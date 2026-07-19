@@ -95,6 +95,32 @@ The builder freezes the captures into `tests/fixtures/live/` and runs the parser
 conformance test over them; any drift from the hand-authored fixtures becomes an
 offline test failure from then on.
 
+## T3 offline acceptance — recorded result
+
+2026-07-19: `scripts/offline_demo.sh` passed end-to-end on the operator
+machine (rootless podman, WSL2), first attempt:
+
+- server image: `ghcr.io/ggml-org/llama.cpp:server-b10068` (854 MB on
+  disk), ctx 8192, `--jinja`
+- model: `/home/dev/models/Qwen3-1.7B-Q4_K_M.gguf` (from
+  `unsloth/Qwen3-1.7B-GGUF`, 1.11 GB) — the docs/OFFLINE.md primary
+  recommendation validated as-is; the pre-authorized Q8_0 fallback was
+  not needed
+- isolation: pod created with `--network none`; in-pod `tls-probe`
+  FAILED as required (negative assertion held)
+- proof: the model drove a real `bash` tool call and `proof.txt`'s
+  content was verified from the host (`offline-demo-ok`)
+- incidental live validation: llama.cpp reported prompt/completion/cached
+  usage and the never-reported cache-write field rendered as `—`
+  (absent-vs-zero display working against a real local server)
+- transcript kept at
+  `/home/dev/temur-t3-offline-demo-transcript-2026-07-19.txt`
+
+Re-run any time with
+`MODEL_GGUF=/home/dev/models/Qwen3-1.7B-Q4_K_M.gguf scripts/offline_demo.sh`
+— the script never pulls; if an image is missing it prints the exact pull
+command and exits.
+
 ## Notes / troubleshooting
 
 - `secret: APP_SECRET_FILE is not set` — run via `run-app.sh` or pass the env as above.
