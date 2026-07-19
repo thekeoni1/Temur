@@ -3,7 +3,6 @@
 
 use temur::agent::events::AgentEvent;
 use temur::agent::{Session, SessionConfig};
-use temur::provider::anthropic::types::StopDetails;
 use temur::provider::*;
 use temur::tools::Registry;
 use std::cell::RefCell;
@@ -99,8 +98,8 @@ fn simple_text_turn() {
             turn_usage,
             session_usage,
         }] => {
-            assert_eq!(turn_usage.input_tokens, 10);
-            assert_eq!(session_usage.output_tokens, 5);
+            assert_eq!(turn_usage.input_tokens, Some(10));
+            assert_eq!(session_usage.output_tokens, Some(5));
         }
         other => panic!("unexpected events: {other:?}"),
     }

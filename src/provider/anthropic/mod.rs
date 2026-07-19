@@ -35,11 +35,16 @@ impl AnthropicProvider {
     }
 
     fn build_body(req: &ChatRequest) -> Result<String, ProviderError> {
+        // Neutral history → Anthropic wire shapes, explicitly, at this
+        // boundary only. Today the JSON they produce is identical to what the
+        // shared types produced pre-T1 (the request_golden suite pins that);
+        // the conversion is the point, not the output.
+        let messages: Vec<types::RequestMessage> = req.messages.iter().map(Into::into).collect();
         let mut body = serde_json::json!({
             "model": req.model,
             "max_tokens": req.max_tokens,
             "stream": true,
-            "messages": req.messages,
+            "messages": messages,
         });
         // Moving cache breakpoint: mark the last cacheable content block of
         // the last message, so each request reads the entire prior
@@ -63,11 +68,20 @@ impl AnthropicProvider {
             }]);
         }
         if !req.tools.is_empty() {
-            body["tools"] = serde_json::to_value(&req.tools)
+            let tools: Vec<types::ToolDef> = req.tools.iter().map(Into::into).collect();
+            body["tools"] = serde_json::to_value(&tools)
                 .map_err(|e| ProviderError::Stream(format!("serialize tools: {e}")))?;
         }
         if req.thinking {
             body["thinking"] = serde_json::json!({"type": "adaptive"});
+        }
+        // Neutral sampling knobs map 1:1 onto Anthropic's names; unset means
+        // the key is absent and behavior is exactly pre-T1.
+        if let Some(t) = req.temperature {
+            body["temperature"] = serde_json::json!(t);
+        }
+        if let Some(p) = req.top_p {
+            body["top_p"] = serde_json::json!(p);
         }
         serde_json::to_string(&body)
             .map_err(|e| ProviderError::Stream(format!("serialize request: {e}")))
@@ -131,7 +145,11 @@ impl AnthropicProvider {
                 message: err.message,
             });
         }
-        acc.into_message().ok_or(ProviderError::Incomplete)
+        // Wire → neutral at the boundary: the accumulator's message is the
+        // last Anthropic-shaped value on this code path.
+        acc.into_message()
+            .map(Into::into)
+            .ok_or(ProviderError::Incomplete)
     }
 }
 

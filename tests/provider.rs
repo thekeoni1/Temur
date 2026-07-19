@@ -55,6 +55,8 @@ fn sample_request() -> ChatRequest {
         max_tokens: 32_000,
         system: Some("You are a coding agent.".into()),
         thinking: false,
+        temperature: None,
+        top_p: None,
         messages: vec![RequestMessage {
             role: Role::User,
             content: vec![ContentBlock::Text {
@@ -135,6 +137,26 @@ fn request_body_shape() {
     assert_eq!(body["messages"][0]["content"][0]["type"], "text");
     // the key must never leak into the body
     assert!(!transport.bodies.borrow()[0].contains("test-key-not-a-secret"));
+}
+
+#[test]
+fn sampling_knobs_absent_when_unset_and_mapped_when_set() {
+    // None (the default everywhere today) sends nothing — pre-T1 behavior.
+    let (provider, transport) = provider_and_transport(vec![Ok("text_simple")]);
+    provider.stream(&sample_request(), &mut |_| {}).unwrap();
+    let body: serde_json::Value = serde_json::from_str(&transport.bodies.borrow()[0]).unwrap();
+    assert!(body.get("temperature").is_none());
+    assert!(body.get("top_p").is_none());
+
+    // Set → mapped onto Anthropic's field names.
+    let (provider, transport) = provider_and_transport(vec![Ok("text_simple")]);
+    let mut req = sample_request();
+    req.temperature = Some(0.5);
+    req.top_p = Some(0.9);
+    provider.stream(&req, &mut |_| {}).unwrap();
+    let body: serde_json::Value = serde_json::from_str(&transport.bodies.borrow()[0]).unwrap();
+    assert_eq!(body["temperature"], 0.5);
+    assert_eq!(body["top_p"], 0.9);
 }
 
 #[test]

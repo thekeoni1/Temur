@@ -1,9 +1,13 @@
-//! Anthropic Messages API wire types.
+//! Anthropic Messages API **wire** types, plus the explicit conversions
+//! between them and the neutral vocabulary in [`crate::provider::types`].
+//! These serialize/deserialize 1:1 against Anthropic's JSON and never leave
+//! this provider; the rest of temur speaks only the neutral types.
 //!
 //! Tolerance policy (per Anthropic's versioning guidance): unknown event
 //! types, block types, delta types, stop reasons, and JSON fields must never
 //! be fatal. Enums carry an `Unknown` catch-all; structs ignore extra fields.
 
+use crate::provider::types as neutral;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -71,6 +75,22 @@ pub struct Usage {
     pub cache_creation_input_tokens: u64,
     #[serde(default)]
     pub cache_read_input_tokens: u64,
+}
+
+/// Request-side wire message (serialized into the Messages API body).
+#[derive(Debug, Clone, Serialize)]
+pub struct RequestMessage {
+    pub role: Role,
+    pub content: Vec<ContentBlock>,
+}
+
+/// Wire tool definition (Anthropic's shape happens to match the neutral one
+/// field-for-field today; the conversion stays explicit anyway).
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolDef {
+    pub name: String,
+    pub description: String,
+    pub input_schema: Value,
 }
 
 /// Populated only on refusals (SDK-fixture-confirmed shape:
@@ -275,5 +295,170 @@ impl MessageAccumulator {
 
     pub fn into_message(self) -> Option<ResponseMessage> {
         self.message
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Boundary conversions: neutral → wire (requests), wire → neutral (responses).
+// This is THE seam — nothing outside `provider::anthropic` may touch the wire
+// types, and nothing here may serialize a neutral type onto the network.
+// ---------------------------------------------------------------------------
+
+impl From<neutral::Role> for Role {
+    fn from(r: neutral::Role) -> Self {
+        match r {
+            neutral::Role::User => Role::User,
+            neutral::Role::Assistant => Role::Assistant,
+        }
+    }
+}
+
+impl From<Role> for neutral::Role {
+    fn from(r: Role) -> Self {
+        match r {
+            Role::User => neutral::Role::User,
+            Role::Assistant => neutral::Role::Assistant,
+        }
+    }
+}
+
+impl From<&neutral::ContentBlock> for ContentBlock {
+    fn from(b: &neutral::ContentBlock) -> Self {
+        match b {
+            neutral::ContentBlock::Text { text } => ContentBlock::Text { text: text.clone() },
+            neutral::ContentBlock::Thinking {
+                thinking,
+                signature,
+            } => ContentBlock::Thinking {
+                thinking: thinking.clone(),
+                signature: signature.clone(),
+            },
+            neutral::ContentBlock::RedactedThinking { data } => {
+                ContentBlock::RedactedThinking { data: data.clone() }
+            }
+            neutral::ContentBlock::ToolUse { id, name, input } => ContentBlock::ToolUse {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+            },
+            neutral::ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => ContentBlock::ToolResult {
+                tool_use_id: tool_use_id.clone(),
+                content: content.clone(),
+                is_error: *is_error,
+            },
+            // The agent filters Unknown before it can reach a request; if one
+            // slips through it still must not panic mid-turn.
+            neutral::ContentBlock::Unknown => ContentBlock::Unknown,
+        }
+    }
+}
+
+impl From<ContentBlock> for neutral::ContentBlock {
+    fn from(b: ContentBlock) -> Self {
+        match b {
+            ContentBlock::Text { text } => neutral::ContentBlock::Text { text },
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+            } => neutral::ContentBlock::Thinking {
+                thinking,
+                signature,
+            },
+            ContentBlock::RedactedThinking { data } => {
+                neutral::ContentBlock::RedactedThinking { data }
+            }
+            ContentBlock::ToolUse { id, name, input } => {
+                neutral::ContentBlock::ToolUse { id, name, input }
+            }
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => neutral::ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            },
+            ContentBlock::Unknown => neutral::ContentBlock::Unknown,
+        }
+    }
+}
+
+impl From<&neutral::RequestMessage> for RequestMessage {
+    fn from(m: &neutral::RequestMessage) -> Self {
+        RequestMessage {
+            role: m.role.into(),
+            content: m.content.iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<&crate::provider::ToolDef> for ToolDef {
+    fn from(t: &crate::provider::ToolDef) -> Self {
+        ToolDef {
+            name: t.name.clone(),
+            description: t.description.clone(),
+            input_schema: t.input_schema.clone(),
+        }
+    }
+}
+
+impl From<StopReason> for neutral::StopReason {
+    fn from(s: StopReason) -> Self {
+        match s {
+            StopReason::EndTurn => neutral::StopReason::EndTurn,
+            StopReason::ToolUse => neutral::StopReason::ToolUse,
+            StopReason::MaxTokens => neutral::StopReason::MaxTokens,
+            StopReason::StopSequence => neutral::StopReason::StopSequence,
+            StopReason::PauseTurn => neutral::StopReason::PauseTurn,
+            StopReason::Refusal => neutral::StopReason::Refusal,
+            StopReason::ModelContextWindowExceeded => {
+                neutral::StopReason::ModelContextWindowExceeded
+            }
+            StopReason::Unknown => neutral::StopReason::Unknown,
+        }
+    }
+}
+
+impl From<StopDetails> for neutral::StopDetails {
+    fn from(d: StopDetails) -> Self {
+        neutral::StopDetails {
+            kind: d.kind,
+            category: d.category,
+            explanation: d.explanation,
+        }
+    }
+}
+
+impl From<Usage> for neutral::Usage {
+    fn from(u: Usage) -> Self {
+        // Anthropic always reports these counters; wire fields absent from a
+        // response default to 0 during parsing, exactly as before T1. The
+        // best-effort `None` states exist for providers that genuinely don't
+        // report usage.
+        neutral::Usage {
+            input_tokens: Some(u.input_tokens),
+            output_tokens: Some(u.output_tokens),
+            cache_creation_input_tokens: Some(u.cache_creation_input_tokens),
+            cache_read_input_tokens: Some(u.cache_read_input_tokens),
+        }
+    }
+}
+
+impl From<ResponseMessage> for neutral::ResponseMessage {
+    fn from(m: ResponseMessage) -> Self {
+        neutral::ResponseMessage {
+            id: m.id,
+            model: m.model,
+            role: m.role.into(),
+            content: m.content.into_iter().map(Into::into).collect(),
+            stop_reason: m.stop_reason.map(Into::into),
+            stop_details: m.stop_details.map(Into::into),
+            usage: m.usage.into(),
+        }
     }
 }

@@ -42,8 +42,8 @@ fn type_str(a: &mut App, s: &str) {
 
 fn usage(input: u64, output: u64) -> Usage {
     Usage {
-        input_tokens: input,
-        output_tokens: output,
+        input_tokens: Some(input),
+        output_tokens: Some(output),
         ..Default::default()
     }
 }
@@ -141,9 +141,9 @@ fn turn_complete_updates_usage_and_appends_tail() {
         session_usage: usage(110, 220),
     });
     assert!(!a.busy);
-    assert_eq!(a.session_usage.input_tokens, 110);
+    assert_eq!(a.session_usage.input_tokens, Some(110));
     assert!(
-        matches!(a.cells.last(), Some(Cell::TurnTail { secs: 3, usage: u }) if u.output_tokens == 20)
+        matches!(a.cells.last(), Some(Cell::TurnTail { secs: 3, usage: u }) if u.output_tokens == Some(20))
     );
 }
 

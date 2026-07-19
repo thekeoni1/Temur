@@ -102,6 +102,10 @@ impl Session {
                 max_tokens: self.cfg.max_tokens,
                 system: self.cfg.system.clone(),
                 thinking: self.cfg.thinking,
+                // Sampling knobs stay provider-default until config grows
+                // them (T3); None sends nothing.
+                temperature: None,
+                top_p: None,
                 messages: self.history.clone(),
                 tools: self.registry.definitions(),
             };
@@ -115,8 +119,8 @@ impl Session {
                 })
             })?;
 
-            add_usage(&mut turn_usage, &msg.usage);
-            add_usage(&mut self.session_usage, &msg.usage);
+            turn_usage.add(&msg.usage);
+            self.session_usage.add(&msg.usage);
 
             let stop = msg.stop_reason;
             let stop_details = msg.stop_details.clone();
@@ -245,11 +249,4 @@ impl Session {
         });
         Ok(())
     }
-}
-
-fn add_usage(acc: &mut Usage, u: &Usage) {
-    acc.input_tokens += u.input_tokens;
-    acc.output_tokens += u.output_tokens;
-    acc.cache_creation_input_tokens += u.cache_creation_input_tokens;
-    acc.cache_read_input_tokens += u.cache_read_input_tokens;
 }

@@ -134,10 +134,10 @@ fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                             "temur · {} · {}s · {} in / {} out · cache r{} w{}",
                             app.model,
                             secs,
-                            usage.input_tokens,
-                            usage.output_tokens,
-                            usage.cache_read_input_tokens,
-                            usage.cache_creation_input_tokens,
+                            usage.input_tokens.unwrap_or(0),
+                            usage.output_tokens.unwrap_or(0),
+                            usage.cache_read_input_tokens.unwrap_or(0),
+                            usage.cache_creation_input_tokens.unwrap_or(0),
                         ),
                         dim(),
                     ),
@@ -252,7 +252,8 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
 fn draw_footer(app: &App, frame: &mut Frame, area: Rect) {
     let session = format!(
         "session {} in / {} out",
-        app.session_usage.input_tokens, app.session_usage.output_tokens
+        app.session_usage.input_tokens.unwrap_or(0),
+        app.session_usage.output_tokens.unwrap_or(0)
     );
     // Most→least verbose; pick the first that leaves the cwd some room.
     let candidates = [
@@ -260,8 +261,8 @@ fn draw_footer(app: &App, frame: &mut Frame, area: Rect) {
             "{} · thinking {} · {session} · cache r{} w{}",
             app.model,
             if app.thinking { "on" } else { "off" },
-            app.session_usage.cache_read_input_tokens,
-            app.session_usage.cache_creation_input_tokens,
+            app.session_usage.cache_read_input_tokens.unwrap_or(0),
+            app.session_usage.cache_creation_input_tokens.unwrap_or(0),
         ),
         format!("{} · {session}", app.model),
         session.clone(),

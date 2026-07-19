@@ -1,26 +1,21 @@
-//! Provider layer. `Provider` is the seam a second provider (e.g. Gemini)
-//! implements later; the agent core and UI speak only these types. The
-//! Anthropic wire format stays inside `anthropic`.
+//! Provider layer. `Provider` is the seam a second provider (e.g. an
+//! OpenAI-compatible endpoint) implements later; the agent core and UI speak
+//! only the neutral types in [`types`]. Each provider owns its wire format
+//! and converts at its own boundary — the Anthropic wire shapes live in
+//! `anthropic::types`, never here.
 
 pub mod anthropic;
+pub mod types;
 
-use serde::Serialize;
 use serde_json::Value;
 
-// The core conversation vocabulary. These are owned by the provider layer;
-// today they serialize 1:1 to Anthropic's format, and a future non-Anthropic
-// provider converts them at its own boundary.
-pub use anthropic::types::{ContentBlock, ResponseMessage, Role, StopReason, Usage};
+pub use types::{
+    ContentBlock, RequestMessage, ResponseMessage, Role, StopDetails, StopReason, Usage,
+};
 
-/// One turn in the conversation history (request side).
-#[derive(Debug, Clone, Serialize)]
-pub struct RequestMessage {
-    pub role: Role,
-    pub content: Vec<ContentBlock>,
-}
-
-/// A tool made available to the model.
-#[derive(Debug, Clone, Serialize)]
+/// A tool made available to the model. Providers serialize this into their
+/// own tool-definition wire shape.
+#[derive(Debug, Clone)]
 pub struct ToolDef {
     pub name: String,
     pub description: String,
@@ -30,10 +25,17 @@ pub struct ToolDef {
 #[derive(Debug, Clone)]
 pub struct ChatRequest {
     pub model: String,
+    /// Response token cap. Neutral name — providers map it to their own
+    /// field (Anthropic `max_tokens`; OpenAI-compat `max_completion_tokens`).
     pub max_tokens: u32,
     pub system: Option<String>,
     /// Adaptive thinking (off by default in v1).
     pub thinking: bool,
+    /// Sampling temperature. `None` = provider default: the field is simply
+    /// absent from the request, exactly as before it existed here.
+    pub temperature: Option<f64>,
+    /// Nucleus sampling. `None` = provider default (field absent).
+    pub top_p: Option<f64>,
     pub messages: Vec<RequestMessage>,
     pub tools: Vec<ToolDef>,
 }

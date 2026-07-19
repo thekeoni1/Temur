@@ -20,7 +20,7 @@ FIXTURES="$PROJ/tests/fixtures/tool_use_parallel.sse,$PROJ/tests/fixtures/text_s
 # --- shared checks, parameterized by binary/deps dir -------------------------
 
 container_suites() { # $1 = deps dir, $2 = label
-    for suite in sse_parser provider tools agent live_conformance skills tui; do
+    for suite in sse_parser provider request_golden tools agent live_conformance skills tui; do
         TBIN=$(ls -t "$1/${suite}"-* 2>/dev/null | grep -v '\.d$' | head -1 || true)
         [ -n "$TBIN" ] || continue
         echo "-- $suite ($(basename "$TBIN")) --"
