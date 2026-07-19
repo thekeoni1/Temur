@@ -1,0 +1,8 @@
+Load a specialized skill's instructions into the conversation.
+
+Skills are reusable instruction sets and workflows for specific tasks (for example, driving a particular command-line tool). When a task matches a skill's description in <available_skills>, call this tool with that skill's name to load its full instructions before you start the task.
+
+Parameters:
+- name: the skill's name (its directory name), exactly as listed in <available_skills>.
+
+The tool returns the skill's instructions along with its base directory. Read any playbooks or asset files the skill references relative to that base directory.

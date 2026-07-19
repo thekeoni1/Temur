@@ -1,0 +1,6 @@
+# Build output goes to native ext4, NOT this OneDrive-synced drvfs mount
+# (a target/ dir here is slow and thrashes OneDrive sync).
+# Default target is the shipping target; correctness only counts on i686.
+[build]
+target-dir = "/home/dev/rustcode-target"
+target = "i686-unknown-linux-gnu"

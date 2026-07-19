@@ -1,0 +1,7 @@
+# Build output lives at /home/dev/rustcode-target (see .cargo/config.toml),
+# but ignore any stray local target dirs too.
+target/
+**/*.rs.bk
+
+# Local working notes — never to be committed.
+opencode-c-conversation.md
