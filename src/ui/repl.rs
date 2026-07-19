@@ -72,14 +72,14 @@ impl Ui for ReplUi {
                 // message caching silently broke.
                 println!(
                     "  (turn: {} in / {} out, cache read {} write {} — session: {} in / {} out, cache read {} write {})",
-                    turn_usage.input_tokens.unwrap_or(0),
-                    turn_usage.output_tokens.unwrap_or(0),
-                    turn_usage.cache_read_input_tokens.unwrap_or(0),
-                    turn_usage.cache_creation_input_tokens.unwrap_or(0),
-                    session_usage.input_tokens.unwrap_or(0),
-                    session_usage.output_tokens.unwrap_or(0),
-                    session_usage.cache_read_input_tokens.unwrap_or(0),
-                    session_usage.cache_creation_input_tokens.unwrap_or(0),
+                    super::fmt_tokens(turn_usage.input_tokens),
+                    super::fmt_tokens(turn_usage.output_tokens),
+                    super::fmt_tokens(turn_usage.cache_read_input_tokens),
+                    super::fmt_tokens(turn_usage.cache_creation_input_tokens),
+                    super::fmt_tokens(session_usage.input_tokens),
+                    super::fmt_tokens(session_usage.output_tokens),
+                    super::fmt_tokens(session_usage.cache_read_input_tokens),
+                    super::fmt_tokens(session_usage.cache_creation_input_tokens),
                 );
             }
         }

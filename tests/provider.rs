@@ -343,6 +343,9 @@ fn moving_breakpoint_advances_across_agent_iterations() {
         thinking: false,
         cwd: dir.path().to_path_buf(),
         max_iterations: 10,
+        temperature: None,
+        top_p: None,
+        context_window: None,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
     session.turn("do the smoke task", &mut |_| {}).unwrap();

@@ -31,6 +31,11 @@ pub struct Config {
     /// Adaptive thinking. Deliberately OFF for v1 bring-up; flipping this on
     /// is a config change, not a refactor (wire types support it from M1).
     pub thinking: bool,
+    /// Sampling temperature, sent to whichever provider is selected.
+    /// `None` = provider default (the field is absent from requests).
+    pub temperature: Option<f32>,
+    /// Nucleus sampling; same absent-when-`None` contract.
+    pub top_p: Option<f32>,
     pub system_prompt: Option<String>,
     /// `:`-separated extra skill directories, searched before the always-included
     /// `.temur/skills` defaults. The `TEMUR_SKILLS_DIR` env var overrides this.
@@ -57,6 +62,11 @@ pub struct OpenAiCompatConfig {
     /// rule as `APP_SECRET_FILE`, never env or argv. `None` = keyless
     /// (local servers need no credential).
     pub api_key_file: Option<String>,
+    /// Advisory context-window size (tokens) of the SERVED model — a
+    /// property of the server (llama.cpp `-c`), which temur cannot query.
+    /// `None` = awareness off. Powers warnings only: no compaction, no
+    /// trimming, no request-side enforcement.
+    pub context_window: Option<u64>,
 }
 
 impl Default for OpenAiCompatConfig {
@@ -65,6 +75,7 @@ impl Default for OpenAiCompatConfig {
             base_url: DEFAULT_OPENAI_COMPAT_BASE_URL.to_string(),
             model: String::new(),
             api_key_file: None,
+            context_window: None,
         }
     }
 }
@@ -77,6 +88,8 @@ impl Default for Config {
             base_url: DEFAULT_BASE_URL.to_string(),
             max_tokens: DEFAULT_MAX_TOKENS,
             thinking: false,
+            temperature: None,
+            top_p: None,
             system_prompt: None,
             skills_dir: None,
             max_turn_iterations: DEFAULT_MAX_TURN_ITERATIONS,
@@ -131,6 +144,23 @@ mod tests {
         // Anthropic fields keep their defaults untouched.
         assert_eq!(c.model, DEFAULT_MODEL);
         assert_eq!(c.base_url, DEFAULT_BASE_URL);
+    }
+
+    #[test]
+    fn sampling_knobs_and_context_window_parse() {
+        // 0.25 / 0.5 are exact in binary so the equality is airtight.
+        let c: Config = serde_json::from_str(
+            r#"{"temperature":0.25,"top_p":0.5,
+                "openai_compat":{"model":"m","context_window":8192}}"#,
+        )
+        .unwrap();
+        assert_eq!(c.temperature, Some(0.25));
+        assert_eq!(c.top_p, Some(0.5));
+        assert_eq!(c.openai_compat.unwrap().context_window, Some(8192));
+        // Absent = provider defaults / awareness off.
+        let c: Config = serde_json::from_str("{}").unwrap();
+        assert!(c.temperature.is_none());
+        assert!(c.top_p.is_none());
     }
 
     #[test]

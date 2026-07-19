@@ -216,6 +216,9 @@ fn repl(
     let cwd_display = cwd.display().to_string();
     let mut session_cfg = SessionConfig::from_config(&cfg, cwd);
     session_cfg.model = model.clone();
+    // Advisory context awareness: the window is a property of the served
+    // model, so it comes from the openai_compat section (None elsewhere).
+    session_cfg.context_window = openai_cfg.as_ref().and_then(|oc| oc.context_window);
     session_cfg.system = Some(system);
     let mut session = Session::new(
         provider,

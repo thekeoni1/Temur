@@ -26,6 +26,13 @@ pub struct SessionConfig {
     pub thinking: bool,
     pub cwd: std::path::PathBuf,
     pub max_iterations: u32,
+    /// Sampling knobs, mapped by every provider; `None` = provider default.
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    /// Advisory context-window size (tokens) of the served model. `None` =
+    /// awareness off. Warnings only — never compaction, trimming, or
+    /// request-side enforcement.
+    pub context_window: Option<u64>,
 }
 
 impl SessionConfig {
@@ -37,6 +44,11 @@ impl SessionConfig {
             thinking: cfg.thinking,
             cwd,
             max_iterations: cfg.max_turn_iterations,
+            temperature: cfg.temperature,
+            top_p: cfg.top_p,
+            // A property of the served model, not of temur: main.rs sets it
+            // from the provider section that knows the server.
+            context_window: None,
         }
     }
 }
@@ -48,6 +60,12 @@ pub struct Session {
     cfg: SessionConfig,
     history: Vec<RequestMessage>,
     session_usage: Usage,
+    /// input+output of the MOST RECENT response — the best available
+    /// estimate of context occupancy (session totals would double-count the
+    /// resent history). Stays stale when a quirk server reports no usage.
+    last_context_used: Option<u64>,
+    /// The context pre-warning fires once per session, not per turn.
+    context_warned: bool,
 }
 
 impl Session {
@@ -60,6 +78,8 @@ impl Session {
             cfg,
             history: Vec::new(),
             session_usage: Usage::default(),
+            last_context_used: None,
+            context_warned: false,
         }
     }
 
@@ -102,10 +122,10 @@ impl Session {
                 max_tokens: self.cfg.max_tokens,
                 system: self.cfg.system.clone(),
                 thinking: self.cfg.thinking,
-                // Sampling knobs stay provider-default until config grows
-                // them (T3); None sends nothing.
-                temperature: None,
-                top_p: None,
+                // None sends nothing (provider default), exactly as before
+                // config grew these knobs.
+                temperature: self.cfg.temperature.map(f64::from),
+                top_p: self.cfg.top_p.map(f64::from),
                 messages: self.history.clone(),
                 tools: self.registry.definitions(),
             };
@@ -121,6 +141,29 @@ impl Session {
 
             turn_usage.add(&msg.usage);
             self.session_usage.add(&msg.usage);
+
+            // Advisory context estimate (T3): the most recent response's
+            // input+output IS the occupancy after this round-trip. One
+            // round-trip stale by nature (no local tokenizer), and left
+            // stale when usage isn't reported at all.
+            if msg.usage.input_tokens.is_some() || msg.usage.output_tokens.is_some() {
+                self.last_context_used = Some(
+                    msg.usage.input_tokens.unwrap_or(0) + msg.usage.output_tokens.unwrap_or(0),
+                );
+            }
+            if !self.context_warned {
+                if let (Some(window), Some(used)) =
+                    (self.cfg.context_window, self.last_context_used)
+                {
+                    if window.saturating_sub(used) < u64::from(self.cfg.max_tokens) {
+                        self.context_warned = true;
+                        ui(AgentEvent::Notice(format!(
+                            "context: ~{used} of {window} tokens used; the next response may not fit (max_tokens {}) — consider starting a new session",
+                            self.cfg.max_tokens
+                        )));
+                    }
+                }
+            }
 
             let stop = msg.stop_reason;
             let stop_details = msg.stop_details.clone();
@@ -224,9 +267,31 @@ impl Session {
                         content,
                     });
                     match other {
-                        Some(StopReason::MaxTokens) => ui(AgentEvent::Notice(
-                            "response truncated: max_tokens reached".into(),
-                        )),
+                        Some(StopReason::MaxTokens) => {
+                            // Near the configured window, max_tokens is the
+                            // symptom, overflow the likely cause. Providers
+                            // stay faithful wire mappers; this heuristic
+                            // lives here. Without a window (or without
+                            // usage) the wording is EXACTLY the old string.
+                            let near_window = match (self.cfg.context_window, self.last_context_used)
+                            {
+                                (Some(window), Some(used)) => {
+                                    used + u64::from(self.cfg.max_tokens) >= window
+                                }
+                                _ => false,
+                            };
+                            if near_window {
+                                let used = self.last_context_used.unwrap_or(0);
+                                let window = self.cfg.context_window.unwrap_or(0);
+                                ui(AgentEvent::Notice(format!(
+                                    "response truncated: max_tokens reached near the context window (~{used} of {window} tokens) — likely context overflow; consider starting a new session"
+                                )));
+                            } else {
+                                ui(AgentEvent::Notice(
+                                    "response truncated: max_tokens reached".into(),
+                                ));
+                            }
+                        }
                         Some(StopReason::ModelContextWindowExceeded) => ui(AgentEvent::Notice(
                             "context window exceeded; consider starting a new session".into(),
                         )),

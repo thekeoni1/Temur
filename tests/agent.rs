@@ -68,6 +68,9 @@ fn session_with(
         thinking: false,
         cwd: dir.to_path_buf(),
         max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
     };
     (
         Session::new(Box::new(provider), Registry::standard(), cfg),
@@ -292,6 +295,9 @@ fn iteration_limit_stops_runaway_turns() {
         thinking: false,
         cwd: dir.path().to_path_buf(),
         max_iterations: 4,
+        temperature: None,
+        top_p: None,
+        context_window: None,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
     let mut events = vec![];
@@ -317,6 +323,156 @@ fn iteration_limit_flows_from_config_to_session() {
     let cfg: temur::config::Config = serde_json::from_str("{}").unwrap();
     let scfg = SessionConfig::from_config(&cfg, dir.path().to_path_buf());
     assert_eq!(scfg.max_iterations, temur::config::DEFAULT_MAX_TURN_ITERATIONS);
+}
+
+// --- T3 context-window awareness (advisory only) ---------------------------
+
+fn msg_with_usage(
+    content: Vec<ContentBlock>,
+    stop: StopReason,
+    usage: serde_json::Value,
+) -> ResponseMessage {
+    let value = serde_json::json!({
+        "id": "msg_test",
+        "model": "local-test",
+        "role": "assistant",
+        "content": [],
+        "usage": usage
+    });
+    let mut m: ResponseMessage = serde_json::from_value(value).unwrap();
+    m.content = content;
+    m.stop_reason = Some(stop);
+    m
+}
+
+fn session_with_window(
+    dir: &std::path::Path,
+    responses: Vec<ResponseMessage>,
+    context_window: Option<u64>,
+    max_tokens: u32,
+) -> Session {
+    let provider = MockProvider {
+        responses: RefCell::new(responses),
+        requests: Rc::new(RefCell::new(vec![])),
+    };
+    let cfg = SessionConfig {
+        model: "local-test".into(),
+        max_tokens,
+        system: None,
+        thinking: false,
+        cwd: dir.to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window,
+    };
+    Session::new(Box::new(provider), Registry::standard(), cfg)
+}
+
+fn notices(events: &[AgentEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Notice(n) => Some(n.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn context_prewarn_fires_once_per_session() {
+    let dir = tempfile::tempdir().unwrap();
+    // window 1000, max_tokens 800: usage 150+100=250 leaves 750 < 800.
+    let mut session = session_with_window(
+        dir.path(),
+        vec![
+            msg_with_usage(
+                vec![text("a")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 150, "output_tokens": 100}),
+            ),
+            msg_with_usage(
+                vec![text("b")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 300, "output_tokens": 100}),
+            ),
+        ],
+        Some(1000),
+        800,
+    );
+    let n1 = notices(&collect_events(&mut session, "one"));
+    assert_eq!(n1.len(), 1, "exactly one pre-warn: {n1:?}");
+    assert!(n1[0].contains("context: ~250 of 1000 tokens used"));
+    assert!(n1[0].contains("the next response may not fit (max_tokens 800)"));
+    assert!(n1[0].contains("consider starting a new session"));
+    // Turn two re-satisfies the condition; the warning is once per SESSION.
+    let n2 = notices(&collect_events(&mut session, "two"));
+    assert!(n2.is_empty(), "no repeat warning: {n2:?}");
+}
+
+#[test]
+fn max_tokens_near_window_gets_context_overflow_wording() {
+    let dir = tempfile::tempdir().unwrap();
+    // used 250 + max_tokens 800 >= window 1000 → overflow wording.
+    let mut session = session_with_window(
+        dir.path(),
+        vec![msg_with_usage(
+            vec![text("truncated tex")],
+            StopReason::MaxTokens,
+            serde_json::json!({"input_tokens": 150, "output_tokens": 100}),
+        )],
+        Some(1000),
+        800,
+    );
+    let events = collect_events(&mut session, "hi");
+    let notice = notices(&events)
+        .into_iter()
+        .find(|n| n.contains("response truncated"))
+        .expect("truncation notice");
+    assert!(notice.contains("max_tokens reached near the context window"));
+    assert!(notice.contains("~250 of 1000 tokens"));
+    assert!(notice.contains("likely context overflow"));
+    assert!(notice.contains("consider starting a new session"));
+}
+
+#[test]
+fn max_tokens_without_window_keeps_exact_old_wording() {
+    let dir = tempfile::tempdir().unwrap();
+    // Regression pin: no configured window → byte-identical v1 notice.
+    let mut session = session_with_window(
+        dir.path(),
+        vec![msg_with_usage(
+            vec![text("t")],
+            StopReason::MaxTokens,
+            serde_json::json!({"input_tokens": 150, "output_tokens": 100}),
+        )],
+        None,
+        800,
+    );
+    let events = collect_events(&mut session, "hi");
+    assert!(notices(&events)
+        .iter()
+        .any(|n| n == "response truncated: max_tokens reached"));
+}
+
+#[test]
+fn no_usage_reported_stays_silent_despite_window() {
+    let dir = tempfile::tempdir().unwrap();
+    // Quirk server: never reports usage. A tiny window would certainly warn
+    // if an estimate existed; without one the heuristic stays silent
+    // instead of inventing numbers.
+    let mut session = session_with_window(
+        dir.path(),
+        vec![msg_with_usage(
+            vec![text("ok")],
+            StopReason::EndTurn,
+            serde_json::json!({}),
+        )],
+        Some(100),
+        32_000,
+    );
+    let events = collect_events(&mut session, "hi");
+    assert!(notices(&events).is_empty());
 }
 
 #[test]

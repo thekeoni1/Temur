@@ -89,6 +89,27 @@ fn thinking_deltas_collapse_to_one_indicator() {
 }
 
 #[test]
+fn absent_usage_renders_dashes_not_zero() {
+    // Local servers may never report usage: the tail and footer must show
+    // "—" per unreported field, never a fake 0.
+    let mut a = app();
+    a.fold(&AgentEvent::TurnComplete {
+        turn_usage: Usage::default(),
+        session_usage: Usage::default(),
+    });
+    let rows = render(&mut a, 100, 12);
+    let all = rows.join("\n");
+    assert!(
+        all.contains("— in / — out"),
+        "expected — for unreported counts:\n{all}"
+    );
+    assert!(
+        !all.contains("0 in / 0 out"),
+        "absent usage must never render as 0:\n{all}"
+    );
+}
+
+#[test]
 fn fifo_pairing_matches_parallel_tools_in_order() {
     let mut a = app();
     // Two tool_use blocks stream first, then execute sequentially in the
@@ -365,6 +386,9 @@ fn headless_end_to_end_through_the_ui_seam() {
         thinking: false,
         cwd: dir.path().to_path_buf(),
         max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
 
