@@ -1,0 +1,11 @@
+data: {"id":"chatcmpl-9XYZ007","object":"chat.completion.chunk","created":1719000006,"model":"gpt-4o-mini","system_fingerprint":"fp_abc123","choices":[{"index":0,"delta":{"role":"assistant","content":null,"refusal":""},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-9XYZ007","object":"chat.completion.chunk","created":1719000006,"model":"gpt-4o-mini","system_fingerprint":"fp_abc123","choices":[{"index":0,"delta":{"refusal":"I'm sorry,"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-9XYZ007","object":"chat.completion.chunk","created":1719000006,"model":"gpt-4o-mini","system_fingerprint":"fp_abc123","choices":[{"index":0,"delta":{"refusal":" I can't assist with that request."},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-9XYZ007","object":"chat.completion.chunk","created":1719000006,"model":"gpt-4o-mini","system_fingerprint":"fp_abc123","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-9XYZ007","object":"chat.completion.chunk","created":1719000006,"model":"gpt-4o-mini","system_fingerprint":"fp_abc123","choices":[],"usage":{"prompt_tokens":79,"completion_tokens":11,"total_tokens":90,"completion_tokens_details":{"reasoning_tokens":0}}}
+
+data: [DONE]

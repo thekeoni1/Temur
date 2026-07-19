@@ -5,6 +5,9 @@
 //! `anthropic::types`, never here.
 
 pub mod anthropic;
+pub mod openai_compat;
+pub mod sse;
+pub mod transport;
 pub mod types;
 
 use serde_json::Value;
@@ -26,7 +29,10 @@ pub struct ToolDef {
 pub struct ChatRequest {
     pub model: String,
     /// Response token cap. Neutral name — providers map it to their own
-    /// field (Anthropic `max_tokens`; OpenAI-compat `max_completion_tokens`).
+    /// field. (Both current providers happen to call it `max_tokens` on the
+    /// wire: OpenAI-proper deprecated that name for `max_completion_tokens`,
+    /// but the compat universe this provider targets — llama.cpp, Ollama,
+    /// OpenRouter, DeepSeek, … — still speaks the classic name universally.)
     pub max_tokens: u32,
     pub system: Option<String>,
     /// Adaptive thinking (off by default in v1).

@@ -1,0 +1,3 @@
+data: {"id":"chatcmpl-9XYZ006","object":"chat.completion.chunk","created":1719000005,"model":"gpt-4o-mini","system_fingerprint":"fp_abc123","choices":[{"index":0,"delta":{"role":"assistant","content":"Partial answ"},"logprobs":null,"finish_reason":null}]}
+
+data: {"error":{"message":"The server is overloaded, please try again later","type":"server_error","code":null}}

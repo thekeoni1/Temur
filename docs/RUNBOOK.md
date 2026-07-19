@@ -36,6 +36,15 @@ Optional config (model, max_tokens, thinking) — appsvc's HOME is
 `{"model": "claude-sonnet-5"}`. Defaults: claude-sonnet-5, 32000 max_tokens,
 thinking off.
 
+Provider selection (T2): `{"provider": "openai-compat", "openai_compat":
+{"base_url": "http://127.0.0.1:8080/v1", "model": "<model-id>"}}` targets any
+OpenAI-compatible endpoint (llama.cpp, Ollama, vLLM, LM Studio, or a hosted
+compat API). Local endpoints need no credential — omit `api_key_file` and no
+auth header is sent. A keyed endpoint reads its key from `api_key_file`, a
+file path with the same isolation rule as `APP_SECRET_FILE` (never env, never
+argv). The default provider remains `anthropic`; selecting the compat
+provider leaves the Anthropic fields untouched.
+
 ## 3. One-time SSE capture (golden fixtures), then the smoke
 
 Run the first turn with capture enabled so the raw wire streams get frozen into the

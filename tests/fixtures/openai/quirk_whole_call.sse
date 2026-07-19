@@ -1,0 +1,3 @@
+data: {"object":"chat.completion.chunk","created":1719000012,"model":"qwen2.5-coder-7b","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"type":"function","function":{"name":"bash","arguments":"{\"command\": \"ls /tmp\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]

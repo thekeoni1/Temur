@@ -1,6 +1,8 @@
 use temur::agent::{Session, SessionConfig};
-use temur::provider::anthropic::transport::ReplayTransport;
 use temur::provider::anthropic::AnthropicProvider;
+use temur::provider::openai_compat::OpenAiCompatProvider;
+use temur::provider::transport::ReplayTransport;
+use temur::provider::Provider;
 use temur::tools::Registry;
 use temur::agent::events::AgentEvent;
 use temur::ui::tui::{SessionInfo, TuiUi};
@@ -100,48 +102,104 @@ fn repl(
         temur::skills::skill_dirs(skill_override.as_deref(), &cwd, home.as_deref());
     let installed_skills = temur::skills::enumerate(&skill_dirs);
 
+    // Provider selection (T2). The default stays anthropic — selecting
+    // "openai-compat" is a config change, never inferred. --mock replays
+    // fixtures through the SELECTED provider, so the selection path itself
+    // is exercised offline.
+    let openai_cfg = match cfg.provider.as_str() {
+        "anthropic" => None,
+        "openai-compat" => {
+            let oc = cfg.openai_compat.clone().unwrap_or_default();
+            if oc.model.is_empty() {
+                return Err(error::Error::Config(
+                    "provider \"openai-compat\" requires openai_compat.model".into(),
+                ));
+            }
+            Some(oc)
+        }
+        other => {
+            return Err(error::Error::Config(format!(
+                "unknown provider {other:?} (expected \"anthropic\" or \"openai-compat\")"
+            )))
+        }
+    };
+    let model = openai_cfg
+        .as_ref()
+        .map(|oc| oc.model.clone())
+        .unwrap_or_else(|| cfg.model.clone());
+
     // Plain-mode banners keep their exact v1 wording; in TUI mode the same
     // facts live in the header/footer (a pre-alt-screen println would be
     // swallowed anyway).
-    let provider = match &mock {
+    let provider: Box<dyn Provider> = match &mock {
         Some(paths) => {
             let files: Vec<std::path::PathBuf> =
                 paths.split(',').map(std::path::PathBuf::from).collect();
             if !use_tui {
                 println!("temur {VERSION} [MOCK replay: {} response(s)]", files.len());
             }
-            AnthropicProvider::new(
-                "https://mock.invalid",
-                "mock-key".into(),
-                Box::new(ReplayTransport::new(files)),
-            )
-        }
-        None => {
-            // Credential comes BY PATH via APP_SECRET_FILE (appsvc launcher).
-            // Deliberately never read from ANTHROPIC_API_KEY.
-            let key = secret::load_api_key()?;
-            if !use_tui {
-                println!("temur {VERSION} (model={}, thinking={})", cfg.model, cfg.thinking);
+            let replay = Box::new(ReplayTransport::new(files));
+            match &openai_cfg {
+                Some(oc) => Box::new(OpenAiCompatProvider::new(oc.base_url.clone(), None, replay)),
+                None => Box::new(AnthropicProvider::new(
+                    "https://mock.invalid",
+                    "mock-key".into(),
+                    replay,
+                )),
             }
-            match &capture {
-                Some(base) => {
-                    // Tee raw SSE bodies to <base>.<n>.sse for the golden
-                    // conformance fixtures (operator-run, one-time).
-                    println!("[capture-sse: writing raw streams to {base}.<n>.sse]");
-                    AnthropicProvider::new(
-                        cfg.base_url.clone(),
-                        key,
-                        Box::new(
-                            temur::provider::anthropic::transport::CaptureTransport::new(
+        }
+        None => match &openai_cfg {
+            Some(oc) => {
+                // Keyless is first-class for local endpoints; a keyed
+                // endpoint reads its credential BY PATH from config — the
+                // same isolation rule as APP_SECRET_FILE, never env/argv.
+                let key = match &oc.api_key_file {
+                    Some(p) => Some(secret::load_api_key_from(std::path::Path::new(p))?),
+                    None => None,
+                };
+                if !use_tui {
+                    println!("temur {VERSION} (model={model}, thinking={})", cfg.thinking);
+                }
+                match &capture {
+                    Some(base) => {
+                        println!("[capture-sse: writing raw streams to {base}.<n>.sse]");
+                        Box::new(OpenAiCompatProvider::new(
+                            oc.base_url.clone(),
+                            key,
+                            Box::new(temur::provider::transport::CaptureTransport::new(
+                                temur::provider::openai_compat::transport::HttpTransport::new(),
+                                std::path::PathBuf::from(base),
+                            )),
+                        ))
+                    }
+                    None => Box::new(OpenAiCompatProvider::with_http(oc.base_url.clone(), key)),
+                }
+            }
+            None => {
+                // Credential comes BY PATH via APP_SECRET_FILE (appsvc launcher).
+                // Deliberately never read from ANTHROPIC_API_KEY.
+                let key = secret::load_api_key()?;
+                if !use_tui {
+                    println!("temur {VERSION} (model={model}, thinking={})", cfg.thinking);
+                }
+                match &capture {
+                    Some(base) => {
+                        // Tee raw SSE bodies to <base>.<n>.sse for the golden
+                        // conformance fixtures (operator-run, one-time).
+                        println!("[capture-sse: writing raw streams to {base}.<n>.sse]");
+                        Box::new(AnthropicProvider::new(
+                            cfg.base_url.clone(),
+                            key,
+                            Box::new(temur::provider::transport::CaptureTransport::new(
                                 temur::provider::anthropic::transport::HttpTransport::new(),
                                 std::path::PathBuf::from(base),
-                            ),
-                        ),
-                    )
+                            )),
+                        ))
+                    }
+                    None => Box::new(AnthropicProvider::with_http(cfg.base_url.clone(), key)),
                 }
-                None => AnthropicProvider::with_http(cfg.base_url.clone(), key),
             }
-        }
+        },
     };
 
     let base_system = cfg
@@ -157,16 +215,17 @@ fn repl(
 
     let cwd_display = cwd.display().to_string();
     let mut session_cfg = SessionConfig::from_config(&cfg, cwd);
+    session_cfg.model = model.clone();
     session_cfg.system = Some(system);
     let mut session = Session::new(
-        Box::new(provider),
+        provider,
         Registry::standard_with_skills(skill_dirs),
         session_cfg,
     );
 
     let mut ui: Box<dyn Ui> = if use_tui {
         Box::new(TuiUi::new(SessionInfo {
-            model: cfg.model.clone(),
+            model: model.clone(),
             thinking: cfg.thinking,
             cwd: cwd_display,
             version: VERSION.to_string(),

@@ -20,7 +20,7 @@ FIXTURES="$PROJ/tests/fixtures/tool_use_parallel.sse,$PROJ/tests/fixtures/text_s
 # --- shared checks, parameterized by binary/deps dir -------------------------
 
 container_suites() { # $1 = deps dir, $2 = label
-    for suite in sse_parser provider request_golden tools agent live_conformance skills tui; do
+    for suite in sse_parser provider openai_compat request_golden tools agent live_conformance skills tui; do
         TBIN=$(ls -t "$1/${suite}"-* 2>/dev/null | grep -v '\.d$' | head -1 || true)
         [ -n "$TBIN" ] || continue
         echo "-- $suite ($(basename "$TBIN")) --"
@@ -38,6 +38,30 @@ mock_repl() { # $1 = bin dir, $2 = image, $3 = label
     echo "$MOCK_OUT" | grep -q "bash" || { echo "FAIL($3): no tool activity"; echo "$MOCK_OUT"; exit 1; }
     echo "$MOCK_OUT" | grep -q "Hello, world!" || { echo "FAIL($3): no second-round response"; echo "$MOCK_OUT"; exit 1; }
     echo "mock REPL OK ($3)"
+}
+
+# Same smoke through the config-selected OpenAI-compat provider: a mounted
+# config picks provider "openai-compat" (keyless, so no secret plumbing) and
+# the fixtures are OpenAI chunk streams. Proves selection + the second wire
+# end-to-end in the real binary.
+OPENAI_FIXTURES="$PROJ/tests/fixtures/openai/tool_parallel.sse,$PROJ/tests/fixtures/openai/text_simple.sse"
+mock_repl_openai() { # $1 = bin dir, $2 = image, $3 = label
+    CFG_DIR=$(mktemp -d)
+    mkdir -p "$CFG_DIR/temur"
+    printf '{"provider":"openai-compat","openai_compat":{"model":"mock-local"}}\n' \
+        > "$CFG_DIR/temur/config.json"
+    MOCK_OUT=$(printf 'do the smoke task\n' | podman run --rm -i \
+        -v "$1":/app:ro -v "$PROJ":"$PROJ":ro -v "$CFG_DIR":/cfg:ro \
+        -e XDG_CONFIG_HOME=/cfg "$2" \
+        /app/temur --mock "$OPENAI_FIXTURES")
+    rm -rf "$CFG_DIR"
+    # No model banner in mock mode; selection is proven by the fixtures
+    # themselves — OpenAI chunk streams only assemble through the compat
+    # provider (the Anthropic parser rejects them, yielding no output).
+    echo "$MOCK_OUT" | grep -q "read the file and list the directory" || { echo "FAIL($3/openai): no streamed text"; echo "$MOCK_OUT"; exit 1; }
+    echo "$MOCK_OUT" | grep -q "bash" || { echo "FAIL($3/openai): no tool activity"; echo "$MOCK_OUT"; exit 1; }
+    echo "$MOCK_OUT" | grep -q "Hello, world!" || { echo "FAIL($3/openai): no second-round response"; echo "$MOCK_OUT"; exit 1; }
+    echo "mock REPL OK ($3, openai-compat)"
 }
 
 # TUI pty smokes: the real binary through the real crossterm path (raw
@@ -107,6 +131,9 @@ container_suites "$(dirname "$GNU_BIN")/deps" gnu
 echo "== container: mock REPL end-to-end (gnu-debug) =="
 mock_repl "$(dirname "$GNU_BIN")" "$IMG" gnu
 
+echo "== container: mock REPL via openai-compat provider (gnu-debug) =="
+mock_repl_openai "$(dirname "$GNU_BIN")" "$IMG" gnu
+
 echo "== host: TUI pty smoke =="
 tui_input | script -qec "stty rows 24 cols 100; $GNU_BIN $MOCKARGS" /tmp/tui-check-host.log >/dev/null
 check_tui_log /tmp/tui-check-host.log host
@@ -147,6 +174,9 @@ container_suites "$(dirname "$MUSL_BIN")/deps" musl
 
 echo "== container: mock REPL end-to-end (musl) =="
 mock_repl "$(dirname "$MUSL_BIN")" "$IMG" musl
+
+echo "== container: mock REPL via openai-compat provider (musl) =="
+mock_repl_openai "$(dirname "$MUSL_BIN")" "$IMG" musl
 
 echo "== container: TUI pty smoke (musl) =="
 container_tui "$(dirname "$MUSL_BIN")" musl /tmp/tui-check-musl.log

@@ -1,0 +1,514 @@
+//! OpenAI-compatible Chat Completions **wire** types, plus the explicit
+//! conversions between them and the neutral vocabulary in
+//! [`crate::provider::types`]. These serialize/deserialize against the
+//! `/chat/completions` JSON dialect spoken by OpenAI, Groq, OpenRouter,
+//! Together, DeepSeek, and — the niche — llama.cpp/Ollama/vLLM/LM Studio.
+//! They never leave this provider; the rest of temur speaks only the
+//! neutral types.
+//!
+//! Tolerance policy mirrors the Anthropic provider's, tuned for local
+//! servers whose compatibility is approximate: unknown fields are ignored,
+//! absent usage stays `None` (never zero), absent tool-call IDs are
+//! synthesized, `finish_reason` values we don't know map to `Unknown`, and
+//! a missing `finish_reason` with assembled tool calls is inferred as tool
+//! use rather than dropped.
+
+use crate::provider::types as neutral;
+use crate::provider::StreamEvent;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+// ---------------------------------------------------------------------------
+// Request side (serialized into the /chat/completions body).
+// ---------------------------------------------------------------------------
+
+/// One wire message. Unlike Anthropic's block model, roles are flat and a
+/// neutral message can fan out into several wire messages (tool results
+/// become individual `role:"tool"` messages).
+#[derive(Debug, Clone, Serialize)]
+pub struct RequestMessage {
+    pub role: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+impl RequestMessage {
+    fn text(role: &'static str, content: String) -> Self {
+        RequestMessage {
+            role,
+            content: Some(content),
+            tool_calls: vec![],
+            tool_call_id: None,
+        }
+    }
+}
+
+/// A completed tool call on an assistant message. `arguments` is a JSON
+/// *string* — the leak point the neutral types deliberately don't model.
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: &'static str, // always "function"
+    pub function: FunctionBody,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FunctionBody {
+    pub name: String,
+    pub arguments: String,
+}
+
+/// Wire tool definition: the neutral schema nested under `function`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolDef {
+    #[serde(rename = "type")]
+    pub kind: &'static str, // always "function"
+    pub function: ToolFunction,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolFunction {
+    pub name: String,
+    pub description: String,
+    pub parameters: Value,
+}
+
+impl From<&crate::provider::ToolDef> for ToolDef {
+    fn from(t: &crate::provider::ToolDef) -> Self {
+        ToolDef {
+            kind: "function",
+            function: ToolFunction {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                parameters: t.input_schema.clone(),
+            },
+        }
+    }
+}
+
+/// Neutral history → wire messages, at this boundary only. Not 1:1: a user
+/// message carrying tool results fans out into `role:"tool"` messages (which
+/// must directly follow the assistant message that made the calls) followed
+/// by a `role:"user"` message for any text. Thinking and redacted-thinking
+/// blocks are provider round-trip state we don't own — dropped, per the
+/// neutral contract ("others ignore them"). `is_error` has no wire flag
+/// here; the result text itself carries the error report.
+pub fn convert_history(messages: &[neutral::RequestMessage]) -> Vec<RequestMessage> {
+    let mut out = Vec::with_capacity(messages.len());
+    for msg in messages {
+        match msg.role {
+            neutral::Role::Assistant => {
+                let mut text = String::new();
+                let mut tool_calls = vec![];
+                for block in &msg.content {
+                    match block {
+                        neutral::ContentBlock::Text { text: t } => {
+                            if !text.is_empty() {
+                                text.push_str("\n\n");
+                            }
+                            text.push_str(t);
+                        }
+                        neutral::ContentBlock::ToolUse { id, name, input } => {
+                            tool_calls.push(ToolCall {
+                                id: id.clone(),
+                                kind: "function",
+                                function: FunctionBody {
+                                    name: name.clone(),
+                                    arguments: input.to_string(),
+                                },
+                            });
+                        }
+                        _ => {} // thinking / redacted / tool_result-in-wrong-role / unknown
+                    }
+                }
+                out.push(RequestMessage {
+                    role: "assistant",
+                    // Omit content entirely for pure tool-call messages; an
+                    // assistant message with neither gets an empty string to
+                    // stay wire-legal.
+                    content: match (text.is_empty(), tool_calls.is_empty()) {
+                        (false, _) => Some(text),
+                        (true, false) => None,
+                        (true, true) => Some(String::new()),
+                    },
+                    tool_calls,
+                    tool_call_id: None,
+                });
+            }
+            neutral::Role::User => {
+                let mut text = String::new();
+                for block in &msg.content {
+                    match block {
+                        neutral::ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            is_error: _,
+                        } => {
+                            out.push(RequestMessage {
+                                role: "tool",
+                                content: Some(content.clone()),
+                                tool_calls: vec![],
+                                tool_call_id: Some(tool_use_id.clone()),
+                            });
+                        }
+                        neutral::ContentBlock::Text { text: t } => {
+                            if !text.is_empty() {
+                                text.push_str("\n\n");
+                            }
+                            text.push_str(t);
+                        }
+                        _ => {}
+                    }
+                }
+                if !text.is_empty() {
+                    out.push(RequestMessage::text("user", text));
+                }
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Response side (streamed chunks).
+// ---------------------------------------------------------------------------
+
+/// One `data:` chunk. Every field is defaulted: local servers omit freely,
+/// and per the tolerance policy an unrecognized payload parses to an empty
+/// chunk and is ignored rather than killing the stream.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Chunk {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub choices: Vec<Choice>,
+    /// Final-chunk-only, and only with `stream_options.include_usage`;
+    /// many local servers never send it.
+    #[serde(default)]
+    pub usage: Option<Usage>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Choice {
+    #[serde(default)]
+    pub delta: Delta,
+    #[serde(default)]
+    pub finish_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Delta {
+    /// Sent in the first chunk by OpenAI; some local servers repeat it in
+    /// every chunk. Tolerated and ignored either way.
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+    /// Structured-output refusals (SDK-fixture-confirmed): the refusal text
+    /// streams here instead of `content`, with `finish_reason:"stop"`.
+    #[serde(default)]
+    pub refusal: Option<String>,
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCallDelta>,
+}
+
+/// A tool-call fragment. OpenAI addresses fragments by `index` and sends
+/// `id`/`name` only in the first one; quirky local servers omit `index`
+/// (whole-call-in-one-chunk) or `id` (synthesized at assembly).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ToolCallDelta {
+    #[serde(default)]
+    pub index: Option<u32>,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub function: Option<FunctionDelta>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FunctionDelta {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub arguments: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub struct Usage {
+    #[serde(default)]
+    pub prompt_tokens: Option<u64>,
+    #[serde(default)]
+    pub completion_tokens: Option<u64>,
+    #[serde(default)]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub struct PromptTokensDetails {
+    #[serde(default)]
+    pub cached_tokens: Option<u64>,
+}
+
+impl From<Usage> for neutral::Usage {
+    fn from(u: Usage) -> Self {
+        neutral::Usage {
+            input_tokens: u.prompt_tokens,
+            output_tokens: u.completion_tokens,
+            // No such concept on this wire; stays "not reported".
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
+        }
+    }
+}
+
+/// `finish_reason` → neutral. Documented per ROADMAP §2: no
+/// OpenAI-compatible endpoint can emit `PauseTurn`, `StopSequence`, or
+/// `ModelContextWindowExceeded`; `content_filter` is the closest thing to a
+/// refusal and carries no details.
+pub fn map_finish_reason(s: &str) -> neutral::StopReason {
+    match s {
+        "stop" => neutral::StopReason::EndTurn,
+        "length" => neutral::StopReason::MaxTokens,
+        "tool_calls" | "function_call" => neutral::StopReason::ToolUse,
+        "content_filter" => neutral::StopReason::Refusal,
+        _ => neutral::StopReason::Unknown,
+    }
+}
+
+/// Error body: OpenAI's `{"error":{"message","type","code",...}}`. Some
+/// servers put a bare string under `error` instead; [`WireError`] absorbs
+/// both shapes.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ApiErrorBody {
+    #[serde(default)]
+    pub message: String,
+    #[serde(rename = "type", default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub code: Option<Value>,
+}
+
+impl ApiErrorBody {
+    /// Best label available: `type`, else a string `code`, else generic.
+    pub fn kind_label(&self) -> String {
+        self.kind
+            .clone()
+            .or_else(|| {
+                self.code
+                    .as_ref()
+                    .and_then(|c| c.as_str().map(String::from))
+            })
+            .unwrap_or_else(|| "api_error".into())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum WireError {
+    Body(ApiErrorBody),
+    Message(String),
+}
+
+impl WireError {
+    pub fn into_body(self) -> ApiErrorBody {
+        match self {
+            WireError::Body(b) => b,
+            WireError::Message(message) => ApiErrorBody {
+                message,
+                kind: None,
+                code: None,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ErrorEnvelope {
+    #[serde(default)]
+    pub error: Option<WireError>,
+}
+
+// ---------------------------------------------------------------------------
+// Stream assembly.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+struct PendingCall {
+    id: Option<String>,
+    name: String,
+    arguments: String,
+}
+
+/// Assembles a complete neutral [`neutral::ResponseMessage`] from a stream
+/// of chunks, emitting UI events as fragments arrive. The OpenAI wire has
+/// no `message_start`, so "did the stream say anything at all" is tracked
+/// explicitly: an empty stream stays `None` (→ `Incomplete`).
+#[derive(Debug, Default)]
+pub struct ChunkAccumulator {
+    started: bool,
+    id: Option<String>,
+    model: Option<String>,
+    text: String,
+    refusal: String,
+    calls: Vec<PendingCall>,
+    finish_reason: Option<String>,
+    usage: Option<Usage>,
+    /// Set if the stream carried an error envelope instead of a chunk.
+    pub error: Option<ApiErrorBody>,
+}
+
+impl ChunkAccumulator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, chunk: &Chunk, on_event: &mut dyn FnMut(StreamEvent)) {
+        self.started = true;
+        if self.id.is_none() {
+            self.id = chunk.id.clone().filter(|s| !s.is_empty());
+        }
+        if self.model.is_none() {
+            self.model = chunk.model.clone().filter(|s| !s.is_empty());
+        }
+        if let Some(u) = chunk.usage {
+            self.usage = Some(u);
+        }
+        let Some(choice) = chunk.choices.first() else {
+            return; // usage-only final chunk has an empty choices array
+        };
+        if let Some(text) = &choice.delta.content {
+            if !text.is_empty() {
+                self.text.push_str(text);
+                on_event(StreamEvent::TextDelta(text.clone()));
+            }
+        }
+        if let Some(refusal) = &choice.delta.refusal {
+            // Not surfaced as streaming text: the agent's refusal path
+            // discards refused output and shows a notice, exactly like the
+            // Anthropic pre-output refusal.
+            self.refusal.push_str(refusal);
+        }
+        for frag in &choice.delta.tool_calls {
+            self.push_tool_fragment(frag, on_event);
+        }
+        if choice.finish_reason.is_some() {
+            self.finish_reason = choice.finish_reason.clone();
+        }
+    }
+
+    fn push_tool_fragment(
+        &mut self,
+        frag: &ToolCallDelta,
+        on_event: &mut dyn FnMut(StreamEvent),
+    ) {
+        // Addressing: `index` when present (OpenAI proper); without it — the
+        // local-server quirk — an id or name opens a new call and bare
+        // argument fragments append to the last one.
+        let idx = match frag.index {
+            Some(i) => {
+                let i = i as usize;
+                while self.calls.len() <= i {
+                    self.calls.push(PendingCall::default());
+                }
+                i
+            }
+            None => {
+                let opens_new = frag.id.is_some()
+                    || frag
+                        .function
+                        .as_ref()
+                        .is_some_and(|f| f.name.as_deref().is_some_and(|n| !n.is_empty()));
+                if opens_new || self.calls.is_empty() {
+                    self.calls.push(PendingCall::default());
+                }
+                self.calls.len() - 1
+            }
+        };
+        let call = &mut self.calls[idx];
+        if call.id.is_none() {
+            call.id = frag.id.clone().filter(|s| !s.is_empty());
+        }
+        if let Some(f) = &frag.function {
+            if let Some(name) = &f.name {
+                if call.name.is_empty() && !name.is_empty() {
+                    call.name = name.clone();
+                    on_event(StreamEvent::ToolUseStarted { name: name.clone() });
+                }
+            }
+            if let Some(args) = &f.arguments {
+                call.arguments.push_str(args);
+            }
+        }
+    }
+
+    pub fn into_message(self, fallback_model: &str) -> Option<neutral::ResponseMessage> {
+        if !self.started {
+            return None;
+        }
+        let mut content = vec![];
+        if !self.text.is_empty() {
+            content.push(neutral::ContentBlock::Text { text: self.text });
+        }
+        let had_calls = !self.calls.is_empty();
+        for (i, call) in self.calls.into_iter().enumerate() {
+            // Quirk: servers that omit IDs get deterministic synthesized
+            // ones; the request converter round-trips whatever is here, so
+            // tool results match up either way.
+            let id = call.id.unwrap_or_else(|| format!("call_{i}"));
+            let input = if call.arguments.trim().is_empty() {
+                serde_json::json!({})
+            } else {
+                match serde_json::from_str::<Value>(&call.arguments) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        log::warn!("tool call {i} arguments are not valid JSON");
+                        serde_json::json!({})
+                    }
+                }
+            };
+            content.push(neutral::ContentBlock::ToolUse {
+                id,
+                name: call.name,
+                input,
+            });
+        }
+        // Quirk: a stream that made tool calls but never sent finish_reason
+        // still means "execute the tools", not "stopped for no reason".
+        let stop_reason = match self.finish_reason {
+            Some(s) => Some(map_finish_reason(&s)),
+            None if had_calls => Some(neutral::StopReason::ToolUse),
+            None => None,
+        };
+        // Structured-output refusal: the wire says finish_reason "stop" but
+        // streams the text into `refusal`. Map it to the neutral refusal
+        // shape (reason + explanation), same as Anthropic's stop_details.
+        let (stop_reason, stop_details) = if self.refusal.is_empty() {
+            (stop_reason, None) // content_filter carries no details on this wire
+        } else {
+            (
+                Some(neutral::StopReason::Refusal),
+                Some(neutral::StopDetails {
+                    kind: "refusal".into(),
+                    category: None,
+                    explanation: Some(self.refusal),
+                }),
+            )
+        };
+        Some(neutral::ResponseMessage {
+            id: self.id.unwrap_or_default(),
+            model: self.model.unwrap_or_else(|| fallback_model.to_string()),
+            role: neutral::Role::Assistant,
+            content,
+            stop_reason,
+            stop_details,
+            usage: self.usage.map(Into::into).unwrap_or_default(),
+        })
+    }
+}

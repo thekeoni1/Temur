@@ -1,8 +1,7 @@
-//! Anthropic HTTP transport. The provider-neutral `Transport` seam, the
-//! replay/capture implementations, and the retry policy live in
-//! `crate::provider::transport` (re-exported here so pre-T2 import paths
-//! keep working); this module owns only the real HTTPS transport with
-//! Anthropic's headers.
+//! OpenAI-compat HTTP transport: `Authorization: Bearer` auth, with the
+//! header omitted entirely for keyless local endpoints. The neutral
+//! `Transport` seam, replay/capture, and retry policy live in
+//! `crate::provider::transport`.
 
 pub use crate::provider::transport::{
     CaptureTransport, ReplayTransport, Transport, TransportError,
@@ -41,13 +40,15 @@ impl Transport for HttpTransport {
         api_key: &str,
         body: &str,
     ) -> Result<Box<dyn Read>, TransportError> {
-        let res = self
+        let mut req = self
             .agent
             .post(url)
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
-            .header("accept", "text/event-stream")
+            .header("accept", "text/event-stream");
+        if !api_key.is_empty() {
+            req = req.header("authorization", &format!("Bearer {api_key}"));
+        }
+        let res = req
             .send(body)
             .map_err(|e| TransportError::Io(e.to_string()))?;
 

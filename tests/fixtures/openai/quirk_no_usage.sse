@@ -1,0 +1,7 @@
+data: {"object":"chat.completion.chunk","created":1719000010,"model":"llama3.2","choices":[{"index":0,"delta":{"role":"assistant","content":"Local"},"finish_reason":null}]}
+
+data: {"object":"chat.completion.chunk","created":1719000010,"model":"llama3.2","choices":[{"index":0,"delta":{"content":" hello."},"finish_reason":null}]}
+
+data: {"object":"chat.completion.chunk","created":1719000010,"model":"llama3.2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]

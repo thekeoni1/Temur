@@ -13,8 +13,6 @@ use std::io::BufReader;
 use transport::{Transport, TransportError};
 use types::{ContentBlock, Delta, MessageAccumulator, SseEvent};
 
-const MAX_RETRIES: u32 = 2;
-
 pub struct AnthropicProvider {
     base_url: String,
     api_key: String,
@@ -161,21 +159,16 @@ impl Provider for AnthropicProvider {
     ) -> Result<ResponseMessage, ProviderError> {
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
         let body = Self::build_body(req)?;
-        let mut attempt: u32 = 0;
-        loop {
-            match self.transport.post_stream(&url, &self.api_key, &body) {
-                Ok(reader) => return self.drive(reader, on_event),
-                Err(e) => {
-                    if e.retryable() && attempt < MAX_RETRIES {
-                        attempt += 1;
-                        let delay = e.retry_after().unwrap_or(1u64 << attempt);
-                        log::warn!("retryable transport error (attempt {attempt}): {e}; retrying in {delay}s");
-                        std::thread::sleep(std::time::Duration::from_secs(delay));
-                        continue;
-                    }
-                    return Err(transport_error_to_provider(e));
-                }
-            }
+        // Shared retry policy (crate::provider::transport); only the error
+        // envelope parsing below is Anthropic-shaped.
+        match crate::provider::transport::post_stream_with_retries(
+            self.transport.as_ref(),
+            &url,
+            &self.api_key,
+            &body,
+        ) {
+            Ok(reader) => self.drive(reader, on_event),
+            Err(e) => Err(transport_error_to_provider(e)),
         }
     }
 }
