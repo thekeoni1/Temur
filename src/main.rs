@@ -1,11 +1,11 @@
-use opencode_rust::agent::{Session, SessionConfig};
-use opencode_rust::provider::anthropic::transport::ReplayTransport;
-use opencode_rust::provider::anthropic::AnthropicProvider;
-use opencode_rust::tools::Registry;
-use opencode_rust::agent::events::AgentEvent;
-use opencode_rust::ui::tui::{SessionInfo, TuiUi};
-use opencode_rust::ui::{repl::ReplUi, Ui};
-use opencode_rust::{config, error, secret};
+use temur::agent::{Session, SessionConfig};
+use temur::provider::anthropic::transport::ReplayTransport;
+use temur::provider::anthropic::AnthropicProvider;
+use temur::tools::Registry;
+use temur::agent::events::AgentEvent;
+use temur::ui::tui::{SessionInfo, TuiUi};
+use temur::ui::{repl::ReplUi, Ui};
+use temur::{config, error, secret};
 use std::io::IsTerminal;
 use std::process::ExitCode;
 
@@ -13,7 +13,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Compact default system prompt for v1; overridable via config.
 /// (`{cwd}` is substituted at startup.)
-const DEFAULT_SYSTEM: &str = "You are opencode-rust, a terminal coding agent. You help with software \
+const DEFAULT_SYSTEM: &str = "You are temur, a terminal coding agent. You help with software \
 engineering tasks: reading and editing code, running commands, and searching the codebase.\n\
 Use the provided tools (read, write, edit, bash, glob, grep, todowrite, todoread, skill) to act; \
 prefer tools over guessing. Keep responses concise and direct — this is a terminal. \
@@ -24,7 +24,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("opencode-rust: {e}");
+            eprintln!("temur: {e}");
             ExitCode::FAILURE
         }
     }
@@ -44,7 +44,7 @@ fn run() -> Result<ExitCode, error::Error> {
     while let Some(arg) = parser.next()? {
         match arg {
             Long("version") | Short('V') => {
-                println!("opencode-rust {VERSION}");
+                println!("temur {VERSION}");
                 return Ok(ExitCode::SUCCESS);
             }
             Long("mock") => mock = Some(parser.value()?.string()?),
@@ -72,7 +72,7 @@ fn run() -> Result<ExitCode, error::Error> {
             Ok(ExitCode::SUCCESS)
         }
         Some("tui-probe") => {
-            opencode_rust::ui::tui::probe()?;
+            temur::ui::tui::probe()?;
             Ok(ExitCode::SUCCESS)
         }
         Some(other) => Err(error::Error::Usage(format!("unknown command: {other}"))),
@@ -90,14 +90,15 @@ fn repl(
 
     // Resolve the skill search path and enumerate installed skills once at
     // startup. Env override wins over config; both fall back to the always-included
-    // `.opencode/skills` defaults resolved inside skill_dirs().
-    let skill_override = std::env::var("OPENCODE_SKILLS_DIR")
+    // `.temur/skills` defaults resolved inside skill_dirs().
+    let skill_override = std::env::var("TEMUR_SKILLS_DIR")
+        .or_else(|_| std::env::var("OPENCODE_SKILLS_DIR")) // pre-rename name, one release
         .ok()
         .or_else(|| cfg.skills_dir.clone());
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let skill_dirs =
-        opencode_rust::skills::skill_dirs(skill_override.as_deref(), &cwd, home.as_deref());
-    let installed_skills = opencode_rust::skills::enumerate(&skill_dirs);
+        temur::skills::skill_dirs(skill_override.as_deref(), &cwd, home.as_deref());
+    let installed_skills = temur::skills::enumerate(&skill_dirs);
 
     // Plain-mode banners keep their exact v1 wording; in TUI mode the same
     // facts live in the header/footer (a pre-alt-screen println would be
@@ -107,7 +108,7 @@ fn repl(
             let files: Vec<std::path::PathBuf> =
                 paths.split(',').map(std::path::PathBuf::from).collect();
             if !use_tui {
-                println!("opencode-rust {VERSION} [MOCK replay: {} response(s)]", files.len());
+                println!("temur {VERSION} [MOCK replay: {} response(s)]", files.len());
             }
             AnthropicProvider::new(
                 "https://mock.invalid",
@@ -120,7 +121,7 @@ fn repl(
             // Deliberately never read from ANTHROPIC_API_KEY.
             let key = secret::load_api_key()?;
             if !use_tui {
-                println!("opencode-rust {VERSION} (model={}, thinking={})", cfg.model, cfg.thinking);
+                println!("temur {VERSION} (model={}, thinking={})", cfg.model, cfg.thinking);
             }
             match &capture {
                 Some(base) => {
@@ -131,8 +132,8 @@ fn repl(
                         cfg.base_url.clone(),
                         key,
                         Box::new(
-                            opencode_rust::provider::anthropic::transport::CaptureTransport::new(
-                                opencode_rust::provider::anthropic::transport::HttpTransport::new(),
+                            temur::provider::anthropic::transport::CaptureTransport::new(
+                                temur::provider::anthropic::transport::HttpTransport::new(),
                                 std::path::PathBuf::from(base),
                             ),
                         ),
@@ -149,7 +150,7 @@ fn repl(
         .unwrap_or_else(|| DEFAULT_SYSTEM.replace("{cwd}", &cwd.display().to_string()));
     // Advertise installed skills so the model knows the skill tool is worth
     // calling; nothing appended when no skills are installed.
-    let system = match opencode_rust::skills::system_prompt_section(&installed_skills) {
+    let system = match temur::skills::system_prompt_section(&installed_skills) {
         Some(section) => format!("{base_system}{section}"),
         None => base_system,
     };

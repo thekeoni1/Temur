@@ -292,8 +292,8 @@ fn authored_fixtures_are_strictly_conformant() {
 
 #[test]
 fn runtime_parser_fully_recognizes_live_streams() {
-    use opencode_rust::provider::anthropic::sse::SseReader;
-    use opencode_rust::provider::anthropic::types::*;
+    use temur::provider::anthropic::sse::SseReader;
+    use temur::provider::anthropic::types::*;
     for f in live_files() {
         let file = std::fs::File::open(&f).unwrap();
         let mut acc = MessageAccumulator::new();

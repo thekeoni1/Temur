@@ -37,7 +37,7 @@ pub fn draw(app: &mut App, frame: &mut Frame) {
 }
 
 fn draw_header(app: &App, frame: &mut Frame, area: Rect) {
-    let right = format!("{} · opencode-rust {}", app.model, app.version);
+    let right = format!("{} · temur {}", app.model, app.version);
     let title = app.title.as_deref().unwrap_or("new session");
     let left_budget = (area.width as usize).saturating_sub(display_width(&right) + 3);
     let title = truncate_width(title, left_budget);
@@ -131,7 +131,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                     Span::styled("▣ ", Style::default().fg(Color::Cyan)),
                     Span::styled(
                         format!(
-                            "opencode · {} · {}s · {} in / {} out · cache r{} w{}",
+                            "temur · {} · {}s · {} in / {} out · cache r{} w{}",
                             app.model,
                             secs,
                             usage.input_tokens,

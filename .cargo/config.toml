@@ -1,6 +1,16 @@
-# Build output goes to native ext4, NOT this OneDrive-synced drvfs mount
-# (a target/ dir here is slow and thrashes OneDrive sync).
-# Default target is the shipping target; correctness only counts on i686.
+# Build output goes to native ext4, never a drvfs mount (a target/ dir there
+# is slow and thrashes any cloud-sync client watching it).
+# Default target is the fast inner loop; the shipped artifact is the
+# i686-unknown-linux-musl static release (scripts/check.sh gates both).
 [build]
 target-dir = "/home/dev/rustcode-target"
 target = "i686-unknown-linux-gnu"
+
+# musl-static release (the shipped artifact): link with rust-lld (ships with
+# rustup) against the toolchain's self-contained musl libc; host gcc
+# (multilib) compiles ring's C/asm. No musl-gcc / musl-tools package needed.
+[target.i686-unknown-linux-musl]
+linker = "rust-lld"
+
+[env]
+CC_i686_unknown_linux_musl = "gcc"

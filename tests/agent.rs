@@ -1,11 +1,11 @@
 //! M4 agent-loop tests against a scripted MockProvider. Real tools run in a
 //! temp dir; the provider is fully scripted — no network.
 
-use opencode_rust::agent::events::AgentEvent;
-use opencode_rust::agent::{Session, SessionConfig};
-use opencode_rust::provider::anthropic::types::StopDetails;
-use opencode_rust::provider::*;
-use opencode_rust::tools::Registry;
+use temur::agent::events::AgentEvent;
+use temur::agent::{Session, SessionConfig};
+use temur::provider::anthropic::types::StopDetails;
+use temur::provider::*;
+use temur::tools::Registry;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -310,14 +310,14 @@ fn iteration_limit_flows_from_config_to_session() {
     let dir = tempfile::tempdir().unwrap();
     // Custom value from config.json is respected (deliberately != the 400
     // default so a silent fall-back to the default would fail here)...
-    let cfg: opencode_rust::config::Config =
+    let cfg: temur::config::Config =
         serde_json::from_str(r#"{"max_turn_iterations":7}"#).unwrap();
     let scfg = SessionConfig::from_config(&cfg, dir.path().to_path_buf());
     assert_eq!(scfg.max_iterations, 7);
     // ...and the built-in default applies when the field is absent.
-    let cfg: opencode_rust::config::Config = serde_json::from_str("{}").unwrap();
+    let cfg: temur::config::Config = serde_json::from_str("{}").unwrap();
     let scfg = SessionConfig::from_config(&cfg, dir.path().to_path_buf());
-    assert_eq!(scfg.max_iterations, opencode_rust::config::DEFAULT_MAX_TURN_ITERATIONS);
+    assert_eq!(scfg.max_iterations, temur::config::DEFAULT_MAX_TURN_ITERATIONS);
 }
 
 #[test]

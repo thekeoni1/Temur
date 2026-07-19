@@ -9,16 +9,16 @@ machine's live state on 2026-07-03.
 > **SUBSTITUTIONS — read first.** These values are machine-specific; replace
 > them with your own everywhere they appear:
 >
-> | Placeholder in this guide | Reference machine's value | Yours |
+> | Placeholder in this guide | Example value | Yours |
 > |---|---|---|
-> | `<WINUSER>` | `theke` | your Windows username |
-> | `<PROJECT>` (Windows) | `C:\Users\theke\OneDrive\Desktop\RustCode` | wherever you clone the repo |
-> | `<PROJECT>` (WSL view) | `/mnt/c/Users/theke/OneDrive/Desktop/RustCode` | `/mnt/c/...` equivalent |
+> | `<WINUSER>` | `alice` | your Windows username |
+> | `<PROJECT>` (Windows) | `C:\Users\alice\Projects\temur` | wherever you clone the repo |
+> | `<PROJECT>` (WSL view) | `/mnt/c/Users/alice/Projects/temur` | `/mnt/c/...` equivalent |
 >
-> Avoid OneDrive-synced (or any cloud-synced) locations for the project tree
-> if you can — build/tool churn thrashes the sync client. The reference
-> machine lives with it only because `target/` is kept **off** the Windows
-> mount entirely (stage 7); do the same regardless of where the tree lives.
+> Avoid cloud-synced folders for the project tree if you can — build/tool
+> churn thrashes sync clients. If the tree must live in one, keeping
+> `target/` **off** the Windows mount entirely (stage 7) makes it tolerable;
+> do that regardless of where the tree lives.
 
 Fixed names you should **not** change (scripts and docs assume them): the WSL
 users `dev` and `appsvc`, `/srv/rustcode-runtime`, `/srv/rustcode-secrets`,
@@ -115,7 +115,7 @@ wsl -d Ubuntu -- sh -c 'whoami; systemctl is-system-running || true'
 ```sh
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --profile minimal -y
 . "$HOME/.cargo/env"
-rustup target add i686-unknown-linux-gnu
+rustup target add i686-unknown-linux-gnu i686-unknown-linux-musl
 ```
 
 Verified with: rustup 1.29.0, rustc/cargo 1.96.1 stable, in `/home/dev/.cargo`
@@ -127,7 +127,7 @@ automatically via the installer's profile hook.
 
 ```sh
 rustc -V && cargo -V
-rustup target list --installed   # must include i686-unknown-linux-gnu
+rustup target list --installed   # must include i686-unknown-linux-gnu AND i686-unknown-linux-musl
 ```
 
 ## Stage 6 — rootless podman (the fiddliest part on WSL2)
@@ -151,11 +151,14 @@ have assigned the default user a different range, and the requirement is
 that `dev` has *any* valid range not overlapping another user's, not that
 specific one.
 
-Then as **`dev`**, pull the validation image (goes into dev's rootless
-storage under `/home/dev/.local/share/containers/storage`):
+Then as **`dev`**, pull the validation images (they go into dev's rootless
+storage under `/home/dev/.local/share/containers/storage`) — the debian image
+is the main test environment, busybox is the bare near-scratch container the
+musl-static gate loads the shipped binary in:
 
 ```sh
 podman pull docker.io/i386/debian:stable
+podman pull docker.io/library/busybox:stable
 ```
 
 **Verify** (as `dev`):
@@ -184,14 +187,16 @@ target = "i686-unknown-linux-gnu"
 ```
 
 Build output goes to **native ext4**, never the drvfs `/mnt/c` mount (slow,
-and thrashes any sync client); the default target is the shipping target. No
-action needed beyond having `/home/dev` exist — cargo creates the target dir.
+and thrashes any sync client). The default target is the fast inner-loop
+build; the shipped artifact is the `i686-unknown-linux-musl` static release,
+which `scripts/check.sh` builds explicitly. No action needed beyond having
+`/home/dev` exist — cargo creates the target dir.
 
 **Verify** (as `dev`, in `<PROJECT>`):
 
 ```sh
 cargo build
-file /home/dev/rustcode-target/i686-unknown-linux-gnu/debug/opencode-rust
+file /home/dev/rustcode-target/i686-unknown-linux-gnu/debug/temur
 # expect: ELF 32-bit LSB pie executable, Intel 80386, …
 #         interpreter /lib/ld-linux.so.2, for GNU/Linux 3.2.0
 ```
@@ -310,11 +315,16 @@ As `dev`, in `<PROJECT>`:
 scripts/check.sh
 ```
 
-This is the standing per-change gate: i686 build + tests on the host,
-forbidden-dep scan (no openssl-sys / aws-lc-sys), 32-bit ELF assertion, TLS
-probe on host and in the container, all test suites inside
-`i386/debian:stable`, and the mock REPL + TUI pty smokes. It must end with
-`== ALL CHECKS PASSED ==`.
+This is the standing per-change gate, in two paths. Path 1 (gnu-debug, fast
+inner loop): i686 build + tests on the host, forbidden-dep scan (no
+openssl-sys / aws-lc-sys), 32-bit ELF assertion, TLS probe on host and in the
+container, all test suites inside `i386/debian:stable`, and the mock REPL +
+TUI pty smokes. Path 2 (musl-release, the acceptance gate for the shipped
+artifact): `--release --target i686-unknown-linux-musl` build, staticness
+assertions (`readelf -l` shows no INTERP, `readelf -d` shows no NEEDED),
+the same suites and smokes in the container against the musl binary, and a
+`--version` + mock-REPL smoke in the bare busybox container, where a dynamic
+binary could not even load. It must end with `== ALL CHECKS PASSED ==`.
 
 ## Residual caveats (understand the boundary's real limits)
 

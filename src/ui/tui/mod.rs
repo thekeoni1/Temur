@@ -118,7 +118,7 @@ impl TuiUi {
                     render_loop(terminal, app, rx, tx_input, &mut CrosstermEvents);
                 ratatui::restore();
                 if matches!(end, LoopEnd::ForceQuit) {
-                    eprintln!("opencode-rust: force quit while a turn was running");
+                    eprintln!("temur: force quit while a turn was running");
                     std::process::exit(130);
                 }
             })?;
@@ -285,7 +285,7 @@ fn probe_loop(terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<&'stat
     loop {
         terminal.draw(|frame| {
             let text = ratatui::widgets::Paragraph::new(
-                "opencode-rust tui-probe — press q to quit (auto-quits in 10s)",
+                "temur tui-probe — press q to quit (auto-quits in 10s)",
             );
             frame.render_widget(text, frame.area());
         })?;

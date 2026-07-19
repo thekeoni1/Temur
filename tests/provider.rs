@@ -1,9 +1,9 @@
 //! M2 provider tests — the full request→stream→completion path over a
 //! fixture Transport. No network, no live API.
 
-use opencode_rust::provider::anthropic::transport::{Transport, TransportError};
-use opencode_rust::provider::anthropic::AnthropicProvider;
-use opencode_rust::provider::*;
+use temur::provider::anthropic::transport::{Transport, TransportError};
+use temur::provider::anthropic::AnthropicProvider;
+use temur::provider::*;
 use std::cell::RefCell;
 use std::io::Read;
 
@@ -308,8 +308,8 @@ fn moving_breakpoint_advances_across_agent_iterations() {
     // Full agent loop over the REAL provider + build_body: iteration 1 asks
     // for two tool calls (fixture), iteration 2 ends the turn. Proves the
     // wire bodies carry the moving breakpoint as history grows.
-    use opencode_rust::agent::{Session, SessionConfig};
-    use opencode_rust::tools::Registry;
+    use temur::agent::{Session, SessionConfig};
+    use temur::tools::Registry;
 
     let (provider, transport) =
         provider_and_transport(vec![Ok("tool_use_parallel"), Ok("text_simple")]);

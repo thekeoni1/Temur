@@ -1,8 +1,8 @@
 [package]
-name = "opencode-rust"
+name = "temur"
 version = "0.1.0"
 edition = "2021"
-description = "Terminal coding agent in Rust (i686 Linux), modeled on OpenCode"
+description = "Single static binary coding agent for constrained Linux (32-bit and embedded), modeled on OpenCode"
 
 [dependencies]
 lexopt = "0.3"

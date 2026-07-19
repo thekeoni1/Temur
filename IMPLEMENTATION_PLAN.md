@@ -1,4 +1,15 @@
-# opencode-rust — Implementation Plan (v1)
+# temur (formerly opencode-rust) — Implementation Plan (v1)
+
+> **Status note (2026-07-18):** this document describes v1 as built and is kept
+> as the v1 record. The forward plan now lives in `ROADMAP.md` (milestones
+> T0–T7), which supersedes anything here that looks forward — in particular:
+> the old post-v1 milestone set (A–E) is retired; the planned second provider
+> is **OpenAI-compatible, not Gemini** (bespoke vendor providers are retired);
+> the provider types re-exported from `anthropic::types` are slated to become
+> provider-owned neutral types in milestone T1; and the shipped target is the
+> **musl-static release** build, which check.sh will gate from T0 (this doc's
+> check.sh description covers only the gnu-debug path). The project renames to
+> `temur` in T0.
 
 Companion to `ROADMAP.md`. Operates under `CLAUDE.md` (auth split, secret-by-path,
 fixture-only testing here, rustls, read-only reference). Reference implementation

@@ -1,6 +1,6 @@
 //! M3 tool tests — temp dirs on native tmpfs/ext4, run as i686 binaries.
 
-use opencode_rust::tools::{Registry, Tool, ToolCtx, ToolError, ToolOutput};
+use temur::tools::{Registry, Tool, ToolCtx, ToolError, ToolOutput};
 use serde_json::json;
 
 fn ctx_in(dir: &std::path::Path) -> ToolCtx {

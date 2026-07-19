@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 
 /// Directory searched under the workspace cwd and under `$HOME`. Matches the
 /// layout an external CLI skill ships in, so real skills drop in unmodified.
-const SKILLS_SUBDIR: &str = ".opencode/skills";
+const SKILLS_SUBDIR: &str = ".temur/skills";
+/// Pre-rename layout, still searched (after the primary) for one release.
+const LEGACY_SKILLS_SUBDIR: &str = ".opencode/skills";
 
 /// Metadata for one installed skill.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,9 +35,10 @@ fn add_unique(dirs: &mut Vec<PathBuf>, p: PathBuf) {
 /// Resolve the effective skill-directory search list.
 ///
 /// Order: explicit `override_list` entries (`:`-separated, blanks skipped) in
-/// the order given, then `<cwd>/.opencode/skills`, then
-/// `<home>/.opencode/skills` — each appended only if not already present
-/// (dedup, first occurrence wins). The two defaults are always searched.
+/// the order given, then `<cwd>/.temur/skills` and its legacy fallback
+/// `<cwd>/.opencode/skills`, then the same pair under `<home>` — each appended
+/// only if not already present (dedup, first occurrence wins). The defaults
+/// are always searched.
 pub fn skill_dirs(override_list: Option<&str>, cwd: &Path, home: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(list) = override_list {
@@ -46,8 +49,10 @@ pub fn skill_dirs(override_list: Option<&str>, cwd: &Path, home: Option<&Path>) 
         }
     }
     add_unique(&mut dirs, cwd.join(SKILLS_SUBDIR));
+    add_unique(&mut dirs, cwd.join(LEGACY_SKILLS_SUBDIR));
     if let Some(h) = home {
         add_unique(&mut dirs, h.join(SKILLS_SUBDIR));
+        add_unique(&mut dirs, h.join(LEGACY_SKILLS_SUBDIR));
     }
     dirs
 }
@@ -129,7 +134,7 @@ pub fn enumerate(dirs: &[PathBuf]) -> Vec<SkillInfo> {
                 Some(fm) => fm,
                 None => {
                     eprintln!(
-                        "opencode-rust: skipping malformed skill (unterminated frontmatter): {}",
+                        "temur: skipping malformed skill (unterminated frontmatter): {}",
                         md.display()
                     );
                     continue;
@@ -202,13 +207,15 @@ mod tests {
     fn resolution_dedups_and_orders() {
         let cwd = Path::new("/work");
         let home = Path::new("/home/dev");
-        let dirs = skill_dirs(Some("/a::/b:/work/.opencode/skills"), cwd, Some(home));
+        let dirs = skill_dirs(Some("/a::/b:/work/.temur/skills"), cwd, Some(home));
         assert_eq!(
             dirs,
             vec![
                 PathBuf::from("/a"),
                 PathBuf::from("/b"),
-                PathBuf::from("/work/.opencode/skills"), // override entry == cwd default: kept once
+                PathBuf::from("/work/.temur/skills"), // override entry == cwd default: kept once
+                PathBuf::from("/work/.opencode/skills"),
+                PathBuf::from("/home/dev/.temur/skills"),
                 PathBuf::from("/home/dev/.opencode/skills"),
             ]
         );
@@ -217,7 +224,14 @@ mod tests {
     #[test]
     fn resolution_defaults_only() {
         let dirs = skill_dirs(None, Path::new("/w"), None);
-        assert_eq!(dirs, vec![PathBuf::from("/w/.opencode/skills")]);
+        // Primary layout first, legacy pre-rename fallback second.
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/w/.temur/skills"),
+                PathBuf::from("/w/.opencode/skills"),
+            ]
+        );
     }
 
     #[test]

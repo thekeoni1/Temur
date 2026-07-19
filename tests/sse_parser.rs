@@ -3,8 +3,8 @@
 //! Provenance: hand-authored from the Messages API streaming reference,
 //! cross-checked against Anthropic's official SDK streaming test fixtures.
 
-use opencode_rust::provider::anthropic::sse::SseReader;
-use opencode_rust::provider::anthropic::types::*;
+use temur::provider::anthropic::sse::SseReader;
+use temur::provider::anthropic::types::*;
 use std::io::BufReader;
 
 fn load(name: &str) -> Vec<SseEvent> {

@@ -567,27 +567,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "opencode-rust"
-version = "0.1.0"
-dependencies = [
- "env_logger",
- "globset",
- "ignore",
- "lexopt",
- "log",
- "ratatui",
- "regex",
- "rustls",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "unicode-width 0.2.0",
- "ureq",
- "wait-timeout",
-]
-
-[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -970,6 +949,27 @@ dependencies = [
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "temur"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "globset",
+ "ignore",
+ "lexopt",
+ "log",
+ "ratatui",
+ "regex",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "unicode-width 0.2.0",
+ "ureq",
+ "wait-timeout",
 ]
 
 [[package]]

@@ -10,7 +10,7 @@ pub const DEFAULT_MAX_TOKENS: u32 = 32_000;
 /// (identical-call detection) is separate and unchanged.
 pub const DEFAULT_MAX_TURN_ITERATIONS: u32 = 400;
 
-/// Loaded from ~/.config/opencode-rust/config.json (or $XDG_CONFIG_HOME).
+/// Loaded from ~/.config/temur/config.json (or $XDG_CONFIG_HOME).
 /// Unknown fields are tolerated so old binaries accept newer configs.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -25,7 +25,7 @@ pub struct Config {
     pub thinking: bool,
     pub system_prompt: Option<String>,
     /// `:`-separated extra skill directories, searched before the always-included
-    /// `.opencode/skills` defaults. The `OPENCODE_SKILLS_DIR` env var overrides this.
+    /// `.temur/skills` defaults. The `TEMUR_SKILLS_DIR` env var overrides this.
     pub skills_dir: Option<String>,
     /// Ceiling on provider round-trips within a single turn. Distinct from the
     /// doom-loop guard (identical-call detection), which stays hardcoded.
@@ -65,7 +65,7 @@ fn config_path() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"));
-    base.join("opencode-rust").join("config.json")
+    base.join("temur").join("config.json")
 }
 
 #[cfg(test)]
@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn missing_file_yields_defaults() {
-        let c = Config::load_from(std::path::Path::new("/nonexistent/opencode-test/config.json"))
+        let c = Config::load_from(std::path::Path::new("/nonexistent/temur-test/config.json"))
             .unwrap();
         assert_eq!(c.model, DEFAULT_MODEL);
     }

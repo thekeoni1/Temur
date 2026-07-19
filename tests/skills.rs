@@ -1,15 +1,19 @@
 //! Hermetic tests for the skill mechanism: dir resolution, enumeration, the
 //! `skill` tool round-trip, and the system-prompt `<available_skills>` block.
-//! Uses a throwaway `.opencode/skills` tree under a tempdir — no network, no
+//! Uses a throwaway `.temur/skills` tree under a tempdir — no network, no
 //! real skills required.
 
-use opencode_rust::skills;
-use opencode_rust::tools::{SkillTool, Tool, ToolCtx};
+use temur::skills;
+use temur::tools::{SkillTool, Tool, ToolCtx};
 use serde_json::json;
 use std::path::Path;
 
 fn write_skill(root: &Path, name: &str, frontmatter: &str, body: &str) {
-    let dir = root.join(".opencode/skills").join(name);
+    write_skill_in(root, ".temur/skills", name, frontmatter, body);
+}
+
+fn write_skill_in(root: &Path, subdir: &str, name: &str, frontmatter: &str, body: &str) {
+    let dir = root.join(subdir).join(name);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("SKILL.md"), format!("{frontmatter}{body}")).unwrap();
 }
@@ -39,8 +43,8 @@ fn enumerate_parses_and_dedups() {
     );
 
     let dirs = vec![
-        a.path().join(".opencode/skills"),
-        b.path().join(".opencode/skills"),
+        a.path().join(".temur/skills"),
+        b.path().join(".temur/skills"),
     ];
     let skills = skills::enumerate(&dirs);
     assert_eq!(skills.len(), 2);
@@ -55,7 +59,7 @@ fn enumerate_skips_malformed() {
     // Unterminated frontmatter → skipped, not fatal.
     write_skill(a.path(), "broken", "---\nname: broken\n(no closing fence)\n", "");
     write_skill(a.path(), "good", "---\nname: good\ndescription: ok\n---\n", "body");
-    let dirs = vec![a.path().join(".opencode/skills")];
+    let dirs = vec![a.path().join(".temur/skills")];
     let skills = skills::enumerate(&dirs);
     assert_eq!(skills.len(), 1);
     assert_eq!(skills[0].name, "good");
@@ -65,7 +69,7 @@ fn enumerate_skips_malformed() {
 fn enumerate_falls_back_to_dirname_without_name() {
     let a = tempfile::tempdir().unwrap();
     write_skill(a.path(), "nameless", "# no frontmatter\n", "just markdown");
-    let dirs = vec![a.path().join(".opencode/skills")];
+    let dirs = vec![a.path().join(".temur/skills")];
     let skills = skills::enumerate(&dirs);
     assert_eq!(skills.len(), 1);
     assert_eq!(skills[0].name, "nameless");
@@ -81,7 +85,7 @@ fn skill_tool_loads_content_wrapped() {
         "---\nname: demo\ndescription: A demo skill.\n---\n",
         "# Demo\nDo the thing.\n",
     );
-    let dirs = vec![a.path().join(".opencode/skills")];
+    let dirs = vec![a.path().join(".temur/skills")];
     let tool = SkillTool::new(dirs);
     let mut ctx = ToolCtx::new(a.path().to_path_buf());
 
@@ -95,13 +99,49 @@ fn skill_tool_loads_content_wrapped() {
 #[test]
 fn skill_tool_errors_on_missing_and_traversal() {
     let a = tempfile::tempdir().unwrap();
-    let dirs = vec![a.path().join(".opencode/skills")];
+    let dirs = vec![a.path().join(".temur/skills")];
     let tool = SkillTool::new(dirs);
     let mut ctx = ToolCtx::new(a.path().to_path_buf());
 
     assert!(tool.execute(json!({"name": "nope"}), &mut ctx).is_err());
     assert!(tool.execute(json!({"name": "../secret"}), &mut ctx).is_err());
     assert!(tool.execute(json!({"name": ""}), &mut ctx).is_err());
+}
+
+#[test]
+fn legacy_opencode_dir_still_found_via_defaults() {
+    // A skill installed only under the pre-rename `.opencode/skills` layout
+    // must still resolve through the default search list (one-release compat),
+    // and the primary `.temur/skills` layout must shadow it by name.
+    let a = tempfile::tempdir().unwrap();
+    write_skill_in(
+        a.path(),
+        ".opencode/skills",
+        "legacy",
+        "---\nname: legacy\ndescription: From the old layout.\n---\n",
+        "body",
+    );
+    write_skill_in(
+        a.path(),
+        ".opencode/skills",
+        "shadowed",
+        "---\nname: shadowed\ndescription: OLD.\n---\n",
+        "old",
+    );
+    write_skill(
+        a.path(),
+        "shadowed",
+        "---\nname: shadowed\ndescription: NEW.\n---\n",
+        "new",
+    );
+
+    let dirs = skills::skill_dirs(None, a.path(), None);
+    let skills = skills::enumerate(&dirs);
+    assert_eq!(skills.len(), 2);
+    let legacy = skills.iter().find(|s| s.name == "legacy").unwrap();
+    assert_eq!(legacy.description, "From the old layout.");
+    let shadowed = skills.iter().find(|s| s.name == "shadowed").unwrap();
+    assert_eq!(shadowed.description, "NEW."); // primary dir wins
 }
 
 #[test]
@@ -113,7 +153,7 @@ fn system_prompt_section_lists_installed() {
         "---\nname: example-cli\ndescription: Drives the example CLI.\n---\n",
         "body",
     );
-    let dirs = vec![a.path().join(".opencode/skills")];
+    let dirs = vec![a.path().join(".temur/skills")];
     let skills = skills::enumerate(&dirs);
     let section = skills::system_prompt_section(&skills).unwrap();
     assert!(section.contains("<available_skills>"));

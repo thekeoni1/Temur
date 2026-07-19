@@ -3,16 +3,16 @@
 //! No terminal, no threads, no network — runs identically on host and in the
 //! i386 container.
 
-use opencode_rust::agent::events::AgentEvent;
-use opencode_rust::agent::{Session, SessionConfig};
-use opencode_rust::provider::anthropic::transport::ReplayTransport;
-use opencode_rust::provider::anthropic::AnthropicProvider;
-use opencode_rust::provider::Usage;
-use opencode_rust::tools::Registry;
-use opencode_rust::ui::tui::app::{Action, App, Cell};
-use opencode_rust::ui::tui::view::draw;
-use opencode_rust::ui::tui::{SessionInfo, TuiUi};
-use opencode_rust::ui::Ui;
+use temur::agent::events::AgentEvent;
+use temur::agent::{Session, SessionConfig};
+use temur::provider::anthropic::transport::ReplayTransport;
+use temur::provider::anthropic::AnthropicProvider;
+use temur::provider::Usage;
+use temur::tools::Registry;
+use temur::ui::tui::app::{Action, App, Cell};
+use temur::ui::tui::view::draw;
+use temur::ui::tui::{SessionInfo, TuiUi};
+use temur::ui::Ui;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -222,7 +222,7 @@ fn frame_empty_welcome_state() {
     let mut a = app();
     let rows = render(&mut a, 90, 8);
     assert!(rows[0].starts_with(" # new session"));
-    assert!(rows[0].contains("claude-sonnet-5 · opencode-rust 0.1.0"));
+    assert!(rows[0].contains("claude-sonnet-5 · temur 0.1.0"));
     assert!(rows[5].contains("▌ > ask anything… (exit to quit)"));
     assert!(rows[6].contains("enter send"));
     assert!(rows[7].contains("/mnt/c/RustCode"));
@@ -299,7 +299,7 @@ fn frame_notice_and_turn_tail_and_footer_totals() {
     let body = rows.join("\n");
     assert!(body.contains("   Hello!"), "assistant text indented:\n{body}");
     assert!(body.contains("▌ [!] response truncated"), "notice block:\n{body}");
-    assert!(body.contains("▣ opencode · claude-sonnet-5 · 2s · 12 in / 34 out"), "tail:\n{body}");
+    assert!(body.contains("▣ temur · claude-sonnet-5 · 2s · 12 in / 34 out"), "tail:\n{body}");
     assert!(rows[13].contains("session 120 in / 340 out"), "footer: {}", rows[13]);
 }
 
@@ -403,7 +403,7 @@ fn headless_end_to_end_through_the_ui_seam() {
     assert!(body.contains("read:"), "read tool completed:\n{body}");
     assert!(body.contains("▌ # bash"), "bash block tool:\n{body}");
     assert!(body.contains("Hello, world!"), "second round text:\n{body}");
-    assert!(body.contains("▣ opencode · claude-sonnet-5"), "turn tail:\n{body}");
+    assert!(body.contains("▣ temur · claude-sonnet-5"), "turn tail:\n{body}");
 }
 
 #[test]

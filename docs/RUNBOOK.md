@@ -7,15 +7,16 @@ secret boundary).
 
 ## What the builder staged
 
-- Binary: `/home/dev/dist/opencode-rust`
-  (i686 ELF, release, stripped; built from this repo at v0.1.0)
-- sha256: `2aeb19f02f5ded05593192cafefd0447f401b9604633fb325f2655c501f4885b`
-- Verify before install: `sha256sum /home/dev/dist/opencode-rust`
+- Binary: `/home/dev/dist/temur`
+  (i686 musl-static ELF, release, stripped — the `i686-unknown-linux-musl`
+  build gated by `scripts/check.sh`)
+- sha256: recorded by the builder at each staging; verify before install with
+  `sha256sum /home/dev/dist/temur` against the value reported for that build.
 
 ## 1. Install (root: `wsl -d Ubuntu -u root`)
 
 ```sh
-install -o appsvc -g appsvc -m 755 /home/dev/dist/opencode-rust /srv/rustcode-runtime/bin/app
+install -o appsvc -g appsvc -m 755 /home/dev/dist/temur /srv/rustcode-runtime/bin/app
 mkdir -p /srv/rustcode-runtime/work && chown appsvc:appsvc /srv/rustcode-runtime/work
 ```
 
@@ -31,7 +32,7 @@ in argv, env values, logs, or the process's own output. The app does not read
 
 Optional config (model, max_tokens, thinking) — appsvc's HOME is
 `/srv/rustcode-runtime`, so the file is
-`/srv/rustcode-runtime/.config/opencode-rust/config.json`, e.g.
+`/srv/rustcode-runtime/.config/temur/config.json`, e.g.
 `{"model": "claude-sonnet-5"}`. Defaults: claude-sonnet-5, 32000 max_tokens,
 thinking off.
 

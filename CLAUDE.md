@@ -28,7 +28,8 @@ enforced by the OS, not just by these rules. Do not try to escalate around them.
 - Nothing secret-related ever goes in the project tree or under `/mnt/c`.
 
 ## Paths (three roles, keep them separate)
-- Project tree (source only): `/mnt/c/Users/theke/OneDrive/Desktop/RustCode`
+- Project tree (source only): the repository checkout — machine-specific;
+  `<PROJECT>` in `SETUP.md`.
 - Runtime dir (built artifacts + launch script, owned by `appsvc`): `/srv/rustcode-runtime`
   — launcher is `/srv/rustcode-runtime/run-app.sh`, binary at `bin/app`. You may build
   into it as directed, but it is `appsvc`-owned runtime territory, not source.
@@ -38,9 +39,10 @@ enforced by the OS, not just by these rules. Do not try to escalate around them.
   anything requiring real file modes, and keep nothing sensitive there.
 
 ## Testing discipline
-- The product targets **`i686-unknown-linux-gnu`**. Build for that target and exercise
-  it in the podman container (`docker.io/i386/debian:stable`), which is the
-  "what we ship is what we test" environment.
+- The product ships as an **`i686-unknown-linux-musl` static release** binary;
+  `i686-unknown-linux-gnu` debug is the fast inner-loop build. Exercise both in the
+  podman container (`docker.io/i386/debian:stable`) — plus the bare busybox check —
+  via `scripts/check.sh`, which is the "what we ship is what we test" gate.
 - Never run the product against the live Anthropic API from your own build session.
   A trivial offline/smoke path is fine here; the real acceptance run happens as the
   separate runtime identity (`runuser`/`appsvc` via the launch script) with the injected
