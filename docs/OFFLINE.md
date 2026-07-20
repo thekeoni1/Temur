@@ -31,10 +31,12 @@ podman run --rm -p 8080:8080 -v /path/to/models:/models:ro \
     -m /models/model.gguf -c 8192 --jinja --host 0.0.0.0 --port 8080
 ```
 
-> **`--jinja` is REQUIRED for tool calls.** Without it, llama-server does
-> not apply the model's chat template's tool-calling format: the model
-> never sees your tool definitions properly and answers in prose instead
-> of calling tools. If temur connects but never executes a tool, check
+> **`--jinja` is STRONGLY RECOMMENDED for tool calls.** Many model chat
+> templates need it before llama-server presents tool definitions
+> properly — without it those models answer in prose instead of calling
+> tools. Some combinations (e.g. Qwen3 on recent llama.cpp builds) emit
+> structured tool calls even without the flag, so it is not an absolute
+> requirement — but if temur connects and never executes a tool, check
 > this flag first.
 
 `-c` sets the server-side context size in tokens; mirror the same number

@@ -121,7 +121,61 @@ Re-run any time with
 — the script never pulls; if an image is missing it prints the exact pull
 command and exits.
 
-## Notes / troubleshooting
+## T4 weak-model acceptance — recorded result
+
+2026-07-20: **T4 acceptance met — `scripts/weak_model_eval.sh` scored 5/6
+(threshold `EVAL_MIN=5`)** with the compact prompt profile, against
+Qwen3-1.7B Q4_K_M under llama.cpp `server-b10068`, ctx 8192, in a
+`--network none` pod. Final scored run:
+
+| task | name | result | seconds |
+|---|---|---|---|
+| 1 | write-file | PASS | 33 |
+| 2 | read-extract | FAIL | 38 |
+| 3 | edit-config | PASS | 36 |
+| 4 | bash-mkdir | PASS | 77 |
+| 5 | find-needle | PASS | 143 |
+| 6 | bump-and-copy | PASS | 39 |
+
+Iterations (disclosed, per the pre-agreed protocol — prompts/wording only,
+no model swap): the first run scored 4/6 with the eval config's
+`max_tokens: 1024` — tasks 2 and 5 both truncated at max_tokens because
+the model's streamed reasoning counts against the completion budget, with
+zero tool calls completing. The generated config was raised to
+`max_tokens: 2048` (comment recorded in the script) and task 2's wording
+made stepwise after the original phrasing ("JUST the value… nothing
+else") provably sent the model into a reasoning spiral. Task 5 then
+passed. Task 2's remaining failure is an honest capability floor, not a
+harness artifact: the model issued its read and write calls in ONE
+parallel batch, writing token.txt before the read result existed, then
+claimed success in prose (the host-verified assertion correctly failed —
+model prose is never evidence).
+
+Live captures, frozen the same day: 14 raw SSE streams in
+`tests/fixtures/live-openai/` (11 with `--jinja`, 3 without), covering
+plain text, a single tool call, a live repeated call, arguments
+fragmented across many chunks, a tool-error round-trip, a live PARALLEL
+three-call response, and post-result texts.
+`tests/live_conformance_openai.rs` walks them strictly (per-chunk key
+allowlists derived from these captures — including llama.cpp's
+`reasoning_content` deltas and `timings` extension — sequence invariants,
+and a zero-tolerance assembler pass) and is green.
+
+No-jinja finding: llama.cpp `server-b10068` emitted fully STRUCTURED
+`tool_calls` for Qwen3-1.7B even without `--jinja` — the wire shape was
+identical to the jinja run (preserved in `oc-openai-nojinja.1.sse`). The
+text-tool-call nudge therefore did NOT fire, correctly: nothing
+prose-shaped ever reached the detector, so its literals remain validated
+only by the offline unit tables, not live. docs/OFFLINE.md's "--jinja is
+REQUIRED" guidance is retained for older builds and other models.
+
+`scripts/offline_demo.sh` re-run as a regression on the T4 tree: PASSED
+(and, incidentally, exercised the untouched Full-profile default path
+live, since the demo's generated config sets no `prompt_profile`).
+
+Eval harness note: all task seeding (data.txt, config.ini, the needle
+files, version.txt) happens inside the script itself, per task, before
+each temur launch — nothing is left to the operator.
 
 - `secret: APP_SECRET_FILE is not set` — run via `run-app.sh` or pass the env as above.
 - `secret: cannot read credential file` — check ownership/mode (`appsvc:appsvc` 600)

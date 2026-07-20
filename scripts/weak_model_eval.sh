@@ -89,7 +89,10 @@ EVAL_ROOT=$(mktemp -d)
 CFG_DIR=$(mktemp -d)
 mkdir -p "$CFG_DIR/temur" "$EVAL_TRANSCRIPT_DIR"
 # Keyless local config; the profile under test is written into the config.
-printf '{"provider":"openai-compat","max_tokens":1024,"prompt_profile":"%s","openai_compat":{"model":"local-gguf","context_window":%s}}\n' \
+# max_tokens 2048: thinking models stream reasoning that counts against the
+# completion budget — 1024 (the single-call demo's size) truncates
+# read-then-reason turns before their tool calls complete.
+printf '{"provider":"openai-compat","max_tokens":2048,"prompt_profile":"%s","openai_compat":{"model":"local-gguf","context_window":%s}}\n' \
     "$PROMPT_PROFILE" "$CTX" > "$CFG_DIR/temur/config.json"
 echo "profile: $PROMPT_PROFILE   per-task timeout: ${EVAL_TASK_TIMEOUT}s   transcripts: $EVAL_TRANSCRIPT_DIR"
 
@@ -135,7 +138,7 @@ n=2; name=read-extract
 mkdir -p "$EVAL_ROOT/task$n"
 printf 'token: ZORP-7143\n' > "$EVAL_ROOT/task$n/data.txt"
 run_task "$n" "$name" \
-    "Read the file data.txt. It contains a line of the form 'token: VALUE'. Use the write tool to create a file named token.txt containing JUST the value (the part after 'token: '), nothing else."
+    "Two steps. Step 1: use the read tool on data.txt — it has one line like 'token: SOMEVALUE'. Step 2: use the write tool to create token.txt whose content is that SOMEVALUE part (the text after 'token: ')."
 if [ "$(trimmed "$EVAL_ROOT/task$n/token.txt")" = "ZORP-7143" ]; then
     record "$n" "$name" PASS "$SECS"; else record "$n" "$name" FAIL "$SECS"; fi
 
