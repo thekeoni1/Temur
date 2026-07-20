@@ -2,7 +2,7 @@
 name = "temur"
 version = "0.1.0"
 edition = "2021"
-description = "Single static binary coding agent for constrained Linux (32-bit and embedded), modeled on OpenCode"
+description = "Dependency-free single static binary coding agent for any Linux — down to 32-bit and embedded — that runs fully offline against local models"
 
 [dependencies]
 lexopt = "0.3"
