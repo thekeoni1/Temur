@@ -1,0 +1,13 @@
+Executes a shell command via `sh -c` and returns its combined stdout/stderr.
+
+Parameters:
+- command (required): the command to run. Quote paths containing spaces.
+- workdir (optional): directory to run the command in. Use this instead of
+  prefixing the command with `cd`.
+- timeout (optional): milliseconds before the command is killed
+  (default 120000, max 600000).
+
+A timeout or a nonzero exit code is noted at the end of the output. Very
+long output is truncated, with a note saying how much was kept. Run one
+command per call and check its result before the next; avoid commands that
+never exit (servers, watchers, interactive prompts).

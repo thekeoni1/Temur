@@ -26,6 +26,9 @@ impl Tool for BashTool {
     fn description(&self) -> &'static str {
         include_str!("prompts/bash.txt")
     }
+    fn description_compact(&self) -> &'static str {
+        include_str!("prompts/compact/bash.txt")
+    }
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",

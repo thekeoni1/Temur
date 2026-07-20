@@ -1,0 +1,14 @@
+Replaces the session task list. Use it to plan work with 3 or more steps
+and to record progress: keep exactly one item in_progress at a time, and
+mark items completed immediately when done. Skip it for trivial one-step
+tasks.
+
+Each item has content (short task description), status (pending |
+in_progress | completed), and an optional id. Send the WHOLE list every
+call — it replaces the previous list.
+
+Example:
+{"todos": [
+  {"id": "1", "content": "Add the parser", "status": "completed"},
+  {"id": "2", "content": "Wire it into main", "status": "in_progress"}
+]}

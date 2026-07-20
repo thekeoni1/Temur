@@ -1,10 +1,65 @@
 //! M3 tool tests — temp dirs on native tmpfs/ext4, run as i686 binaries.
 
-use temur::tools::{Registry, Tool, ToolCtx, ToolError, ToolOutput};
+use temur::tools::{PromptProfile, Registry, Tool, ToolCtx, ToolError, ToolOutput};
 use serde_json::json;
 
 fn ctx_in(dir: &std::path::Path) -> ToolCtx {
     ToolCtx::new(dir.to_path_buf())
+}
+
+// --- T4 prompt profiles ----------------------------------------------------
+
+/// MUST-HOLD: the default registry serves byte-identical definitions to an
+/// explicit Full profile — the default path is provably unchanged by T4.
+#[test]
+fn default_definitions_byte_equal_explicit_full_profile() {
+    let default_defs = Registry::standard().definitions();
+    let full_defs = Registry::standard()
+        .with_profile(PromptProfile::Full)
+        .definitions();
+    assert_eq!(default_defs.len(), full_defs.len());
+    for (d, f) in default_defs.iter().zip(full_defs.iter()) {
+        assert_eq!(d.name, f.name);
+        assert_eq!(d.description, f.description, "description differs for {}", d.name);
+        assert_eq!(d.input_schema, f.input_schema, "schema differs for {}", d.name);
+    }
+}
+
+#[test]
+fn compact_profile_swaps_descriptions_only() {
+    let full = Registry::standard().definitions();
+    let compact = Registry::standard()
+        .with_profile(PromptProfile::Compact)
+        .definitions();
+    // Tool set and ORDER untouched; schemas identical.
+    assert_eq!(
+        full.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+        compact.iter().map(|d| d.name.as_str()).collect::<Vec<_>>()
+    );
+    for (f, c) in full.iter().zip(compact.iter()) {
+        assert_eq!(f.input_schema, c.input_schema, "schema differs for {}", f.name);
+    }
+    let get = |defs: &[temur::provider::ToolDef], name: &str| {
+        defs.iter().find(|d| d.name == name).unwrap().description.clone()
+    };
+    // Hand-trimmed prompts differ and honor their size caps.
+    for (name, cap) in [("bash", 1000), ("todowrite", 700), ("edit", 700)] {
+        let c = get(&compact, name);
+        assert_ne!(c, get(&full, name), "{name} compact prompt must differ");
+        assert!(
+            c.chars().count() <= cap,
+            "{name} compact prompt exceeds {cap} chars ({})",
+            c.chars().count()
+        );
+    }
+    // Tools without an override serve the full text unchanged.
+    for name in ["read", "write", "glob", "grep", "todoread"] {
+        assert_eq!(get(&compact, name), get(&full, name), "{name} must be unchanged");
+    }
+    // The point of the profile: total tool text within the small-context
+    // budget (~24.4KB full today).
+    let total: usize = compact.iter().map(|d| d.description.len()).sum();
+    assert!(total <= 8 * 1024, "compact tool text is {total} bytes, budget 8KB");
 }
 
 fn run(reg: &Registry, ctx: &mut ToolCtx, name: &str, input: serde_json::Value) -> Result<ToolOutput, ToolError> {

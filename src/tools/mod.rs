@@ -58,10 +58,27 @@ impl ToolError {
     }
 }
 
+/// Which description set [`Registry::definitions`] serves (T4). `Full` is
+/// the OpenCode-ported prompts (Claude-sized); `Compact` is hand-trimmed
+/// for small-context local models. Selected explicitly via config only —
+/// never inferred from context_window or anything else.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PromptProfile {
+    #[default]
+    Full,
+    Compact,
+}
+
 pub trait Tool {
     fn name(&self) -> &'static str;
     /// The model-facing prompt (ported .txt), used as the tool description.
     fn description(&self) -> &'static str;
+    /// Trimmed description for the compact profile. Defaults to the full
+    /// description, so tools without a hand-written compact prompt need no
+    /// changes.
+    fn description_compact(&self) -> &'static str {
+        self.description()
+    }
     fn input_schema(&self) -> Value;
     fn execute(&self, input: Value, ctx: &mut ToolCtx) -> Result<ToolOutput, ToolError>;
 }
@@ -74,6 +91,7 @@ fn parse_input<T: serde::de::DeserializeOwned>(input: Value) -> Result<T, ToolEr
 
 pub struct Registry {
     tools: Vec<Box<dyn Tool>>,
+    profile: PromptProfile,
 }
 
 impl Registry {
@@ -89,11 +107,22 @@ impl Registry {
                 Box::new(todo::TodoWriteTool),
                 Box::new(todo::TodoReadTool),
             ],
+            profile: PromptProfile::Full,
         }
     }
 
     pub fn with_tools(tools: Vec<Box<dyn Tool>>) -> Self {
-        Registry { tools }
+        Registry {
+            tools,
+            profile: PromptProfile::Full,
+        }
+    }
+
+    /// Builder: select which description set `definitions()` serves. Tool
+    /// set and ORDER are untouched — only the description text varies.
+    pub fn with_profile(mut self, profile: PromptProfile) -> Self {
+        self.profile = profile;
+        self
     }
 
     /// The standard set plus the `skill` tool, which loads instruction files
@@ -112,7 +141,11 @@ impl Registry {
             .iter()
             .map(|t| ToolDef {
                 name: t.name().to_string(),
-                description: t.description().to_string(),
+                description: match self.profile {
+                    PromptProfile::Full => t.description(),
+                    PromptProfile::Compact => t.description_compact(),
+                }
+                .to_string(),
                 input_schema: t.input_schema(),
             })
             .collect()

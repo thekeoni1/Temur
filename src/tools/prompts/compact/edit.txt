@@ -1,0 +1,9 @@
+Performs an exact string replacement in a file.
+
+- Read the file first; copy oldString EXACTLY from the file content
+  (everything after the line-number prefix), preserving indentation.
+- The edit fails if oldString is not found, or is found more than once.
+  If it matches multiple places, include more surrounding lines to make
+  it unique — or set replaceAll to true to change every occurrence
+  (useful for renames).
+- Prefer editing existing files over writing new ones.

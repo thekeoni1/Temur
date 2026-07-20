@@ -106,6 +106,28 @@ window it means a single response is allowed to (try to) outgrow the
 whole context, and temur's advisory warning will — correctly — fire
 immediately. 1024–4096 is a sensible local range.
 
+## Compact prompt profile
+
+The stock tool descriptions are the OpenCode-ported prompts — sized for
+Claude-class context windows (~24 KB of tool text). On a small local
+window that is a real tax before the conversation even starts. Setting
+
+```json
+{ "prompt_profile": "compact" }
+```
+
+(top-level, next to `provider`) swaps in hand-trimmed descriptions for
+the largest tools (bash, todowrite, edit) and a shorter default system
+prompt, bringing total tool text under 8 KB. Tool set, order, and input
+schemas are identical in both profiles — only the description text
+varies — and an explicit `system_prompt` in config always wins over
+either default.
+
+The profile is **explicit-only**: absent or `"full"` means the stock
+prompts (byte-identical to pre-profile behavior), `"compact"` opts in,
+anything else is a startup config error. temur never auto-selects a
+profile from `context_window` or the model name.
+
 ## LAN topology
 
 ```
@@ -190,6 +212,31 @@ The script never pulls images or models; preflight checks print the exact
 negative (TLS to the internet MUST fail inside the pod) before the
 positive (the model must use the bash tool to write a proof file, which
 is verified from the host — model prose is never trusted as evidence).
+
+## The weak-model eval
+
+`scripts/weak_model_eval.sh` measures — instead of claiming — how well a
+small model drives temur's tools. Same setup discipline as the demo
+(operator-run, not part of `check.sh`; podman pod with `--network none`;
+nothing ever pulled; musl binary readelf-checked), then six fixed tasks,
+each in a fresh work directory with a fresh temur process: a plain file
+write, a read-and-extract, a targeted edit that must leave the rest of
+the file unchanged, a bash mkdir+write, a search across three files, and
+an edit-then-bash chain where order matters. Every task is scored by a
+host-verified filesystem assertion only — model prose is never evidence —
+and the run ends with a fixed-width PASS/FAIL table plus a `SCORE: N/6`
+line.
+
+```sh
+MODEL_GGUF=/path/to/model.gguf scripts/weak_model_eval.sh
+```
+
+Knobs: `MUSL_BIN`, `LLAMA_IMAGE`, `CTX` (default 8192), `PROMPT_PROFILE`
+(default `compact` — written into the generated keyless config),
+`EVAL_TASK_TIMEOUT` (seconds per task, default 300), `EVAL_MIN` (default
+0 = informational; a nonzero value makes the script exit 1 below that
+score), and `EVAL_TRANSCRIPT_DIR` (per-task transcripts are kept there
+for debugging).
 
 ## Troubleshooting
 

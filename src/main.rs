@@ -21,6 +21,14 @@ Use the provided tools (read, write, edit, bash, glob, grep, todowrite, todoread
 prefer tools over guessing. Keep responses concise and direct — this is a terminal. \
 When you edit files, verify your changes. The current working directory is: {cwd}";
 
+/// Shorter default system prompt used when `prompt_profile` is `"compact"`
+/// AND no config `system_prompt` override exists — an explicit override
+/// always wins, in either profile.
+const DEFAULT_SYSTEM_COMPACT: &str = "You are temur, a coding agent in a terminal. Act through \
+the provided tools; always call them with valid JSON arguments — never write a tool call as \
+plain text. Prefer tools over guessing, keep answers short, verify edits. \
+Working directory: {cwd}";
+
 fn main() -> ExitCode {
     env_logger::init();
     match run() {
@@ -88,6 +96,9 @@ fn repl(
     use_tui: bool,
 ) -> Result<ExitCode, error::Error> {
     let cfg = config::Config::load()?;
+    // Validated up front: an unknown prompt_profile is a startup error, not
+    // a silent fallback.
+    let prompt_profile = cfg.prompt_profile()?;
     let cwd = std::env::current_dir()?;
 
     // Resolve the skill search path and enumerate installed skills once at
@@ -202,10 +213,13 @@ fn repl(
         },
     };
 
-    let base_system = cfg
-        .system_prompt
-        .clone()
-        .unwrap_or_else(|| DEFAULT_SYSTEM.replace("{cwd}", &cwd.display().to_string()));
+    let base_system = cfg.system_prompt.clone().unwrap_or_else(|| {
+        let default = match prompt_profile {
+            temur::tools::PromptProfile::Compact => DEFAULT_SYSTEM_COMPACT,
+            temur::tools::PromptProfile::Full => DEFAULT_SYSTEM,
+        };
+        default.replace("{cwd}", &cwd.display().to_string())
+    });
     // Advertise installed skills so the model knows the skill tool is worth
     // calling; nothing appended when no skills are installed.
     let system = match temur::skills::system_prompt_section(&installed_skills) {
@@ -222,7 +236,7 @@ fn repl(
     session_cfg.system = Some(system);
     let mut session = Session::new(
         provider,
-        Registry::standard_with_skills(skill_dirs),
+        Registry::standard_with_skills(skill_dirs).with_profile(prompt_profile),
         session_cfg,
     );
 

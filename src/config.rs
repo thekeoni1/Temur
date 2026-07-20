@@ -43,6 +43,12 @@ pub struct Config {
     /// Ceiling on provider round-trips within a single turn. Distinct from the
     /// doom-loop guard (identical-call detection), which stays hardcoded.
     pub max_turn_iterations: u32,
+    /// Tool-prompt profile: `"full"` (= absent, the default) or `"compact"`
+    /// (hand-trimmed descriptions + a shorter default system prompt for
+    /// small-context local models). EXPLICIT-ONLY: never auto-selected from
+    /// context_window or anything else; any other value is a startup
+    /// config error.
+    pub prompt_profile: Option<String>,
     /// Settings for `provider: "openai-compat"`; ignored otherwise.
     pub openai_compat: Option<OpenAiCompatConfig>,
 }
@@ -93,6 +99,7 @@ impl Default for Config {
             system_prompt: None,
             skills_dir: None,
             max_turn_iterations: DEFAULT_MAX_TURN_ITERATIONS,
+            prompt_profile: None,
             openai_compat: None,
         }
     }
@@ -101,6 +108,18 @@ impl Default for Config {
 impl Config {
     pub fn load() -> Result<Self, crate::error::Error> {
         Self::load_from(&config_path())
+    }
+
+    /// Resolve `prompt_profile` to the typed profile, rejecting anything
+    /// but `"full"` / `"compact"` / absent at startup.
+    pub fn prompt_profile(&self) -> Result<crate::tools::PromptProfile, crate::error::Error> {
+        match self.prompt_profile.as_deref() {
+            None | Some("full") => Ok(crate::tools::PromptProfile::Full),
+            Some("compact") => Ok(crate::tools::PromptProfile::Compact),
+            Some(other) => Err(crate::error::Error::Config(format!(
+                "unknown prompt_profile {other:?} (expected \"full\" or \"compact\")"
+            ))),
+        }
     }
 
     fn load_from(path: &std::path::Path) -> Result<Self, crate::error::Error> {
@@ -201,6 +220,33 @@ mod tests {
         assert_eq!(c.max_turn_iterations, 7);
         let c: Config = serde_json::from_str(r#"{"model":"claude-sonnet-5"}"#).unwrap();
         assert_eq!(c.max_turn_iterations, DEFAULT_MAX_TURN_ITERATIONS);
+    }
+
+    #[test]
+    fn prompt_profile_explicit_only_and_invalid_is_startup_error() {
+        // Absent = full, byte-for-byte the pre-T4 default path.
+        let c: Config = serde_json::from_str("{}").unwrap();
+        assert!(c.prompt_profile.is_none());
+        assert_eq!(c.prompt_profile().unwrap(), crate::tools::PromptProfile::Full);
+        // Explicit values.
+        let c: Config = serde_json::from_str(r#"{"prompt_profile":"full"}"#).unwrap();
+        assert_eq!(c.prompt_profile().unwrap(), crate::tools::PromptProfile::Full);
+        let c: Config = serde_json::from_str(r#"{"prompt_profile":"compact"}"#).unwrap();
+        assert_eq!(
+            c.prompt_profile().unwrap(),
+            crate::tools::PromptProfile::Compact
+        );
+        // Anything else is a config error, not a silent fallback. NOTE:
+        // deliberately NO auto-selection — a small context_window must not
+        // flip the profile.
+        let c: Config = serde_json::from_str(r#"{"prompt_profile":"tiny"}"#).unwrap();
+        let err = c.prompt_profile().unwrap_err().to_string();
+        assert!(err.contains("tiny"), "error names the bad value: {err}");
+        let c: Config = serde_json::from_str(
+            r#"{"openai_compat":{"model":"m","context_window":2048}}"#,
+        )
+        .unwrap();
+        assert_eq!(c.prompt_profile().unwrap(), crate::tools::PromptProfile::Full);
     }
 
     #[test]

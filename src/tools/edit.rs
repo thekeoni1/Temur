@@ -26,6 +26,9 @@ impl Tool for EditTool {
     fn description(&self) -> &'static str {
         include_str!("prompts/edit.txt")
     }
+    fn description_compact(&self) -> &'static str {
+        include_str!("prompts/compact/edit.txt")
+    }
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
