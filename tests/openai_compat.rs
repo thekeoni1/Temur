@@ -196,11 +196,13 @@ fn history_fans_out_tool_results_and_drops_thinking() {
                     id: "call_A1".into(),
                     name: "read".into(),
                     input: serde_json::json!({"filePath": "/tmp/a.txt"}),
+                    input_raw: None,
                 },
                 ContentBlock::ToolUse {
                     id: "call_B2".into(),
                     name: "bash".into(),
                     input: serde_json::json!({"command": "ls /tmp"}),
+                    input_raw: None,
                 },
             ],
         },
@@ -265,6 +267,7 @@ fn assistant_tool_only_message_omits_content() {
                 id: "call_A1".into(),
                 name: "read".into(),
                 input: serde_json::json!({}),
+                input_raw: None,
             }],
         },
         RequestMessage {
@@ -325,7 +328,7 @@ fn assembles_arguments_fragmented_across_chunks() {
     assert_eq!(events, vec![StreamEvent::ToolUseStarted { name: "read".into() }]);
     assert_eq!(msg.content.len(), 1);
     match &msg.content[0] {
-        ContentBlock::ToolUse { id, name, input } => {
+        ContentBlock::ToolUse { id, name, input, .. } => {
             assert_eq!(id, "call_A1");
             assert_eq!(name, "read");
             assert_eq!(input, &serde_json::json!({"filePath": "/tmp/a.txt"}));
@@ -351,7 +354,7 @@ fn assembles_parallel_tool_calls() {
     assert_eq!(events[1], StreamEvent::ToolUseStarted { name: "read".into() });
     assert_eq!(events[2], StreamEvent::ToolUseStarted { name: "bash".into() });
     match &msg.content[1] {
-        ContentBlock::ToolUse { id, name, input } => {
+        ContentBlock::ToolUse { id, name, input, .. } => {
             assert_eq!(id, "call_A1");
             assert_eq!(name, "read");
             assert_eq!(input, &serde_json::json!({"filePath": "/tmp/a.txt"}));
@@ -359,7 +362,7 @@ fn assembles_parallel_tool_calls() {
         other => panic!("expected tool_use, got {other:?}"),
     }
     match &msg.content[2] {
-        ContentBlock::ToolUse { id, name, input } => {
+        ContentBlock::ToolUse { id, name, input, .. } => {
             assert_eq!(id, "call_B2");
             assert_eq!(name, "bash");
             assert_eq!(input, &serde_json::json!({"command": "ls /tmp"}));
@@ -518,7 +521,7 @@ fn quirk_absent_tool_call_id_is_synthesized() {
     let msg = provider.stream(&sample_request(), &mut |_| {}).unwrap();
     assert_eq!(msg.stop_reason, Some(StopReason::ToolUse));
     match &msg.content[0] {
-        ContentBlock::ToolUse { id, name, input } => {
+        ContentBlock::ToolUse { id, name, input, .. } => {
             assert_eq!(id, "call_0"); // deterministic synthesis
             assert_eq!(name, "read");
             assert_eq!(input, &serde_json::json!({"filePath": "/tmp/a.txt"}));
@@ -537,13 +540,78 @@ fn quirk_whole_call_in_one_chunk_without_index() {
     assert_eq!(msg.stop_reason, Some(StopReason::ToolUse));
     assert_eq!(events, vec![StreamEvent::ToolUseStarted { name: "bash".into() }]);
     match &msg.content[0] {
-        ContentBlock::ToolUse { id, name, input } => {
+        ContentBlock::ToolUse { id, name, input, .. } => {
             assert_eq!(id, "call_0");
             assert_eq!(name, "bash");
             assert_eq!(input, &serde_json::json!({"command": "ls /tmp"}));
         }
         other => panic!("expected tool_use, got {other:?}"),
     }
+}
+
+#[test]
+fn truncated_tool_arguments_preserved_as_input_raw() {
+    // Arguments cut off by finish_reason "length": input stays {}, and the
+    // raw fragment the model actually emitted survives as input_raw.
+    let provider = provider_with(vec![Ok("tool_truncated_args")]);
+    let msg = provider.stream(&sample_request(), &mut |_| {}).unwrap();
+    assert_eq!(msg.stop_reason, Some(StopReason::MaxTokens));
+    match &msg.content[0] {
+        ContentBlock::ToolUse {
+            id,
+            name,
+            input,
+            input_raw,
+        } => {
+            assert_eq!(id, "call_T1");
+            assert_eq!(name, "write");
+            assert_eq!(input, &serde_json::json!({}));
+            assert_eq!(input_raw.as_deref(), Some("{\"filePath\": \"notes"));
+        }
+        other => panic!("expected tool_use, got {other:?}"),
+    }
+}
+
+#[test]
+fn input_raw_never_reaches_the_wire() {
+    // T4: two requests identical except one history tool_use carries
+    // input_raw — the serialized bodies must be byte-identical, proving the
+    // raw string is dropped at the neutral→wire conversion.
+    let body_with = |input_raw: Option<String>| {
+        let (provider, transport) = provider_and_transport(vec![Ok("text_simple")], None);
+        let mut req = sample_request();
+        req.messages = vec![
+            RequestMessage {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "go".into() }],
+            },
+            RequestMessage {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "call_A1".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({}),
+                    input_raw,
+                }],
+            },
+            RequestMessage {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_A1".into(),
+                    content: "arguments were not valid JSON".into(),
+                    is_error: true,
+                }],
+            },
+        ];
+        provider.stream(&req, &mut |_| {}).unwrap();
+        let body = transport.bodies.borrow()[0].clone();
+        body
+    };
+    assert_eq!(
+        body_with(None),
+        body_with(Some("{\"filePath\": \"trunc".into())),
+        "input_raw changed the OpenAI-compat request body"
+    );
 }
 
 #[test]

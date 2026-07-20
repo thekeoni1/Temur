@@ -5,6 +5,7 @@
 
 use temur::provider::anthropic::sse::SseReader;
 use temur::provider::anthropic::types::*;
+use temur::provider::types as neutral;
 use std::io::BufReader;
 
 fn load(name: &str) -> Vec<SseEvent> {
@@ -117,6 +118,40 @@ fn max_tokens_mid_tool_json_leaves_input_empty_without_block_stop() {
     match &msg.content[0] {
         ContentBlock::ToolUse { input, .. } => {
             assert_eq!(input, &serde_json::json!({}));
+        }
+        other => panic!("expected tool_use, got {other:?}"),
+    }
+    // T4: the neutral conversion preserves the unparseable fragment as
+    // input_raw so the agent can see what the model actually emitted.
+    let neutral_msg = assemble(&load("incomplete_tool_json"))
+        .into_neutral_message()
+        .unwrap();
+    match &neutral_msg.content[0] {
+        neutral::ContentBlock::ToolUse {
+            input, input_raw, ..
+        } => {
+            assert_eq!(input, &serde_json::json!({}));
+            assert_eq!(input_raw.as_deref(), Some("{\"filePath\": \"taxes.txt"));
+        }
+        other => panic!("expected tool_use, got {other:?}"),
+    }
+}
+
+#[test]
+fn invalid_tool_json_with_block_stop_preserves_raw() {
+    // block_stop DID arrive but the accumulated JSON is invalid: input stays
+    // {} on the wire message, and the neutral conversion attaches the raw
+    // string as input_raw.
+    let msg = assemble(&load("tool_json_invalid"))
+        .into_neutral_message()
+        .unwrap();
+    assert_eq!(msg.stop_reason, Some(neutral::StopReason::ToolUse));
+    match &msg.content[0] {
+        neutral::ContentBlock::ToolUse {
+            input, input_raw, ..
+        } => {
+            assert_eq!(input, &serde_json::json!({}));
+            assert_eq!(input_raw.as_deref(), Some("{\"filePath\" \"a.txt\"}"));
         }
         other => panic!("expected tool_use, got {other:?}"),
     }

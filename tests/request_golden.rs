@@ -131,11 +131,13 @@ fn golden_tool_history() {
                     id: "tu_1".into(),
                     name: "read".into(),
                     input: serde_json::json!({"arg": "/tmp/a.txt"}),
+                    input_raw: None,
                 },
                 ContentBlock::ToolUse {
                     id: "tu_2".into(),
                     name: "bash".into(),
                     input: serde_json::json!({"arg": "ls /tmp"}),
+                    input_raw: None,
                 },
             ],
         },
@@ -210,4 +212,40 @@ fn golden_pause_resume() {
         },
     ];
     check_golden("pause_resume", &req);
+}
+
+#[test]
+fn input_raw_never_reaches_the_wire() {
+    // T4: two requests identical except one history tool_use carries
+    // input_raw — the serialized bodies must be byte-identical, proving the
+    // raw string is dropped at the neutral→wire conversion.
+    let body_with = |input_raw: Option<String>| {
+        let mut req = base_request();
+        req.messages = vec![
+            user_text("start"),
+            RequestMessage {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "tu_1".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({}),
+                    input_raw,
+                }],
+            },
+            RequestMessage {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tu_1".into(),
+                    content: "arguments were not valid JSON".into(),
+                    is_error: true,
+                }],
+            },
+        ];
+        body_for(&req)
+    };
+    assert_eq!(
+        body_with(None),
+        body_with(Some("{\"filePath\": \"trunc".into())),
+        "input_raw changed the Anthropic request body"
+    );
 }

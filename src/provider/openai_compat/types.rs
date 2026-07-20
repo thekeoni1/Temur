@@ -113,7 +113,14 @@ pub fn convert_history(messages: &[neutral::RequestMessage]) -> Vec<RequestMessa
                             }
                             text.push_str(t);
                         }
-                        neutral::ContentBlock::ToolUse { id, name, input } => {
+                        // input_raw is deliberately dropped: raw unparseable
+                        // arguments never reach any wire.
+                        neutral::ContentBlock::ToolUse {
+                            id,
+                            name,
+                            input,
+                            input_raw: _,
+                        } => {
                             tool_calls.push(ToolCall {
                                 id: id.clone(),
                                 kind: "function",
@@ -462,14 +469,16 @@ impl ChunkAccumulator {
             // ones; the request converter round-trips whatever is here, so
             // tool results match up either way.
             let id = call.id.unwrap_or_else(|| format!("call_{i}"));
-            let input = if call.arguments.trim().is_empty() {
-                serde_json::json!({})
+            let (input, input_raw) = if call.arguments.trim().is_empty() {
+                (serde_json::json!({}), None)
             } else {
                 match serde_json::from_str::<Value>(&call.arguments) {
-                    Ok(v) => v,
+                    Ok(v) => (v, None),
                     Err(_) => {
                         log::warn!("tool call {i} arguments are not valid JSON");
-                        serde_json::json!({})
+                        // Preserve what the model actually emitted so the
+                        // agent can repair or report it; input stays {}.
+                        (serde_json::json!({}), Some(call.arguments))
                     }
                 }
             };
@@ -477,6 +486,7 @@ impl ChunkAccumulator {
                 id,
                 name: call.name,
                 input,
+                input_raw,
             });
         }
         // Quirk: a stream that made tool calls but never sent finish_reason

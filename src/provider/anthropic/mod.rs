@@ -144,10 +144,9 @@ impl AnthropicProvider {
             });
         }
         // Wire → neutral at the boundary: the accumulator's message is the
-        // last Anthropic-shaped value on this code path.
-        acc.into_message()
-            .map(Into::into)
-            .ok_or(ProviderError::Incomplete)
+        // last Anthropic-shaped value on this code path. This conversion
+        // also attaches input_raw for tool arguments that failed to parse.
+        acc.into_neutral_message().ok_or(ProviderError::Incomplete)
     }
 }
 

@@ -198,7 +198,7 @@ impl Session {
                     let calls: Vec<(String, String, serde_json::Value)> = content
                         .iter()
                         .filter_map(|b| match b {
-                            ContentBlock::ToolUse { id, name, input } => {
+                            ContentBlock::ToolUse { id, name, input, .. } => {
                                 Some((id.clone(), name.clone(), input.clone()))
                             }
                             _ => None,

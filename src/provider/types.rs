@@ -39,6 +39,13 @@ pub enum ContentBlock {
         id: String,
         name: String,
         input: Value,
+        /// The raw argument string as the provider received it, populated
+        /// ONLY when it failed to parse as JSON (`input` stays `{}` then).
+        /// Dropped at every neutral→wire request conversion — this never
+        /// reaches any network, it exists so the agent can see WHAT the
+        /// model actually emitted instead of a generic missing-field error.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_raw: Option<String>,
     },
     /// Request-only (sent back by us after executing tools).
     ToolResult {

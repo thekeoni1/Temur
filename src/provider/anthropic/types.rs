@@ -190,6 +190,9 @@ pub struct MessageAccumulator {
     /// Accumulated `input_json_delta` fragments per block index; parsed into
     /// the tool_use `input` at `content_block_stop`.
     pending_json: HashMap<usize, String>,
+    /// Raw argument strings that failed to parse, by block index — attached
+    /// as `input_raw` at the wire→neutral conversion, never on any wire.
+    failed_json: HashMap<usize, String>,
     /// Set if the stream carried a mid-stream `error` event.
     pub error: Option<ApiErrorBody>,
 }
@@ -254,6 +257,7 @@ impl MessageAccumulator {
                                 *input = v;
                             } else {
                                 log::warn!("tool input at block {index} is not valid JSON");
+                                self.failed_json.insert(*index, json);
                             }
                         }
                     }
@@ -296,6 +300,44 @@ impl MessageAccumulator {
     pub fn into_message(self) -> Option<ResponseMessage> {
         self.message
     }
+
+    /// Leftover `pending_json` means the stream ended without a
+    /// `content_block_stop` for that block (the max_tokens-mid-JSON case):
+    /// record anything unparseable so it surfaces as `input_raw` too.
+    fn drain_pending_json(&mut self) {
+        let pending = std::mem::take(&mut self.pending_json);
+        for (index, json) in pending {
+            let is_tool_use = matches!(
+                self.message.as_ref().and_then(|m| m.content.get(index)),
+                Some(ContentBlock::ToolUse { .. })
+            );
+            if is_tool_use
+                && !json.trim().is_empty()
+                && serde_json::from_str::<Value>(&json).is_err()
+            {
+                self.failed_json.insert(index, json);
+            }
+        }
+    }
+
+    /// Wire → neutral, the streaming path's boundary crossing: converts the
+    /// assembled message and attaches the raw unparseable argument strings
+    /// as `input_raw` on their tool_use blocks.
+    pub fn into_neutral_message(mut self) -> Option<neutral::ResponseMessage> {
+        self.drain_pending_json();
+        let failed = std::mem::take(&mut self.failed_json);
+        self.message.map(|m| {
+            let mut msg: neutral::ResponseMessage = m.into();
+            for (index, raw) in failed {
+                if let Some(neutral::ContentBlock::ToolUse { input_raw, .. }) =
+                    msg.content.get_mut(index)
+                {
+                    *input_raw = Some(raw);
+                }
+            }
+            msg
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -336,7 +378,14 @@ impl From<&neutral::ContentBlock> for ContentBlock {
             neutral::ContentBlock::RedactedThinking { data } => {
                 ContentBlock::RedactedThinking { data: data.clone() }
             }
-            neutral::ContentBlock::ToolUse { id, name, input } => ContentBlock::ToolUse {
+            // input_raw is deliberately dropped: raw unparseable arguments
+            // never reach any wire.
+            neutral::ContentBlock::ToolUse {
+                id,
+                name,
+                input,
+                input_raw: _,
+            } => ContentBlock::ToolUse {
                 id: id.clone(),
                 name: name.clone(),
                 input: input.clone(),
@@ -371,9 +420,14 @@ impl From<ContentBlock> for neutral::ContentBlock {
             ContentBlock::RedactedThinking { data } => {
                 neutral::ContentBlock::RedactedThinking { data }
             }
-            ContentBlock::ToolUse { id, name, input } => {
-                neutral::ContentBlock::ToolUse { id, name, input }
-            }
+            ContentBlock::ToolUse { id, name, input } => neutral::ContentBlock::ToolUse {
+                id,
+                name,
+                input,
+                // Attached (when applicable) by the accumulator's
+                // into_neutral_message, which owns the failed-parse map.
+                input_raw: None,
+            },
             ContentBlock::ToolResult {
                 tool_use_id,
                 content,

@@ -283,11 +283,13 @@ fn cache_breakpoints_on_system_and_last_message_block() {
                     id: "tu_1".into(),
                     name: "read".into(),
                     input: serde_json::json!({"filePath": "/tmp/a.txt"}),
+                    input_raw: None,
                 },
                 ContentBlock::ToolUse {
                     id: "tu_2".into(),
                     name: "bash".into(),
                     input: serde_json::json!({"command": "ls /tmp"}),
+                    input_raw: None,
                 },
             ],
         },

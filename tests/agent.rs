@@ -49,6 +49,7 @@ fn tool_use(id: &str, name: &str, input: serde_json::Value) -> ContentBlock {
         id: id.into(),
         name: name.into(),
         input,
+        input_raw: None,
     }
 }
 
