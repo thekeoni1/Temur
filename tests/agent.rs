@@ -270,9 +270,41 @@ fn doom_loop_guard_stops_identical_calls() {
 }
 
 #[test]
+fn alternating_pair_doom_loop_fires() {
+    // T4 DELIBERATE INVERSION: this spot previously asserted that
+    // alternating two calls escaped the doom-loop guard (only the iteration
+    // limit could stop such a turn). The 6-deep alternating-pair window now
+    // catches A,B,A,B,A,B — the guard fires on the 6th request, before
+    // executing its batch.
+    let dir = tempfile::tempdir().unwrap();
+    let call = |cmd: &str| {
+        msg(
+            vec![tool_use("tu_x", "bash", serde_json::json!({"command": cmd}))],
+            StopReason::ToolUse,
+        )
+    };
+    let responses = vec![
+        call("echo a"),
+        call("echo b"),
+        call("echo a"),
+        call("echo b"),
+        call("echo a"),
+        call("echo b"),
+    ];
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "loop");
+    assert_eq!(requests.borrow().len(), 6, "guard fires on the 6th request");
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::Notice(n) if n.contains("alternated")
+    )));
+}
+
+#[test]
 fn iteration_limit_stops_runaway_turns() {
     let dir = tempfile::tempdir().unwrap();
-    // Alternate two different calls so the doom-loop guard never fires.
+    // Ten DISTINCT calls so neither doom-loop guard (identical or
+    // alternating) fires; only the iteration limit stops the turn.
     let mk = |i: u32| {
         msg(
             vec![tool_use(

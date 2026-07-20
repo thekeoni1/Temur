@@ -2,6 +2,7 @@
 //! OpenCode's processor semantics onto native Anthropic stop reasons.
 
 pub mod events;
+pub mod recover;
 
 use crate::provider::{
     ChatRequest, ContentBlock, Provider, ProviderError, RequestMessage, Role, StopReason, Usage,
@@ -12,6 +13,19 @@ use events::AgentEvent;
 /// Mirrors OpenCode's doom-loop threshold: N identical consecutive tool
 /// calls stop the turn.
 const DOOM_LOOP_THRESHOLD: u32 = 3;
+
+/// T4 weak-model guards, hardcoded like the doom-loop threshold above.
+///
+/// Consecutive batches in which EVERY tool result was an error stop the
+/// turn. Independent of the doom-loop guard: identical×3 catches a model
+/// stuck verbatim, this catches one thrashing with different arguments.
+const CONSECUTIVE_TOOL_FAILURE_LIMIT: u32 = 5;
+/// Consecutive empty responses (no tool use, no thinking, whitespace-only
+/// text) stop the turn — protects the PauseTurn-resend and nudge paths. A
+/// single empty EndTurn still finishes cleanly.
+const EMPTY_RESPONSE_LIMIT: u32 = 3;
+/// Corrective nudges per turn for tool calls written as plain text.
+const NUDGE_LIMIT: u32 = 2;
 
 #[derive(thiserror::Error, Debug)]
 pub enum AgentError {
@@ -106,6 +120,11 @@ impl Session {
         let mut iterations: u32 = 0;
         let mut last_fingerprint = String::new();
         let mut repeat_count: u32 = 0;
+        // T4 guard state (all per-turn).
+        let mut fingerprint_window: Vec<String> = Vec::new();
+        let mut consecutive_failed_batches: u32 = 0;
+        let mut consecutive_empty: u32 = 0;
+        let mut nudges: u32 = 0;
 
         loop {
             iterations += 1;
@@ -174,6 +193,25 @@ impl Session {
                 .filter(|b| !matches!(b, ContentBlock::Unknown))
                 .collect();
 
+            // Empty-response guard: no tool use, no thinking, and only
+            // whitespace text. One empty EndTurn finishes cleanly below;
+            // this stops the loops that would otherwise resend forever.
+            let is_empty = content.iter().all(|b| match b {
+                ContentBlock::Text { text } => text.trim().is_empty(),
+                _ => false,
+            });
+            if is_empty {
+                consecutive_empty += 1;
+                if consecutive_empty >= EMPTY_RESPONSE_LIMIT {
+                    ui(AgentEvent::Notice(format!(
+                        "stopped: the model returned {EMPTY_RESPONSE_LIMIT} consecutive empty responses"
+                    )));
+                    break;
+                }
+            } else {
+                consecutive_empty = 0;
+            }
+
             match stop {
                 Some(StopReason::Refusal) => {
                     // Discard the (partial or empty) refused output entirely;
@@ -195,12 +233,15 @@ impl Session {
                         role: Role::Assistant,
                         content: content.clone(),
                     });
-                    let calls: Vec<(String, String, serde_json::Value)> = content
+                    let calls: Vec<(String, String, serde_json::Value, Option<String>)> = content
                         .iter()
                         .filter_map(|b| match b {
-                            ContentBlock::ToolUse { id, name, input, .. } => {
-                                Some((id.clone(), name.clone(), input.clone()))
-                            }
+                            ContentBlock::ToolUse {
+                                id,
+                                name,
+                                input,
+                                input_raw,
+                            } => Some((id.clone(), name.clone(), input.clone(), input_raw.clone())),
                             _ => None,
                         })
                         .collect();
@@ -212,16 +253,17 @@ impl Session {
                     }
 
                     // Doom-loop guard on identical consecutive calls.
+                    // Fingerprint format unchanged by T4.
                     let fingerprint = calls
                         .iter()
-                        .map(|(_, name, input)| format!("{name}:{input}"))
+                        .map(|(_, name, input, _)| format!("{name}:{input}"))
                         .collect::<Vec<_>>()
                         .join("|");
                     if fingerprint == last_fingerprint {
                         repeat_count += 1;
                     } else {
                         repeat_count = 1;
-                        last_fingerprint = fingerprint;
+                        last_fingerprint = fingerprint.clone();
                     }
                     if repeat_count >= DOOM_LOOP_THRESHOLD {
                         ui(AgentEvent::Notice(format!(
@@ -230,14 +272,65 @@ impl Session {
                         break;
                     }
 
+                    // Alternating-pair doom loop (T4): A,B,A,B,A,B over a
+                    // 6-deep fingerprint window.
+                    fingerprint_window.push(fingerprint);
+                    if fingerprint_window.len() > 6 {
+                        fingerprint_window.remove(0);
+                    }
+                    if let [f6, f5, f4, f3, f2, f1] = fingerprint_window.as_slice() {
+                        if f1 == f3 && f3 == f5 && f2 == f4 && f4 == f6 && f1 != f2 {
+                            ui(AgentEvent::Notice(
+                                "stopped: two tool calls alternated 3 times in a row".into(),
+                            ));
+                            break;
+                        }
+                    }
+
                     // Execute every call; ALL results go back in ONE user message.
                     let mut results: Vec<ContentBlock> = Vec::with_capacity(calls.len());
-                    for (id, name, input) in calls {
-                        let (output, title, is_error) =
-                            match self.registry.execute(&name, input, &mut self.tool_ctx) {
+                    for (id, name, input, input_raw) in calls {
+                        let (output, title, is_error) = match input_raw {
+                            // T4 dispatch policy for arguments that failed to
+                            // parse on the wire: execute only a LOSSLESS
+                            // repair. A completed truncation is schema-valid
+                            // but semantically wrong — a silent wrong
+                            // write/bash — so Lossy and unrepairable both
+                            // feed an error back instead of executing.
+                            Some(raw) => match recover::repair_json(&raw) {
+                                Some(recover::Repaired::Lossless(v)) => {
+                                    ui(AgentEvent::Notice(format!(
+                                        "{name}: malformed tool arguments were losslessly repaired before execution"
+                                    )));
+                                    match self.registry.execute(&name, v, &mut self.tool_ctx) {
+                                        Ok(out) => (out.output, out.title, false),
+                                        Err(e) => (e.to_string(), name.clone(), true),
+                                    }
+                                }
+                                _ => {
+                                    let parse_err =
+                                        match serde_json::from_str::<serde_json::Value>(&raw) {
+                                            Err(e) => e.to_string(),
+                                            Ok(_) => "not a JSON object".to_string(),
+                                        };
+                                    let echoed: String = raw.chars().take(500).collect();
+                                    (
+                                        format!(
+                                            "The tool call was NOT executed: its arguments were not valid JSON. \
+                                             Parse error: {parse_err}\n\
+                                             Raw arguments as received (first 500 chars):\n{echoed}\n\
+                                             Re-issue the tool call with complete, valid JSON arguments."
+                                        ),
+                                        name.clone(),
+                                        true,
+                                    )
+                                }
+                            },
+                            None => match self.registry.execute(&name, input, &mut self.tool_ctx) {
                                 Ok(out) => (out.output, out.title, false),
                                 Err(e) => (e.to_string(), name.clone(), true),
-                            };
+                            },
+                        };
                         ui(AgentEvent::ToolEnd {
                             name,
                             title,
@@ -249,10 +342,29 @@ impl Session {
                             is_error,
                         });
                     }
+
+                    // Consecutive-failure cap (T4): a batch where every
+                    // result errored counts; any success resets. The results
+                    // message is pushed BEFORE stopping so history stays
+                    // consistent with the calls the model made.
+                    let all_errored = results.iter().all(|b| {
+                        matches!(b, ContentBlock::ToolResult { is_error: true, .. })
+                    });
+                    if all_errored {
+                        consecutive_failed_batches += 1;
+                    } else {
+                        consecutive_failed_batches = 0;
+                    }
                     self.history.push(RequestMessage {
                         role: Role::User,
                         content: results,
                     });
+                    if consecutive_failed_batches >= CONSECUTIVE_TOOL_FAILURE_LIMIT {
+                        ui(AgentEvent::Notice(format!(
+                            "stopped: every tool call failed in {CONSECUTIVE_TOOL_FAILURE_LIMIT} consecutive batches"
+                        )));
+                        break;
+                    }
                 }
                 Some(StopReason::PauseTurn) => {
                     // Append assistant content and re-send as-is to resume.
@@ -262,10 +374,54 @@ impl Session {
                     });
                 }
                 other => {
+                    // Text-tool-call nudge (T4): an EndTurn whose message
+                    // made no structured calls but *reads* like a tool call.
+                    // DETECT + FEEDBACK only — prose is never parsed into an
+                    // execution.
+                    let nudge = matches!(other, Some(StopReason::EndTurn))
+                        && nudges < NUDGE_LIMIT
+                        && !content
+                            .iter()
+                            .any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+                        && {
+                            let text = content
+                                .iter()
+                                .filter_map(|b| match b {
+                                    ContentBlock::Text { text } => Some(text.as_str()),
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            let tool_names: Vec<String> = self
+                                .registry
+                                .definitions()
+                                .iter()
+                                .map(|d| d.name.clone())
+                                .collect();
+                            recover::detect_text_tool_call(&text, &tool_names)
+                        };
                     self.history.push(RequestMessage {
                         role: Role::Assistant,
                         content,
                     });
+                    if nudge {
+                        nudges += 1;
+                        self.history.push(RequestMessage {
+                            role: Role::User,
+                            content: vec![ContentBlock::Text {
+                                text: "You wrote what looks like a tool call as plain text. \
+                                       Nothing was executed — text is never interpreted as a \
+                                       tool call. Invoke the tool through the structured \
+                                       tool-calling interface instead."
+                                    .into(),
+                            }],
+                        });
+                        ui(AgentEvent::Notice(
+                            "the model wrote a tool call as plain text; asked it to use the tool interface"
+                                .into(),
+                        ));
+                        continue;
+                    }
                     match other {
                         Some(StopReason::MaxTokens) => {
                             // Near the configured window, max_tokens is the
