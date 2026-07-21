@@ -13,6 +13,7 @@ pub mod view;
 pub mod wrap;
 
 use crate::agent::events::AgentEvent;
+use crate::cancel::CancelToken;
 use app::{Action, App, TICK_MS};
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyModifiers};
@@ -85,7 +86,10 @@ impl TuiUi {
     /// Real terminal: alternate screen + raw mode on a render thread.
     /// Restoration is covered three ways: the normal path after the loop,
     /// a chained panic hook, and `Drop` (which joins the thread).
-    pub fn new(info: SessionInfo) -> std::io::Result<TuiUi> {
+    ///
+    /// `cancel` is the session's cancel token (T6): the render thread holds
+    /// this clone — never a `Session` reference — and sets it on Esc.
+    pub fn new(info: SessionInfo, cancel: CancelToken) -> std::io::Result<TuiUi> {
         // Fail fast on a broken tty from the calling thread, so the error
         // surfaces before the agent starts (raw-mode state is global).
         ratatui::crossterm::terminal::enable_raw_mode()?;
@@ -115,7 +119,7 @@ impl TuiUi {
                 };
                 let app = App::new(info.model, info.thinking, info.cwd, info.version);
                 let (_, end) =
-                    render_loop(terminal, app, rx, tx_input, &mut CrosstermEvents);
+                    render_loop(terminal, app, rx, tx_input, &mut CrosstermEvents, cancel);
                 ratatui::restore();
                 if matches!(end, LoopEnd::ForceQuit) {
                     eprintln!("temur: force quit while a turn was running");
@@ -137,6 +141,7 @@ impl TuiUi {
         width: u16,
         height: u16,
         script: Vec<Event>,
+        cancel: CancelToken,
     ) -> (TuiUi, Arc<Mutex<Vec<String>>>) {
         let snapshot = Arc::new(Mutex::new(Vec::new()));
         let captured = Arc::clone(&snapshot);
@@ -149,7 +154,8 @@ impl TuiUi {
                 let terminal = Terminal::new(backend).expect("test backend");
                 let app = App::new(info.model, info.thinking, info.cwd, info.version);
                 let mut source = ScriptedEvents::new(script);
-                let (terminal, _) = render_loop(terminal, app, rx, tx_input, &mut source);
+                let (terminal, _) =
+                    render_loop(terminal, app, rx, tx_input, &mut source, cancel);
                 let buf = terminal.backend().buffer();
                 let rows: Vec<String> = (0..height)
                     .map(|y| {
@@ -202,6 +208,7 @@ fn render_loop<B: Backend>(
     rx: mpsc::Receiver<ToUi>,
     tx_input: mpsc::Sender<Option<String>>,
     events: &mut dyn EventSource,
+    cancel: CancelToken,
 ) -> (Terminal<B>, LoopEnd) {
     let start = Instant::now();
     let end = loop {
@@ -250,6 +257,10 @@ fn render_loop<B: Backend>(
                     let _ = tx_input.send(None);
                 }
                 Action::ForceQuit => break LoopEnd::ForceQuit,
+                // The whole interrupt mechanism from this thread's side:
+                // set the flag; the blocked agent thread notices at its
+                // next cooperative checkpoint and lands the turn.
+                Action::Interrupt => cancel.set(),
                 Action::None => {}
             },
             // Resize just needs the redraw that happens next iteration.

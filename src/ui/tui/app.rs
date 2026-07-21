@@ -53,6 +53,9 @@ pub enum Action {
     Quit,
     /// Second Ctrl+C during a running turn: restore terminal and exit now.
     ForceQuit,
+    /// Esc during a running turn: the runtime sets the session's cancel
+    /// token; the turn lands cooperatively (T6).
+    Interrupt,
 }
 
 pub struct App {
@@ -67,6 +70,9 @@ pub struct App {
     // Turn state.
     pub busy: bool,
     pub force_quit_armed: bool,
+    /// Esc was pressed this turn; shown as "interrupting…" until the turn
+    /// actually lands (TurnComplete clears it).
+    pub interrupting: bool,
     turn_started_ms: u64,
     // Session info for chrome.
     pub title: Option<String>,
@@ -97,6 +103,7 @@ impl App {
             draft: String::new(),
             busy: false,
             force_quit_armed: false,
+            interrupting: false,
             turn_started_ms: 0,
             title: None,
             model,
@@ -170,6 +177,7 @@ impl App {
                 self.session_usage = *session_usage;
                 self.busy = false;
                 self.force_quit_armed = false;
+                self.interrupting = false;
                 self.cells.push(Cell::TurnTail {
                     secs: (self.now_ms.saturating_sub(self.turn_started_ms)) / 1000,
                     usage: *turn_usage,
@@ -199,6 +207,7 @@ impl App {
     pub fn prompt_open(&mut self) {
         self.busy = false;
         self.force_quit_armed = false;
+        self.interrupting = false;
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
@@ -264,6 +273,16 @@ impl App {
                 if self.cursor < self.input.len() {
                     let c = self.input[self.cursor..].chars().next().unwrap();
                     self.cursor += c.len_utf8();
+                }
+            }
+            // Esc while a turn runs = cooperative interrupt (T6). Idle Esc
+            // is a no-op. A second Esc just re-requests — idempotent. Note
+            // the disarm at the top of this fn: Esc also participates in
+            // the "any key disarms force-quit" rule.
+            KeyCode::Esc => {
+                if self.busy {
+                    self.interrupting = true;
+                    return Action::Interrupt;
                 }
             }
             KeyCode::Home => self.cursor = 0,

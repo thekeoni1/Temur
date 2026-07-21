@@ -7,7 +7,7 @@ use temur::agent::events::AgentEvent;
 use temur::agent::{Session, SessionConfig};
 use temur::provider::anthropic::transport::ReplayTransport;
 use temur::provider::anthropic::AnthropicProvider;
-use temur::provider::Usage;
+use temur::provider::{CancelToken, ChatRequest, Provider, ProviderError, ResponseMessage, StreamEvent, Usage};
 use temur::tools::Registry;
 use temur::ui::tui::app::{Action, App, Cell};
 use temur::ui::tui::view::draw;
@@ -430,6 +430,7 @@ fn headless_end_to_end_through_the_ui_seam() {
         100,
         30,
         script,
+        session.cancel_token(),
     );
 
     let line = ui.read_input().expect("scripted submit reaches read_input");
@@ -466,4 +467,151 @@ fn resize_rewraps_same_state() {
     assert!(narrow.iter().all(|r| r.chars().count() <= 30));
     // Content survives both widths.
     assert!(narrow.join(" ").contains("theta"));
+}
+// ---- to append to tests/tui.rs (T6 I4) ----
+
+// ------------------------------------------------------ T6 (I4): interrupt
+
+#[test]
+fn esc_interrupts_only_while_busy_and_is_idempotent() {
+    let mut a = app();
+    // Idle: Esc is a no-op.
+    assert_eq!(a.handle_key(key(KeyCode::Esc)), Action::None);
+    assert!(!a.interrupting);
+
+    a.submit("go"); // busy
+    assert_eq!(a.handle_key(key(KeyCode::Esc)), Action::Interrupt);
+    assert!(a.interrupting);
+    // Second Esc: idempotent (setting an already-set token is harmless).
+    assert_eq!(a.handle_key(key(KeyCode::Esc)), Action::Interrupt);
+
+    // TurnComplete clears the interrupting state along with busy.
+    a.fold(&AgentEvent::TurnComplete {
+        turn_usage: usage(1, 1),
+        session_usage: usage(1, 1),
+    });
+    assert!(!a.busy);
+    assert!(!a.interrupting);
+    assert_eq!(a.handle_key(key(KeyCode::Esc)), Action::None);
+}
+
+#[test]
+fn esc_disarms_force_quit_and_ctrl_c_semantics_unchanged() {
+    let mut a = app();
+    a.submit("go");
+    assert_eq!(a.handle_key(ctrl('c')), Action::None); // arms
+    assert!(a.force_quit_armed);
+    // Esc participates in the "any key disarms" rule…
+    assert_eq!(a.handle_key(key(KeyCode::Esc)), Action::Interrupt);
+    assert!(!a.force_quit_armed);
+    // …so the next Ctrl+C re-arms instead of force-quitting.
+    assert_eq!(a.handle_key(ctrl('c')), Action::None);
+    assert!(a.force_quit_armed);
+    // Ctrl+C twice in a row still force-quits, interrupting or not.
+    assert_eq!(a.handle_key(ctrl('c')), Action::ForceQuit);
+}
+
+#[test]
+fn status_row_shows_esc_hint_and_interrupting_state() {
+    let mut a = app();
+    a.submit("go");
+    let rows = render(&mut a, 80, 12);
+    let body = rows.join("\n");
+    assert!(body.contains("esc interrupt"), "busy hint:\n{body}");
+
+    a.handle_key(key(KeyCode::Esc));
+    let rows = render(&mut a, 80, 12);
+    let body = rows.join("\n");
+    assert!(body.contains("interrupting…"), "interrupting state:\n{body}");
+
+    a.fold(&AgentEvent::TurnComplete {
+        turn_usage: usage(1, 1),
+        session_usage: usage(1, 1),
+    });
+    let rows = render(&mut a, 80, 12);
+    let body = rows.join("\n");
+    assert!(!body.contains("interrupting…"), "cleared after turn:\n{body}");
+    assert!(body.contains("enter send"), "idle hint back:\n{body}");
+}
+
+/// Provider that streams a partial tail and then BLOCKS in 10 ms slices
+/// until the cancel token is set — it can only finish through the
+/// render-thread → token → agent chain, so this e2e has no timing races.
+struct BlockUntilCancelled;
+
+impl Provider for BlockUntilCancelled {
+    fn stream(
+        &self,
+        _req: &ChatRequest,
+        on_event: &mut dyn FnMut(StreamEvent),
+        cancel: &CancelToken,
+    ) -> Result<ResponseMessage, ProviderError> {
+        on_event(StreamEvent::TextDelta("partial tail".into()));
+        while !cancel.is_set() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let value = serde_json::json!({
+            "id": "msg_block",
+            "model": "claude-sonnet-5",
+            "role": "assistant",
+            "content": [],
+            "usage": {}
+        });
+        let mut m: ResponseMessage = serde_json::from_value(value).unwrap();
+        m.content = vec![temur::provider::ContentBlock::Text {
+            text: "partial tail".into(),
+        }];
+        Ok(m)
+    }
+}
+
+/// The full interrupt chain, headless: scripted prompt + Enter + Esc; the
+/// Esc must unblock the agent thread via the shared token, land the turn,
+/// and return to the prompt.
+#[test]
+fn headless_esc_interrupts_a_blocked_turn_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens: 32_000,
+        system: Some("test system".into()),
+        thinking: false,
+        cwd: dir.path().to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+    };
+    let mut session = Session::new(Box::new(BlockUntilCancelled), Registry::standard(), cfg);
+
+    let mut script: Vec<Event> = "interrupt me"
+        .chars()
+        .map(|c| Event::Key(key(KeyCode::Char(c))))
+        .collect();
+    script.push(Event::Key(key(KeyCode::Enter)));
+    script.push(Event::Key(key(KeyCode::Esc)));
+
+    let (mut ui, snapshot) = TuiUi::headless(
+        SessionInfo {
+            model: "claude-sonnet-5".into(),
+            thinking: false,
+            cwd: dir.path().display().to_string(),
+            version: "test".into(),
+        },
+        100,
+        30,
+        script,
+        session.cancel_token(),
+    );
+
+    let line = ui.read_input().expect("scripted submit reaches read_input");
+    session.turn(&line, &mut |ev| ui.event(&ev)).unwrap();
+    drop(ui); // shutdown drains all pending events into the final frame
+
+    let rows = snapshot.lock().unwrap().clone();
+    let body = rows.join("\n");
+    assert!(body.contains("partial tail"), "kept partial:\n{body}");
+    assert!(body.contains("turn interrupted"), "notice:\n{body}");
+    assert!(body.contains("▣"), "turn tail rendered:\n{body}");
+    assert!(!body.contains("interrupting…"), "state cleared:\n{body}");
 }

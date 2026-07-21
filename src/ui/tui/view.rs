@@ -218,10 +218,15 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
                     Style::default().fg(Color::Yellow),
                 ),
             ]
+        } else if app.interrupting {
+            vec![
+                Span::raw(format!("  {} working… ", app.spinner())),
+                Span::styled("interrupting…", Style::default().fg(Color::Yellow)),
+            ]
         } else {
             vec![
                 Span::raw(format!("  {} working… ", app.spinner())),
-                Span::styled("(enter disabled during turn)", dim()),
+                Span::styled("esc interrupt · (enter disabled during turn)", dim()),
             ]
         }
     } else {

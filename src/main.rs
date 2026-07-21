@@ -300,12 +300,17 @@ fn repl(
     };
 
     let mut ui: Box<dyn Ui> = if use_tui {
-        Box::new(TuiUi::new(SessionInfo {
-            model: model.clone(),
-            thinking: cfg.thinking,
-            cwd: cwd_display.clone(),
-            version: VERSION.to_string(),
-        })?)
+        Box::new(TuiUi::new(
+            SessionInfo {
+                model: model.clone(),
+                thinking: cfg.thinking,
+                cwd: cwd_display.clone(),
+                version: VERSION.to_string(),
+            },
+            // T6: the render thread holds the session's cancel token so
+            // Esc can interrupt a running turn.
+            session.cancel_token(),
+        )?)
     } else {
         Box::new(ReplUi::new())
     };
