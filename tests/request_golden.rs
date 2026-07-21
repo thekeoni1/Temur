@@ -43,7 +43,7 @@ fn body_for(req: &ChatRequest) -> String {
             bodies: bodies.clone(),
         }),
     );
-    provider.stream(req, &mut |_| {}).unwrap();
+    provider.stream(req, &mut |_| {}, &CancelToken::new()).unwrap();
     let body = bodies.borrow()[0].clone();
     body
 }

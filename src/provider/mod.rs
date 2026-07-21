@@ -12,6 +12,7 @@ pub mod types;
 
 use serde_json::Value;
 
+pub use crate::cancel::CancelToken;
 pub use types::{
     ContentBlock, RequestMessage, ResponseMessage, Role, StopDetails, StopReason, Usage,
 };
@@ -75,9 +76,16 @@ pub enum ProviderError {
 pub trait Provider {
     /// Send one request; invoke `on_event` for each incremental UI event;
     /// return the fully assembled assistant message.
+    ///
+    /// `cancel` is polled cooperatively — before the POST, at each retry
+    /// backoff slice, and at each received stream frame. On cancellation the
+    /// provider stops reading and returns `Ok` with whatever partial message
+    /// has accumulated (the agent applies its landing policy), or
+    /// `Err(Incomplete)` if nothing had started.
     fn stream(
         &self,
         req: &ChatRequest,
         on_event: &mut dyn FnMut(StreamEvent),
+        cancel: &CancelToken,
     ) -> Result<ResponseMessage, ProviderError>;
 }

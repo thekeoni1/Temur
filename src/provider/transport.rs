@@ -59,14 +59,23 @@ pub const MAX_RETRIES: u32 = 2;
 /// The shared retry policy: retryable transport errors (408/429/5xx, I/O)
 /// are re-sent up to [`MAX_RETRIES`] times, honoring `Retry-After` when the
 /// server sent one and exponential backoff otherwise.
+///
+/// `cancel` is polled before each POST and in ≤200 ms slices during backoff,
+/// so an interrupt lands promptly even inside a long `Retry-After` wait; the
+/// pending transport error is returned as-is (the agent treats any error
+/// arriving with the token set as an interruption, not a failure).
 pub fn post_stream_with_retries(
     transport: &dyn Transport,
     url: &str,
     api_key: &str,
     body: &str,
+    cancel: &crate::cancel::CancelToken,
 ) -> Result<Box<dyn Read>, TransportError> {
     let mut attempt: u32 = 0;
     loop {
+        if cancel.is_set() {
+            return Err(TransportError::Io("interrupted by user".into()));
+        }
         match transport.post_stream(url, api_key, body) {
             Ok(reader) => return Ok(reader),
             Err(e) => {
@@ -76,7 +85,18 @@ pub fn post_stream_with_retries(
                     log::warn!(
                         "retryable transport error (attempt {attempt}): {e}; retrying in {delay}s"
                     );
-                    std::thread::sleep(std::time::Duration::from_secs(delay));
+                    // u64 millis: second-scale delays would overflow nothing,
+                    // but keep byte/time math out of usize on 32-bit anyway.
+                    let total_ms: u64 = delay.saturating_mul(1000);
+                    let mut slept_ms: u64 = 0;
+                    while slept_ms < total_ms {
+                        if cancel.is_set() {
+                            return Err(e);
+                        }
+                        let slice_ms = (total_ms - slept_ms).min(200);
+                        std::thread::sleep(std::time::Duration::from_millis(slice_ms));
+                        slept_ms += slice_ms;
+                    }
                     continue;
                 }
                 return Err(e);

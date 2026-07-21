@@ -4,6 +4,7 @@
 pub mod events;
 pub mod recover;
 
+use crate::cancel::CancelToken;
 use crate::provider::{
     ChatRequest, ContentBlock, Provider, ProviderError, RequestMessage, Role, StopReason, Usage,
 };
@@ -81,6 +82,9 @@ pub struct Session {
     last_context_used: Option<u64>,
     /// The context pre-warning fires once per session, not per turn.
     context_warned: bool,
+    /// T6 cooperative interruption. The UI holds a clone (via
+    /// [`Session::cancel_token`]) and sets it; the provider stack polls it.
+    cancel: CancelToken,
 }
 
 /// Everything a session persists, borrowed. ONE method
@@ -107,6 +111,7 @@ impl Session {
             session_usage: Usage::default(),
             last_context_used: None,
             context_warned: false,
+            cancel: CancelToken::new(),
         }
     }
 
@@ -135,11 +140,18 @@ impl Session {
             session_usage: seed.session_usage,
             last_context_used: seed.last_context_used,
             context_warned: false,
+            cancel: CancelToken::new(),
         }
     }
 
     pub fn history(&self) -> &[RequestMessage] {
         &self.history
+    }
+
+    /// A clone of this session's cancel token, for the UI thread to set.
+    /// Holding a clone never requires holding the session itself.
+    pub fn cancel_token(&self) -> CancelToken {
+        self.cancel.clone()
     }
 
     /// The persistable view of this session. Borrowed throughout: saving a
@@ -200,15 +212,21 @@ impl Session {
                 messages: self.history.clone(),
                 tools: self.registry.definitions(),
             };
-            let msg = self.provider.stream(&req, &mut |ev| {
-                ui(match ev {
-                    crate::provider::StreamEvent::TextDelta(t) => AgentEvent::TextDelta(t),
-                    crate::provider::StreamEvent::ThinkingDelta(t) => AgentEvent::ThinkingDelta(t),
-                    crate::provider::StreamEvent::ToolUseStarted { name } => {
-                        AgentEvent::ToolStart { name }
-                    }
-                })
-            })?;
+            let msg = self.provider.stream(
+                &req,
+                &mut |ev| {
+                    ui(match ev {
+                        crate::provider::StreamEvent::TextDelta(t) => AgentEvent::TextDelta(t),
+                        crate::provider::StreamEvent::ThinkingDelta(t) => {
+                            AgentEvent::ThinkingDelta(t)
+                        }
+                        crate::provider::StreamEvent::ToolUseStarted { name } => {
+                            AgentEvent::ToolStart { name }
+                        }
+                    })
+                },
+                &self.cancel,
+            )?;
 
             turn_usage.add(&msg.usage);
             self.session_usage.add(&msg.usage);

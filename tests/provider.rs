@@ -112,7 +112,7 @@ fn provider_and_transport(
 #[test]
 fn request_body_shape() {
     let (provider, transport) = provider_and_transport(vec![Ok("text_simple")]);
-    provider.stream(&sample_request(), &mut |_| {}).unwrap();
+    provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
 
     assert_eq!(
         transport.urls.borrow()[0],
@@ -143,7 +143,7 @@ fn request_body_shape() {
 fn sampling_knobs_absent_when_unset_and_mapped_when_set() {
     // None (the default everywhere today) sends nothing — pre-T1 behavior.
     let (provider, transport) = provider_and_transport(vec![Ok("text_simple")]);
-    provider.stream(&sample_request(), &mut |_| {}).unwrap();
+    provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
     let body: serde_json::Value = serde_json::from_str(&transport.bodies.borrow()[0]).unwrap();
     assert!(body.get("temperature").is_none());
     assert!(body.get("top_p").is_none());
@@ -153,7 +153,7 @@ fn sampling_knobs_absent_when_unset_and_mapped_when_set() {
     let mut req = sample_request();
     req.temperature = Some(0.5);
     req.top_p = Some(0.9);
-    provider.stream(&req, &mut |_| {}).unwrap();
+    provider.stream(&req, &mut |_| {}, &CancelToken::new()).unwrap();
     let body: serde_json::Value = serde_json::from_str(&transport.bodies.borrow()[0]).unwrap();
     assert_eq!(body["temperature"], 0.5);
     assert_eq!(body["top_p"], 0.9);
@@ -164,7 +164,7 @@ fn thinking_flag_adds_adaptive() {
     let (provider, transport) = provider_and_transport(vec![Ok("text_simple")]);
     let mut req = sample_request();
     req.thinking = true;
-    provider.stream(&req, &mut |_| {}).unwrap();
+    provider.stream(&req, &mut |_| {}, &CancelToken::new()).unwrap();
     let body: serde_json::Value = serde_json::from_str(&transport.bodies.borrow()[0]).unwrap();
     assert_eq!(body["thinking"]["type"], "adaptive");
 }
@@ -174,7 +174,7 @@ fn streams_events_and_assembles_tool_use() {
     let provider = provider_with(vec![Ok("tool_use_parallel")]);
     let mut events = vec![];
     let msg = provider
-        .stream(&sample_request(), &mut |e| events.push(e))
+        .stream(&sample_request(), &mut |e| events.push(e), &CancelToken::new())
         .unwrap();
 
     assert_eq!(msg.stop_reason, Some(StopReason::ToolUse));
@@ -200,7 +200,7 @@ fn retries_429_with_retry_after_then_succeeds() {
         }),
         Ok("text_simple"),
     ]);
-    let msg = provider.stream(&sample_request(), &mut |_| {}).unwrap();
+    let msg = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
     assert_eq!(msg.stop_reason, Some(StopReason::EndTurn));
     assert_eq!(transport.bodies.borrow().len(), 2); // exactly one retry
 }
@@ -213,7 +213,7 @@ fn does_not_retry_400() {
         body: r#"{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}"#
             .into(),
     })]);
-    let err = provider.stream(&sample_request(), &mut |_| {}).unwrap_err();
+    let err = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap_err();
     match err {
         ProviderError::Api {
             status,
@@ -232,7 +232,7 @@ fn does_not_retry_400() {
 #[test]
 fn midstream_error_event_becomes_api_error() {
     let provider = provider_with(vec![Ok("error_midstream")]);
-    let err = provider.stream(&sample_request(), &mut |_| {}).unwrap_err();
+    let err = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap_err();
     match err {
         ProviderError::Api { kind, .. } => assert_eq!(kind, "overloaded_error"),
         other => panic!("expected Api error, got {other:?}"),
@@ -242,7 +242,7 @@ fn midstream_error_event_becomes_api_error() {
 #[test]
 fn refusal_completion_carries_stop_details() {
     let provider = provider_with(vec![Ok("refusal_pre_output")]);
-    let msg = provider.stream(&sample_request(), &mut |_| {}).unwrap();
+    let msg = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
     assert_eq!(msg.stop_reason, Some(StopReason::Refusal));
     assert_eq!(
         msg.stop_details.unwrap().category.as_deref(),
@@ -309,7 +309,7 @@ fn cache_breakpoints_on_system_and_last_message_block() {
             ],
         },
     ];
-    provider.stream(&req, &mut |_| {}).unwrap();
+    provider.stream(&req, &mut |_| {}, &CancelToken::new()).unwrap();
 
     let body: serde_json::Value = serde_json::from_str(&transport.bodies.borrow()[0]).unwrap();
     // Static breakpoint on the system block…
@@ -380,4 +380,221 @@ fn moving_breakpoint_advances_across_agent_iterations() {
         "request 1's marker must not persist into request 2"
     );
     assert_eq!(b2["system"][0]["cache_control"]["type"], "ephemeral");
+}
+
+// ---------------------------------------------------------------------------
+// T6 cancellation (I1): the provider-side cancel seam. No threads, no timing
+// races — a throttled reader sets the token deterministically at a byte
+// offset computed from the fixture's own content.
+// ---------------------------------------------------------------------------
+
+use std::cell::Cell;
+use std::rc::Rc;
+
+fn fixture_bytes(name: &str) -> Vec<u8> {
+    std::fs::read(format!(
+        "{}/tests/fixtures/{name}.sse",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap()
+}
+
+/// Serves one in-memory SSE body in ≤16-byte reads, setting `token` once
+/// `cancel_at` total bytes have been delivered and recording the total —
+/// models a mid-stream Esc without any thread or clock.
+struct CancellingTransport {
+    data: Vec<u8>,
+    cancel_at: u64,
+    token: CancelToken,
+    delivered: Rc<Cell<u64>>,
+}
+
+struct ThrottledReader {
+    data: Vec<u8>,
+    pos: usize,
+    cancel_at: u64,
+    token: CancelToken,
+    delivered: Rc<Cell<u64>>,
+}
+
+impl Read for ThrottledReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = buf.len().min(16).min(self.data.len() - self.pos);
+        buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+        self.pos += n;
+        self.delivered.set(self.delivered.get() + n as u64);
+        if self.delivered.get() >= self.cancel_at {
+            self.token.set();
+        }
+        Ok(n)
+    }
+}
+
+impl Transport for CancellingTransport {
+    fn post_stream(
+        &self,
+        _url: &str,
+        _api_key: &str,
+        _body: &str,
+    ) -> Result<Box<dyn Read>, TransportError> {
+        Ok(Box::new(ThrottledReader {
+            data: self.data.clone(),
+            pos: 0,
+            cancel_at: self.cancel_at,
+            token: self.token.clone(),
+            delivered: self.delivered.clone(),
+        }))
+    }
+}
+
+fn cancelling_provider(
+    fixture: &str,
+    cancel_at: u64,
+) -> (AnthropicProvider, CancelToken, Rc<Cell<u64>>, u64) {
+    let data = fixture_bytes(fixture);
+    let total = data.len() as u64;
+    let token = CancelToken::new();
+    let delivered = Rc::new(Cell::new(0u64));
+    let provider = AnthropicProvider::new(
+        "https://api.example.test",
+        "test-key-not-a-secret".into(),
+        Box::new(CancellingTransport {
+            data,
+            cancel_at,
+            token: token.clone(),
+            delivered: delivered.clone(),
+        }),
+    );
+    (provider, token, delivered, total)
+}
+
+#[test]
+fn cancel_mid_stream_returns_partial_and_stops_reading() {
+    // Cut while the content_block_start frame is being read: message_start
+    // is fully accumulated, no text delta ever arrives.
+    let data = fixture_bytes("text_simple");
+    let cut = find(&data, br#""content_block":{"type":"text""#) as u64;
+    let (provider, token, delivered, total) = cancelling_provider("text_simple", cut);
+
+    let mut events = vec![];
+    let msg = provider
+        .stream(&sample_request(), &mut |e| events.push(e), &token)
+        .unwrap();
+
+    // Partial: the message started but no delta was consumed, and the stream
+    // stopped mid-body instead of draining.
+    assert_eq!(msg.id, "msg_01A");
+    assert!(msg.stop_reason.is_none(), "no message_delta was reached");
+    let text: String = msg
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "", "cancel landed before any text delta");
+    assert!(events.is_empty(), "no UI events after the kept prefix");
+    assert!(
+        delivered.get() < total,
+        "stream fully drained ({} of {total} bytes) despite cancel",
+        delivered.get()
+    );
+}
+
+#[test]
+fn cancel_mid_tool_json_marks_input_raw() {
+    // Cut inside the first real input_json_delta of the first tool call:
+    // its content_block_stop never runs, so the partial JSON must surface
+    // as input_raw (the agent's incomplete-block marker).
+    let data = fixture_bytes("tool_use_parallel");
+    let cut = find(&data, b"filePath") as u64;
+    let (provider, token, delivered, total) = cancelling_provider("tool_use_parallel", cut);
+
+    let msg = provider
+        .stream(&sample_request(), &mut |_| {}, &token)
+        .unwrap();
+
+    assert!(msg.stop_reason.is_none());
+    match &msg.content[..] {
+        [ContentBlock::Text { text }, ContentBlock::ToolUse {
+            name, input_raw, ..
+        }] => {
+            assert_eq!(text, "I'll read the file and list the directory.");
+            assert_eq!(name, "read");
+            assert_eq!(
+                input_raw.as_deref(),
+                Some("{\"filePath\":"),
+                "incomplete tool JSON must be preserved raw"
+            );
+        }
+        other => panic!("unexpected partial content: {other:?}"),
+    }
+    assert!(delivered.get() < total, "stream must not be fully drained");
+}
+
+#[test]
+fn cancel_before_first_frame_is_incomplete_without_posting() {
+    let (provider, transport) = provider_and_transport(vec![Ok("text_simple")]);
+    let token = CancelToken::new();
+    token.set();
+    let err = provider
+        .stream(&sample_request(), &mut |_| {}, &token)
+        .unwrap_err();
+    assert!(matches!(err, ProviderError::Incomplete), "got {err:?}");
+    assert!(
+        transport.bodies.borrow().is_empty(),
+        "a pre-set token must prevent the POST entirely"
+    );
+}
+
+#[test]
+fn retry_backoff_sleep_is_sliced_by_cancel() {
+    // 429 with Retry-After: 30 would normally sleep 30 s before the retry;
+    // the transport sets the token as it fails, so the sliced backoff must
+    // notice within ~200 ms and return the pending error.
+    struct FailingTransport(CancelToken);
+    impl Transport for FailingTransport {
+        fn post_stream(
+            &self,
+            _url: &str,
+            _api_key: &str,
+            _body: &str,
+        ) -> Result<Box<dyn Read>, TransportError> {
+            self.0.set();
+            Err(TransportError::Status {
+                code: 429,
+                retry_after: Some(30),
+                body: String::new(),
+            })
+        }
+    }
+
+    let token = CancelToken::new();
+    let start = std::time::Instant::now();
+    let err = match temur::provider::transport::post_stream_with_retries(
+        &FailingTransport(token.clone()),
+        "https://api.example.test/v1/messages",
+        "test-key-not-a-secret",
+        "{}",
+        &token,
+    ) {
+        Err(e) => e,
+        Ok(_) => panic!("expected the 429 to surface as an error"),
+    };
+    assert!(matches!(err, TransportError::Status { code: 429, .. }));
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(1),
+        "backoff must abort promptly on cancel (took {:?})",
+        start.elapsed()
+    );
+}
+
+/// Byte offset of `needle` in `haystack` (first occurrence; panics if absent
+/// so a fixture edit fails loudly here instead of hanging an assertion).
+fn find(haystack: &[u8], needle: &[u8]) -> usize {
+    haystack
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .unwrap_or_else(|| panic!("fixture no longer contains {:?}", String::from_utf8_lossy(needle)))
 }

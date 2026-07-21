@@ -21,6 +21,7 @@ impl Provider for MockProvider {
         &self,
         req: &ChatRequest,
         _on_event: &mut dyn FnMut(StreamEvent),
+        _cancel: &CancelToken,
     ) -> Result<ResponseMessage, ProviderError> {
         self.requests.borrow_mut().push(req.clone());
         Ok(self.responses.borrow_mut().remove(0))

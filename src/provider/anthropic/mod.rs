@@ -5,6 +5,7 @@ pub mod sse;
 pub mod transport;
 pub mod types;
 
+use crate::cancel::CancelToken;
 use crate::provider::{
     ChatRequest, Provider, ProviderError, ResponseMessage, StreamEvent,
 };
@@ -114,6 +115,7 @@ impl AnthropicProvider {
         &self,
         reader: Box<dyn std::io::Read>,
         on_event: &mut dyn FnMut(StreamEvent),
+        cancel: &CancelToken,
     ) -> Result<ResponseMessage, ProviderError> {
         let mut acc = MessageAccumulator::new();
         for item in SseReader::new(BufReader::new(reader)) {
@@ -135,6 +137,14 @@ impl AnthropicProvider {
                 _ => {}
             }
             acc.push(&ev);
+            // Cooperative cancel, checked once per received frame — AFTER the
+            // frame is accumulated, so everything fully received is kept and
+            // the outcome never depends on read buffering. A fully stalled
+            // read blocks in the iterator and cannot observe the token
+            // (documented residual; force-quit remains the escape hatch).
+            if cancel.is_set() {
+                break;
+            }
         }
         if let Some(err) = acc.error {
             return Err(ProviderError::Api {
@@ -155,7 +165,12 @@ impl Provider for AnthropicProvider {
         &self,
         req: &ChatRequest,
         on_event: &mut dyn FnMut(StreamEvent),
+        cancel: &CancelToken,
     ) -> Result<ResponseMessage, ProviderError> {
+        // Cancelled before anything was sent: nothing to keep.
+        if cancel.is_set() {
+            return Err(ProviderError::Incomplete);
+        }
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
         let body = Self::build_body(req)?;
         // Shared retry policy (crate::provider::transport); only the error
@@ -165,8 +180,9 @@ impl Provider for AnthropicProvider {
             &url,
             &self.api_key,
             &body,
+            cancel,
         ) {
-            Ok(reader) => self.drive(reader, on_event),
+            Ok(reader) => self.drive(reader, on_event, cancel),
             Err(e) => Err(transport_error_to_provider(e)),
         }
     }

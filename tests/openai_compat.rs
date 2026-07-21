@@ -115,7 +115,7 @@ fn provider_and_transport(
 fn request_body_shape() {
     let (provider, transport) =
         provider_and_transport(vec![Ok("text_simple")], Some("test-key-not-a-secret".into()));
-    provider.stream(&sample_request(), &mut |_| {}).unwrap();
+    provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
 
     assert_eq!(
         transport.urls.borrow()[0],
@@ -154,7 +154,7 @@ fn keyless_sends_empty_key() {
     // None key = keyless local endpoint: the transport seam sees "" and the
     // HTTP transport sends no auth header at all.
     let (provider, transport) = provider_and_transport(vec![Ok("text_simple")], None);
-    provider.stream(&sample_request(), &mut |_| {}).unwrap();
+    provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
     assert_eq!(transport.keys.borrow()[0], "");
 }
 
@@ -165,7 +165,7 @@ fn sampling_knobs_mapped_when_set() {
     let mut req = sample_request();
     req.temperature = Some(0.5);
     req.top_p = Some(0.9);
-    provider.stream(&req, &mut |_| {}).unwrap();
+    provider.stream(&req, &mut |_| {}, &CancelToken::new()).unwrap();
     let body: serde_json::Value = serde_json::from_str(&transport.bodies.borrow()[0]).unwrap();
     assert_eq!(body["temperature"], 0.5);
     assert_eq!(body["top_p"], 0.9);
@@ -223,7 +223,7 @@ fn history_fans_out_tool_results_and_drops_thinking() {
             ],
         },
     ];
-    provider.stream(&req, &mut |_| {}).unwrap();
+    provider.stream(&req, &mut |_| {}, &CancelToken::new()).unwrap();
 
     let body: serde_json::Value = serde_json::from_str(&transport.bodies.borrow()[0]).unwrap();
     let msgs = body["messages"].as_array().unwrap();
@@ -279,7 +279,7 @@ fn assistant_tool_only_message_omits_content() {
             }],
         },
     ];
-    provider.stream(&req, &mut |_| {}).unwrap();
+    provider.stream(&req, &mut |_| {}, &CancelToken::new()).unwrap();
     let body: serde_json::Value = serde_json::from_str(&transport.bodies.borrow()[0]).unwrap();
     let assistant = &body["messages"][2];
     assert_eq!(assistant["role"], "assistant");
@@ -292,7 +292,7 @@ fn streams_text_and_maps_final_chunk_usage() {
     let provider = provider_with(vec![Ok("text_simple")]);
     let mut events = vec![];
     let msg = provider
-        .stream(&sample_request(), &mut |e| events.push(e))
+        .stream(&sample_request(), &mut |e| events.push(e), &CancelToken::new())
         .unwrap();
 
     assert_eq!(
@@ -321,7 +321,7 @@ fn assembles_arguments_fragmented_across_chunks() {
     let provider = provider_with(vec![Ok("tool_fragmented")]);
     let mut events = vec![];
     let msg = provider
-        .stream(&sample_request(), &mut |e| events.push(e))
+        .stream(&sample_request(), &mut |e| events.push(e), &CancelToken::new())
         .unwrap();
 
     assert_eq!(msg.stop_reason, Some(StopReason::ToolUse));
@@ -342,7 +342,7 @@ fn assembles_parallel_tool_calls() {
     let provider = provider_with(vec![Ok("tool_parallel")]);
     let mut events = vec![];
     let msg = provider
-        .stream(&sample_request(), &mut |e| events.push(e))
+        .stream(&sample_request(), &mut |e| events.push(e), &CancelToken::new())
         .unwrap();
 
     assert_eq!(msg.stop_reason, Some(StopReason::ToolUse));
@@ -376,7 +376,7 @@ fn assembles_parallel_tool_calls() {
 #[test]
 fn content_filter_maps_to_refusal() {
     let provider = provider_with(vec![Ok("content_filter")]);
-    let msg = provider.stream(&sample_request(), &mut |_| {}).unwrap();
+    let msg = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
     assert_eq!(msg.stop_reason, Some(StopReason::Refusal));
     assert!(msg.stop_details.is_none()); // no details on this wire
 }
@@ -390,7 +390,7 @@ fn refusal_deltas_map_to_refusal_with_explanation() {
     let provider = provider_with(vec![Ok("refusal_delta")]);
     let mut events = vec![];
     let msg = provider
-        .stream(&sample_request(), &mut |e| events.push(e))
+        .stream(&sample_request(), &mut |e| events.push(e), &CancelToken::new())
         .unwrap();
     assert_eq!(msg.stop_reason, Some(StopReason::Refusal));
     let details = msg.stop_details.expect("refusal carries details");
@@ -407,14 +407,14 @@ fn refusal_deltas_map_to_refusal_with_explanation() {
 #[test]
 fn length_maps_to_max_tokens() {
     let provider = provider_with(vec![Ok("length_stop")]);
-    let msg = provider.stream(&sample_request(), &mut |_| {}).unwrap();
+    let msg = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
     assert_eq!(msg.stop_reason, Some(StopReason::MaxTokens));
 }
 
 #[test]
 fn midstream_error_envelope_becomes_api_error() {
     let provider = provider_with(vec![Ok("error_midstream")]);
-    let err = provider.stream(&sample_request(), &mut |_| {}).unwrap_err();
+    let err = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap_err();
     match err {
         ProviderError::Api { status, kind, message } => {
             assert_eq!(status, 200);
@@ -428,7 +428,7 @@ fn midstream_error_envelope_becomes_api_error() {
 #[test]
 fn done_only_stream_is_incomplete() {
     let provider = provider_with(vec![Ok("empty_stream")]);
-    let err = provider.stream(&sample_request(), &mut |_| {}).unwrap_err();
+    let err = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap_err();
     assert!(matches!(err, ProviderError::Incomplete));
 }
 
@@ -446,7 +446,7 @@ fn retries_429_with_retry_after_then_succeeds() {
         ],
         None,
     );
-    let msg = provider.stream(&sample_request(), &mut |_| {}).unwrap();
+    let msg = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
     assert_eq!(msg.stop_reason, Some(StopReason::EndTurn));
     assert_eq!(transport.bodies.borrow().len(), 2); // exactly one retry
 }
@@ -462,7 +462,7 @@ fn http_error_envelope_parsed_not_retried() {
         })],
         None,
     );
-    let err = provider.stream(&sample_request(), &mut |_| {}).unwrap_err();
+    let err = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap_err();
     match err {
         ProviderError::Api { status, kind, message } => {
             assert_eq!(status, 400);
@@ -488,7 +488,7 @@ fn bare_string_error_body_tolerated() {
         vec![Err(overloaded()), Err(overloaded()), Err(overloaded())],
         None,
     );
-    let err = provider.stream(&sample_request(), &mut |_| {}).unwrap_err();
+    let err = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap_err();
     match err {
         ProviderError::Api { status, kind, message } => {
             assert_eq!(status, 500);
@@ -504,7 +504,7 @@ fn bare_string_error_body_tolerated() {
 #[test]
 fn quirk_absent_usage_stays_none_never_zero() {
     let provider = provider_with(vec![Ok("quirk_no_usage")]);
-    let msg = provider.stream(&sample_request(), &mut |_| {}).unwrap();
+    let msg = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
     assert_eq!(
         msg.content,
         vec![ContentBlock::Text { text: "Local hello.".into() }]
@@ -518,7 +518,7 @@ fn quirk_absent_usage_stays_none_never_zero() {
 #[test]
 fn quirk_absent_tool_call_id_is_synthesized() {
     let provider = provider_with(vec![Ok("quirk_no_ids")]);
-    let msg = provider.stream(&sample_request(), &mut |_| {}).unwrap();
+    let msg = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
     assert_eq!(msg.stop_reason, Some(StopReason::ToolUse));
     match &msg.content[0] {
         ContentBlock::ToolUse { id, name, input, .. } => {
@@ -535,7 +535,7 @@ fn quirk_whole_call_in_one_chunk_without_index() {
     let mut events = vec![];
     let provider = provider_with(vec![Ok("quirk_whole_call")]);
     let msg = provider
-        .stream(&sample_request(), &mut |e| events.push(e))
+        .stream(&sample_request(), &mut |e| events.push(e), &CancelToken::new())
         .unwrap();
     assert_eq!(msg.stop_reason, Some(StopReason::ToolUse));
     assert_eq!(events, vec![StreamEvent::ToolUseStarted { name: "bash".into() }]);
@@ -554,7 +554,7 @@ fn truncated_tool_arguments_preserved_as_input_raw() {
     // Arguments cut off by finish_reason "length": input stays {}, and the
     // raw fragment the model actually emitted survives as input_raw.
     let provider = provider_with(vec![Ok("tool_truncated_args")]);
-    let msg = provider.stream(&sample_request(), &mut |_| {}).unwrap();
+    let msg = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
     assert_eq!(msg.stop_reason, Some(StopReason::MaxTokens));
     match &msg.content[0] {
         ContentBlock::ToolUse {
@@ -603,7 +603,7 @@ fn input_raw_never_reaches_the_wire() {
                 }],
             },
         ];
-        provider.stream(&req, &mut |_| {}).unwrap();
+        provider.stream(&req, &mut |_| {}, &CancelToken::new()).unwrap();
         let body = transport.bodies.borrow()[0].clone();
         body
     };
@@ -617,7 +617,7 @@ fn input_raw_never_reaches_the_wire() {
 #[test]
 fn quirk_repeated_role_deltas_and_detailless_usage() {
     let provider = provider_with(vec![Ok("quirk_role_deltas")]);
-    let msg = provider.stream(&sample_request(), &mut |_| {}).unwrap();
+    let msg = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
     assert_eq!(
         msg.content,
         vec![ContentBlock::Text { text: "ok computer".into() }]
@@ -673,5 +673,170 @@ fn agent_turn_round_trips_tool_calls_as_tool_messages() {
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(args).unwrap(),
         serde_json::json!({"command": "ls /tmp"})
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T6 cancellation (I1): mirror of the Anthropic cancel-seam tests on this
+// wire. Same deterministic throttled-reader technique — no threads, no clock.
+// ---------------------------------------------------------------------------
+
+use std::cell::Cell;
+use std::rc::Rc;
+
+fn fixture_bytes(name: &str) -> Vec<u8> {
+    std::fs::read(format!(
+        "{}/tests/fixtures/openai/{name}.sse",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap()
+}
+
+/// Serves one in-memory SSE body in ≤16-byte reads, setting `token` once
+/// `cancel_at` total bytes have been delivered and recording the total.
+struct CancellingTransport {
+    data: Vec<u8>,
+    cancel_at: u64,
+    token: CancelToken,
+    delivered: Rc<Cell<u64>>,
+}
+
+struct ThrottledReader {
+    data: Vec<u8>,
+    pos: usize,
+    cancel_at: u64,
+    token: CancelToken,
+    delivered: Rc<Cell<u64>>,
+}
+
+impl Read for ThrottledReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = buf.len().min(16).min(self.data.len() - self.pos);
+        buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+        self.pos += n;
+        self.delivered.set(self.delivered.get() + n as u64);
+        if self.delivered.get() >= self.cancel_at {
+            self.token.set();
+        }
+        Ok(n)
+    }
+}
+
+impl Transport for CancellingTransport {
+    fn post_stream(
+        &self,
+        _url: &str,
+        _api_key: &str,
+        _body: &str,
+    ) -> Result<Box<dyn Read>, TransportError> {
+        Ok(Box::new(ThrottledReader {
+            data: self.data.clone(),
+            pos: 0,
+            cancel_at: self.cancel_at,
+            token: self.token.clone(),
+            delivered: self.delivered.clone(),
+        }))
+    }
+}
+
+fn cancelling_provider(
+    fixture: &str,
+    cancel_at: u64,
+) -> (OpenAiCompatProvider, CancelToken, Rc<Cell<u64>>, u64) {
+    let data = fixture_bytes(fixture);
+    let total = data.len() as u64;
+    let token = CancelToken::new();
+    let delivered = Rc::new(Cell::new(0u64));
+    let provider = OpenAiCompatProvider::new(
+        "http://local.test/v1",
+        None,
+        Box::new(CancellingTransport {
+            data,
+            cancel_at,
+            token: token.clone(),
+            delivered: delivered.clone(),
+        }),
+    );
+    (provider, token, delivered, total)
+}
+
+/// Byte offset of `needle` (first occurrence; panics loudly on fixture drift).
+fn find(haystack: &[u8], needle: &[u8]) -> usize {
+    haystack
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .unwrap_or_else(|| panic!("fixture no longer contains {:?}", String::from_utf8_lossy(needle)))
+}
+
+#[test]
+fn cancel_mid_stream_returns_partial_and_stops_reading() {
+    // Cut inside the "Hello," chunk: that chunk is the last one accumulated,
+    // " world!" and the finish chunk never arrive.
+    let data = fixture_bytes("text_simple");
+    let cut = find(&data, b"Hello,") as u64;
+    let (provider, token, delivered, total) = cancelling_provider("text_simple", cut);
+
+    let mut events = vec![];
+    let msg = provider
+        .stream(&sample_request(), &mut |e| events.push(e), &token)
+        .unwrap();
+
+    assert!(msg.stop_reason.is_none(), "finish_reason never arrived");
+    match &msg.content[..] {
+        [ContentBlock::Text { text }] => assert_eq!(text, "Hello,"),
+        other => panic!("unexpected partial content: {other:?}"),
+    }
+    assert_eq!(events, vec![StreamEvent::TextDelta("Hello,".into())]);
+    assert!(
+        delivered.get() < total,
+        "stream fully drained ({} of {total} bytes) despite cancel",
+        delivered.get()
+    );
+}
+
+#[test]
+fn cancel_mid_tool_json_marks_input_raw() {
+    // Cut inside the first argument fragment ("{\"fi"): the call's arguments
+    // never complete, so assembly must attach them as input_raw.
+    let data = fixture_bytes("tool_fragmented");
+    let cut = find(&data, br#"{\"fi"#) as u64;
+    let (provider, token, delivered, total) = cancelling_provider("tool_fragmented", cut);
+
+    let msg = provider
+        .stream(&sample_request(), &mut |_| {}, &token)
+        .unwrap();
+
+    match &msg.content[..] {
+        [ContentBlock::ToolUse {
+            name,
+            input,
+            input_raw,
+            ..
+        }] => {
+            assert_eq!(name, "read");
+            assert_eq!(input, &serde_json::json!({}));
+            assert_eq!(
+                input_raw.as_deref(),
+                Some("{\"fi"),
+                "incomplete tool JSON must be preserved raw"
+            );
+        }
+        other => panic!("unexpected partial content: {other:?}"),
+    }
+    assert!(delivered.get() < total, "stream must not be fully drained");
+}
+
+#[test]
+fn cancel_before_first_frame_is_incomplete_without_posting() {
+    let (provider, transport) = provider_and_transport(vec![Ok("text_simple")], None);
+    let token = CancelToken::new();
+    token.set();
+    let err = provider
+        .stream(&sample_request(), &mut |_| {}, &token)
+        .unwrap_err();
+    assert!(matches!(err, ProviderError::Incomplete), "got {err:?}");
+    assert!(
+        transport.bodies.borrow().is_empty(),
+        "a pre-set token must prevent the POST entirely"
     );
 }
