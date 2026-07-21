@@ -12,6 +12,15 @@ pub const DEFAULT_MAX_TOKENS: u32 = 32_000;
 /// runs died at the old 50 cap with work unfinished. The doom-loop guard
 /// (identical-call detection) is separate and unchanged.
 pub const DEFAULT_MAX_TURN_ITERATIONS: u32 = 400;
+/// Session-file size cap (T5). 4 MiB bounds the load-time peak on a 32-bit
+/// box — parsing JSON costs roughly 3–4x the file size in transient
+/// allocations — and a bigger cap buys nothing: what makes a resumed session
+/// useful is the recent history, not the whole of it.
+pub const DEFAULT_SESSION_MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// Below this a cap cannot hold a realistic exchange (one tool result can be
+/// tens of KiB), so every save would trim to nothing. A smaller value is a
+/// configuration mistake, reported at startup rather than at save time.
+pub const MIN_SESSION_MAX_BYTES: u64 = 64 * 1024;
 
 /// Loaded from ~/.config/temur/config.json (or $XDG_CONFIG_HOME).
 /// Unknown fields are tolerated so old binaries accept newer configs.
@@ -49,6 +58,15 @@ pub struct Config {
     /// context_window or anything else; any other value is a startup
     /// config error.
     pub prompt_profile: Option<String>,
+    /// Directory holding saved sessions (T5). `None` = the default state
+    /// location, `$XDG_STATE_HOME/temur/sessions` falling back to
+    /// `~/.local/state/temur/sessions`. A directory override and nothing
+    /// more: filenames are derived from the working directory.
+    pub sessions_dir: Option<String>,
+    /// Size cap for a session FILE in bytes. `None` =
+    /// [`DEFAULT_SESSION_MAX_BYTES`]. Over the cap the oldest exchanges are
+    /// dropped from the file; the in-memory history is never touched.
+    pub session_max_bytes: Option<u64>,
     /// Settings for `provider: "openai-compat"`; ignored otherwise.
     pub openai_compat: Option<OpenAiCompatConfig>,
 }
@@ -100,6 +118,8 @@ impl Default for Config {
             skills_dir: None,
             max_turn_iterations: DEFAULT_MAX_TURN_ITERATIONS,
             prompt_profile: None,
+            sessions_dir: None,
+            session_max_bytes: None,
             openai_compat: None,
         }
     }
@@ -118,6 +138,19 @@ impl Config {
             Some("compact") => Ok(crate::tools::PromptProfile::Compact),
             Some(other) => Err(crate::error::Error::Config(format!(
                 "unknown prompt_profile {other:?} (expected \"full\" or \"compact\")"
+            ))),
+        }
+    }
+
+    /// Resolve the session file size cap, rejecting a uselessly small value at
+    /// startup instead of trimming every save to nothing (same
+    /// validated-accessor shape as [`Config::prompt_profile`]).
+    pub fn session_max_bytes(&self) -> Result<u64, crate::error::Error> {
+        match self.session_max_bytes {
+            None => Ok(DEFAULT_SESSION_MAX_BYTES),
+            Some(v) if v >= MIN_SESSION_MAX_BYTES => Ok(v),
+            Some(v) => Err(crate::error::Error::Config(format!(
+                "session_max_bytes {v} is below the {MIN_SESSION_MAX_BYTES}-byte minimum"
             ))),
         }
     }
@@ -210,6 +243,30 @@ mod tests {
         assert!(c.system_prompt.is_none());
         assert!(c.skills_dir.is_none());
         assert_eq!(c.max_turn_iterations, DEFAULT_MAX_TURN_ITERATIONS);
+        assert!(c.sessions_dir.is_none());
+        assert!(c.session_max_bytes.is_none());
+        assert_eq!(c.session_max_bytes().unwrap(), DEFAULT_SESSION_MAX_BYTES);
+    }
+
+    #[test]
+    fn session_settings_parse_and_validate() {
+        let c: Config = serde_json::from_str(
+            r#"{"sessions_dir":"/var/lib/temur","session_max_bytes":1048576}"#,
+        )
+        .unwrap();
+        assert_eq!(c.sessions_dir.as_deref(), Some("/var/lib/temur"));
+        assert_eq!(c.session_max_bytes().unwrap(), 1_048_576);
+        // Absent = the default cap, not zero.
+        let c: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(c.session_max_bytes().unwrap(), DEFAULT_SESSION_MAX_BYTES);
+        // Below the floor is a startup error naming the floor, never a silent
+        // clamp — a cap that trims every save to nothing is a mistake.
+        let c: Config = serde_json::from_str(r#"{"session_max_bytes":1024}"#).unwrap();
+        let err = c.session_max_bytes().unwrap_err().to_string();
+        assert!(
+            err.contains(&MIN_SESSION_MAX_BYTES.to_string()) && err.contains("1024"),
+            "error names the value and the floor: {err}"
+        );
     }
 
     #[test]

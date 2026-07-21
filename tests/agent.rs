@@ -522,3 +522,231 @@ fn max_tokens_notice_and_history_kept() {
     )));
     assert_eq!(session.history().len(), 2); // truncated output IS kept
 }
+
+// ------------------------------------------------------- T5 resume seam
+
+use temur::session_store::{self as store, SessionFile, FORMAT_VERSION};
+
+/// Same harness as `session_with`, but the session is rebuilt from a saved
+/// seed instead of started empty.
+fn resumed_with(
+    dir: &std::path::Path,
+    file: SessionFile,
+    responses: Vec<ResponseMessage>,
+) -> (Session, Rc<RefCell<Vec<ChatRequest>>>, Vec<String>) {
+    let requests = Rc::new(RefCell::new(vec![]));
+    let provider = MockProvider {
+        responses: RefCell::new(responses),
+        requests: requests.clone(),
+    };
+    let cfg = SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens: 32_000,
+        system: Some("test system".into()),
+        thinking: false,
+        cwd: dir.to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+    };
+    let (seed, notices) = store::prepare_seed(file);
+    (
+        Session::resume(Box::new(provider), Registry::standard(), cfg, seed),
+        requests,
+        notices,
+    )
+}
+
+fn saved(history: Vec<RequestMessage>, todos: Vec<temur::tools::TodoItem>) -> SessionFile {
+    SessionFile {
+        version: FORMAT_VERSION,
+        provider: "anthropic".into(),
+        model: "claude-sonnet-5".into(),
+        cwd: "/work".into(),
+        history,
+        session_usage: Usage {
+            input_tokens: Some(1000),
+            output_tokens: Some(200),
+            ..Default::default()
+        },
+        todos,
+        last_context_used: Some(1200),
+    }
+}
+
+fn user_msg(t: &str) -> RequestMessage {
+    RequestMessage {
+        role: Role::User,
+        content: vec![text(t)],
+    }
+}
+
+fn assistant_msg(content: Vec<ContentBlock>) -> RequestMessage {
+    RequestMessage {
+        role: Role::Assistant,
+        content,
+    }
+}
+
+#[test]
+fn resumed_history_is_replayed_ahead_of_the_new_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = saved(
+        vec![
+            user_msg("what is in a.txt?"),
+            assistant_msg(vec![text("it says hello")]),
+        ],
+        vec![],
+    );
+    let (mut session, requests, _) = resumed_with(
+        dir.path(),
+        file,
+        vec![msg(vec![text("and b.txt says world")], StopReason::EndTurn)],
+    );
+    collect_events(&mut session, "and b.txt?");
+
+    let reqs = requests.borrow();
+    assert_eq!(reqs.len(), 1);
+    let sent = &reqs[0].messages;
+    // The seeded exchange goes out ahead of the new prompt, in order.
+    assert_eq!(sent.len(), 3);
+    assert_eq!(sent[0], user_msg("what is in a.txt?"));
+    assert_eq!(sent[1], assistant_msg(vec![text("it says hello")]));
+    assert_eq!(sent[2], user_msg("and b.txt?"));
+
+    // Accumulated usage continues from the saved totals rather than restarting.
+    assert_eq!(session.snapshot().session_usage.input_tokens, Some(1010));
+    assert_eq!(session.snapshot().last_context_used, Some(15));
+}
+
+#[test]
+fn resume_drops_a_trailing_unanswered_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    // The provider-error shape: the prompt was saved, the answer never came.
+    let file = saved(
+        vec![
+            user_msg("first"),
+            assistant_msg(vec![text("ok")]),
+            user_msg("this one errored out"),
+        ],
+        vec![],
+    );
+    let (mut session, requests, notices) = resumed_with(
+        dir.path(),
+        file,
+        vec![msg(vec![text("fine")], StopReason::EndTurn)],
+    );
+    assert!(notices.iter().any(|n| n.contains("never answered")), "{notices:?}");
+    collect_events(&mut session, "try again");
+
+    let reqs = requests.borrow();
+    let sent = &reqs[0].messages;
+    assert_eq!(sent.len(), 3, "stale prompt must not be replayed: {sent:?}");
+    assert_eq!(sent[2], user_msg("try again"));
+    assert!(!sent.iter().any(|m| m == &user_msg("this one errored out")));
+}
+
+#[test]
+fn resume_keeps_a_trailing_tool_result_message() {
+    let dir = tempfile::tempdir().unwrap();
+    // A guard-stopped turn ends exactly like this: results delivered, no
+    // assistant reply. It is factual and wire-valid, so it is kept.
+    let file = saved(
+        vec![
+            user_msg("read it"),
+            assistant_msg(vec![tool_use("t1", "read", serde_json::json!({}))]),
+            RequestMessage {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "file body".into(),
+                    is_error: false,
+                }],
+            },
+        ],
+        vec![],
+    );
+    let (mut session, requests, notices) = resumed_with(
+        dir.path(),
+        file,
+        vec![msg(vec![text("got it")], StopReason::EndTurn)],
+    );
+    assert!(!notices.iter().any(|n| n.contains("never answered")), "{notices:?}");
+    collect_events(&mut session, "continue");
+
+    let reqs = requests.borrow();
+    let sent = &reqs[0].messages;
+    assert_eq!(sent.len(), 4);
+    assert!(matches!(
+        sent[2].content[0],
+        ContentBlock::ToolResult { .. }
+    ));
+}
+
+#[test]
+fn seeded_todos_are_visible_to_the_todoread_tool() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = saved(
+        vec![user_msg("plan the work"), assistant_msg(vec![text("planned")])],
+        vec![temur::tools::TodoItem {
+            id: Some("1".into()),
+            content: "finish the migration".into(),
+            status: "in_progress".into(),
+        }],
+    );
+    let (mut session, _requests, _) = resumed_with(
+        dir.path(),
+        file,
+        vec![
+            msg(
+                vec![tool_use("t1", "todoread", serde_json::json!({}))],
+                StopReason::ToolUse,
+            ),
+            msg(vec![text("one task still open")], StopReason::EndTurn),
+        ],
+    );
+    collect_events(&mut session, "what is left?");
+
+    // The tool result the model saw must contain the restored todo.
+    let result = session
+        .history()
+        .iter()
+        .flat_map(|m| &m.content)
+        .find_map(|b| match b {
+            ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .expect("a todoread tool_result");
+    assert!(
+        result.contains("finish the migration"),
+        "seeded todos lost: {result}"
+    );
+}
+
+#[test]
+fn snapshot_reports_exactly_what_gets_persisted() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![
+            msg(
+                vec![tool_use(
+                    "t1",
+                    "todowrite",
+                    serde_json::json!({"todos": [{"content": "a task", "status": "pending"}]}),
+                )],
+                StopReason::ToolUse,
+            ),
+            msg(vec![text("noted")], StopReason::EndTurn),
+        ],
+    );
+    collect_events(&mut session, "add a task");
+
+    let snap = session.snapshot();
+    assert_eq!(snap.history.len(), session.history().len());
+    assert_eq!(snap.todos.len(), 1);
+    assert_eq!(snap.todos[0].content, "a task");
+    assert_eq!(snap.session_usage.input_tokens, Some(20)); // two round-trips
+    assert_eq!(snap.last_context_used, Some(15));
+}

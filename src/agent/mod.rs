@@ -7,7 +7,8 @@ pub mod recover;
 use crate::provider::{
     ChatRequest, ContentBlock, Provider, ProviderError, RequestMessage, Role, StopReason, Usage,
 };
-use crate::tools::{Registry, ToolCtx};
+use crate::session_store::SessionSeed;
+use crate::tools::{Registry, TodoItem, ToolCtx};
 use events::AgentEvent;
 
 /// Mirrors OpenCode's doom-loop threshold: N identical consecutive tool
@@ -82,6 +83,18 @@ pub struct Session {
     context_warned: bool,
 }
 
+/// Everything a session persists, borrowed. ONE method
+/// ([`Session::snapshot`]) defines what survives a restart, and it lives here
+/// next to the private state it reads — so adding state to `Session` puts the
+/// question "does this belong in a saved session?" in front of whoever adds
+/// it, instead of leaving it to a distant serializer to notice.
+pub struct SessionSnapshot<'a> {
+    pub history: &'a [RequestMessage],
+    pub session_usage: Usage,
+    pub todos: &'a [TodoItem],
+    pub last_context_used: Option<u64>,
+}
+
 impl Session {
     pub fn new(provider: Box<dyn Provider>, registry: Registry, cfg: SessionConfig) -> Self {
         let tool_ctx = ToolCtx::new(cfg.cwd.clone());
@@ -97,8 +110,47 @@ impl Session {
         }
     }
 
+    /// Rebuild a session from a saved seed. Mirrors [`Session::new`] — same
+    /// provider, registry, and config path — and differs only in the state it
+    /// starts from. Infallible by construction: every decision about what is
+    /// safe to replay was already made in `session_store::prepare_seed`.
+    ///
+    /// `context_warned` is deliberately NOT seeded: the context pre-warning is
+    /// once per process, and a fresh process that is about to overflow should
+    /// say so again.
+    pub fn resume(
+        provider: Box<dyn Provider>,
+        registry: Registry,
+        cfg: SessionConfig,
+        seed: SessionSeed,
+    ) -> Self {
+        let mut tool_ctx = ToolCtx::new(cfg.cwd.clone());
+        tool_ctx.todos = seed.todos;
+        Session {
+            provider,
+            registry,
+            tool_ctx,
+            cfg,
+            history: seed.history,
+            session_usage: seed.session_usage,
+            last_context_used: seed.last_context_used,
+            context_warned: false,
+        }
+    }
+
     pub fn history(&self) -> &[RequestMessage] {
         &self.history
+    }
+
+    /// The persistable view of this session. Borrowed throughout: saving a
+    /// multi-megabyte history must not clone it.
+    pub fn snapshot(&self) -> SessionSnapshot<'_> {
+        SessionSnapshot {
+            history: &self.history,
+            session_usage: self.session_usage,
+            todos: &self.tool_ctx.todos,
+            last_context_used: self.last_context_used,
+        }
     }
 
     /// Run one user turn to completion (which may involve many provider

@@ -3,6 +3,7 @@ pub mod config;
 pub mod error;
 pub mod provider;
 pub mod secret;
+pub mod session_store;
 pub mod skills;
 pub mod tools;
 pub mod ui;

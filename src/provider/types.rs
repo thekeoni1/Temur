@@ -2,9 +2,14 @@
 //!
 //! Every provider converts these to/from its own wire shapes at its own
 //! boundary (`anthropic::types` holds the Anthropic side). The serde derives
-//! here exist for temur's OWN use only — e.g. future session persistence
-//! (T5) — they are NOT a wire format, and no provider may put them on the
-//! network directly.
+//! here exist for temur's OWN use only — session persistence (T5,
+//! `crate::session_store`) is the consumer — they are NOT a wire format, and
+//! no provider may put them on the network directly.
+//!
+//! T5 note on round-tripping: no schema change was needed to persist these.
+//! The `skip_serializing_if` attributes below only elide `None`/`false`, so a
+//! populated `input_raw` (or a `Thinking` signature) survives
+//! serialize→deserialize unchanged; an absent one comes back absent.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -125,7 +130,7 @@ impl Usage {
 }
 
 /// One turn in the conversation history (request side).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RequestMessage {
     pub role: Role,
     pub content: Vec<ContentBlock>,

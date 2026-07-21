@@ -12,4 +12,6 @@ pub enum Error {
     Tls(String),
     #[error("secret: {0}")]
     Secret(String),
+    #[error("session: {0}")]
+    Session(String),
 }
