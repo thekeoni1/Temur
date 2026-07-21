@@ -346,3 +346,286 @@ fn bash_with_preset_token_aborts_immediately() {
     );
     assert!(err.to_string().contains("(interrupted by user)"));
 }
+
+// ----------------------------------------------------------- T6 (E2): fuzzy
+
+/// MUST-HOLD pin: when an exact match exists, the fuzzy pipeline is never
+/// consulted and the output is byte-identical to v1 (no matcher marker).
+#[test]
+fn edit_exact_path_output_is_byte_identical_to_v1() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("e.txt");
+    std::fs::write(&f, "a foo b").unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+
+    let out = run(&reg, &mut ctx, "edit", json!({
+        "filePath": f.to_str().unwrap(), "oldString": "foo", "newString": "bar"
+    }))
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "a bar b");
+    assert_eq!(
+        out.output,
+        format!("Edited {} (1 replacement(s))", f.display()),
+        "the exact path must not grow a marker"
+    );
+}
+
+#[test]
+fn edit_fuzzy_fallback_matrix() {
+    struct Case {
+        name: &'static str,
+        initial: &'static str,
+        old: &'static str,
+        new: &'static str,
+        replace_all: bool,
+        // Ok: (final file content, output must contain). Err: message must
+        // contain — and the file must be untouched.
+        expect: Result<(&'static str, &'static str), &'static str>,
+    }
+    let cases = [
+        Case {
+            name: "line_edge_whitespace_forgiven_new_spliced_verbatim",
+            initial: "fn main() {\n\tlet x = 1;\n}\n",
+            old: "    let x = 1;",
+            new: "    let y = 2;",
+            replace_all: false,
+            expect: Ok(("fn main() {\n    let y = 2;\n}\n", "whitespace-tolerant match")),
+        },
+        Case {
+            name: "interior_tab_vs_space_stays_not_found",
+            initial: "x\nfoo\tbar\ny\n",
+            old: "foo bar",
+            new: "z",
+            replace_all: false,
+            expect: Err("not found in the file, even with whitespace-tolerant"),
+        },
+        Case {
+            name: "crlf_file_lf_old_new_converted_rest_untouched",
+            initial: "a\r\nfoo\r\nb\r\n",
+            old: " foo",
+            new: "bar",
+            replace_all: false,
+            expect: Ok(("a\r\nbar\r\nb\r\n", "whitespace-tolerant match")),
+        },
+        Case {
+            name: "crlf_multiline_new_string_converted",
+            initial: "a\r\nfoo\r\nb\r\n",
+            old: "  foo",
+            new: "x\ny",
+            replace_all: false,
+            expect: Ok(("a\r\nx\r\ny\r\nb\r\n", "whitespace-tolerant match")),
+        },
+        Case {
+            name: "trailing_newline_old_no_doubled_newline",
+            initial: "x\na\nb\nc\n",
+            old: " a\nb\n",
+            new: "Q\n",
+            replace_all: false,
+            expect: Ok(("x\nQ\nc\n", "whitespace-tolerant match")),
+        },
+        Case {
+            name: "eof_without_trailing_newline",
+            initial: "a\nfoo",
+            old: "  foo",
+            new: "bar",
+            replace_all: false,
+            expect: Ok(("a\nbar", "whitespace-tolerant match")),
+        },
+        Case {
+            name: "file_trailing_newline_preserved",
+            initial: "a\nfoo\n",
+            old: "  foo",
+            new: "bar",
+            replace_all: false,
+            expect: Ok(("a\nbar\n", "whitespace-tolerant match")),
+        },
+        Case {
+            name: "match_at_file_start",
+            initial: "a\nb",
+            old: "  a",
+            new: "A",
+            replace_all: false,
+            expect: Ok(("A\nb", "whitespace-tolerant match")),
+        },
+        Case {
+            name: "unicode_content_correct_splice",
+            initial: "α\n\tβγ\nδ\n",
+            old: " βγ",
+            new: "χ",
+            replace_all: false,
+            expect: Ok(("α\nχ\nδ\n", "whitespace-tolerant match")),
+        },
+        Case {
+            name: "exact_twice_keeps_v1_error_fuzzy_not_consulted",
+            initial: "foo foo",
+            old: "foo",
+            new: "b",
+            replace_all: false,
+            expect: Err("appears 2 times"),
+        },
+        Case {
+            name: "replace_all_with_fuzzy_only_match_errors",
+            initial: "a\n\tfoo\n",
+            old: "  foo",
+            new: "b",
+            replace_all: true,
+            expect: Err("replaceAll requires an exact match"),
+        },
+        Case {
+            name: "fuzzy_ambiguous_demands_more_context",
+            initial: "a\nx\na\n",
+            old: " a",
+            new: "b",
+            replace_all: false,
+            expect: Err("matched 2 locations approximately"),
+        },
+        Case {
+            name: "two_line_old_skips_block_anchor",
+            initial: "start X\nend Y\n",
+            old: "start X mangled\nend Y",
+            new: "z",
+            replace_all: false,
+            expect: Err("not found in the file, even with whitespace-tolerant"),
+        },
+        Case {
+            name: "block_anchor_mangled_middle_accepted_and_marked",
+            initial: "fn f() {\n  actual_body();\n}\n",
+            old: "fn f() {\n  imagined_body();\n}",
+            new: "fn f() {\n  new_body();\n}",
+            replace_all: false,
+            expect: Ok((
+                "fn f() {\n  new_body();\n}\n",
+                "block-anchor match — oldString differed from the file; re-read",
+            )),
+        },
+        Case {
+            name: "block_anchor_actual_block_longer_than_search",
+            initial: "s\nm1\nm2\ne\n",
+            old: "s\nm\ne",
+            new: "R",
+            replace_all: false,
+            expect: Ok(("R\n", "block-anchor match")),
+        },
+        Case {
+            name: "block_anchor_actual_block_shorter_than_search",
+            initial: "s\nm\ne\n",
+            old: "s\na\nb\nc\ne",
+            new: "R",
+            replace_all: false,
+            expect: Ok(("R\n", "block-anchor match")),
+        },
+        Case {
+            name: "same_anchor_pair_twice_is_ambiguous",
+            initial: "s\nm\ne\ns\nz\ne\n",
+            old: "s\nq\ne",
+            new: "R",
+            replace_all: false,
+            expect: Err("matched 2 locations approximately"),
+        },
+        Case {
+            name: "old_with_more_lines_than_file_no_panic",
+            initial: "a\nb",
+            old: "a\nb\nc\nd\ne",
+            new: "z",
+            replace_all: false,
+            expect: Err("not found in the file, even with whitespace-tolerant"),
+        },
+    ];
+
+    let reg = Registry::standard();
+    for c in &cases {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("t.txt");
+        std::fs::write(&f, c.initial).unwrap();
+        let mut ctx = ctx_in(dir.path());
+        let res = run(&reg, &mut ctx, "edit", json!({
+            "filePath": f.to_str().unwrap(),
+            "oldString": c.old,
+            "newString": c.new,
+            "replaceAll": c.replace_all,
+        }));
+        match (&c.expect, res) {
+            (Ok((want, marker)), Ok(out)) => {
+                assert_eq!(
+                    std::fs::read_to_string(&f).unwrap(),
+                    *want,
+                    "final content mismatch in {}",
+                    c.name
+                );
+                assert!(
+                    out.output.contains(marker),
+                    "{}: output {:?} missing {marker:?}",
+                    c.name,
+                    out.output
+                );
+            }
+            (Err(want), Err(e)) => {
+                assert!(
+                    e.to_string().contains(want),
+                    "{}: error {:?} missing {want:?}",
+                    c.name,
+                    e.to_string()
+                );
+                assert_eq!(
+                    std::fs::read_to_string(&f).unwrap(),
+                    c.initial,
+                    "{}: file must be untouched on error",
+                    c.name
+                );
+            }
+            (want, got) => panic!(
+                "{}: expectation mismatch (want {:?}) got Ok={}",
+                c.name,
+                want.as_ref().map(|(w, m)| (w, m)),
+                got.is_ok()
+            ),
+        }
+    }
+}
+
+/// Invalid inputs stay invalid (unchanged from v1) and touch nothing.
+#[test]
+fn edit_invalid_inputs_unchanged_by_fuzzy() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("t.txt");
+    std::fs::write(&f, "content\n").unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let fp = f.to_str().unwrap();
+
+    let err = run(&reg, &mut ctx, "edit", json!({
+        "filePath": fp, "oldString": "", "newString": "x"
+    }))
+    .unwrap_err();
+    assert!(err.to_string().contains("must not be empty"));
+
+    let err = run(&reg, &mut ctx, "edit", json!({
+        "filePath": fp, "oldString": "same", "newString": "same"
+    }))
+    .unwrap_err();
+    assert!(err.to_string().contains("must be different"));
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "content\n");
+}
+
+/// A fuzzy edit is not re-appliable: once applied, the same oldString no
+/// longer matches anything — no silent double apply.
+#[test]
+fn edit_fuzzy_is_not_idempotently_reapplied() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("t.txt");
+    std::fs::write(&f, "fn main() {\n\tlet x = 1;\n}\n").unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let input = json!({
+        "filePath": f.to_str().unwrap(),
+        "oldString": "    let x = 1;",
+        "newString": "    let y = 2;"
+    });
+
+    run(&reg, &mut ctx, "edit", input.clone()).unwrap();
+    let after_first = std::fs::read_to_string(&f).unwrap();
+    let err = run(&reg, &mut ctx, "edit", input).unwrap_err();
+    assert!(err.to_string().contains("not found"));
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), after_first);
+}

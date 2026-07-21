@@ -1,6 +1,10 @@
-//! v1 edit semantics (exact unique match, or `replaceAll`). The fuzzy
-//! fallbacks live in [`matchers`] as pure functions; they are wired in by
-//! T6 phase E2 — until then this module's behavior is byte-identical to v1.
+//! Edit semantics: EXACT match first — a unique exact match (or
+//! `replaceAll`) behaves byte-identically to v1. Only when an exact search
+//! finds NOTHING (and `replaceAll` is off) are the fuzzy fallbacks in
+//! [`matchers`] consulted: line-trimmed, then block-anchor, each erroring
+//! on ambiguity rather than guessing. Fuzzy successes are marked in the
+//! output so they are never mistaken for exact edits; the tool prompt
+//! still demands exactness — the fallback is a net, not an invitation.
 
 pub mod matchers;
 
@@ -60,9 +64,7 @@ impl Tool for EditTool {
             .map_err(|_| ToolError::failed(format!("File not found: {}", path.display())))?;
         let matches = content.matches(&p.old_string).count();
         if matches == 0 {
-            return Err(ToolError::failed(
-                "oldString was not found in the file. Make sure it matches exactly, including whitespace and indentation.",
-            ));
+            return self.execute_fuzzy(&p, &path, &content);
         }
         if matches > 1 && !p.replace_all {
             return Err(ToolError::failed(format!(
@@ -81,3 +83,60 @@ impl Tool for EditTool {
         })
     }
 }
+
+impl EditTool {
+    /// The exact search found nothing — consult the fuzzy pipeline (T6).
+    /// `replaceAll` never edits fuzzily (a fuzzy replace-all is incoherent);
+    /// it only borrows the pipeline to word its error precisely.
+    fn execute_fuzzy(
+        &self,
+        p: &Params,
+        path: &std::path::Path,
+        content: &str,
+    ) -> Result<ToolOutput, ToolError> {
+        let result = matchers::fuzzy_match(content, &p.old_string);
+        if p.replace_all {
+            return Err(match result {
+                matchers::FuzzyResult::NoMatch => ToolError::failed(NOT_FOUND_MSG),
+                _ => ToolError::failed(
+                    "replaceAll requires an exact match. Re-read the file and copy the text exactly, or make individual edits without replaceAll.",
+                ),
+            });
+        }
+        match result {
+            matchers::FuzzyResult::NoMatch => Err(ToolError::failed(NOT_FOUND_MSG)),
+            matchers::FuzzyResult::Ambiguous { count } => Err(ToolError::failed(format!(
+                "oldString matched {count} locations approximately (whitespace-tolerant). Provide more surrounding lines to make the match unique."
+            ))),
+            matchers::FuzzyResult::Unique { range, matcher } => {
+                // Splice over the ORIGINAL byte range; on a CRLF file the
+                // (typically LF-shaped) replacement is converted so the
+                // untouched regions and the new block agree.
+                let replacement = if matchers::is_crlf(content) {
+                    matchers::to_crlf(&p.new_string)
+                } else {
+                    p.new_string.clone()
+                };
+                let mut new_content =
+                    String::with_capacity(content.len() + replacement.len());
+                new_content.push_str(&content[..range.start]);
+                new_content.push_str(&replacement);
+                new_content.push_str(&content[range.end..]);
+                std::fs::write(path, new_content)
+                    .map_err(|e| ToolError::failed(e.to_string()))?;
+                let note = match matcher {
+                    matchers::Matcher::LineTrimmed => "whitespace-tolerant match",
+                    matchers::Matcher::BlockAnchor => {
+                        "block-anchor match — oldString differed from the file; re-read before further edits"
+                    }
+                };
+                Ok(ToolOutput {
+                    title: p.file_path.clone(),
+                    output: format!("Edited {} (1 replacement(s), {note})", path.display()),
+                })
+            }
+        }
+    }
+}
+
+const NOT_FOUND_MSG: &str = "oldString was not found in the file, even with whitespace-tolerant matching. Re-read the file and copy the text exactly.";
