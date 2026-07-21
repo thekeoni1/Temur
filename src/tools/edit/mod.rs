@@ -1,5 +1,8 @@
-//! v1 edit semantics (deliberately simpler than OpenCode's fuzzy fallbacks):
-//! exact unique match, or `replaceAll`.
+//! v1 edit semantics (exact unique match, or `replaceAll`). The fuzzy
+//! fallbacks live in [`matchers`] as pure functions; they are wired in by
+//! T6 phase E2 — until then this module's behavior is byte-identical to v1.
+
+pub mod matchers;
 
 use super::{parse_input, resolve_path, Tool, ToolCtx, ToolError, ToolOutput};
 use serde::Deserialize;
@@ -24,10 +27,10 @@ impl Tool for EditTool {
         "edit"
     }
     fn description(&self) -> &'static str {
-        include_str!("prompts/edit.txt")
+        include_str!("../prompts/edit.txt")
     }
     fn description_compact(&self) -> &'static str {
-        include_str!("prompts/compact/edit.txt")
+        include_str!("../prompts/compact/edit.txt")
     }
     fn input_schema(&self) -> Value {
         json!({
