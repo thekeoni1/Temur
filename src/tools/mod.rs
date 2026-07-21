@@ -10,6 +10,7 @@ mod skill;
 mod todo;
 mod write;
 
+use crate::cancel::CancelToken;
 use crate::provider::ToolDef;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,11 +27,19 @@ const MAX_OUTPUT_CHARS: usize = 30_000;
 pub struct ToolCtx {
     pub cwd: PathBuf,
     pub todos: Vec<TodoItem>,
+    /// T6 cooperative interruption. Long-running tools (bash) poll it; the
+    /// default is an inert token that is never set, so tools outside a
+    /// session behave exactly as before. The session wires its own token in.
+    pub cancel: CancelToken,
 }
 
 impl ToolCtx {
     pub fn new(cwd: PathBuf) -> Self {
-        ToolCtx { cwd, todos: vec![] }
+        ToolCtx {
+            cwd,
+            todos: vec![],
+            cancel: CancelToken::new(),
+        }
     }
 }
 

@@ -9,6 +9,20 @@ use wait_timeout::ChildExt;
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_TIMEOUT_MS: u64 = 600_000;
 
+/// Kill the child's whole process group (see `process_group(0)` at spawn),
+/// then reap the sh itself. The group kill goes through sh's BUILTIN kill —
+/// a kill *binary* does not exist in minimal images (debian base ships none),
+/// but the builtin is everywhere sh is, and sh is what spawned the child.
+/// Failures are ignored — the direct kill below still ends the sh either way.
+fn kill_group(child: &mut std::process::Child) {
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg(format!("kill -9 -{}", child.id()))
+        .status();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 #[derive(Deserialize)]
 struct Params {
     command: String,
@@ -49,13 +63,22 @@ impl Tool for BashTool {
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| ctx.cwd.clone());
 
-        let mut child = Command::new("sh")
-            .arg("-c")
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
             .arg(&p.command)
             .current_dir(&workdir)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        // Own process group (leader = the sh itself): sh usually FORKS the
+        // command, so killing sh alone orphans it — and the orphan holds the
+        // output pipes open, blocking the drain threads below until it exits
+        // on its own. Kill/timeout paths kill the whole group instead.
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        let mut child = cmd
             .spawn()
             .map_err(|e| ToolError::failed(format!("failed to spawn shell: {e}")))?;
 
@@ -73,15 +96,32 @@ impl Tool for BashTool {
             buf
         });
 
-        let (timed_out, exit_code) = match child
-            .wait_timeout(timeout)
-            .map_err(|e| ToolError::failed(e.to_string()))?
-        {
-            Some(status) => (false, status.code()),
-            None => {
-                let _ = child.kill();
-                let _ = child.wait();
-                (true, None)
+        // Sliced wait (T6): poll the cancel token every ≤200 ms so an Esc
+        // reaches a long-running command promptly. Deadline math in u64
+        // millis, never usize (32-bit target). The timeout semantics are
+        // unchanged: slices sum to exactly the configured deadline.
+        let deadline_ms: u64 = timeout.as_millis() as u64;
+        let mut waited_ms: u64 = 0;
+        let mut interrupted = false;
+        let (timed_out, exit_code) = loop {
+            if ctx.cancel.is_set() {
+                kill_group(&mut child);
+                interrupted = true;
+                break (false, None);
+            }
+            let slice = Duration::from_millis((deadline_ms - waited_ms).min(200));
+            match child
+                .wait_timeout(slice)
+                .map_err(|e| ToolError::failed(e.to_string()))?
+            {
+                Some(status) => break (false, status.code()),
+                None => {
+                    waited_ms += slice.as_millis() as u64;
+                    if waited_ms >= deadline_ms {
+                        kill_group(&mut child);
+                        break (true, None);
+                    }
+                }
             }
         };
 
@@ -97,6 +137,15 @@ impl Tool for BashTool {
                 output.push('\n');
             }
             output.push_str(&stderr);
+        }
+        if interrupted {
+            if !output.is_empty() && !output.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push_str("(interrupted by user)");
+            // An interrupted command is an error result: the model must not
+            // treat whatever partial output exists as the command's outcome.
+            return Err(ToolError::Failed(output));
         }
         if timed_out {
             if !output.is_empty() && !output.ends_with('\n') {

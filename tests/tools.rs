@@ -297,3 +297,52 @@ fn definitions_are_complete_and_ordered() {
         assert_eq!(d.input_schema["type"], "object");
     }
 }
+
+// --------------------------------------------------------------- T6 (I3)
+
+/// Esc reaches a running bash: token set at ~100 ms kills a 30 s sleep and
+/// the result is an error carrying the interruption marker.
+#[test]
+fn bash_interrupted_by_cancel_token_returns_fast() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+
+    let token = ctx.cancel.clone();
+    let setter = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        token.set();
+    });
+
+    let start = std::time::Instant::now();
+    let err = run(&reg, &mut ctx, "bash", json!({"command": "sleep 30"})).unwrap_err();
+    setter.join().unwrap();
+
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "interrupt must land within one poll slice (took {:?})",
+        start.elapsed()
+    );
+    assert!(
+        err.to_string().contains("(interrupted by user)"),
+        "marker missing: {err}"
+    );
+}
+
+/// A token already set when bash starts aborts before any real waiting.
+#[test]
+fn bash_with_preset_token_aborts_immediately() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    ctx.cancel.set();
+
+    let start = std::time::Instant::now();
+    let err = run(&reg, &mut ctx, "bash", json!({"command": "sleep 30"})).unwrap_err();
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(1),
+        "pre-set token must abort at once (took {:?})",
+        start.elapsed()
+    );
+    assert!(err.to_string().contains("(interrupted by user)"));
+}

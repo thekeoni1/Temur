@@ -101,7 +101,10 @@ pub struct SessionSnapshot<'a> {
 
 impl Session {
     pub fn new(provider: Box<dyn Provider>, registry: Registry, cfg: SessionConfig) -> Self {
-        let tool_ctx = ToolCtx::new(cfg.cwd.clone());
+        let cancel = CancelToken::new();
+        let mut tool_ctx = ToolCtx::new(cfg.cwd.clone());
+        // One token per session: an Esc must reach a running bash too.
+        tool_ctx.cancel = cancel.clone();
         Session {
             provider,
             registry,
@@ -111,7 +114,7 @@ impl Session {
             session_usage: Usage::default(),
             last_context_used: None,
             context_warned: false,
-            cancel: CancelToken::new(),
+            cancel,
         }
     }
 
@@ -129,8 +132,10 @@ impl Session {
         cfg: SessionConfig,
         seed: SessionSeed,
     ) -> Self {
+        let cancel = CancelToken::new();
         let mut tool_ctx = ToolCtx::new(cfg.cwd.clone());
         tool_ctx.todos = seed.todos;
+        tool_ctx.cancel = cancel.clone();
         Session {
             provider,
             registry,
@@ -140,7 +145,7 @@ impl Session {
             session_usage: seed.session_usage,
             last_context_used: seed.last_context_used,
             context_warned: false,
-            cancel: CancelToken::new(),
+            cancel,
         }
     }
 

@@ -1093,3 +1093,77 @@ fn stale_token_is_cleared_at_turn_entry() {
     );
     assert_eq!(session.history().len(), 2, "normal completion");
 }
+
+#[test]
+fn interrupt_mid_batch_aborts_running_bash_and_synthesizes_the_rest() {
+    // First call: bash sleeping 30 s. Second call: a write whose side
+    // effect must never appear. The token is set while bash runs — the
+    // running call aborts with the marker, the pending call is synthesized
+    // without executing, and both land in ONE results message.
+    let dir = tempfile::tempdir().unwrap();
+    let side_effect = dir.path().join("must-not-exist.txt");
+    let mut session = interrupt_session(
+        dir.path(),
+        vec![(
+            false,
+            Ok(msg(
+                vec![
+                    tool_use("t1", "bash", serde_json::json!({"command": "sleep 30"})),
+                    tool_use(
+                        "t2",
+                        "write",
+                        serde_json::json!({
+                            "filePath": side_effect.to_str().unwrap(),
+                            "content": "boom"
+                        }),
+                    ),
+                ],
+                StopReason::ToolUse,
+            )),
+        )],
+    );
+
+    let token = session.cancel_token();
+    let setter = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        token.set();
+    });
+    let start = std::time::Instant::now();
+    let events = run_interrupted(&mut session, "go");
+    setter.join().unwrap();
+
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "turn must land promptly (took {:?})",
+        start.elapsed()
+    );
+    assert_eq!(session.history().len(), 3);
+    match &session.history()[2].content[..] {
+        [ContentBlock::ToolResult {
+            tool_use_id: id1,
+            content: c1,
+            is_error: true,
+        }, ContentBlock::ToolResult {
+            tool_use_id: id2,
+            content: c2,
+            is_error: true,
+        }] => {
+            assert_eq!(id1, "t1");
+            assert!(
+                c1.contains("(interrupted by user)"),
+                "aborted bash carries the marker: {c1}"
+            );
+            assert_eq!(id2, "t2");
+            assert_eq!(c2, "[interrupted by user]", "pending call synthesized");
+        }
+        other => panic!("expected two error results in one message: {other:?}"),
+    }
+    assert!(!side_effect.exists(), "pending write must never execute");
+    // Both cells closed: the executed-then-aborted bash and the synthesized
+    // write each got a ToolEnd.
+    let ends = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolEnd { is_error: true, .. }))
+        .count();
+    assert_eq!(ends, 2);
+}
