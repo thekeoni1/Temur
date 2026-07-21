@@ -570,3 +570,40 @@ fn config_cap_default_and_floor() {
     let _: u64 = config::DEFAULT_SESSION_MAX_BYTES;
     let _: u64 = config::MIN_SESSION_MAX_BYTES;
 }
+
+#[test]
+fn interrupted_turn_shapes_survive_the_resume_seam() {
+    // T6 landing shape A: interrupt left a synthesized "[interrupted by
+    // user]" tool-result message at the tail. It is factual and wire-valid —
+    // prepare_seed must keep it.
+    let f = file_with(vec![
+        user_text("go"),
+        assistant(vec![ContentBlock::ToolUse {
+            id: "t1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command": "sleep 60"}),
+            input_raw: None,
+        }]),
+        tool_result("t1", "[interrupted by user]", true),
+    ]);
+    let (seed, notices) = store::prepare_seed(f);
+    assert_eq!(seed.history.len(), 3, "synthesized results are kept");
+    assert_eq!(notices.len(), 1, "no drop notice expected: {notices:?}");
+    assert!(matches!(
+        &seed.history[2].content[0],
+        ContentBlock::ToolResult { is_error: true, content, .. }
+            if content == "[interrupted by user]"
+    ));
+
+    // T6 landing shape B: empty landing — the interrupt arrived before any
+    // content, so history ends with the plain user prompt. The existing
+    // dangling-prompt rule drops it with the existing notice.
+    let f = file_with(vec![
+        user_text("first"),
+        assistant(vec![ContentBlock::Text { text: "ok".into() }]),
+        user_text("interrupted before any reply"),
+    ]);
+    let (seed, notices) = store::prepare_seed(f);
+    assert_eq!(seed.history.len(), 2, "trailing plain prompt dropped");
+    assert!(notices[0].contains("never answered"), "{notices:?}");
+}

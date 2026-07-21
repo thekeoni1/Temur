@@ -751,3 +751,345 @@ fn snapshot_reports_exactly_what_gets_persisted() {
     assert_eq!(snap.session_usage.input_tokens, Some(20)); // two round-trips
     assert_eq!(snap.last_context_used, Some(15));
 }
+
+// ---------------------------------------------------------------------------
+// T6 interruption (I2): the turn landing policy. A scripted provider sets
+// the cancel token as it returns — modeling a mid-stream Esc with zero
+// timing — and every case is checked against the wire rule that makes the
+// landed history resumable.
+// ---------------------------------------------------------------------------
+
+/// Scripted provider for interruption cases: each entry is (set_cancel,
+/// stream outcome). `set_cancel: true` models the token being set while
+/// that response streamed.
+struct InterruptingProvider {
+    responses: RefCell<Vec<(bool, Result<ResponseMessage, ProviderError>)>>,
+}
+
+impl Provider for InterruptingProvider {
+    fn stream(
+        &self,
+        _req: &ChatRequest,
+        _on_event: &mut dyn FnMut(StreamEvent),
+        cancel: &CancelToken,
+    ) -> Result<ResponseMessage, ProviderError> {
+        let (set_cancel, resp) = self.responses.borrow_mut().remove(0);
+        if set_cancel {
+            cancel.set();
+        }
+        resp
+    }
+}
+
+fn interrupt_session(
+    dir: &std::path::Path,
+    responses: Vec<(bool, Result<ResponseMessage, ProviderError>)>,
+) -> Session {
+    let cfg = SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens: 32_000,
+        system: Some("test system".into()),
+        thinking: false,
+        cwd: dir.to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+    };
+    Session::new(
+        Box::new(InterruptingProvider {
+            responses: RefCell::new(responses),
+        }),
+        Registry::standard(),
+        cfg,
+    )
+}
+
+/// A cancelled stream's partial message: same shape as `msg` but with no
+/// stop reason (the message_delta never arrived).
+fn partial(content: Vec<ContentBlock>) -> ResponseMessage {
+    let mut m = msg(content, StopReason::EndTurn);
+    m.stop_reason = None;
+    m
+}
+
+/// A tool_use whose streamed arguments never completed (`input_raw` set) —
+/// exactly what the T4 accumulators deliver for a cancel mid tool-JSON.
+fn tool_use_incomplete(id: &str, name: &str, raw: &str) -> ContentBlock {
+    ContentBlock::ToolUse {
+        id: id.into(),
+        name: name.into(),
+        input: serde_json::json!({}),
+        input_raw: Some(raw.into()),
+    }
+}
+
+/// WIRE RULE (the invariant that makes interrupted sessions resumable):
+/// every assistant tool_use id must be answered by a tool_result in the
+/// immediately following user message.
+fn assert_history_wire_valid(history: &[RequestMessage]) {
+    for (i, m) in history.iter().enumerate() {
+        if m.role != Role::Assistant {
+            continue;
+        }
+        let ids: Vec<&str> = m
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        if ids.is_empty() {
+            continue;
+        }
+        let next = history
+            .get(i + 1)
+            .unwrap_or_else(|| panic!("history ends on a tool_use message (index {i})"));
+        assert_eq!(next.role, Role::User, "tool_use not followed by user msg");
+        for id in ids {
+            assert!(
+                next.content.iter().any(|b| matches!(
+                    b,
+                    ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == id
+                )),
+                "tool_use {id} has no tool_result in the next message"
+            );
+        }
+    }
+}
+
+/// Runs one interrupted turn and applies the assertions every case shares:
+/// turn returns Ok, the "turn interrupted" notice fires, TurnComplete is
+/// last, and the landed history is wire-valid.
+fn run_interrupted(session: &mut Session, input: &str) -> Vec<AgentEvent> {
+    let mut events = vec![];
+    session.turn(input, &mut |e| events.push(e)).unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Notice(n) if n == "turn interrupted")),
+        "missing interrupt notice: {events:?}"
+    );
+    assert!(
+        matches!(events.last(), Some(AgentEvent::TurnComplete { .. })),
+        "TurnComplete must always be emitted: {events:?}"
+    );
+    assert_history_wire_valid(session.history());
+    events
+}
+
+#[test]
+fn interrupt_with_partial_text_keeps_the_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = interrupt_session(
+        dir.path(),
+        vec![(true, Ok(partial(vec![text("partial tail")])))],
+    );
+    run_interrupted(&mut session, "go");
+
+    assert_eq!(session.history().len(), 2);
+    assert_eq!(session.history()[1].role, Role::Assistant);
+    assert_eq!(
+        session.history()[1].content,
+        vec![text("partial tail")],
+        "completed text must be kept"
+    );
+}
+
+#[test]
+fn interrupt_drops_incomplete_tool_use_and_synthesizes_result_for_kept_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let side_effect = dir.path().join("side.txt");
+    let mut session = interrupt_session(
+        dir.path(),
+        vec![(
+            true,
+            Ok(partial(vec![
+                tool_use(
+                    "t1",
+                    "write",
+                    serde_json::json!({
+                        "filePath": side_effect.to_str().unwrap(),
+                        "content": "must never be written"
+                    }),
+                ),
+                tool_use_incomplete("t2", "bash", "{\"comm"),
+            ])),
+        )],
+    );
+    let events = run_interrupted(&mut session, "go");
+
+    // Kept complete call, dropped incomplete one, ONE synthesized result.
+    assert_eq!(session.history().len(), 3);
+    match &session.history()[1].content[..] {
+        [ContentBlock::ToolUse { id, input_raw, .. }] => {
+            assert_eq!(id, "t1");
+            assert!(input_raw.is_none());
+        }
+        other => panic!("incomplete tool_use must be dropped: {other:?}"),
+    }
+    match &session.history()[2].content[..] {
+        [ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        }] => {
+            assert_eq!(tool_use_id, "t1");
+            assert_eq!(content, "[interrupted by user]");
+            assert!(is_error);
+        }
+        other => panic!("expected one synthesized result: {other:?}"),
+    }
+    // The kept call was NEVER executed.
+    assert!(!side_effect.exists(), "interrupted tool must not run");
+    // Both streamed cells were closed (kept and dropped), preserving FIFO.
+    let ends: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolEnd { name, is_error: true, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ends, vec!["write", "bash"]);
+}
+
+#[test]
+fn interrupt_between_stream_end_and_tool_exec_synthesizes_all() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = interrupt_session(
+        dir.path(),
+        vec![(
+            true,
+            Ok(msg(
+                vec![
+                    tool_use("t1", "read", serde_json::json!({"filePath": "/nope"})),
+                    tool_use("t2", "bash", serde_json::json!({"command": "true"})),
+                ],
+                StopReason::ToolUse,
+            )),
+        )],
+    );
+    run_interrupted(&mut session, "go");
+
+    assert_eq!(session.history().len(), 3);
+    let results: Vec<(&str, &str)> = session.history()[2]
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error: true,
+            } => Some((tool_use_id.as_str(), content.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        results,
+        vec![
+            ("t1", "[interrupted by user]"),
+            ("t2", "[interrupted by user]"),
+        ],
+        "every kept call gets a synthesized result in ONE message"
+    );
+}
+
+#[test]
+fn interrupt_before_first_byte_lands_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session =
+        interrupt_session(dir.path(), vec![(true, Err(ProviderError::Incomplete))]);
+    run_interrupted(&mut session, "go");
+
+    // History ends with the plain user prompt; the resume seam's
+    // dangling-prompt rule handles it on --continue.
+    assert_eq!(session.history().len(), 1);
+    assert_eq!(session.history()[0].role, Role::User);
+}
+
+#[test]
+fn interrupt_treats_transport_error_under_cancel_as_interruption() {
+    // D4: Err + token set is the user's interrupt, not a provider failure —
+    // turn returns Ok and no "provider error" surfaces.
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = interrupt_session(
+        dir.path(),
+        vec![(true, Err(ProviderError::Network("reset by peer".into())))],
+    );
+    let events = run_interrupted(&mut session, "go");
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Notice(n) if n.contains("provider error"))),
+        "{events:?}"
+    );
+    assert_eq!(session.history().len(), 1);
+}
+
+#[test]
+fn interrupt_drops_unsigned_thinking_keeps_signed() {
+    let dir = tempfile::tempdir().unwrap();
+    let unsigned = ContentBlock::Thinking {
+        thinking: "half a thought".into(),
+        signature: None,
+    };
+    let signed = ContentBlock::Thinking {
+        thinking: "a full thought".into(),
+        signature: Some("sig".into()),
+    };
+    let mut session = interrupt_session(
+        dir.path(),
+        vec![(
+            true,
+            Ok(partial(vec![unsigned, signed.clone(), text("tail")])),
+        )],
+    );
+    run_interrupted(&mut session, "go");
+
+    assert_eq!(session.history().len(), 2);
+    assert_eq!(
+        session.history()[1].content,
+        vec![signed, text("tail")],
+        "unsigned thinking is rejected on replay and must be dropped"
+    );
+}
+
+#[test]
+fn interrupt_with_only_droppable_content_lands_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = interrupt_session(
+        dir.path(),
+        vec![(
+            true,
+            Ok(partial(vec![ContentBlock::Thinking {
+                thinking: "half".into(),
+                signature: None,
+            }])),
+        )],
+    );
+    run_interrupted(&mut session, "go");
+    assert_eq!(session.history().len(), 1, "empty landing pushes nothing");
+}
+
+#[test]
+fn stale_token_is_cleared_at_turn_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = interrupt_session(
+        dir.path(),
+        vec![(false, Ok(msg(vec![text("Hi there")], StopReason::EndTurn)))],
+    );
+    // Esc landed after the previous turn already finished.
+    session.cancel_token().set();
+
+    let mut events = vec![];
+    session.turn("hello", &mut |e| events.push(e)).unwrap();
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Notice(n) if n == "turn interrupted")),
+        "a stale token must not cancel the next turn: {events:?}"
+    );
+    assert_eq!(session.history().len(), 2, "normal completion");
+}

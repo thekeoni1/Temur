@@ -173,6 +173,9 @@ impl Session {
         user_input: &str,
         ui: &mut dyn FnMut(AgentEvent),
     ) -> Result<(), AgentError> {
+        // Stale-flag defense: an Esc that landed after the previous turn
+        // already finished must not cancel this one.
+        self.cancel.clear();
         self.history.push(RequestMessage {
             role: Role::User,
             content: vec![ContentBlock::Text {
@@ -212,7 +215,7 @@ impl Session {
                 messages: self.history.clone(),
                 tools: self.registry.definitions(),
             };
-            let msg = self.provider.stream(
+            let result = self.provider.stream(
                 &req,
                 &mut |ev| {
                     ui(match ev {
@@ -226,7 +229,15 @@ impl Session {
                     })
                 },
                 &self.cancel,
-            )?;
+            );
+            if self.cancel.is_set() {
+                // Interrupted. A transport error that raced the cancel is
+                // deliberately treated as the interruption, not a provider
+                // failure — the user asked for the turn to stop.
+                self.land_interrupted(result.ok(), &mut turn_usage, ui);
+                break;
+            }
+            let msg = result?;
 
             turn_usage.add(&msg.usage);
             self.session_usage.add(&msg.usage);
@@ -359,7 +370,27 @@ impl Session {
 
                     // Execute every call; ALL results go back in ONE user message.
                     let mut results: Vec<ContentBlock> = Vec::with_capacity(calls.len());
+                    let mut interrupted = false;
                     for (id, name, input, input_raw) in calls {
+                        // Interrupt between calls: results already produced
+                        // stay factual; this call and every remaining one get
+                        // a synthesized error result in the SAME message, so
+                        // the wire rule (every tool_use answered in the next
+                        // user message) holds.
+                        if self.cancel.is_set() {
+                            interrupted = true;
+                            ui(AgentEvent::ToolEnd {
+                                name: name.clone(),
+                                title: name,
+                                is_error: true,
+                            });
+                            results.push(ContentBlock::ToolResult {
+                                tool_use_id: id,
+                                content: "[interrupted by user]".into(),
+                                is_error: true,
+                            });
+                            continue;
+                        }
                         let (output, title, is_error) = match input_raw {
                             // T4 dispatch policy for arguments that failed to
                             // parse on the wire: execute only a LOSSLESS
@@ -411,6 +442,15 @@ impl Session {
                             content: output,
                             is_error,
                         });
+                    }
+
+                    if interrupted {
+                        self.history.push(RequestMessage {
+                            role: Role::User,
+                            content: results,
+                        });
+                        ui(AgentEvent::Notice("turn interrupted".into()));
+                        break;
                     }
 
                     // Consecutive-failure cap (T4): a batch where every
@@ -539,5 +579,80 @@ impl Session {
             session_usage: self.session_usage,
         });
         Ok(())
+    }
+
+    /// T6 landing policy for an interrupted stream: file whatever partial
+    /// response arrived on a wire-valid history boundary and close every UI
+    /// cell the stream opened, so the driver-loop save that follows persists
+    /// a resumable session.
+    ///
+    /// Kept: completed text, signed thinking, redacted thinking, tool_use
+    /// whose arguments parsed. Dropped: tool_use still mid-JSON
+    /// (`input_raw`), unsigned thinking (rejected on replay), unknown
+    /// blocks. Kept tool_use blocks are answered immediately with
+    /// synthesized error results — they were never executed. If nothing is
+    /// kept, nothing is pushed: history ends with the plain user prompt and
+    /// the resume seam's dangling-prompt rule handles it.
+    fn land_interrupted(
+        &mut self,
+        partial: Option<crate::provider::ResponseMessage>,
+        turn_usage: &mut Usage,
+        ui: &mut dyn FnMut(AgentEvent),
+    ) {
+        if let Some(msg) = partial {
+            turn_usage.add(&msg.usage);
+            self.session_usage.add(&msg.usage);
+            // Close every tool cell the stream opened — kept AND dropped —
+            // preserving the FIFO ToolStart/ToolEnd pairing (docs/TUI.md).
+            // A ToolStart only fires once a tool_use block has a name, so
+            // an unnamed quirk-server block never opened a cell.
+            for b in &msg.content {
+                if let ContentBlock::ToolUse { name, .. } = b {
+                    if !name.is_empty() {
+                        ui(AgentEvent::ToolEnd {
+                            name: name.clone(),
+                            title: name.clone(),
+                            is_error: true,
+                        });
+                    }
+                }
+            }
+            let kept: Vec<ContentBlock> = msg
+                .content
+                .into_iter()
+                .filter(|b| match b {
+                    ContentBlock::Text { text } => !text.is_empty(),
+                    ContentBlock::Thinking { signature, .. } => signature.is_some(),
+                    ContentBlock::RedactedThinking { .. } => true,
+                    ContentBlock::ToolUse { input_raw, .. } => input_raw.is_none(),
+                    // Impossible in assistant content / never replayed.
+                    ContentBlock::ToolResult { .. } | ContentBlock::Unknown => false,
+                })
+                .collect();
+            if !kept.is_empty() {
+                let results: Vec<ContentBlock> = kept
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::ToolUse { id, .. } => Some(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: "[interrupted by user]".into(),
+                            is_error: true,
+                        }),
+                        _ => None,
+                    })
+                    .collect();
+                self.history.push(RequestMessage {
+                    role: Role::Assistant,
+                    content: kept,
+                });
+                if !results.is_empty() {
+                    self.history.push(RequestMessage {
+                        role: Role::User,
+                        content: results,
+                    });
+                }
+            }
+        }
+        ui(AgentEvent::Notice("turn interrupted".into()));
     }
 }
