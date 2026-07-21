@@ -249,6 +249,11 @@ the loop degrades politely.
 vocabulary; atomic writes (power-cut-friendly — it's the niche); size-capped
 with `u64` discipline. Anthropic thinking signatures round-trip opaquely.
 
+> As-built note: session files live under the STATE dir
+> (`$XDG_STATE_HOME/temur/sessions`, fallback `~/.local/state`), not the
+> config dir as written above — megabyte transcripts of tool output don't
+> belong in a dotfile-synced `~/.config`.
+
 ### T6 — Editing + interruption
 Port OpenCode's fuzzy matchers (whitespace-tolerant, block-anchor) behind the
 existing exact-match-first behavior, with offline table-driven tests; add the

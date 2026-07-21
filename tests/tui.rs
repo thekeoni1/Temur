@@ -305,6 +305,28 @@ fn frame_inline_and_block_tools() {
 }
 
 #[test]
+fn frame_resume_notice_renders_before_any_input() {
+    // T5: the resume summary arrives as a plain Notice after UI construction
+    // and before the first prompt — exactly what main.rs emits on
+    // --continue. It must render through the existing notice pattern with an
+    // empty transcript, including the em dash for never-reported usage.
+    let mut a = app();
+    a.fold(&AgentEvent::Notice(
+        "resumed session: 12 messages, ~3400 tokens in / — out".into(),
+    ));
+    let rows = render(&mut a, 70, 10);
+    let body = rows.join("\n");
+    assert!(
+        body.contains("▌ [!] resumed session: 12 messages"),
+        "resume notice block:\n{body}"
+    );
+    assert!(
+        body.contains("~3400 tokens in / — out"),
+        "absent usage stays an em dash, not a zero:\n{body}"
+    );
+}
+
+#[test]
 fn frame_notice_and_turn_tail_and_footer_totals() {
     let mut a = app();
     a.now_ms = 0;

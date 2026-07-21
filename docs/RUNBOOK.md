@@ -177,6 +177,30 @@ Eval harness note: all task seeding (data.txt, config.ini, the needle
 files, version.txt) happens inside the script itself, per task, before
 each temur launch — nothing is left to the operator.
 
+## T5 sessions (operator notes)
+
+Live runs persist the conversation after every turn (mock runs never do).
+Location: `$XDG_STATE_HOME/temur/sessions/`, falling back to
+`~/.local/state/temur/sessions/` — for the appsvc runtime identity (HOME
+`/srv/rustcode-runtime`) that is
+`/srv/rustcode-runtime/.local/state/temur/sessions/`. One file per working
+directory (`<basename>-<hash>.json`); `--continue` from the same directory
+resumes it. Config: `sessions_dir` relocates the directory,
+`session_max_bytes` caps the file (default 4 MiB).
+
+- **Power-cut semantics:** saves are write→fsync→rename atomic. The previous
+  complete file is always intact; after a crash you resume the last fully
+  saved turn. A leftover `*.json.tmp.<pid>` file is harmless litter from an
+  interrupted save — safe to delete, never loaded.
+- **Two processes, same directory:** safe against corruption — each writes
+  its own pid-suffixed temp file and renames a complete file into place.
+  Last writer wins; the sessions aren't merged.
+- **Reset:** `rm` the directory's file from the sessions dir (the startup
+  error for a corrupt or version-mismatched file names the exact path).
+- **`--continue` fails fast** on a missing, corrupt, or wrong-version file
+  rather than silently starting fresh; run without `--continue` to start a
+  new session.
+
 - `secret: APP_SECRET_FILE is not set` — run via `run-app.sh` or pass the env as above.
 - `secret: cannot read credential file` — check ownership/mode (`appsvc:appsvc` 600)
   and that you're running as `appsvc`.

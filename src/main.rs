@@ -46,6 +46,9 @@ fn run() -> Result<ExitCode, error::Error> {
     let mut cmd: Option<String> = None;
     let mut mock: Option<String> = None;
     let mut capture: Option<String> = None;
+    // --continue (`continue` is a keyword, hence the variable name): resume
+    // this directory's saved session instead of starting fresh.
+    let mut resume = false;
     // UI selection: --tui / --plain force it; default is TUI on a real
     // terminal, plain line REPL otherwise (so piped/scripted use — the mock
     // e2e, operator scripts — is unchanged without any flag).
@@ -59,6 +62,7 @@ fn run() -> Result<ExitCode, error::Error> {
             }
             Long("mock") => mock = Some(parser.value()?.string()?),
             Long("capture-sse") => capture = Some(parser.value()?.string()?),
+            Long("continue") => resume = true,
             Long("tui") => force_tui = true,
             Long("plain") => force_plain = true,
             Value(v) if cmd.is_none() => cmd = Some(v.string()?),
@@ -67,6 +71,11 @@ fn run() -> Result<ExitCode, error::Error> {
     }
     if force_tui && force_plain {
         return Err(error::Error::Usage("--tui and --plain are mutually exclusive".into()));
+    }
+    // Persistence is disabled under --mock (fixtures must never touch real
+    // state), so a --continue there could only ever mislead.
+    if resume && mock.is_some() {
+        return Err(error::Error::Usage("--continue is unavailable with --mock".into()));
     }
     let use_tui = if force_plain {
         false
@@ -86,7 +95,7 @@ fn run() -> Result<ExitCode, error::Error> {
             Ok(ExitCode::SUCCESS)
         }
         Some(other) => Err(error::Error::Usage(format!("unknown command: {other}"))),
-        None => repl(mock, capture, use_tui),
+        None => repl(mock, capture, use_tui, resume),
     }
 }
 
@@ -94,12 +103,29 @@ fn repl(
     mock: Option<String>,
     capture: Option<String>,
     use_tui: bool,
+    resume: bool,
 ) -> Result<ExitCode, error::Error> {
     let cfg = config::Config::load()?;
     // Validated up front: an unknown prompt_profile is a startup error, not
     // a silent fallback.
     let prompt_profile = cfg.prompt_profile()?;
     let cwd = std::env::current_dir()?;
+
+    // Session persistence (T5), resolved up front so a bad cap is a startup
+    // error, not a mid-session surprise. Default-on for live runs; disabled
+    // under --mock — fixtures must never touch real state. --capture-sse
+    // runs keep it on. Nothing is written here: a fresh run only overwrites
+    // this directory's file on its FIRST SAVE, so launching and quitting
+    // without a turn never destroys a resumable session.
+    let session_max_bytes = cfg.session_max_bytes()?;
+    let persist_path = if mock.is_none() {
+        Some(temur::session_store::session_path(
+            &temur::session_store::sessions_dir(cfg.sessions_dir.as_deref()),
+            &cwd,
+        ))
+    } else {
+        None
+    };
 
     // Resolve the skill search path and enumerate installed skills once at
     // startup. Env override wins over config; both fall back to the always-included
@@ -138,6 +164,40 @@ fn repl(
         .as_ref()
         .map(|oc| oc.model.clone())
         .unwrap_or_else(|| cfg.model.clone());
+    let cwd_display = cwd.display().to_string();
+
+    // --continue: load BEFORE provider construction — "you have no session
+    // to resume" should not hide behind a credential error — and FAIL FAST
+    // on a missing, corrupt, or wrong-version file: never silently start a
+    // fresh session over the very file the user asked to resume. Notices are
+    // collected here but emitted only after UI construction (the TUI
+    // swallows pre-alt-screen printlns).
+    let mut pending_notices: Vec<String> = Vec::new();
+    let seed = if resume {
+        let path = persist_path
+            .as_ref()
+            .expect("--continue with --mock is rejected at argument parsing");
+        let file = match temur::session_store::load(path) {
+            Ok(f) => f,
+            Err(e @ temur::session_store::StoreError::Missing { .. }) => {
+                return Err(error::Error::Session(format!(
+                    "{e} — run without --continue to start one"
+                )))
+            }
+            Err(e) => return Err(e.into()),
+        };
+        pending_notices.extend(temur::session_store::mismatch_notices(
+            &file,
+            &cfg.provider,
+            &model,
+            &cwd_display,
+        ));
+        let (seed, notices) = temur::session_store::prepare_seed(file);
+        pending_notices.extend(notices);
+        Some(seed)
+    } else {
+        None
+    };
 
     // Plain-mode banners keep their exact v1 wording; in TUI mode the same
     // facts live in the header/footer (a pre-alt-screen println would be
@@ -227,35 +287,78 @@ fn repl(
         None => base_system,
     };
 
-    let cwd_display = cwd.display().to_string();
     let mut session_cfg = SessionConfig::from_config(&cfg, cwd);
     session_cfg.model = model.clone();
     // Advisory context awareness: the window is a property of the served
     // model, so it comes from the openai_compat section (None elsewhere).
     session_cfg.context_window = openai_cfg.as_ref().and_then(|oc| oc.context_window);
     session_cfg.system = Some(system);
-    let mut session = Session::new(
-        provider,
-        Registry::standard_with_skills(skill_dirs).with_profile(prompt_profile),
-        session_cfg,
-    );
+    let registry = Registry::standard_with_skills(skill_dirs).with_profile(prompt_profile);
+    let mut session = match seed {
+        Some(seed) => Session::resume(provider, registry, session_cfg, seed),
+        None => Session::new(provider, registry, session_cfg),
+    };
 
     let mut ui: Box<dyn Ui> = if use_tui {
         Box::new(TuiUi::new(SessionInfo {
             model: model.clone(),
             thinking: cfg.thinking,
-            cwd: cwd_display,
+            cwd: cwd_display.clone(),
             version: VERSION.to_string(),
         })?)
     } else {
         Box::new(ReplUi::new())
     };
+    // Resume notices (mismatches, dangling-prompt drop, the summary line)
+    // surface through the same seam as everything else, after the UI exists.
+    for n in &pending_notices {
+        ui.event(&AgentEvent::Notice(n.clone()));
+    }
+
+    let mut save_failure_notified = false;
     while let Some(line) = ui.read_input() {
         if let Err(e) = session.turn(&line, &mut |ev| ui.event(&ev)) {
             // Provider-level failure: surface through the UI seam and keep
             // the session alive. (Behavior note, docs/TUI.md: in the plain
             // REPL this line moved from stderr to stdout with M-B.)
             ui.event(&AgentEvent::Notice(format!("provider error: {e}")));
+        }
+        // Save in BOTH arms — power-cut philosophy: a provider-error turn's
+        // dangling user message is real history, and the resume seam is what
+        // handles it (prepare_seed drops a trailing unanswered prompt).
+        if let Some(path) = &persist_path {
+            let snap = session.snapshot();
+            let file = temur::session_store::SessionFileRef {
+                version: temur::session_store::FORMAT_VERSION,
+                provider: &cfg.provider,
+                model: &model,
+                cwd: &cwd_display,
+                history: snap.history,
+                session_usage: snap.session_usage,
+                todos: snap.todos,
+                last_context_used: snap.last_context_used,
+            };
+            let mut trim_notices: Vec<String> = Vec::new();
+            match temur::session_store::save(path, &file, session_max_bytes, &mut |n| {
+                trim_notices.push(n)
+            }) {
+                Ok(()) => {
+                    for n in trim_notices {
+                        ui.event(&AgentEvent::Notice(n));
+                    }
+                }
+                Err(e) => {
+                    // Never fatal: the in-memory conversation is intact and
+                    // every later turn retries. Noticed once per process so a
+                    // full disk doesn't shout on every turn.
+                    if !save_failure_notified {
+                        save_failure_notified = true;
+                        ui.event(&AgentEvent::Notice(format!(
+                            "session save failed: {e} — continuing; will retry next turn"
+                        )));
+                    }
+                }
+            }
         }
     }
     drop(ui); // TUI: joins the render thread and restores the terminal

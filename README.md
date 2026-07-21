@@ -84,6 +84,26 @@ models, and the compact prompt profile: [docs/OFFLINE.md](docs/OFFLINE.md).
 The default provider is `anthropic` (model `claude-sonnet-5`); any API key
 is read from a file path at startup, never from env or argv.
 
+Two more optional keys: `sessions_dir` overrides where saved sessions live
+(default: the state dir, see below), and `session_max_bytes` caps the saved
+session file's size (default 4 MiB, minimum 64 KiB).
+
+## Sessions
+
+Every live run saves the conversation after each turn — one file per working
+directory, under `$XDG_STATE_HOME/temur/sessions/` (fallback
+`~/.local/state/temur/sessions/`; state, not config, because transcripts
+carry tool output and grow to megabytes). `temur --continue` resumes the
+current directory's session; the saved history is provider-neutral, so a
+session recorded against one provider resumes against another. Saves are
+atomic (write, fsync, rename) and the format contains no timestamps, so a
+power cut at any instant leaves the previous complete file — resumable on a
+clock-less device. Past the size cap the file drops its oldest exchanges,
+always cutting at a message boundary that keeps the remainder replayable;
+the in-memory conversation is never trimmed. Two processes in one directory
+don't corrupt anything: last complete writer wins. To start over, delete the
+directory's file from the sessions dir.
+
 ## Scope
 
 temur deliberately does not do LSP, MCP, IDE plugins, web UI,
