@@ -177,6 +177,42 @@ Eval harness note: all task seeding (data.txt, config.ini, the needle
 files, version.txt) happens inside the script itself, per task, before
 each temur launch — nothing is left to the operator.
 
+## T5 acceptance — recorded result
+
+2026-07-21: **live resume smoke PASSED, first attempt** — the full cycle
+live turn → save → SIGKILL → `--continue` → seeded history on the wire,
+end-to-end through main.rs, reusing the T3/T4 infrastructure unchanged
+(llama.cpp `server-b10068`, Qwen3-1.7B Q4_K_M, ctx 8192, `--jinja`,
+`--network none` pod; in-pod `tls-probe` FAILED as required before any
+turn; musl-static binary readelf-verified in preflight; compact profile,
+max_tokens 2048 — the T4 eval settings).
+
+- **Run 1** (two turns): the model drove a real `write` creating
+  `milestone.txt` (content `t5-resume-proof`, host-verified) and a real
+  `todowrite`. The session file appeared after turn 1 — first-save
+  behavior confirmed live. `kill -9` of the temur process mid-idle.
+- **Survival (host-verified):** the file survived SIGKILL intact — parsed
+  as JSON, version 1, 8 messages, the todo present, 1661 bytes. No
+  `.tmp` litter (the kill was mid-idle; any would be harmless per below).
+- **Run 2** (`--continue`): notice rendered exactly as
+  `[!] resumed session: 8 messages, ~10769 tokens in / 699 out` —
+  matching the file's contents — with zero mismatch lines (same
+  provider/model/cwd, as expected). Asked *without tools* what file it
+  had created earlier and with what text, the model answered
+  `/work/milestone.txt` / `t5-resume-proof` from the seeded history
+  alone; a live `todoread` returned the seeded todo. Session usage
+  continued from the saved totals (10769+2850 in on the first resumed
+  turn) rather than restarting from zero.
+- **Post-exit re-validation:** the grown file parses, version still 1,
+  8 → 14 messages, 1661 → 2627 bytes — save-after-resume produces a
+  valid file, not just a larger one.
+- Incidental: `cache_creation_input_tokens` (never reported by
+  llama.cpp) round-tripped save → SIGKILL → load as JSON `null`, and both
+  runs displayed it as `—` — absent-vs-zero preserved across persistence.
+
+Artifacts (transcripts, the session file pre- and post-resume) kept at
+`/home/dev/temur-t5-resume-smoke-2026-07-21/`.
+
 ## T5 sessions (operator notes)
 
 Live runs persist the conversation after every turn (mock runs never do).
