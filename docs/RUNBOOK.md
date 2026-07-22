@@ -244,3 +244,21 @@ resumes it. Config: `sessions_dir` relocates the directory,
   used, trimmed, as the API key).
 - The build environment never performs this procedure; per project rules the live API
   is only ever touched here, by the operator, as `appsvc`.
+
+## T6 interruption (operator notes)
+
+Esc during a TUI turn interrupts it cooperatively (status row shows
+`interrupting…`, then a `turn interrupted` notice). Effect on the session
+file: the turn lands on a wire-valid boundary and the normal after-turn
+save runs, so the file ends in one of three shapes — partial assistant
+text; an assistant message whose tool calls are answered by synthesized
+`[interrupted by user]` error results (kept on `--continue`); or, when
+the interrupt landed before any content, the bare user prompt (dropped on
+`--continue` with the usual notice). All three resume cleanly.
+
+A running `bash` is killed with its whole process group within ~200 ms —
+no orphaned children. Esc cannot reach a FULLY stalled stream (no frames
+arriving); double-Ctrl+C force-quit (exit 130) remains the escape hatch
+there, and the session file then simply holds everything up to the last
+completed turn (the in-flight turn was never saved). The plain line REPL
+has no interruption — documented T6 exclusion.

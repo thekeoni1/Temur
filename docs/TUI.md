@@ -54,18 +54,44 @@ scripts that filtered stderr for provider errors must watch stdout
 instead. Everything else about the plain REPL's output is unchanged from
 v1.
 
-## KNOWN LIMITATION — no turn interruption (deferred; needs a core seam)
+## Turn interruption (T6) — as built
 
-Esc-to-interrupt (OpenCode behavior) requires a cancellation path in
-`Session::turn`/`Provider::stream` that v1 deliberately does not have; a
-TUI-only milestone could not add it without touching the agent core. The
-v1.x consequence: **a hanging or unwanted turn cannot be interrupted, only
-force-quit** — Ctrl+C during a turn arms a confirm, a second Ctrl+C
-restores the terminal and exits the whole app (code 130). Session history
-is lost (no persistence yet, also deferred). Framed for prioritization:
-*turn interruption needs a small core seam extension* (a cancel flag the
-turn loop checks between stream events and tool calls) — a trade-off to
-weigh when tuning the post-v1 milestone order; see ROADMAP.md.
+Esc during a running turn interrupts it cooperatively: the render thread
+holds a clone of the session's `CancelToken` (passed into `TuiUi::new` —
+never a `Session` reference) and sets it; the blocking agent stack polls
+the token at its natural pause points — each received SSE frame, each
+retry-backoff slice (≤200 ms), before each tool call in a batch, and
+every ≤200 ms of a running `bash` (whose process group is killed on
+cancel — no orphaned children).
+
+Landing rules (agent core, `Session::turn`): completed text, signed
+thinking, redacted thinking, and fully-parsed `tool_use` blocks are kept;
+a `tool_use` still mid-JSON (`input_raw`), unsigned thinking, and unknown
+blocks are dropped. Kept `tool_use` blocks are answered immediately in
+ONE user message of synthesized `[interrupted by user]` error results —
+they are never executed — so every `tool_use` id is answered in the next
+message and the landed history is wire-valid for both providers. An
+interrupt that arrives before any content lands nothing: history ends
+with the plain user prompt and the resume seam's dangling-prompt rule
+drops it on `--continue`. The driver-loop save runs after the landing,
+so an interrupted session resumes cleanly.
+
+FIFO pairing is preserved: every tool cell the stream opened gets a
+`ToolEnd{is_error: true}` (kept and dropped alike) before the
+`turn interrupted` notice and the normal `TurnComplete`. The status row
+shows `esc interrupt` in the busy hint and `interrupting…` once Esc is
+pressed, until the turn lands. Esc while idle is a no-op; a second Esc is
+idempotent; Esc participates in the any-key-disarms rule for the
+force-quit prompt.
+
+**Exclusions.** The plain line REPL has no interruption: the main thread
+is blocked inside `Session::turn` with no listener, and SIGINT handling
+would need a new dependency — deliberately out of T6 scope. A FULLY
+stalled TCP stream (no frames arriving at all) cannot observe the token
+either — ureq timeouts are whole-phase deadlines, not idle timeouts, and
+would kill legitimate long streams — so the double-Ctrl+C force-quit
+(arm + confirm, exit 130) remains the documented escape hatch for that
+case; Ctrl+C semantics are unchanged.
 
 Also deferred, noted during the port: input queuing while a turn runs
 (OpenCode queues prompts; we disable Enter and show a hint), tool output
@@ -75,9 +101,10 @@ title), mouse support, themes, multi-pane layouts.
 ## Keys
 
 Enter send · ↑/↓ input history · PgUp/PgDn scroll (End of scroll
-re-sticks to bottom) · Home/End/←/→/Backspace/Delete edit · Ctrl+C clear
-input, or quit when empty; twice during a turn force-quits · Ctrl+D quit
-(empty prompt) · `exit`/`quit` as a line also quits.
+re-sticks to bottom) · Home/End/←/→/Backspace/Delete edit · Esc
+interrupt the running turn · Ctrl+C clear input, or quit when empty;
+twice during a turn force-quits · Ctrl+D quit (empty prompt) ·
+`exit`/`quit` as a line also quits.
 
 ## Offline test strategy (all in `check.sh`, host + container)
 

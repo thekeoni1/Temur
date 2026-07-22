@@ -260,6 +260,28 @@ existing exact-match-first behavior, with offline table-driven tests; add the
 cancel flag/seam from `docs/TUI.md` so a turn can be interrupted without
 killing the process.
 
+> As-built notes (2026-07-21): both halves landed offline-gated.
+> **Interruption:** a session-owned `CancelToken` (`Arc<AtomicBool>`),
+> polled once per received SSE frame in both provider drive loops, in
+> ≤200 ms slices of retry backoff and bash waits, and per tool call in a
+> batch; TUI Esc sets it. Landing keeps completed content, drops mid-JSON
+> `tool_use` (`input_raw`) and unsigned thinking, and answers kept
+> `tool_use` blocks with synthesized `[interrupted by user]` error results
+> in one message — history stays wire-valid and the driver-loop save
+> persists it. Exclusions: plain-REPL interruption (blocked main thread,
+> SIGINT would need a new dependency) and fully stalled streams — ureq
+> timeouts are whole-phase deadlines, not idle timeouts (verified in
+> ureq 3.3.0 source), so they cannot implement cancel-polling and
+> double-Ctrl+C force-quit remains that escape hatch. Found en route:
+> `sh -c` forks its command, so bash kill/timeout now kill the process
+> GROUP via the sh *builtin* kill (minimal images ship no kill binary).
+> **Fuzzy edit:** OpenCode's line-trimmed and block-anchor matchers
+> ported behind exact-match-first; within a matcher ≥2 candidates is an
+> error demanding more context (stricter than OpenCode — never a guess);
+> `replaceAll` stays exact-only; no Levenshtein scoring at all. Fuzzy
+> successes are marked in the tool output; the prompts still demand
+> exactness.
+
 ### T7 — Multi-arch packaging
 Release builds for `i686-musl`, `armv7-musleabihf`, `aarch64-musl`,
 `x86_64-musl`; per-target readelf gates; checksums; an install page that leads
