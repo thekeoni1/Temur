@@ -1167,3 +1167,105 @@ fn interrupt_mid_batch_aborts_running_bash_and_synthesizes_the_rest() {
         .count();
     assert_eq!(ends, 2);
 }
+// ---- to append to tests/agent.rs (T6 E3) ----
+
+// ------------------------------------------------------------ T6 (E3): fuzzy
+
+/// A weak model reproduced oldString with mangled indentation (spaces for
+/// the file's tab): the edit must land via the whitespace-tolerant
+/// fallback, the file must be corrected on disk, and the tool_result the
+/// model reads back must carry the fuzzy marker with is_error false.
+#[test]
+fn fuzzy_edit_lands_end_to_end_through_the_agent_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("code.rs");
+    std::fs::write(&file, "fn main() {\n\tlet x = 1;\n}\n").unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(
+                vec![tool_use(
+                    "t1",
+                    "edit",
+                    serde_json::json!({
+                        "filePath": file.to_str().unwrap(),
+                        "oldString": "    let x = 1;",
+                        "newString": "    let y = 2;"
+                    }),
+                )],
+                StopReason::ToolUse,
+            ),
+            msg(vec![text("done")], StopReason::EndTurn),
+        ],
+    );
+    let events = collect_events(&mut session, "rename x to y");
+
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "fn main() {\n    let y = 2;\n}\n"
+    );
+    let second = &requests.borrow()[1];
+    match &second.messages.last().unwrap().content[0] {
+        ContentBlock::ToolResult {
+            content, is_error, ..
+        } => {
+            assert!(!is_error, "fuzzy success is not an error: {content}");
+            assert!(
+                content.contains("whitespace-tolerant match"),
+                "marker must round-trip to the model: {content}"
+            );
+        }
+        other => panic!("expected tool_result, got {other:?}"),
+    }
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ToolEnd { is_error: false, .. })));
+}
+
+/// Ambiguous fuzzy oldString: the "more surrounding lines" error feeds back
+/// as a normal is_error tool_result — non-fatal, turn completes cleanly.
+#[test]
+fn ambiguous_fuzzy_edit_round_trips_as_nonfatal_error_result() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("data.txt");
+    std::fs::write(&file, "a\nx\na\n").unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(
+                vec![tool_use(
+                    "t1",
+                    "edit",
+                    serde_json::json!({
+                        "filePath": file.to_str().unwrap(),
+                        "oldString": " a",
+                        "newString": "b"
+                    }),
+                )],
+                StopReason::ToolUse,
+            ),
+            msg(vec![text("I need more context.")], StopReason::EndTurn),
+        ],
+    );
+    collect_events(&mut session, "edit the file");
+
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "a\nx\na\n",
+        "ambiguity must not touch the file"
+    );
+    let second = &requests.borrow()[1];
+    match &second.messages.last().unwrap().content[0] {
+        ContentBlock::ToolResult {
+            content, is_error, ..
+        } => {
+            assert!(is_error);
+            assert!(
+                content.contains("more surrounding lines"),
+                "ambiguity guidance must reach the model: {content}"
+            );
+        }
+        other => panic!("expected tool_result, got {other:?}"),
+    }
+    assert_eq!(session.history().len(), 4, "turn completed normally");
+}
