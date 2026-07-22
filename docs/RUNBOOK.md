@@ -262,3 +262,93 @@ arriving); double-Ctrl+C force-quit (exit 130) remains the escape hatch
 there, and the session file then simply holds everything up to the last
 completed turn (the in-flight turn was never saved). The plain line REPL
 has no interruption — documented T6 exclusion.
+
+## T6 acceptance — recorded result
+
+2026-07-22: **live interrupt + fuzzy-edit smoke PASSED — all seven gated
+checks (2a–2g)**, on the T3/T4/T5 infrastructure unchanged (llama.cpp
+`server-b10068`, Qwen3-1.7B Q4_K_M, ctx 8192, `--jinja`, `--network none`
+pod; in-pod `tls-probe` FAILED as required before any turn; compact
+profile, max_tokens 2048). The musl binary was installed to
+`/srv/rustcode-runtime/bin/app` from the Windows-side root path (RUNBOOK
+§1) and sha256-verified identical to the gated staged copy
+(`20c98142…c3888`); the pod executed that same hash-verified staged
+binary (T5 precedent — the runtime copy is not mountable from dev's
+rootless podman, and the hash tie is the point). TUI driven by scripted
+keystrokes over the podman pty; sessions on a host-mounted state dir.
+
+- **2a interrupt mid-stream:** Esc sent 10 s into streaming (mid-stream
+  proven by transcript growth +21 KB and cross-checked against server
+  timing). `interrupting…` state, `turn interrupted` notice, partial
+  lighthouse-story tail and the ▣ turn tail all rendered; the prompt was
+  back within **≤2 s** of Esc (a Ctrl+D landing-probe quit the app).
+  Server side, llama logged `srv stop: cancel task` **114 ms** after the
+  Esc stamp — this build notices the dropped connection immediately, so
+  the "post-interrupt slot hangover" watch item did not materialize.
+- **2b/2g session validity:** checked with a python3 script (jq is not
+  installed on the host and installing needs elevation — same check
+  content, disclosed substitution). Pre-resume file: parsed, wire-valid.
+  Final file after all runs: 17 messages, **3 tool_use ids, every one
+  answered by a tool_result in the immediately following message**; the
+  file ends with run 5's bare user prompt — the documented empty-landing
+  shape that `prepare_seed` drops on the next `--continue`.
+- **2c resume:** `--continue` rendered the resume notice; the server
+  accepted the seeded history including the interrupted partial text (no
+  400, clean turn). The model answered from pre-interrupt session content
+  (Elaris story details recalled without tools). Honest nuance: asked
+  *which* story was interrupted, it recounted the completed first story
+  rather than the interrupted lighthouse one — a 1.7B comprehension slip;
+  the wire-level acceptance and cross-interrupt recall are what the step
+  gates, and both held.
+- **2d bash interrupt:** the model ran `sleep 60` via bash; /proc scans
+  inside the app container show the forked pair `sh -c sleep 60` +
+  `sleep 60` BOTH running pre-Esc and BOTH GONE at Esc+4 s with temur
+  still alive — the I3 process-group kill proven live, no orphaned
+  children. History landed exactly the designed shape: assistant
+  tool_use answered by `(interrupted by user)` `is_error` tool_result;
+  no post-Esc server request (the pre-POST token check held). The
+  transcript shows `interrupting…` → ▣ ~30 bytes apart (landing within
+  ~one render frame).
+- **2e pre-first-byte (ran LAST as its own `--continue` session —
+  disclosed sequencing deviation):** Esc 0.3 s after Enter, during
+  prompt processing. Server logged `cancel task` **446 ms** after the
+  Esc — b10068 emits an early chunk before prompt eval completes, so the
+  blocked-read residual barely bites on this server. The residual stands
+  as documented for servers that send nothing until the first token.
+  Notice + tail rendered; app quit by Esc+6 s (probe granularity).
+- **2f live fuzzy edit:** tab-indented `app.py` seeded; the model called
+  edit with an UNINDENTED `oldString` (`value = 1`) — a legitimate exact
+  substring match, so the fuzzy fallback was correctly NOT consulted
+  (output marker absent, `Edited /work/app.py (1 replacement(s))`
+  byte-identical v1 shape). Host-verified: `value = 2` with tab
+  indentation preserved. Recorded as the plan anticipated: the binding
+  fuzzy proof is the E3 scripted e2e plus the builder mock smokes (which
+  exercised the fallback in both the gnu and musl binaries).
+- **Watch item (synthesized-result reaction):** in run 4 the model had
+  the `(interrupted by user)` bash result in context and simply
+  proceeded with the new task — no confusion, no spontaneous retry of
+  the aborted command. First live data point: benign.
+- **Harness observation (not a product signal):** scripted keystrokes
+  through the podman-attach pty occasionally coalesce, and crossterm
+  clears its whole parse buffer per event — a batched `EscEsc+Ctrl+D`
+  yields the Esc and silently drops the Ctrl+D, so some landing-probes
+  registered one probe-interval late (also seen once with no Esc
+  involved at all). Characterized with three offline probes (lone
+  late Ctrl+D at idle: quits in <1 s); app-side landing is evidenced
+  frame-adjacent in every interrupted run. Real-terminal input does not
+  batch this way; noted as a follow-up curiosity, not a defect.
+- **Run 1a baseline (driver retry, disclosed):** the first 2a attempt's
+  Esc fired after the turn had already completed (a wrong server-log
+  grep plus the lone-ESC pty ambiguity — fixed by transcript-growth
+  detection and the ESC-ESC encoding, which crossterm 0.28.1 parses as
+  exactly one Esc). That run is kept as a bonus baseline: a full live
+  turn streamed, completed naturally, and saved wire-valid.
+
+Residuals unchanged from the offline record: a FULLY stalled stream
+stays force-quit-only; the plain REPL has no interruption; pre-first-byte
+latency equals one blocked read on silent-until-first-token servers.
+
+Artifacts (driver scripts + stamped logs, raw TUI transcripts, session
+files after 2a and after all runs, tls-probe output, /proc scan evidence
+in the run-3 log, llama server log, wire-validity outputs) kept at
+`/home/dev/temur-t6-interrupt-smoke-2026-07-21/`.
