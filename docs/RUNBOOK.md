@@ -411,3 +411,28 @@ Then: annotated tag `v<ver>`, push main + tag, `gh release create` with
 the four binaries + SHA256SUMS, and a live verification of the README
 one-liner into a temp `HOME` (live download, live checksum, live
 install, version match). Record the result here.
+
+## T7 release acceptance — recorded result
+
+2026-07-23: **v0.1.0 published and live-verified.** Annotated tag `v0.1.0`
+(at `703a1bc`) pushed with main; GitHub release "temur v0.1.0" created
+with the four gated binaries + `SHA256SUMS`:
+<https://github.com/thekeoni1/Temur/releases/tag/v0.1.0>. Preflight at
+the exact tagged HEAD: clean synced tree, full `release.sh` green
+(`check.sh` ALL CHECKS PASSED, leak gate clean over tracked files and
+all commit-message history, 4/4 artifacts gated, all four `--version`
+asserted — x86 natively, ARM via qemu).
+
+Closing gate: the README one-liner run **verbatim** into a temp `HOME` —
+live download of `scripts/install.sh` from the `v0.1.0` tag, live
+artifact + `SHA256SUMS` download from the release, checksum verified,
+installed `temur --version` printed `0.1.0`, and the installed binary's
+sha256 matched the staged `SHA256SUMS` entry byte-for-byte.
+
+Sequencing note (disclosed): at the first closing-gate attempt the repo
+was still private, so the raw one-liner URL 404ed — the installer is
+fail-closed and installed nothing. The operator made the repo public
+(`gh repo edit --visibility public`; gh 2.45.0 predates the newer
+confirmation flag) and the gate re-ran green. ARM binaries remain
+verified at build level + qemu-user per the ROADMAP T7 as-built note;
+real-hardware smoke stays an open follow-up.
