@@ -306,6 +306,36 @@ and kernel-interface behavior differ — so the ARM hardware smoke stays an
 open follow-up until hardware exists; `scripts/release.sh` gates a release
 on all of the above plus the leak grep and checksum staging.
 
+### v0.1.1 — post-release review fixes (as-built, 2026-07-23)
+
+A high-effort adversarially-verified code review of the shipped T6+T7
+range found 10 defects; v0.1.1 fixes all ten. CONFIRMED correctness:
+**F1** block_anchor bound the nearest closing anchor with no middle check
+(silent mis-splice — now: exact-expected-offset preference + a ≥½
+order-preserving middle-similarity guard on the nearest fallback; match
+correctly or refuse); **F2** the installer's GNU-only `sha256sum -c`
+flags broke busybox/Alpine — the core musl audience (now portable
+awk-extract + string compare, unlisted artifact = hard fail; tested in
+busybox itself via `scripts/install_test.sh`); **F3** the fuzzy splice
+kept the model's indentation verbatim, corrupting nested Python-style
+blocks (now: uniform leading-whitespace delta re-applied to newString,
+inconsistent delta refuses); **F4** plain-REPL Ctrl+C orphaned bash
+children (now: `src/signal.rs` SIGINT handler, plain mode only, no
+SA_RESTART; first press = cooperative interrupt via the shared token,
+second press = exit 130; new direct dep `libc`, FFI-only; closes the T6
+exclusion); **F5** an Esc racing a stream error swallowed the error AND
+the streamed partial (now: providers return the partial under cancel,
+the agent's notice carries a surviving real failure). PLAUSIBLE hazards:
+**F6** thinking-only interrupted landings persisted a message that 400s
+on replay (now: push nothing); **F7** Enter+Esc coalescing could drop
+the interrupt via turn-entry `cancel.clear()` (now: the clear moved to
+submission — TUI Submit arm / plain REPL post-read_input — documented
+invariant on `Session::turn`). Cleanups: **F8** matchers precompute
+spans/trims once; **F9** one private `Session::build` behind new/resume;
+**F10** `INTERRUPT_MARKER` const + one synthesis helper. Every fix
+carries regression tests; gates: full `check.sh` per phase, installer
+matrix (host + busybox), SIGINT black-box matrix, full `release.sh`.
+
 ## 4. Invariants (every milestone)
 
 - Ships musl-static: `readelf` shows **no INTERP, no NEEDED** (gated from T0).

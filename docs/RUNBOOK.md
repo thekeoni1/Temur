@@ -447,3 +447,28 @@ above and the README one-liner therefore 404 for non-collaborators
 **by design** until the repo is made public again — that is a pending
 publication decision, not a broken release. The preflight visibility
 check above exists so the next run handles this consciously.
+
+## v0.1.1 — post-release review fixes (release procedure delta)
+
+v0.1.1 fixes the 10 verified findings from the post-release code review
+of the T6+T7 range (F1–F10; per-finding as-built summary in ROADMAP §3,
+"v0.1.1"). Two new committed test scripts join the gates:
+
+- `scripts/install_test.sh [staged-dir]` — the installer matrix: pass /
+  corrupted-artifact / unlisted-artifact, each on the GNU host (curl,
+  file:// mirrors) AND inside `busybox:stable` (busybox sh + wget +
+  sha256sum over busybox httpd). The busybox column fails verbatim on
+  the v0.1.0 installer (F2's GNU-only flags) — it is the reason this
+  release exists.
+- `scripts/sigint_test.sh [binary]` — plain-REPL SIGINT black box (F4):
+  single Ctrl+C mid-bash-turn lands the turn with no orphaned child in
+  /proc and a clean exit on EOF; a second Ctrl+C exits 130.
+
+**DECIDED (operator, at planning): v0.1.1 is tagged and released while
+the repo stays PRIVATE.** The publish preflight above applies unchanged
+EXCEPT the repo-visibility bullet: the closing gate for a private
+release is `gh release download` (authenticated) → checksum verify →
+`scripts/install.sh` against the downloaded artifacts via
+`TEMUR_BASE_URL` → installed `temur --version`. The PUBLIC one-liner
+gate is explicitly deferred to the visibility flip and recorded as the
+one open item when it happens.
