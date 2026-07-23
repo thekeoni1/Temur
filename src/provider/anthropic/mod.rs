@@ -119,7 +119,15 @@ impl AnthropicProvider {
     ) -> Result<ResponseMessage, ProviderError> {
         let mut acc = MessageAccumulator::new();
         for item in SseReader::new(BufReader::new(reader)) {
-            let ev = item.map_err(|e| ProviderError::Stream(e.to_string()))?;
+            let ev = match item {
+                Ok(ev) => ev,
+                // A read/parse error while the user has already cancelled is
+                // the cancellation, not a failure: stop reading and keep the
+                // accumulated partial (F5) — an Err here would throw away
+                // already-streamed content the landing policy wants.
+                Err(_) if cancel.is_set() => break,
+                Err(e) => return Err(ProviderError::Stream(e.to_string())),
+            };
             match &ev {
                 SseEvent::ContentBlockStart { content_block, .. } => {
                     if let ContentBlock::ToolUse { name, .. } = content_block {

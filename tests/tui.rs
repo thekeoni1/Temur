@@ -565,6 +565,122 @@ impl Provider for BlockUntilCancelled {
     }
 }
 
+/// F7 regression: a STALE token (Esc that landed after the previous turn
+/// finished) is cleared at SUBMISSION by the render thread — not by
+/// `Session::turn`, which no longer clears. The turn after a stale Esc
+/// must complete normally.
+#[test]
+fn headless_submission_clears_a_stale_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = AnthropicProvider::new(
+        "https://mock.invalid",
+        "mock-key".into(),
+        Box::new(ReplayTransport::new(vec![format!(
+            "{}/tests/fixtures/text_simple.sse",
+            env!("CARGO_MANIFEST_DIR")
+        )
+        .into()])),
+    );
+    let cfg = SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens: 32_000,
+        system: Some("test system".into()),
+        thinking: false,
+        cwd: dir.path().to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+    };
+    let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
+    // The stale Esc: set after the (zeroth) turn ended, before submission.
+    session.cancel_token().set();
+
+    let mut script: Vec<Event> = "hello"
+        .chars()
+        .map(|c| Event::Key(key(KeyCode::Char(c))))
+        .collect();
+    script.push(Event::Key(key(KeyCode::Enter)));
+
+    let (mut ui, snapshot) = TuiUi::headless(
+        SessionInfo {
+            model: "claude-sonnet-5".into(),
+            thinking: false,
+            cwd: dir.path().display().to_string(),
+            version: "test".into(),
+        },
+        100,
+        30,
+        script,
+        session.cancel_token(),
+    );
+
+    let line = ui.read_input().expect("scripted submit reaches read_input");
+    session.turn(&line, &mut |ev| ui.event(&ev)).unwrap();
+    drop(ui);
+
+    let rows = snapshot.lock().unwrap().clone();
+    let body = rows.join("\n");
+    assert!(
+        !body.contains("turn interrupted"),
+        "stale token must be wiped at submission:\n{body}"
+    );
+    assert!(body.contains("Hello, world!"), "normal completion:\n{body}");
+}
+
+/// F7 regression: coalesced Enter+Esc. The render thread clears the token
+/// in the Submit arm BEFORE forwarding the line, and processes the Esc
+/// right after — with the old turn-entry clear, `Session::turn` (agent
+/// thread) could wipe that Esc and the interrupt was lost (this test then
+/// hangs on the blocking provider). Now the interrupt deterministically
+/// survives: clear-at-submission is ordered before the Esc on the SAME
+/// thread, and nothing later clears the token.
+#[test]
+fn headless_coalesced_enter_esc_interrupt_survives() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens: 32_000,
+        system: Some("test system".into()),
+        thinking: false,
+        cwd: dir.path().to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+    };
+    let mut session = Session::new(Box::new(BlockUntilCancelled), Registry::standard(), cfg);
+
+    let mut script: Vec<Event> = "race me"
+        .chars()
+        .map(|c| Event::Key(key(KeyCode::Char(c))))
+        .collect();
+    script.push(Event::Key(key(KeyCode::Enter)));
+    script.push(Event::Key(key(KeyCode::Esc)));
+
+    let (mut ui, snapshot) = TuiUi::headless(
+        SessionInfo {
+            model: "claude-sonnet-5".into(),
+            thinking: false,
+            cwd: dir.path().display().to_string(),
+            version: "test".into(),
+        },
+        100,
+        30,
+        script,
+        session.cancel_token(),
+    );
+
+    let line = ui.read_input().expect("scripted submit reaches read_input");
+    session.turn(&line, &mut |ev| ui.event(&ev)).unwrap();
+    drop(ui);
+
+    let rows = snapshot.lock().unwrap().clone();
+    let body = rows.join("\n");
+    assert!(body.contains("turn interrupted"), "interrupt survives:\n{body}");
+    assert!(body.contains("partial tail"), "kept partial:\n{body}");
+}
+
 /// The full interrupt chain, headless: scripted prompt + Enter + Esc; the
 /// Esc must unblock the agent thread via the shared token, land the turn,
 /// and return to the prompt.

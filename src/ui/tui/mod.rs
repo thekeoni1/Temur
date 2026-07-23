@@ -249,6 +249,12 @@ fn render_loop<B: Backend>(
                     if line == "exit" || line == "quit" {
                         let _ = tx_input.send(None);
                     } else {
+                        // F7: clear the cancel token at SUBMISSION, on the
+                        // same thread that processes Esc — a stale Esc from
+                        // after the previous turn is wiped here, and an Esc
+                        // arriving after this line is a real interrupt that
+                        // `Session::turn` must never clear away.
+                        cancel.clear();
                         app.submit(&line);
                         let _ = tx_input.send(Some(line));
                     }

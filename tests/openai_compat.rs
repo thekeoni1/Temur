@@ -840,3 +840,100 @@ fn cancel_before_first_frame_is_incomplete_without_posting() {
         "a pre-set token must prevent the POST entirely"
     );
 }
+
+// ------------------------------------------------------------- F5 (v0.1.1)
+
+/// Reader that serves a fixed prefix, then sets the cancel token and fails —
+/// modeling a transport error racing the user's Esc with zero timing.
+struct FailAfterPrefix {
+    data: std::io::Cursor<Vec<u8>>,
+    set_on_error: CancelToken,
+}
+
+impl Read for FailAfterPrefix {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.data.read(buf)?;
+        if n == 0 {
+            self.set_on_error.set();
+            return Err(std::io::Error::other("connection reset mid-stream"));
+        }
+        Ok(n)
+    }
+}
+
+struct PartialThenErrorTransport {
+    prefix: Vec<u8>,
+    set_on_error: CancelToken,
+}
+
+impl Transport for PartialThenErrorTransport {
+    fn post_stream(
+        &self,
+        _url: &str,
+        _api_key: &str,
+        _body: &str,
+    ) -> Result<Box<dyn Read>, TransportError> {
+        Ok(Box::new(FailAfterPrefix {
+            data: std::io::Cursor::new(self.prefix.clone()),
+            set_on_error: self.set_on_error.clone(),
+        }))
+    }
+}
+
+/// F5(a), second wire: a read error while the cancel token is set returns
+/// Ok(partial) — the already-streamed chunks survive.
+#[test]
+fn cancel_racing_read_error_keeps_streamed_partial() {
+    let full = std::fs::read_to_string(format!(
+        "{}/tests/fixtures/openai/text_simple.sse",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    // Cut before the finish_reason chunk (the 4th data line).
+    let cut = full
+        .match_indices("data: {")
+        .nth(3)
+        .expect("fixture has at least four chunks")
+        .0;
+    let cancel = CancelToken::new();
+    let provider = OpenAiCompatProvider::new(
+        "http://127.0.0.1:8080/v1",
+        None,
+        Box::new(PartialThenErrorTransport {
+            prefix: full[..cut].into(),
+            set_on_error: cancel.clone(),
+        }),
+    );
+    let msg = provider
+        .stream(&sample_request(), &mut |_| {}, &cancel)
+        .expect("partial must survive an Err that races the cancel");
+    assert!(
+        matches!(&msg.content[0], ContentBlock::Text { text } if text == "Hello, world!"),
+        "streamed text kept: {:?}",
+        msg.content
+    );
+    assert!(msg.stop_reason.is_none(), "cut stream has no stop reason");
+}
+
+/// Control: the same failure with the token clear stays a hard error.
+#[test]
+fn read_error_without_cancel_is_still_an_error() {
+    let full = std::fs::read_to_string(format!(
+        "{}/tests/fixtures/openai/text_simple.sse",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    let cut = full.match_indices("data: {").nth(3).unwrap().0;
+    let provider = OpenAiCompatProvider::new(
+        "http://127.0.0.1:8080/v1",
+        None,
+        Box::new(PartialThenErrorTransport {
+            prefix: full[..cut].into(),
+            set_on_error: CancelToken::new(),
+        }),
+    );
+    let err = provider
+        .stream(&sample_request(), &mut |_| {}, &CancelToken::new())
+        .unwrap_err();
+    assert!(matches!(err, ProviderError::Stream(_)), "got {err:?}");
+}

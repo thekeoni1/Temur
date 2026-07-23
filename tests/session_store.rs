@@ -584,7 +584,7 @@ fn interrupted_turn_shapes_survive_the_resume_seam() {
             input: serde_json::json!({"command": "sleep 60"}),
             input_raw: None,
         }]),
-        tool_result("t1", "[interrupted by user]", true),
+        tool_result("t1", temur::agent::INTERRUPT_MARKER, true),
     ]);
     let (seed, notices) = store::prepare_seed(f);
     assert_eq!(seed.history.len(), 3, "synthesized results are kept");
@@ -592,7 +592,7 @@ fn interrupted_turn_shapes_survive_the_resume_seam() {
     assert!(matches!(
         &seed.history[2].content[0],
         ContentBlock::ToolResult { is_error: true, content, .. }
-            if content == "[interrupted by user]"
+            if content == temur::agent::INTERRUPT_MARKER
     ));
 
     // T6 landing shape B: empty landing — the interrupt arrived before any

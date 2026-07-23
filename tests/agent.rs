@@ -2,7 +2,7 @@
 //! temp dir; the provider is fully scripted — no network.
 
 use temur::agent::events::AgentEvent;
-use temur::agent::{Session, SessionConfig};
+use temur::agent::{Session, SessionConfig, INTERRUPT_MARKER};
 use temur::provider::*;
 use temur::tools::Registry;
 use std::cell::RefCell;
@@ -860,15 +860,16 @@ fn assert_history_wire_valid(history: &[RequestMessage]) {
 }
 
 /// Runs one interrupted turn and applies the assertions every case shares:
-/// turn returns Ok, the "turn interrupted" notice fires, TurnComplete is
-/// last, and the landed history is wire-valid.
+/// turn returns Ok, the "turn interrupted" notice fires (possibly with an
+/// F5 "request had failed" suffix), TurnComplete is last, and the landed
+/// history is wire-valid.
 fn run_interrupted(session: &mut Session, input: &str) -> Vec<AgentEvent> {
     let mut events = vec![];
     session.turn(input, &mut |e| events.push(e)).unwrap();
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, AgentEvent::Notice(n) if n == "turn interrupted")),
+            .any(|e| matches!(e, AgentEvent::Notice(n) if n.starts_with("turn interrupted"))),
         "missing interrupt notice: {events:?}"
     );
     assert!(
@@ -936,7 +937,7 @@ fn interrupt_drops_incomplete_tool_use_and_synthesizes_result_for_kept_one() {
             is_error,
         }] => {
             assert_eq!(tool_use_id, "t1");
-            assert_eq!(content, "[interrupted by user]");
+            assert_eq!(content, INTERRUPT_MARKER);
             assert!(is_error);
         }
         other => panic!("expected one synthesized result: {other:?}"),
@@ -988,8 +989,8 @@ fn interrupt_between_stream_end_and_tool_exec_synthesizes_all() {
     assert_eq!(
         results,
         vec![
-            ("t1", "[interrupted by user]"),
-            ("t2", "[interrupted by user]"),
+            ("t1", INTERRUPT_MARKER),
+            ("t2", INTERRUPT_MARKER),
         ],
         "every kept call gets a synthesized result in ONE message"
     );
@@ -1010,8 +1011,9 @@ fn interrupt_before_first_byte_lands_nothing() {
 
 #[test]
 fn interrupt_treats_transport_error_under_cancel_as_interruption() {
-    // D4: Err + token set is the user's interrupt, not a provider failure —
-    // turn returns Ok and no "provider error" surfaces.
+    // D4 + F5: Err + token set is still the user's interrupt (turn returns
+    // Ok, no fatal "provider error") — but the real failure is no longer
+    // swallowed: the interrupt notice carries it.
     let dir = tempfile::tempdir().unwrap();
     let mut session = interrupt_session(
         dir.path(),
@@ -1024,6 +1026,89 @@ fn interrupt_treats_transport_error_under_cancel_as_interruption() {
             .any(|e| matches!(e, AgentEvent::Notice(n) if n.contains("provider error"))),
         "{events:?}"
     );
+    let notice = notices(&events)
+        .into_iter()
+        .find(|n| n.starts_with("turn interrupted"))
+        .unwrap();
+    assert!(
+        notice.contains("request had failed") && notice.contains("reset by peer"),
+        "real failure must surface in the notice: {notice}"
+    );
+    assert_eq!(session.history().len(), 1);
+}
+
+#[test]
+fn interrupt_with_api_error_surfaces_the_error_text() {
+    // F5(b): the user pressed Esc while the request had ALREADY failed with
+    // a real API error (e.g. 401) — the notice must include the API error
+    // text, not swallow it into a bare "turn interrupted".
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = interrupt_session(
+        dir.path(),
+        vec![(
+            true,
+            Err(ProviderError::Api {
+                status: 401,
+                kind: "authentication_error".into(),
+                message: "invalid x-api-key".into(),
+            }),
+        )],
+    );
+    let events = run_interrupted(&mut session, "go");
+    let notice = notices(&events)
+        .into_iter()
+        .find(|n| n.starts_with("turn interrupted"))
+        .unwrap();
+    assert!(
+        notice.contains("request had failed") && notice.contains("invalid x-api-key"),
+        "API error text must reach the notice: {notice}"
+    );
+    assert_eq!(session.history().len(), 1, "nothing to land");
+}
+
+#[test]
+fn interrupt_before_first_byte_keeps_the_plain_notice() {
+    // F5 boundary: Incomplete is the provider's own "cancelled before
+    // anything happened", not a failure — the notice stays exactly
+    // "turn interrupted" with no suffix.
+    let dir = tempfile::tempdir().unwrap();
+    let mut session =
+        interrupt_session(dir.path(), vec![(true, Err(ProviderError::Incomplete))]);
+    let events = run_interrupted(&mut session, "go");
+    assert!(
+        notices(&events).iter().any(|n| n == "turn interrupted"),
+        "no suffix for the self-inflicted Incomplete: {events:?}"
+    );
+}
+
+#[test]
+fn interrupt_with_signed_thinking_only_pushes_nothing() {
+    // F6: a landing that keeps only thinking blocks (no text, no tool_use)
+    // must push NOTHING — a thinking-only assistant message is rejected on
+    // replay (400), which would brick the saved session.
+    let dir = tempfile::tempdir().unwrap();
+    let signed = ContentBlock::Thinking {
+        thinking: "a full thought".into(),
+        signature: Some("sig".into()),
+    };
+    let mut session = interrupt_session(dir.path(), vec![(true, Ok(partial(vec![signed])))]);
+    run_interrupted(&mut session, "go");
+    assert_eq!(
+        session.history().len(),
+        1,
+        "history must end at the user prompt"
+    );
+}
+
+#[test]
+fn interrupt_with_redacted_thinking_only_pushes_nothing() {
+    // F6, redacted variant: kept-but-not-substantive content lands nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let redacted = ContentBlock::RedactedThinking {
+        data: "opaque".into(),
+    };
+    let mut session = interrupt_session(dir.path(), vec![(true, Ok(partial(vec![redacted])))]);
+    run_interrupted(&mut session, "go");
     assert_eq!(session.history().len(), 1);
 }
 
@@ -1073,25 +1158,26 @@ fn interrupt_with_only_droppable_content_lands_nothing() {
 }
 
 #[test]
-fn stale_token_is_cleared_at_turn_entry() {
+fn turn_no_longer_clears_the_token_callers_clear_at_submission() {
+    // F7 INVARIANT INVERSION: `Session::turn` used to clear the token at
+    // entry as a stale-flag defense, but that clear raced a real Esc landing
+    // between submission and turn entry and silently dropped the interrupt.
+    // The clear now belongs to the submitting component (TUI Submit arm /
+    // plain REPL after read_input — see tests/tui.rs for the seam test);
+    // a token that is set when turn runs IS an interrupt.
     let dir = tempfile::tempdir().unwrap();
     let mut session = interrupt_session(
         dir.path(),
         vec![(false, Ok(msg(vec![text("Hi there")], StopReason::EndTurn)))],
     );
-    // Esc landed after the previous turn already finished.
     session.cancel_token().set();
-
-    let mut events = vec![];
-    session.turn("hello", &mut |e| events.push(e)).unwrap();
-
+    let events = run_interrupted(&mut session, "hello");
     assert!(
-        !events
+        events
             .iter()
-            .any(|e| matches!(e, AgentEvent::Notice(n) if n == "turn interrupted")),
-        "a stale token must not cancel the next turn: {events:?}"
+            .any(|e| matches!(e, AgentEvent::Notice(n) if n.starts_with("turn interrupted"))),
+        "a set token at turn time is an interrupt now: {events:?}"
     );
-    assert_eq!(session.history().len(), 2, "normal completion");
 }
 
 #[test]
@@ -1154,7 +1240,7 @@ fn interrupt_mid_batch_aborts_running_bash_and_synthesizes_the_rest() {
                 "aborted bash carries the marker: {c1}"
             );
             assert_eq!(id2, "t2");
-            assert_eq!(c2, "[interrupted by user]", "pending call synthesized");
+            assert_eq!(c2, INTERRUPT_MARKER, "pending call synthesized");
         }
         other => panic!("expected two error results in one message: {other:?}"),
     }

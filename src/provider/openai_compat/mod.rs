@@ -103,7 +103,14 @@ impl OpenAiCompatProvider {
     ) -> Result<ResponseMessage, ProviderError> {
         let mut acc = ChunkAccumulator::new();
         for frame in SseFrames::new(BufReader::new(reader)) {
-            let data = frame.map_err(|e| ProviderError::Stream(e.to_string()))?;
+            let data = match frame {
+                Ok(data) => data,
+                // A read error while the user has already cancelled is the
+                // cancellation, not a failure: keep the accumulated partial
+                // (F5) instead of throwing away already-streamed content.
+                Err(_) if cancel.is_set() => break,
+                Err(e) => return Err(ProviderError::Stream(e.to_string())),
+            };
             if data.trim() == "[DONE]" {
                 break;
             }
@@ -115,10 +122,15 @@ impl OpenAiCompatProvider {
                     continue;
                 }
             }
-            let chunk: types::Chunk = serde_json::from_str(&data).map_err(|e| {
-                let snippet: String = data.chars().take(120).collect();
-                ProviderError::Stream(format!("{e} (data: {snippet})"))
-            })?;
+            let chunk: types::Chunk = match serde_json::from_str::<types::Chunk>(&data) {
+                Ok(chunk) => chunk,
+                // Same rule for a chunk cut mid-JSON by the cancel race.
+                Err(_) if cancel.is_set() => break,
+                Err(e) => {
+                    let snippet: String = data.chars().take(120).collect();
+                    return Err(ProviderError::Stream(format!("{e} (data: {snippet})")));
+                }
+            };
             acc.push(&chunk, on_event);
             // Cooperative cancel, checked once per received frame — AFTER the
             // frame is accumulated, so everything fully received is kept and

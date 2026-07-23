@@ -99,29 +99,20 @@ pub struct SessionSnapshot<'a> {
     pub last_context_used: Option<u64>,
 }
 
+/// The synthesized error result every never-executed `tool_use` is answered
+/// with when a turn is interrupted (wire rule: every id answered in the next
+/// user message). One constant, one builder — the shape exists nowhere else.
+pub const INTERRUPT_MARKER: &str = "[interrupted by user]";
+
 impl Session {
     pub fn new(provider: Box<dyn Provider>, registry: Registry, cfg: SessionConfig) -> Self {
-        let cancel = CancelToken::new();
-        let mut tool_ctx = ToolCtx::new(cfg.cwd.clone());
-        // One token per session: an Esc must reach a running bash too.
-        tool_ctx.cancel = cancel.clone();
-        Session {
-            provider,
-            registry,
-            tool_ctx,
-            cfg,
-            history: Vec::new(),
-            session_usage: Usage::default(),
-            last_context_used: None,
-            context_warned: false,
-            cancel,
-        }
+        Self::build(provider, registry, cfg, None)
     }
 
-    /// Rebuild a session from a saved seed. Mirrors [`Session::new`] — same
-    /// provider, registry, and config path — and differs only in the state it
-    /// starts from. Infallible by construction: every decision about what is
-    /// safe to replay was already made in `session_store::prepare_seed`.
+    /// Rebuild a session from a saved seed. Same provider, registry, and
+    /// config path as [`Session::new`]; differs only in the state it starts
+    /// from. Infallible by construction: every decision about what is safe to
+    /// replay was already made in `session_store::prepare_seed`.
     ///
     /// `context_warned` is deliberately NOT seeded: the context pre-warning is
     /// once per process, and a fresh process that is about to overflow should
@@ -132,18 +123,34 @@ impl Session {
         cfg: SessionConfig,
         seed: SessionSeed,
     ) -> Self {
+        Self::build(provider, registry, cfg, Some(seed))
+    }
+
+    /// The one constructor: fresh (`seed: None`) or seeded. Cancel/ToolCtx
+    /// wiring exists exactly once, here.
+    fn build(
+        provider: Box<dyn Provider>,
+        registry: Registry,
+        cfg: SessionConfig,
+        seed: Option<SessionSeed>,
+    ) -> Self {
         let cancel = CancelToken::new();
         let mut tool_ctx = ToolCtx::new(cfg.cwd.clone());
-        tool_ctx.todos = seed.todos;
+        // One token per session: an Esc must reach a running bash too.
         tool_ctx.cancel = cancel.clone();
+        let (history, session_usage, todos, last_context_used) = match seed {
+            Some(s) => (s.history, s.session_usage, s.todos, s.last_context_used),
+            None => (Vec::new(), Usage::default(), Vec::new(), None),
+        };
+        tool_ctx.todos = todos;
         Session {
             provider,
             registry,
             tool_ctx,
             cfg,
-            history: seed.history,
-            session_usage: seed.session_usage,
-            last_context_used: seed.last_context_used,
+            history,
+            session_usage,
+            last_context_used,
             context_warned: false,
             cancel,
         }
@@ -173,14 +180,17 @@ impl Session {
     /// Run one user turn to completion (which may involve many provider
     /// round-trips for tool use). Tool failures feed back to the model;
     /// only provider-level failures return `Err`.
+    ///
+    /// INVARIANT (F7): the CALLER clears the cancel token at submission
+    /// time — the component that serializes input (the TUI render thread's
+    /// Submit arm; the plain REPL right after `read_input`). `turn` itself
+    /// never clears it: a clear here would race an Esc/Ctrl+C that landed
+    /// between submission and turn entry and silently drop the interrupt.
     pub fn turn(
         &mut self,
         user_input: &str,
         ui: &mut dyn FnMut(AgentEvent),
     ) -> Result<(), AgentError> {
-        // Stale-flag defense: an Esc that landed after the previous turn
-        // already finished must not cancel this one.
-        self.cancel.clear();
         self.history.push(RequestMessage {
             role: Role::User,
             content: vec![ContentBlock::Text {
@@ -236,10 +246,11 @@ impl Session {
                 &self.cancel,
             );
             if self.cancel.is_set() {
-                // Interrupted. A transport error that raced the cancel is
-                // deliberately treated as the interruption, not a provider
-                // failure — the user asked for the turn to stop.
-                self.land_interrupted(result.ok(), &mut turn_usage, ui);
+                // Interrupted. An error that raced the cancel still ends the
+                // turn as an interruption — the user asked for it to stop —
+                // but a REAL failure (pre-stream 401, mid-stream API error)
+                // is surfaced in the notice instead of being swallowed (F5).
+                self.land_interrupted(result, &mut turn_usage, ui);
                 break;
             }
             let msg = result?;
@@ -384,16 +395,7 @@ impl Session {
                         // user message) holds.
                         if self.cancel.is_set() {
                             interrupted = true;
-                            ui(AgentEvent::ToolEnd {
-                                name: name.clone(),
-                                title: name,
-                                is_error: true,
-                            });
-                            results.push(ContentBlock::ToolResult {
-                                tool_use_id: id,
-                                content: "[interrupted by user]".into(),
-                                is_error: true,
-                            });
+                            results.push(synth_interrupted(&id, &name, ui));
                             continue;
                         }
                         let (output, title, is_error) = match input_raw {
@@ -595,57 +597,75 @@ impl Session {
     /// whose arguments parsed. Dropped: tool_use still mid-JSON
     /// (`input_raw`), unsigned thinking (rejected on replay), unknown
     /// blocks. Kept tool_use blocks are answered immediately with
-    /// synthesized error results — they were never executed. If nothing is
-    /// kept, nothing is pushed: history ends with the plain user prompt and
-    /// the resume seam's dangling-prompt rule handles it.
+    /// synthesized error results — they were never executed. If nothing
+    /// SUBSTANTIVE is kept — no text and no tool_use, e.g. only thinking
+    /// blocks (F6) — nothing is pushed: a thinking-only assistant message
+    /// is rejected on replay, so history ends with the plain user prompt
+    /// and the resume seam's dangling-prompt rule handles it.
+    ///
+    /// An `Err` landing here means the request had actually failed while
+    /// the user interrupted (pre-stream 401, mid-stream API error): the
+    /// turn still ends as an interruption, but the notice carries the error
+    /// instead of swallowing it (F5). `Incomplete` is the provider's own
+    /// "cancelled before anything happened" — not a failure worth wording.
     fn land_interrupted(
         &mut self,
-        partial: Option<crate::provider::ResponseMessage>,
+        result: Result<crate::provider::ResponseMessage, ProviderError>,
         turn_usage: &mut Usage,
         ui: &mut dyn FnMut(AgentEvent),
     ) {
-        if let Some(msg) = partial {
+        let notice = match &result {
+            Ok(_) | Err(ProviderError::Incomplete) => "turn interrupted".to_string(),
+            Err(e) => format!("turn interrupted (request had failed: {e})"),
+        };
+        if let Ok(msg) = result {
             turn_usage.add(&msg.usage);
             self.session_usage.add(&msg.usage);
-            // Close every tool cell the stream opened — kept AND dropped —
-            // preserving the FIFO ToolStart/ToolEnd pairing (docs/TUI.md).
-            // A ToolStart only fires once a tool_use block has a name, so
-            // an unnamed quirk-server block never opened a cell.
-            for b in &msg.content {
-                if let ContentBlock::ToolUse { name, .. } = b {
-                    if !name.is_empty() {
-                        ui(AgentEvent::ToolEnd {
-                            name: name.clone(),
-                            title: name.clone(),
-                            is_error: true,
-                        });
-                    }
-                }
-            }
-            let kept: Vec<ContentBlock> = msg
-                .content
-                .into_iter()
-                .filter(|b| match b {
+            // One pass in stream order: keep-or-drop each block, close every
+            // tool cell the stream opened — kept AND dropped — preserving
+            // the FIFO ToolStart/ToolEnd pairing (docs/TUI.md), and answer
+            // each kept tool_use with the synthesized result. A ToolStart
+            // only fires once a tool_use block has a name, so an unnamed
+            // quirk-server block never opened a cell (and gets no ToolEnd).
+            let mut kept: Vec<ContentBlock> = Vec::new();
+            let mut results: Vec<ContentBlock> = Vec::new();
+            for b in msg.content {
+                let keep = match &b {
                     ContentBlock::Text { text } => !text.is_empty(),
                     ContentBlock::Thinking { signature, .. } => signature.is_some(),
                     ContentBlock::RedactedThinking { .. } => true,
-                    ContentBlock::ToolUse { input_raw, .. } => input_raw.is_none(),
+                    ContentBlock::ToolUse {
+                        id,
+                        name,
+                        input_raw,
+                        ..
+                    } => {
+                        if input_raw.is_none() {
+                            results.push(synth_interrupted(id, name, ui));
+                            true
+                        } else {
+                            // Dropped mid-JSON call: close its cell only.
+                            if !name.is_empty() {
+                                ui(AgentEvent::ToolEnd {
+                                    name: name.clone(),
+                                    title: name.clone(),
+                                    is_error: true,
+                                });
+                            }
+                            false
+                        }
+                    }
                     // Impossible in assistant content / never replayed.
                     ContentBlock::ToolResult { .. } | ContentBlock::Unknown => false,
-                })
-                .collect();
-            if !kept.is_empty() {
-                let results: Vec<ContentBlock> = kept
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::ToolUse { id, .. } => Some(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: "[interrupted by user]".into(),
-                            is_error: true,
-                        }),
-                        _ => None,
-                    })
-                    .collect();
+                };
+                if keep {
+                    kept.push(b);
+                }
+            }
+            let substantive = kept
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { .. } | ContentBlock::ToolUse { .. }));
+            if substantive {
                 self.history.push(RequestMessage {
                     role: Role::Assistant,
                     content: kept,
@@ -658,6 +678,25 @@ impl Session {
                 }
             }
         }
-        ui(AgentEvent::Notice("turn interrupted".into()));
+        ui(AgentEvent::Notice(notice));
+    }
+}
+
+/// F10: the one builder for a synthesized interrupt answer — closes the
+/// call's UI cell (when a named block opened one) and returns the
+/// [`INTERRUPT_MARKER`] error result the never-executed call is answered
+/// with. Every synthesis site goes through here.
+fn synth_interrupted(id: &str, name: &str, ui: &mut dyn FnMut(AgentEvent)) -> ContentBlock {
+    if !name.is_empty() {
+        ui(AgentEvent::ToolEnd {
+            name: name.to_string(),
+            title: name.to_string(),
+            is_error: true,
+        });
+    }
+    ContentBlock::ToolResult {
+        tool_use_id: id.to_string(),
+        content: INTERRUPT_MARKER.into(),
+        is_error: true,
     }
 }

@@ -320,8 +320,16 @@ fn repl(
         ui.event(&AgentEvent::Notice(n.clone()));
     }
 
+    // F7: the cancel token is cleared at SUBMISSION by whichever component
+    // serializes input. In TUI mode that is the render thread's Submit arm
+    // (same thread as Esc — race-free); here it is the plain REPL, right
+    // after read_input returns and before the turn is dispatched.
+    let plain_cancel = session.cancel_token();
     let mut save_failure_notified = false;
     while let Some(line) = ui.read_input() {
+        if !use_tui {
+            plain_cancel.clear();
+        }
         if let Err(e) = session.turn(&line, &mut |ev| ui.event(&ev)) {
             // Provider-level failure: surface through the UI seam and keep
             // the session alive. (Behavior note, docs/TUI.md: in the plain
