@@ -472,3 +472,32 @@ release is `gh release download` (authenticated) → checksum verify →
 `TEMUR_BASE_URL` → installed `temur --version`. The PUBLIC one-liner
 gate is explicitly deferred to the visibility flip and recorded as the
 one open item when it happens.
+
+## v0.1.1 release acceptance — recorded result
+
+2026-07-23: **v0.1.1 published (repo PRIVATE by decision) and
+closing-gate verified.** Annotated tag `v0.1.1` (at `fa702a2`) pushed
+with main (`a3220d6..fa702a2`); release "temur v0.1.1" created with the
+four gated binaries + `SHA256SUMS`:
+<https://github.com/thekeoni1/Temur/releases/tag/v0.1.1> (404s for
+non-collaborators while private — by design). Preflight at the exact
+tagged tree: clean, full `release.sh` green (check.sh ALL CHECKS PASSED
+both paths, leak gate clean over tracked files + all commit-message
+history, version/target skew gate OK, 4/4 artifacts gated, all four
+`--version` asserted — x86 natively, ARM via qemu), installer matrix
+6/6 (host + busybox), SIGINT matrix 2/2, `gh auth` OK, visibility
+confirmed PRIVATE pre-push.
+
+Closing gate (private variant, run in a fresh temp dir + temp HOME):
+authenticated `gh release download v0.1.1` → `sha256sum -c SHA256SUMS`
+all four OK → `scripts/install.sh` against the downloaded artifacts via
+`TEMUR_BASE_URL` (fetched, verified, installed) → installed
+`temur --version` printed `0.1.1` → installed binary's sha256 equals
+the downloaded AND locally-staged `SHA256SUMS` entries byte-for-byte
+(`a901884f…be3f6`, x86_64 artifact).
+
+**OPEN ITEM (the only one): the PUBLIC one-liner gate.** When the
+operator flips visibility, run the README one-liner verbatim into a
+temp `HOME` (live raw-URL download of install.sh at the `v0.1.1` tag,
+live artifact + SHA256SUMS from the release, checksum verified,
+`--version` 0.1.1) and record the result here.
