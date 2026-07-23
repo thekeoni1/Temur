@@ -7,7 +7,7 @@
 # (cpuinfo path, test seam for the SSE2 check).
 set -eu
 
-VERSION=0.1.0
+VERSION=0.1.1
 TAG="v$VERSION"
 BASE="${TEMUR_BASE_URL:-https://github.com/thekeoni1/Temur/releases/download/$TAG}"
 DIR="${TEMUR_INSTALL_DIR:-$HOME/.local/bin}"
@@ -48,8 +48,14 @@ echo "downloading $ART ..."
 fetch "$BASE/$ART" "$TMP/$ART"           || fail "download failed: $BASE/$ART"
 fetch "$BASE/SHA256SUMS" "$TMP/SHA256SUMS" || fail "download failed: $BASE/SHA256SUMS"
 
-( cd "$TMP" && sha256sum -c --ignore-missing --quiet SHA256SUMS ) \
-    || fail "CHECKSUM VERIFICATION FAILED — not installing."
+# Portable verify (busybox/Alpine ship a sha256sum without --ignore-missing
+# or --quiet): extract our artifact's expected hash from SHA256SUMS and
+# compare strings. An artifact missing from SHA256SUMS is a hard fail — an
+# empty expectation must never verify.
+EXPECTED=$(awk -v f="$ART" '$2 == f { print $1; exit }' "$TMP/SHA256SUMS")
+[ -n "$EXPECTED" ] || fail "$ART is not listed in SHA256SUMS — not installing."
+ACTUAL=$(sha256sum "$TMP/$ART" | awk '{ print $1 }')
+[ "$ACTUAL" = "$EXPECTED" ] || fail "CHECKSUM VERIFICATION FAILED — not installing."
 echo "checksum verified."
 
 mkdir -p "$DIR"
