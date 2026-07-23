@@ -73,8 +73,9 @@ while IFS= read -r pat; do
     fi
 done < "$CLEAN_PATTERNS"
 
-# Embedded generic key-shape scan (repo-safe: shapes, not secrets).
-GENERIC='sk-ant-|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|BEGIN [A-Z ]*PRIVATE KEY'
+# Embedded generic key-shape scan (repo-safe: each shape requires the key
+# body, so doc mentions of a bare prefix — or this very line — don't match).
+GENERIC='sk-ant-[a-zA-Z0-9_-]{8}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|BEGIN [A-Z ]*PRIVATE KEY'
 if git grep -E "$GENERIC" -- . >/dev/null 2>&1; then
     echo "FAIL: generic key-shape scan matched tracked files:"
     git grep -E "$GENERIC" -- . | head -20
