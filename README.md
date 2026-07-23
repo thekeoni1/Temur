@@ -54,10 +54,37 @@ call), not excluded from the score.
 
 ## Install
 
-No prebuilt binaries yet — build from source. The musl-static recipe is
-checked into `.cargo/config.toml`: rust-lld links against the toolchain's
-bundled musl, and the host `gcc` (with 32-bit support, e.g. gcc-multilib)
-compiles ring's C — no musl-gcc or musl-tools package needed.
+Prebuilt static binaries ship for `x86_64`, `aarch64`, `armv7` (hard-float —
+Raspberry Pi 2/3+ and other 32-bit ARM userlands), and `i686` (SSE2
+required). Because they are musl-static they run on any Linux distro,
+including Alpine and other musl systems — no glibc needed.
+
+One-liner (detects your arch, downloads, verifies the checksum, installs to
+`~/.local/bin`; refuses to install anything unverified):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/thekeoni1/Temur/v0.1.0/scripts/install.sh | sh
+```
+
+Piping to `sh` is a trust decision — [read the script
+first](https://github.com/thekeoni1/Temur/blob/v0.1.0/scripts/install.sh) if
+you prefer. The checksum step defends against transport corruption and a
+mismatched artifact; it is not a substitute for trusting the release source,
+since the sums come from the same place as the binaries.
+
+Manual install (example: x86_64; substitute your triple):
+
+```sh
+curl -fsSLO https://github.com/thekeoni1/Temur/releases/download/v0.1.0/temur-v0.1.0-x86_64-unknown-linux-musl
+curl -fsSLO https://github.com/thekeoni1/Temur/releases/download/v0.1.0/SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+install -m 755 temur-v0.1.0-x86_64-unknown-linux-musl ~/.local/bin/temur
+```
+
+Build from source (any Rust-supported target, e.g. pre-armv7 ARM): the
+musl-static recipe is checked into `.cargo/config.toml` — rust-lld links
+against the toolchain's bundled musl, and the host or cross `gcc` compiles
+ring's C — no musl-gcc or musl-tools package needed.
 
 ```sh
 rustup target add i686-unknown-linux-musl
