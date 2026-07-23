@@ -29,9 +29,15 @@ pub enum FuzzyResult {
 
 /// The fallback pipeline: line-trimmed first, block-anchor only if the
 /// stricter matcher found NOTHING (never to disambiguate — ambiguity is
-/// final at the matcher that found it).
+/// final at the matcher that found it). Line spans and trimmed line
+/// vectors are computed ONCE here and shared by both matchers.
 pub fn fuzzy_match(content: &str, old: &str) -> FuzzyResult {
-    let candidates = line_trimmed(content, old);
+    let spans = line_spans(content);
+    let trimmed: Vec<&str> = spans.iter().map(|&(s, e)| content[s..e].trim()).collect();
+    let (lines, trailing_newline) = old_lines(old);
+    let old_trimmed: Vec<&str> = lines.iter().map(|l| l.trim()).collect();
+
+    let candidates = line_trimmed_impl(content, &spans, &trimmed, &old_trimmed, trailing_newline);
     match candidates.len() {
         1 => {
             return FuzzyResult::Unique {
@@ -42,7 +48,7 @@ pub fn fuzzy_match(content: &str, old: &str) -> FuzzyResult {
         n if n >= 2 => return FuzzyResult::Ambiguous { count: n },
         _ => {}
     }
-    let candidates = block_anchor(content, old);
+    let candidates = block_anchor_impl(content, &spans, &trimmed, &old_trimmed, trailing_newline);
     match candidates.len() {
         1 => FuzzyResult::Unique {
             range: candidates.into_iter().next().unwrap(),
@@ -112,22 +118,34 @@ fn range_for(
 /// whitespace differences are forgiven, interior differences are not.
 pub fn line_trimmed(content: &str, old: &str) -> Vec<Range<usize>> {
     let spans = line_spans(content);
+    let trimmed: Vec<&str> = spans.iter().map(|&(s, e)| content[s..e].trim()).collect();
     let (lines, trailing_newline) = old_lines(old);
-    if lines.is_empty() || spans.len() < lines.len() {
+    let old_trimmed: Vec<&str> = lines.iter().map(|l| l.trim()).collect();
+    line_trimmed_impl(content, &spans, &trimmed, &old_trimmed, trailing_newline)
+}
+
+fn line_trimmed_impl(
+    content: &str,
+    spans: &[(usize, usize)],
+    trimmed: &[&str],
+    old_trimmed: &[&str],
+    trailing_newline: bool,
+) -> Vec<Range<usize>> {
+    if old_trimmed.is_empty() || spans.len() < old_trimmed.len() {
         return Vec::new();
     }
     let mut out = Vec::new();
-    for i in 0..=(spans.len() - lines.len()) {
-        let all = lines.iter().enumerate().all(|(j, l)| {
-            let (s, e) = spans[i + j];
-            content[s..e].trim() == l.trim()
-        });
+    for i in 0..=(spans.len() - old_trimmed.len()) {
+        let all = old_trimmed
+            .iter()
+            .enumerate()
+            .all(|(j, l)| trimmed[i + j] == *l);
         if all {
             out.push(range_for(
                 content,
-                &spans,
+                spans,
                 i,
-                i + lines.len() - 1,
+                i + old_trimmed.len() - 1,
                 trailing_newline,
             ));
         }
@@ -136,34 +154,146 @@ pub fn line_trimmed(content: &str, old: &str) -> Vec<Range<usize>> {
 }
 
 /// Block-anchor matcher, for `old` blocks of >= 3 lines: the trimmed first
-/// and last lines are anchors; a candidate is a first-anchor line paired
-/// with the NEAREST closing anchor at least two lines below (so the middle
-/// may differ — even in line count). A single candidate is accepted on the
-/// anchors alone (OpenCode ships a 0.0 single-candidate threshold — its
-/// middle-similarity score never rejects one either).
+/// and last lines are anchors. For each first-anchor line, the closing
+/// anchor is bound in two steps:
+///
+/// 1. If the line at the EXACT expected offset (`i + old_lines - 1`)
+///    trimmed-matches the closing anchor, bind there — the common
+///    weak-model case: same block shape, middle content differs.
+/// 2. Otherwise fall back to the NEAREST closing anchor at least two lines
+///    below, but ONLY if the candidate's middle passes a deterministic
+///    similarity guard: at least half of the search block's middle lines
+///    must appear trimmed-equal, order-preserving, in the candidate middle.
+///    Without the guard a common closing line (`}`) could bind to an inner
+///    brace or a foreign block and silently splice away real code.
+///
+/// Still zero Levenshtein; >= 2 surviving candidates remain an error.
 pub fn block_anchor(content: &str, old: &str) -> Vec<Range<usize>> {
     let spans = line_spans(content);
+    let trimmed: Vec<&str> = spans.iter().map(|&(s, e)| content[s..e].trim()).collect();
     let (lines, trailing_newline) = old_lines(old);
-    if lines.len() < 3 {
+    let old_trimmed: Vec<&str> = lines.iter().map(|l| l.trim()).collect();
+    block_anchor_impl(content, &spans, &trimmed, &old_trimmed, trailing_newline)
+}
+
+fn block_anchor_impl(
+    content: &str,
+    spans: &[(usize, usize)],
+    trimmed: &[&str],
+    old_trimmed: &[&str],
+    trailing_newline: bool,
+) -> Vec<Range<usize>> {
+    if old_trimmed.len() < 3 {
         return Vec::new();
     }
-    let first = lines[0].trim();
-    let last = lines[lines.len() - 1].trim();
+    let first = old_trimmed[0];
+    let last = *old_trimmed.last().unwrap();
+    let middle = &old_trimmed[1..old_trimmed.len() - 1];
     let mut out = Vec::new();
     for i in 0..spans.len() {
-        let (s, e) = spans[i];
-        if content[s..e].trim() != first {
+        if trimmed[i] != first {
             continue;
         }
-        for j in (i + 2)..spans.len() {
-            let (s2, e2) = spans[j];
-            if content[s2..e2].trim() == last {
-                out.push(range_for(content, &spans, i, j, trailing_newline));
-                break; // nearest closing anchor only
-            }
+        let expected = i + old_trimmed.len() - 1; // >= i+2 (old has >= 3 lines)
+        let close = if expected < spans.len() && trimmed[expected] == last {
+            Some(expected)
+        } else {
+            ((i + 2)..spans.len())
+                .find(|&j| trimmed[j] == last)
+                .filter(|&j| middle_similar(middle, &trimmed[i + 1..j]))
+        };
+        if let Some(j) = close {
+            out.push(range_for(content, spans, i, j, trailing_newline));
         }
     }
     out
+}
+
+/// The nearest-fallback similarity guard: the fraction of `search_middle`
+/// lines that appear trimmed-equal, order-preserving (subsequence), in
+/// `candidate_middle` must be >= 1/2.
+fn middle_similar(search_middle: &[&str], candidate_middle: &[&str]) -> bool {
+    let mut matched: usize = 0;
+    let mut pos: usize = 0;
+    for s in search_middle {
+        if let Some(k) = candidate_middle[pos..].iter().position(|c| c == s) {
+            matched += 1;
+            pos += k + 1;
+        }
+    }
+    matched * 2 >= search_middle.len()
+}
+
+/// Leading whitespace of a line (everything before the first
+/// non-whitespace character; the whole line if it is blank).
+fn leading_ws(line: &str) -> &str {
+    &line[..line.len() - line.trim_start().len()]
+}
+
+/// Strip the longest common char suffix from a pair of leading-whitespace
+/// strings, leaving only the differing prefixes — the per-line delta.
+fn ws_delta<'a>(old_ws: &'a str, file_ws: &'a str) -> (&'a str, &'a str) {
+    let mut o = old_ws.char_indices().rev();
+    let mut f = file_ws.char_indices().rev();
+    let (mut oi, mut fi) = (old_ws.len(), file_ws.len());
+    loop {
+        match (o.next(), f.next()) {
+            (Some((io, co)), Some((jf, cf))) if co == cf => {
+                oi = io;
+                fi = jf;
+            }
+            _ => break,
+        }
+    }
+    (&old_ws[..oi], &file_ws[..fi])
+}
+
+/// F3: uniform indentation-delta re-application for the line-trimmed path.
+///
+/// For every matched non-blank line pair, the leading-whitespace delta
+/// (old line vs file line, longest common suffix removed) must be
+/// IDENTICAL; that delta is then re-applied to each non-blank `new` line
+/// that carries the old prefix (others are spliced verbatim). Returns the
+/// adjusted replacement, or `None` when the delta is inconsistent across
+/// lines — the caller rejects the candidate rather than guessing, because
+/// splicing the model's indentation verbatim corrupts
+/// indentation-significant blocks (nested Python was the review case).
+pub fn reindent_replacement(
+    content: &str,
+    range: &Range<usize>,
+    old: &str,
+    new: &str,
+) -> Option<String> {
+    let (old_ls, _) = old_lines(old);
+    let matched = &content[range.clone()];
+    let mut delta: Option<(&str, &str)> = None;
+    for (ol, fl) in old_ls.iter().zip(matched.split('\n')) {
+        if ol.trim().is_empty() {
+            continue; // blank lines carry no indentation signal
+        }
+        let d = ws_delta(leading_ws(ol), leading_ws(fl));
+        match delta {
+            None => delta = Some(d),
+            Some(prev) if prev == d => {}
+            Some(_) => return None, // inconsistent — reject the candidate
+        }
+    }
+    match delta {
+        None | Some(("", "")) => Some(new.to_string()), // no signal / no delta
+        Some((from, to)) => {
+            let adjusted: Vec<String> = new
+                .split('\n')
+                .map(|line| {
+                    if !line.trim().is_empty() && line.starts_with(from) {
+                        format!("{to}{}", &line[from.len()..])
+                    } else {
+                        line.to_string()
+                    }
+                })
+                .collect();
+            Some(adjusted.join("\n"))
+        }
+    }
 }
 
 /// True if the file uses CRLF line endings.
@@ -198,8 +328,8 @@ mod tests {
         let content = "fn main() {\n\tlet x = 1;\n}\n";
         let (range, m) = unique(content, "    let x = 1;");
         assert_eq!(m, Matcher::LineTrimmed);
-        // The replacement is spliced VERBATIM — the model's indentation
-        // wins inside the block.
+        // The MATCHER splices verbatim — indentation correction is the
+        // tool's job via reindent_replacement (F3), tested separately.
         assert_eq!(
             splice(content, range, "    let y = 2;"),
             "fn main() {\n    let y = 2;\n}\n"
@@ -308,23 +438,79 @@ mod tests {
     }
 
     #[test]
-    fn block_anchor_tolerates_different_block_lengths() {
-        // Actual block longer than the search block…
+    fn block_anchor_tolerates_different_block_lengths_with_similar_middle() {
+        // Actual block longer than the search block: the nearest-fallback
+        // guard passes because the search middle (m1, m2) appears in order
+        // in the candidate middle (2/2 >= 1/2)…
         let content = "start\nm1\nm2\nm3\nend\n";
-        let (range, m) = unique(content, "start\nmm\nend");
+        let (range, m) = unique(content, "start\nm1\nm2\nend");
         assert_eq!(m, Matcher::BlockAnchor);
         assert_eq!(&content[range], "start\nm1\nm2\nm3\nend");
-        // …and shorter.
+        // …and shorter: half of (m, x) appears (1/2 >= 1/2).
         let content = "start\nm\nend\n";
-        let (range, _) = unique(content, "start\na\nb\nc\nend");
+        let (range, _) = unique(content, "start\nm\nx\nend");
         assert_eq!(&content[range], "start\nm\nend");
     }
 
     #[test]
-    fn block_anchor_uses_nearest_closing_anchor() {
+    fn block_anchor_dissimilar_middle_refuses_length_mismatch() {
+        // F1 regression (review scenario: nearest-anchor short splice).
+        // Pre-fix, the nearest closing anchor was bound with NO middle
+        // check, deleting real code on a length mismatch; now a fallback
+        // candidate with a dissimilar middle is refused outright.
+        let content = "start\nm1\nm2\nm3\nend\n";
+        assert_eq!(fuzzy_match(content, "start\nmm\nend"), FuzzyResult::NoMatch);
+        let content = "start\nm\nend\n";
+        assert_eq!(
+            fuzzy_match(content, "start\na\nb\nc\nend"),
+            FuzzyResult::NoMatch
+        );
+    }
+
+    #[test]
+    fn block_anchor_inner_brace_does_not_bind() {
+        // F1 regression (review scenario: inner-brace bind on `}`). The
+        // nearest `}` after `fn a() {` is the IF's closing brace; binding
+        // there would splice away tail() and the real closing brace.
+        let content = "fn a() {\n    if x {\n        inner();\n    }\n    tail();\n}\n";
+        assert_eq!(
+            fuzzy_match(content, "fn a() {\n    body();\n}"),
+            FuzzyResult::NoMatch
+        );
+    }
+
+    #[test]
+    fn block_anchor_prefers_exact_offset_over_nearer_anchor() {
+        // Both line 2 and line 3 trimmed-match the closing anchor; the one
+        // at the exact expected offset (same block shape) wins over the
+        // nearer one.
+        let content = "s\nx\ne\ne\n";
+        let (range, m) = unique(content, "s\nq\nr\ne");
+        assert_eq!(m, Matcher::BlockAnchor);
+        assert_eq!(&content[range], "s\nx\ne\ne");
+    }
+
+    #[test]
+    fn block_anchor_exact_offset_bind_ignores_farther_anchor() {
+        // The expected-offset arm binds the block-shaped candidate; the
+        // stray later `}` is never considered.
         let content = "if {\n a\n}\nmore\n}\n";
         let (range, _) = unique(content, "if {\nXX\n}");
         assert_eq!(&content[range], "if {\n a\n}");
+    }
+
+    #[test]
+    fn block_anchor_exact_offset_disambiguates_repeated_anchors() {
+        // Review scenario variant: two begin/end blocks; the search block
+        // matches only the second by shape. Pre-fix the first `begin`
+        // bound the nearest `end` (a mis-splice) and the result was a
+        // spurious ambiguity; now the dissimilar first candidate is
+        // refused and the true block matches uniquely.
+        let content = "begin\na()\nend\nbegin\nb()\nc()\nd()\nend\n";
+        // c2() keeps line-trimmed from matching; 2/3 middle lines match.
+        let (range, m) = unique(content, "begin\nb()\nc2()\nd()\nend");
+        assert_eq!(m, Matcher::BlockAnchor);
+        assert_eq!(&content[range], "begin\nb()\nc()\nd()\nend");
     }
 
     #[test]
@@ -341,6 +527,81 @@ mod tests {
         let content = "fn f() {\n\tbody();\n}\n";
         let (_, m) = unique(content, "fn f() {\n    body();\n}");
         assert_eq!(m, Matcher::LineTrimmed);
+    }
+
+    // ------------------------------------------------- F3: reindentation
+
+    /// Match `old` via line-trimmed and return the reindented replacement.
+    #[track_caller]
+    fn reindent(content: &str, old: &str, new: &str) -> Option<String> {
+        let (range, m) = unique(content, old);
+        assert_eq!(m, Matcher::LineTrimmed);
+        reindent_replacement(content, &range, old, new)
+    }
+
+    #[test]
+    fn reindent_adds_uniform_missing_indent() {
+        // Model wrote the block one nesting level shallower than the file
+        // (4-vs-8 nested Python): the uniform +4 delta is re-applied.
+        let content = "def f():\n        if cond:\n            do_a()\n";
+        assert_eq!(
+            reindent(content, "    if cond:\n        do_a()", "    if cond:\n        do_b()"),
+            Some("        if cond:\n            do_b()".into())
+        );
+    }
+
+    #[test]
+    fn reindent_strips_uniform_extra_indent() {
+        let content = "a()\nb()\nrest\n";
+        assert_eq!(
+            reindent(content, "  a()\n  b()", "  c()\n  d()"),
+            Some("c()\nd()".into())
+        );
+    }
+
+    #[test]
+    fn reindent_swaps_tab_for_spaces() {
+        // Wholesale style swap (file tabs, model spaces): the pair delta is
+        // uniform, so new lines carrying the model prefix get the file's.
+        let content = "fn main() {\n\tlet x = 1;\n}\n";
+        assert_eq!(
+            reindent(content, "    let x = 1;", "    let y = 2;"),
+            Some("\tlet y = 2;".into())
+        );
+    }
+
+    #[test]
+    fn reindent_zero_delta_is_verbatim() {
+        let content = "a\n  keep\nb\n";
+        assert_eq!(reindent(content, "  keep", "  kept"), Some("  kept".into()));
+    }
+
+    #[test]
+    fn reindent_inconsistent_delta_rejects() {
+        // Line 1 delta is +1 space, line 2 delta is -1: no uniform rule
+        // exists, so the candidate is rejected rather than guessed at.
+        let content = "  aa\nbb\n";
+        let (range, _) = unique(content, " aa\n bb");
+        assert_eq!(reindent_replacement(content, &range, " aa\n bb", "x"), None);
+    }
+
+    #[test]
+    fn reindent_blank_lines_carry_no_signal_and_stay_unprefixed() {
+        let content = "    a\n\n    b\n";
+        // Old's blank middle line is skipped for the delta; new's blank
+        // line is not given trailing whitespace.
+        assert_eq!(
+            reindent(content, "a\n\nb", "c\n\nd"),
+            Some("    c\n\n    d".into())
+        );
+    }
+
+    #[test]
+    fn reindent_leaves_nonmatching_new_lines_verbatim() {
+        // Removal delta: new lines missing the old prefix are left alone
+        // instead of being rejected (the model dedented below block base).
+        let content = "a\nb\n";
+        assert_eq!(reindent(content, "  a\n  b", "A\nB"), Some("A\nB".into()));
     }
 
     #[test]

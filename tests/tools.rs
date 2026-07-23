@@ -385,12 +385,14 @@ fn edit_fuzzy_fallback_matrix() {
     }
     let cases = [
         Case {
-            name: "line_edge_whitespace_forgiven_new_spliced_verbatim",
+            // F3: the file's indentation style (tab) survives the splice —
+            // the model's spaces are swapped for the matched line's tab.
+            name: "line_edge_whitespace_forgiven_file_indent_preserved",
             initial: "fn main() {\n\tlet x = 1;\n}\n",
             old: "    let x = 1;",
             new: "    let y = 2;",
             replace_all: false,
-            expect: Ok(("fn main() {\n    let y = 2;\n}\n", "whitespace-tolerant match")),
+            expect: Ok(("fn main() {\n\tlet y = 2;\n}\n", "whitespace-tolerant match")),
         },
         Case {
             name: "interior_tab_vs_space_stays_not_found",
@@ -417,9 +419,11 @@ fn edit_fuzzy_fallback_matrix() {
             expect: Ok(("a\r\nx\r\ny\r\nb\r\n", "whitespace-tolerant match")),
         },
         Case {
+            // Uniform two-space delta across both lines (F3-compatible);
+            // still exercises the no-doubled-newline splice.
             name: "trailing_newline_old_no_doubled_newline",
             initial: "x\na\nb\nc\n",
-            old: " a\nb\n",
+            old: "  a\n  b\n",
             new: "Q\n",
             replace_all: false,
             expect: Ok(("x\nQ\nc\n", "whitespace-tolerant match")),
@@ -500,20 +504,104 @@ fn edit_fuzzy_fallback_matrix() {
             )),
         },
         Case {
+            // F1: length tolerance now requires the middle-similarity
+            // guard — here m1 appears in the candidate middle (1/1).
             name: "block_anchor_actual_block_longer_than_search",
             initial: "s\nm1\nm2\ne\n",
-            old: "s\nm\ne",
+            old: "s\nm1\ne",
             new: "R",
             replace_all: false,
             expect: Ok(("R\n", "block-anchor match")),
         },
         Case {
+            // F1: shorter actual block, half the search middle present.
             name: "block_anchor_actual_block_shorter_than_search",
             initial: "s\nm\ne\n",
-            old: "s\na\nb\nc\ne",
+            old: "s\nm\nx\ne",
             new: "R",
             replace_all: false,
             expect: Ok(("R\n", "block-anchor match")),
+        },
+        Case {
+            // F1 regression (review scenario: nearest-anchor short splice).
+            // A dissimilar middle with a length mismatch used to splice
+            // away real code; it now refuses.
+            name: "block_anchor_dissimilar_middle_refuses",
+            initial: "s\nm1\nm2\ne\n",
+            old: "s\nzz\ne",
+            new: "R",
+            replace_all: false,
+            expect: Err("not found in the file, even with whitespace-tolerant"),
+        },
+        Case {
+            // F1 regression (review scenario: inner-brace bind). The
+            // nearest `}` is the if's; binding there deleted tail() and
+            // reported success. Refusal, file untouched.
+            name: "block_anchor_inner_brace_refuses",
+            initial: "fn a() {\n    if x {\n        inner();\n    }\n    tail();\n}\n",
+            old: "fn a() {\n    body();\n}",
+            new: "fn a() {\n    new_body();\n}",
+            replace_all: false,
+            expect: Err("not found in the file, even with whitespace-tolerant"),
+        },
+        Case {
+            // F3 regression (review scenario: nested Python, model wrote
+            // the block one level shallower). The uniform +4 delta is
+            // re-applied to newString: the file stays 8-space based.
+            name: "indent_delta_nested_python_reindented",
+            initial: "def f():\n        if cond:\n            do_a()\n        tail()\n",
+            old: "    if cond:\n        do_a()",
+            new: "    if cond:\n        do_b()\n        do_c()",
+            replace_all: false,
+            expect: Ok((
+                "def f():\n        if cond:\n            do_b()\n            do_c()\n        tail()\n",
+                "whitespace-tolerant match",
+            )),
+        },
+        Case {
+            // F3: tab-delta — the file's leading tab is re-applied.
+            name: "indent_delta_tab_added",
+            initial: "\tif x {\n\t\tgo();\n\t}\n",
+            old: "if x {\n\tgo();\n}",
+            new: "if x {\n\tstop();\n}",
+            replace_all: false,
+            expect: Ok(("\tif x {\n\t\tstop();\n\t}\n", "whitespace-tolerant match")),
+        },
+        Case {
+            // F3: removal delta — the model over-indented; the extra two
+            // spaces are stripped from newString.
+            name: "indent_delta_spaces_removed",
+            initial: "a()\nb()\nrest\n",
+            old: "  a()\n  b()",
+            new: "  c()\n  d()",
+            replace_all: false,
+            expect: Ok(("c()\nd()\nrest\n", "whitespace-tolerant match")),
+        },
+        Case {
+            // F3: inconsistent per-line delta (one line +1 space, the
+            // other -1) — no uniform rule exists, so the candidate is
+            // rejected rather than spliced with guessed indentation.
+            name: "indent_delta_inconsistent_refuses",
+            initial: "  aa\nbb\n",
+            old: " aa\n bb",
+            new: "x",
+            replace_all: false,
+            expect: Err("not found in the file, even with whitespace-tolerant"),
+        },
+        Case {
+            // F3 + CRLF: the delta is applied to the LF-shaped newString
+            // first, then the whole replacement is CRLF-converted.
+            name: "indent_delta_with_crlf_conversion",
+            initial: "a\r\n    foo\r\nb\r\n",
+            // Trailing space defeats the exact-substring path; the leading
+            // delta is computed from the matched line ("" -> four spaces).
+            old: "foo ",
+            new: "bar\nbaz",
+            replace_all: false,
+            expect: Ok((
+                "a\r\n    bar\r\n    baz\r\nb\r\n",
+                "whitespace-tolerant match",
+            )),
         },
         Case {
             name: "same_anchor_pair_twice_is_ambiguous",

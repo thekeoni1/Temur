@@ -109,13 +109,28 @@ impl EditTool {
                 "oldString matched {count} locations approximately (whitespace-tolerant). Provide more surrounding lines to make the match unique."
             ))),
             matchers::FuzzyResult::Unique { range, matcher } => {
+                // Line-trimmed path (F3): re-apply the uniform
+                // leading-whitespace delta between oldString and the matched
+                // lines to newString, so the FILE's indentation style
+                // survives the splice (indentation-significant languages
+                // corrupt otherwise). An inconsistent delta rejects the
+                // candidate — not-found beats a guessed splice. Block-anchor
+                // splices verbatim: its middle differs by definition, so no
+                // per-line pairing exists.
+                let adjusted = match matcher {
+                    matchers::Matcher::LineTrimmed => {
+                        matchers::reindent_replacement(content, &range, &p.old_string, &p.new_string)
+                            .ok_or_else(|| ToolError::failed(NOT_FOUND_MSG))?
+                    }
+                    matchers::Matcher::BlockAnchor => p.new_string.clone(),
+                };
                 // Splice over the ORIGINAL byte range; on a CRLF file the
                 // (typically LF-shaped) replacement is converted so the
                 // untouched regions and the new block agree.
                 let replacement = if matchers::is_crlf(content) {
-                    matchers::to_crlf(&p.new_string)
+                    matchers::to_crlf(&adjusted)
                 } else {
-                    p.new_string.clone()
+                    adjusted
                 };
                 let mut new_content =
                     String::with_capacity(content.len() + replacement.len());

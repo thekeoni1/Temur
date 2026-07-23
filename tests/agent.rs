@@ -1200,9 +1200,11 @@ fn fuzzy_edit_lands_end_to_end_through_the_agent_loop() {
     );
     let events = collect_events(&mut session, "rename x to y");
 
+    // F3: the file's tab indentation survives the splice — the model's
+    // 4-space prefix is swapped for the matched line's tab.
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
-        "fn main() {\n    let y = 2;\n}\n"
+        "fn main() {\n\tlet y = 2;\n}\n"
     );
     let second = &requests.borrow()[1];
     match &second.messages.last().unwrap().content[0] {
