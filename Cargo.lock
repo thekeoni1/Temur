@@ -959,6 +959,7 @@ dependencies = [
  "globset",
  "ignore",
  "lexopt",
+ "libc",
  "log",
  "ratatui",
  "regex",

@@ -84,14 +84,26 @@ pressed, until the turn lands. Esc while idle is a no-op; a second Esc is
 idempotent; Esc participates in the any-key-disarms rule for the
 force-quit prompt.
 
-**Exclusions.** The plain line REPL has no interruption: the main thread
-is blocked inside `Session::turn` with no listener, and SIGINT handling
-would need a new dependency — deliberately out of T6 scope. A FULLY
-stalled TCP stream (no frames arriving at all) cannot observe the token
-either — ureq timeouts are whole-phase deadlines, not idle timeouts, and
-would kill legitimate long streams — so the double-Ctrl+C force-quit
-(arm + confirm, exit 130) remains the documented escape hatch for that
-case; Ctrl+C semantics are unchanged.
+**Plain-REPL interruption (F4, v0.1.1 — closes the T6 exclusion).** The
+plain REPL now interrupts too: a minimal SIGINT handler (`src/signal.rs`,
+`libc` sigaction WITHOUT `SA_RESTART`, installed only in plain mode) sets
+a process-global flag that `CancelToken::is_set` ORs in, so the first
+Ctrl+C lands the running turn through exactly the same cooperative
+checkpoints as a TUI Esc — bash group-kill included, session saved by the
+driver loop as usual. A second Ctrl+C while the flag is still set
+force-quits with exit 130 (async-signal-safe `_exit`); the flag is
+cleared at each submission together with the token (the F7 invariant), so
+the two-press escape hatch re-arms every turn. TUI raw mode never
+generates SIGINT — TUI Ctrl+C semantics are untouched.
+
+**Remaining exclusion.** A FULLY stalled TCP stream (no frames arriving
+at all) cannot observe the token — ureq timeouts are whole-phase
+deadlines, not idle timeouts, and would kill legitimate long streams.
+The no-`SA_RESTART` choice lets a blocked raw read return EINTR (and F5
+treats a read error under cancel as a graceful stop), but Rust's buffered
+readers retry EINTR internally, so this is opportunistic, not guaranteed:
+the force-quit paths (TUI double-Ctrl+C arm+confirm; plain second
+Ctrl+C) remain the documented escape hatch, both exiting 130.
 
 Also deferred, noted during the port: input queuing while a turn runs
 (OpenCode queues prompts; we disable Enter and show a hint), tool output

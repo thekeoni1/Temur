@@ -116,6 +116,9 @@ fn range_for(
 /// Whitespace-tolerant matcher: every line of `old` equals the
 /// corresponding content line after `trim()` — indentation and line-edge
 /// whitespace differences are forgiven, interior differences are not.
+/// (Test-only wrapper since F8; production goes through `fuzzy_match`,
+/// which precomputes the spans/trims once for both matchers.)
+#[cfg(test)]
 pub fn line_trimmed(content: &str, old: &str) -> Vec<Range<usize>> {
     let spans = line_spans(content);
     let trimmed: Vec<&str> = spans.iter().map(|&(s, e)| content[s..e].trim()).collect();
@@ -168,6 +171,8 @@ fn line_trimmed_impl(
 ///    brace or a foreign block and silently splice away real code.
 ///
 /// Still zero Levenshtein; >= 2 surviving candidates remain an error.
+/// (Test-only wrapper since F8, like `line_trimmed`.)
+#[cfg(test)]
 pub fn block_anchor(content: &str, old: &str) -> Vec<Range<usize>> {
     let spans = line_spans(content);
     let trimmed: Vec<&str> = spans.iter().map(|&(s, e)| content[s..e].trim()).collect();

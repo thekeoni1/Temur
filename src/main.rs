@@ -320,10 +320,19 @@ fn repl(
         ui.event(&AgentEvent::Notice(n.clone()));
     }
 
+    // F4: plain-REPL SIGINT — the first Ctrl+C interrupts the running turn
+    // through the same cooperative token as a TUI Esc; the second (while
+    // the flag is still set) force-quits with exit 130. Installed ONLY in
+    // plain mode: TUI raw mode never generates SIGINT and its Ctrl+C
+    // semantics are unchanged.
+    if !use_tui {
+        temur::signal::install_plain_repl_handler()?;
+    }
     // F7: the cancel token is cleared at SUBMISSION by whichever component
     // serializes input. In TUI mode that is the render thread's Submit arm
     // (same thread as Esc — race-free); here it is the plain REPL, right
-    // after read_input returns and before the turn is dispatched.
+    // after read_input returns and before the turn is dispatched (the
+    // clear also resets the SIGINT flag — F4).
     let plain_cancel = session.cancel_token();
     let mut save_failure_notified = false;
     while let Some(line) = ui.read_input() {

@@ -27,6 +27,9 @@ wait-timeout = "0.2"
 # no crypto; the forbidden-dep scan in check.sh keeps enforcing that.
 ratatui = "0.29"
 unicode-width = "0.2" # already in ratatui's tree; used directly for wrapping
+# Plain-REPL SIGINT (F4, v0.1.1): sigaction without SA_RESTART. FFI-only,
+# already in the tree transitively via ring; musl-safe on every target.
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

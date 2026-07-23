@@ -3,6 +3,12 @@
 //! points (SSE frame boundaries, retry backoff slices, tool wait loops).
 //! Purely cooperative: a fully stalled TCP read cannot observe it — the
 //! double-Ctrl+C force-quit remains the escape hatch for that case.
+//!
+//! F4: `is_set` also ORs in the plain-REPL SIGINT flag
+//! ([`crate::signal::interrupted`]), so a plain-mode Ctrl+C interrupts a
+//! turn through exactly the same checkpoints as a TUI Esc; `clear` resets
+//! both. One process runs one session, so a process-global flag folding
+//! into every clone is sound.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -21,12 +27,14 @@ impl CancelToken {
     }
 
     pub fn is_set(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.0.load(Ordering::SeqCst) || crate::signal::interrupted()
     }
 
-    /// Reset for the next turn (stale-flag defense: `Session::turn` clears
-    /// at entry so a set-after-turn-end Esc cannot cancel a future turn).
+    /// Reset for the next turn — called at SUBMISSION by the component that
+    /// serializes input (F7 invariant on `Session::turn`). Clears both the
+    /// token and the plain-REPL SIGINT flag.
     pub fn clear(&self) {
         self.0.store(false, Ordering::SeqCst);
+        crate::signal::clear();
     }
 }
