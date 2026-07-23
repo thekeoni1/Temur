@@ -1,5 +1,11 @@
 # RUNBOOK — Tier-1 live smoke (operator steps)
 
+> Scope note (T7): the "What the builder staged" section below covers
+> **operator staging only** — the single i686 binary at `/home/dev/dist/temur`
+> installed into the appsvc runtime. Multi-arch **release** artifacts are a
+> separate flow staged under `/home/dev/dist/release/` — see "T7 release
+> procedure" at the end of this file.
+
 Everything here is a **human/operator** procedure. The build agent (`dev`) cannot and
 must not perform these steps: it can't read the credential, and it deliberately can't
 write the binary that `appsvc` executes (a builder-writable binary would nullify the
@@ -352,3 +358,56 @@ Artifacts (driver scripts + stamped logs, raw TUI transcripts, session
 files after 2a and after all runs, tls-probe output, /proc scan evidence
 in the run-3 log, llama server log, wire-validity outputs) kept at
 `/home/dev/temur-t6-interrupt-smoke-2026-07-21/`.
+
+## T7 release procedure
+
+### Building and gating (builder side)
+
+`scripts/release.sh` is the release gate. It refuses to pass any red step:
+
+1. Runs `scripts/check.sh` in full (the standing i686 acceptance gate,
+   untouched by T7). `SKIP_CHECK=1` skips it for iteration only — a real
+   release run never sets it.
+2. Leak gate, two layers:
+   - **Operator patterns file** at
+     `${LEAK_PATTERNS:-$HOME/.config/temur-release/leak-patterns.txt}` —
+     one case-insensitive extended regex per line, `#` comments allowed.
+     It is machine configuration and must **never be committed**; ask the
+     operator for its contents. **A missing file is a hard fail by
+     design**, not a skip — a release without the leak gate is not a
+     release. Patterns run over all tracked files (`git grep -i -E`) and
+     all commit messages in history (`git log --all -i --grep`).
+   - An embedded generic key-shape scan (`sk-ant-`, AWS `AKIA…`, GitHub
+     `ghp_…`, `PRIVATE KEY` blocks) that always runs.
+3. Per target — `i686-unknown-linux-musl`, `x86_64-unknown-linux-musl`,
+   `aarch64-unknown-linux-musl`, `armv7-unknown-linux-musleabihf`:
+   release build, staticness (no INTERP, no NEEDED, `file` reports
+   static), ELF class/machine match, armv7 `Tag_ABI_VFP_args: VFP
+   registers` (blocking), and `--version` must equal the Cargo.toml
+   version on every runnable binary (x86 natively, ARM via
+   `qemu-*-static` when present).
+4. Stages **bare binaries** (no tarballs) named
+   `temur-v<ver>-<full-rust-triple>` plus `SHA256SUMS` (native
+   `sha256sum` format, bare filenames, so `sha256sum -c
+   --ignore-missing` works on a single downloaded artifact) at
+   `/home/dev/dist/release/v<ver>/`, and self-verifies the sums.
+
+The version is extracted from Cargo.toml and asserted against the
+binaries' own `--version`, so tag, filename, and binary can never skew.
+
+### Publish preflight (operator-gated — nothing is pushed without it)
+
+All of the following, in order, before any tag/push/release:
+
+- `git status` clean and synced with origin/main.
+- `scripts/release.sh` green **at the exact HEAD being tagged**.
+- Installer test green: serve `/home/dev/dist/release/v<ver>/` locally
+  (`python3 -m http.server`) and run `scripts/install.sh` with
+  `TEMUR_BASE_URL` pointing at it, into a temp `HOME`; installed
+  `temur --version` must match.
+- `gh auth status` OK (operator runs `gh auth login` if not).
+
+Then: annotated tag `v<ver>`, push main + tag, `gh release create` with
+the four binaries + SHA256SUMS, and a live verification of the README
+one-liner into a temp `HOME` (live download, live checksum, live
+install, version match). Record the result here.

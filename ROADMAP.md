@@ -288,6 +288,24 @@ Release builds for `i686-musl`, `armv7-musleabihf`, `aarch64-musl`,
 with the one-liner. ARM targets get build-level verification even if hardware
 smoke-testing waits for hardware.
 
+**As-built (2026-07-22).** All four targets ship from the one proven recipe
+— rust-lld against rustup's self-contained musl; per-target CC for ring's
+C/asm (host gcc for the x86 pair, Ubuntu cross-gcc for the ARM pair) with
+`-U_FORTIFY_SOURCE -fno-stack-protector` on ARM. The planned fallback ladder
+(clang, vendored musl-cross toolchains, cross-rs) was never needed. Fortify
+data point: an aarch64 build *without* those CFLAGS also links — musl
+provides the `__stack_chk_*` symbols ring's objects reference, and gcc
+13.3/ring 0.17.14 emits no fortify `__*_chk` at all — so the flags are
+defense-in-depth against toolchain drift, not currently load-bearing.
+Verification matrix: i686 = the unchanged full `check.sh`; x86_64 = native
+full test suite + host smokes + TUI pty + bare amd64-busybox proof; ARM =
+build-level gates (ELF class/machine, static, no INTERP/NEEDED, armv7
+VFP-args tag) plus qemu-user smokes (`--version`, live `tls-probe` through
+ring's real ARM asm, mock REPL). qemu is not hardware — scheduling, timing,
+and kernel-interface behavior differ — so the ARM hardware smoke stays an
+open follow-up until hardware exists; `scripts/release.sh` gates a release
+on all of the above plus the leak grep and checksum staging.
+
 ## 4. Invariants (every milestone)
 
 - Ships musl-static: `readelf` shows **no INTERP, no NEEDED** (gated from T0).
