@@ -12,5 +12,11 @@ target = "i686-unknown-linux-gnu"
 [target.i686-unknown-linux-musl]
 linker = "rust-lld"
 
+# T7 multi-arch: same recipe generalized — rust-lld against each rustup
+# target's self-contained musl; host or cross gcc compiles ring's C/asm.
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+
 [env]
 CC_i686_unknown_linux_musl = "gcc"
+CC_x86_64_unknown_linux_musl = "gcc"
