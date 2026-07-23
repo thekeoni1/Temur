@@ -17,7 +17,9 @@ set -eu
 cd "$(dirname "$0")/.."
 
 TDIR=/home/dev/rustcode-target
-STAGE_ROOT=/home/dev/dist/release
+# STAGE_ROOT is overridable for iteration only (stage to a scratch dir without
+# touching the real release area); a real release run never sets it.
+STAGE_ROOT="${STAGE_ROOT:-/home/dev/dist/release}"
 
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 [ -n "$VERSION" ] || { echo "FAIL: cannot extract version from Cargo.toml"; exit 1; }
@@ -56,15 +58,15 @@ grep -v -E '^[[:space:]]*(#|$)' "$PATTERNS" > "$CLEAN_PATTERNS"
 [ -s "$CLEAN_PATTERNS" ] || { echo "FAIL: patterns file has no active patterns"; exit 1; }
 
 # Operator patterns over all tracked files (case-insensitive, extended RE).
-if git grep -i -E -f "$CLEAN_PATTERNS" -- . >/dev/null 2>&1; then
+HITS=$(git grep -i -E -f "$CLEAN_PATTERNS" -- . 2>/dev/null | head -20)
+if [ -n "$HITS" ]; then
     echo "FAIL: operator leak pattern matched tracked files:"
-    git grep -i -E -f "$CLEAN_PATTERNS" -- . | head -20
+    echo "$HITS"
     LEAK_FAIL=1
 fi
 
 # Operator patterns over all history (commit messages).
 while IFS= read -r pat; do
-    case "$pat" in ''|'#'*) continue ;; esac
     HITS=$(git log --all -i --extended-regexp --grep="$pat" --format='%h %s' | head -5)
     if [ -n "$HITS" ]; then
         echo "FAIL: operator leak pattern matched commit messages: $pat"
@@ -76,9 +78,10 @@ done < "$CLEAN_PATTERNS"
 # Embedded generic key-shape scan (repo-safe: each shape requires the key
 # body, so doc mentions of a bare prefix — or this very line — don't match).
 GENERIC='sk-ant-[a-zA-Z0-9_-]{8}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|BEGIN [A-Z ]*PRIVATE KEY'
-if git grep -E "$GENERIC" -- . >/dev/null 2>&1; then
+HITS=$(git grep -E "$GENERIC" -- . 2>/dev/null | head -20)
+if [ -n "$HITS" ]; then
     echo "FAIL: generic key-shape scan matched tracked files:"
-    git grep -E "$GENERIC" -- . | head -20
+    echo "$HITS"
     LEAK_FAIL=1
 fi
 HITS=$(git log --all --extended-regexp --grep="$GENERIC" --format='%h %s' | head -5)
@@ -91,40 +94,52 @@ fi
 [ "$LEAK_FAIL" = "0" ] || exit 1
 echo "OK: leak grep clean (operator patterns + generic shapes, files + history)"
 
-# --- per-target build + gates ------------------------------------------------
+# --- gate 3: version/target skew ---------------------------------------------
+# install.sh and the README pin the version and triples outside Cargo.toml;
+# assert they match so "tag, filename, and binary can never skew" covers the
+# installer and docs too, not just the binaries.
+
+echo "== gate: install.sh / README skew =="
+INST_VER=$(sed -n 's/^VERSION=//p' scripts/install.sh)
+[ "$INST_VER" = "$VERSION" ] \
+    || { echo "FAIL: scripts/install.sh VERSION=$INST_VER but Cargo.toml says $VERSION"; exit 1; }
+grep -q "Temur/$TAG/scripts/install.sh" README.md \
+    || { echo "FAIL: README one-liner does not pin tag $TAG"; exit 1; }
+grep -q "releases/download/$TAG/" README.md \
+    || { echo "FAIL: README manual install does not pin tag $TAG"; exit 1; }
+for T in $TARGETS; do
+    grep -q "$T" scripts/install.sh \
+        || { echo "FAIL: scripts/install.sh has no mapping for target $T"; exit 1; }
+done
+echo "OK: install.sh + README match version $VERSION and all targets"
+
+# --- build + per-target gates ------------------------------------------------
 
 mkdir -p "$STAGE"
 
-# expected readelf Class / Machine per target
-expect_class() {
-    case "$1" in
-        i686-*|armv7-*) echo ELF32 ;;
-        *)              echo ELF64 ;;
-    esac
-}
-expect_machine() {
-    case "$1" in
-        i686-*)    echo "Intel 80386" ;;
-        x86_64-*)  echo "Advanced Micro Devices X86-64" ;;
-        aarch64-*) echo "AArch64" ;;
-        armv7-*)   echo "ARM" ;;
-    esac
-}
-# how to execute the artifact on this host, if at all
-runner() {
-    case "$1" in
-        i686-*|x86_64-*) echo "" ;;
-        aarch64-*) command -v qemu-aarch64-static || echo "SKIP" ;;
-        armv7-*)   command -v qemu-arm-static    || echo "SKIP" ;;
-    esac
-}
+echo "== build: all release targets =="
+# One invocation, one job graph: cargo overlaps the targets' long serial
+# tails (final-crate codegen + link) instead of running four builds end to end.
+# shellcheck disable=SC2046
+cargo build --quiet --release $(for T in $TARGETS; do printf -- '--target %s ' "$T"; done)
 
 SUMMARY=""
 for T in $TARGETS; do
     echo "== target: $T =="
-    cargo build --quiet --release --target "$T"
     BIN="$TDIR/$T/release/temur"
     [ -f "$BIN" ] || { echo "FAIL($T): binary not found at $BIN"; exit 1; }
+
+    # per-target gate facts — one arm per target; unknown targets fail closed
+    # rather than weakening a grep to "Machine:.*"
+    case "$T" in
+        i686-*)    WANT_CLASS=ELF32; WANT_MACHINE="Intel 80386";                   RUN="" ;;
+        x86_64-*)  WANT_CLASS=ELF64; WANT_MACHINE="Advanced Micro Devices X86-64"; RUN="" ;;
+        aarch64-*) WANT_CLASS=ELF64; WANT_MACHINE="AArch64"
+                   RUN=$(command -v qemu-aarch64-static || echo SKIP) ;;
+        armv7-*)   WANT_CLASS=ELF32; WANT_MACHINE="ARM"
+                   RUN=$(command -v qemu-arm-static || echo SKIP) ;;
+        *) echo "FAIL($T): no gate facts for this target — add a case arm"; exit 1 ;;
+    esac
 
     # staticness
     if readelf -l "$BIN" | grep -q 'INTERP'; then
@@ -137,10 +152,10 @@ for T in $TARGETS; do
         || { echo "FAIL($T): file(1) does not report static linking"; exit 1; }
 
     # architecture
-    WANT_CLASS=$(expect_class "$T"); WANT_MACHINE=$(expect_machine "$T")
-    readelf -h "$BIN" | grep -q "Class:.*$WANT_CLASS" \
+    HDR=$(readelf -h "$BIN")
+    echo "$HDR" | grep -q "Class:.*$WANT_CLASS" \
         || { echo "FAIL($T): wrong ELF class (want $WANT_CLASS)"; exit 1; }
-    readelf -h "$BIN" | grep -q "Machine:.*$WANT_MACHINE" \
+    echo "$HDR" | grep -q "Machine:.*$WANT_MACHINE" \
         || { echo "FAIL($T): wrong machine (want $WANT_MACHINE)"; exit 1; }
 
     # armv7 hard-float ABI tag (blocking)
@@ -150,7 +165,6 @@ for T in $TARGETS; do
     fi
 
     # version assertion on every runnable binary (native or qemu)
-    RUN=$(runner "$T")
     if [ "$RUN" = "SKIP" ]; then
         VNOTE="version: not asserted (no emulator)"
     else
@@ -164,7 +178,7 @@ for T in $TARGETS; do
     cp "$BIN" "$STAGE/$ART"
     chmod 755 "$STAGE/$ART"
     SIZE=$(wc -c < "$STAGE/$ART")
-    SUMMARY="$SUMMARY$ART  $(readelf -h "$BIN" | sed -n 's/.*Class: *//p')/$WANT_MACHINE  ${SIZE}B  $VNOTE
+    SUMMARY="$SUMMARY$ART  $WANT_CLASS/$WANT_MACHINE  ${SIZE}B  $VNOTE
 "
     echo "OK($T): gated + staged as $ART"
 done
@@ -179,5 +193,5 @@ echo ""
 echo "== staged at $STAGE =="
 printf '%s' "$SUMMARY"
 echo ""
-N=$(printf '%s\n' $TARGETS | wc -w)
+set -- $TARGETS; N=$#
 echo "== RELEASE $TAG: $N/$N ARTIFACTS GATED == (ARM verified at build level per ROADMAP T7; hardware smoke pending hardware)"

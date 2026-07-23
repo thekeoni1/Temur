@@ -27,8 +27,10 @@ linker = "rust-lld"
 CC_i686_unknown_linux_musl = "gcc"
 CC_x86_64_unknown_linux_musl = "gcc"
 # Ubuntu cross-gcc compiles ring's C against glibc headers; the objects are
-# freestanding enough for musl linking, but fortify/stack-protector would
-# inject glibc-only __*_chk symbols — the CFLAGS switch both off.
+# freestanding enough for musl linking. The CFLAGS switch off fortify and
+# stack-protector so no glibc-only __*_chk symbols can be injected —
+# defense-in-depth against toolchain drift, not currently load-bearing
+# (builds link without them; see the ROADMAP T7 as-built note).
 CC_aarch64_unknown_linux_musl = "aarch64-linux-gnu-gcc"
 CFLAGS_aarch64_unknown_linux_musl = "-U_FORTIFY_SOURCE -fno-stack-protector"
 CC_armv7_unknown_linux_musleabihf = "arm-linux-gnueabihf-gcc"

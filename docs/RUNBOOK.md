@@ -406,6 +406,10 @@ All of the following, in order, before any tag/push/release:
   `TEMUR_BASE_URL` pointing at it, into a temp `HOME`; installed
   `temur --version` must match.
 - `gh auth status` OK (operator runs `gh auth login` if not).
+- Repo visibility checked (`gh repo view --json visibility`): the
+  closing gate (README one-liner) only works with the repo **public** —
+  raw/release URLs 404 otherwise. Make it public before the gate (or
+  accept a deliberate 404 and re-run the gate after flipping).
 
 Then: annotated tag `v<ver>`, push main + tag, `gh release create` with
 the four binaries + SHA256SUMS, and a live verification of the README
@@ -436,3 +440,10 @@ fail-closed and installed nothing. The operator made the repo public
 confirmation flag) and the gate re-ran green. ARM binaries remain
 verified at build level + qemu-user per the ROADMAP T7 as-built note;
 real-hardware smoke stays an open follow-up.
+
+Post-verification state (deliberate): after the closing gate passed, the
+operator returned the repo to **private** the same day. The release URL
+above and the README one-liner therefore 404 for non-collaborators
+**by design** until the repo is made public again — that is a pending
+publication decision, not a broken release. The preflight visibility
+check above exists so the next run handles this consciously.
