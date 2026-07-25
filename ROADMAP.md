@@ -178,7 +178,7 @@ payload.
 | T5 | Session persistence | JSON save/resume in the neutral vocabulary |
 | T6 | Editing + interruption | Fuzzy-match edit fallback; cancellable turns |
 | T7 | Multi-arch packaging | armv7/aarch64/x86_64 musl-static releases, install story |
-| T8 | Daily-driver UX (in progress) | Slash commands + named-profile switching (P1, done); markdown rendering + TUI styling pass (P2, done) — releases as v0.2.0 when complete |
+| T8 | Daily-driver UX (in progress) | Slash commands + named-profile switching (P1, done); markdown rendering + TUI styling pass (P2, done); serve.sh background server launcher (P3, done) — feature-complete, releases as v0.2.0 when complete |
 
 ### T0 — Identity + honest gate
 - Rename `opencode-rust` → `temur`: package name, `--version`, binary name,
@@ -341,9 +341,9 @@ matrix (host + busybox), SIGINT black-box matrix, full `release.sh`.
 
 Post-v0.1.1 direction (operator-decided): daily-dogfooding ergonomics,
 landed as independently gated pieces with no per-piece release — T8 ships
-as v0.2.0 when the milestone is complete. Remaining before the v0.2.0
-close-out: the release itself (version bump, tag, release.sh) — the
-planned feature pieces are done.
+as v0.2.0 when the milestone is complete. All planned feature pieces
+(P1–P3) are done; the only remaining T8 work is the v0.2.0 close-out
+itself (version bump, tag, release.sh).
 
 **T8-P1 (as-built, 2026-07-25): slash commands + named-profile model
 switching.** Config gains `profiles` (nickname → provider/model/base_url/
@@ -393,6 +393,22 @@ accents, bringing the pre-existing cyan uses in-contract) and the
 running-tool line dimmed to match its finished form. Deviation from the
 plan sketch: none of substance; soft breaks reflow as spaces (CommonMark
 semantics), pinned by test.
+
+**T8-P3 (as-built, 2026-07-25): `scripts/serve.sh` — background
+llama.cpp server launcher.** Operator infrastructure for the
+third-party inference server (the roadmap's server/multi-client-mode
+exclusion is about temur-the-binary serving clients; temur gains no
+server behavior). Command surface is `start|stop|status` only. It
+inverts `offline_demo.sh`'s sealed-pod bring-up for one-window use:
+plain `podman run -d` with a loopback-only published port
+(`127.0.0.1:8080`, matching the default openai-compat `base_url`),
+container-side bind `0.0.0.0`, and no exit trap — the server survives
+script exit. Same pinned image and never-pull preflight as the demos;
+host-side `/health` wait (30×2s) fails closed by removing the dead
+container. Scripts + docs only — no product code, no new dependencies.
+Deviation from the plan sketch: the container-name knob is
+`CONTAINER_NAME`, not `NAME` — live testing caught WSL exporting
+`NAME=<hostname>`, which silently overrode the default.
 
 ## 4. Invariants (every milestone)
 

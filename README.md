@@ -107,6 +107,8 @@ against a local llama.cpp server (`base_url` defaults to
 
 Server setup for llama.cpp and Ollama, LAN topology, recommended small
 models, and the compact prompt profile: [docs/OFFLINE.md](docs/OFFLINE.md).
+From a checkout, `scripts/serve.sh start|stop|status` runs the containerized
+llama.cpp server detached in the same terminal (details in OFFLINE.md).
 
 The default provider is `anthropic` (model `claude-sonnet-5`); any API key
 is read from a file path at startup, never from env or argv.

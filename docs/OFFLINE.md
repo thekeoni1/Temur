@@ -23,13 +23,34 @@ llama.cpp's `llama-server` speaks the OpenAI-compatible API temur's
 llama-server -m /path/to/model.gguf -c 8192 --jinja --port 8080
 ```
 
-**Container:**
+**Container** (the repo pins `server-b10068` — the tag scheme is
+`server-b<build>`; update the pin deliberately, never track `latest`):
 
 ```sh
-podman run --rm -p 8080:8080 -v /path/to/models:/models:ro \
-    ghcr.io/ggml-org/llama.cpp:server \
-    -m /models/model.gguf -c 8192 --jinja --host 0.0.0.0 --port 8080
+podman run --rm -p 127.0.0.1:8080:8080 \
+    -v /path/to/model.gguf:/model.gguf:ro \
+    ghcr.io/ggml-org/llama.cpp:server-b10068 \
+    -m /model.gguf -c 8192 --jinja --host 0.0.0.0 --port 8080
 ```
+
+**One window** (checkout only): `scripts/serve.sh` wraps the container
+form as a detached background server, so the server and temur share one
+terminal — no second WSL window:
+
+```sh
+MODEL_GGUF=/path/to/model.gguf scripts/serve.sh start   # detached; waits on /health
+scripts/serve.sh status                                 # health + summary
+scripts/serve.sh stop                                   # idempotent teardown
+```
+
+It publishes loopback-only (`127.0.0.1:8080`), which matches temur's
+default openai-compat `base_url` exactly — the keyless config above
+works unchanged. Knobs (env overrides): `MODEL_GGUF` (required),
+`LLAMA_IMAGE` (the pin above; a missing image prints the exact
+`podman pull` command and stops — nothing is pulled for you), `CTX`,
+`PORT`/`BIND` (published host side only; the container-internal port is
+always 8080 — a non-default `PORT` prints the `base_url` to set),
+`CONTAINER_NAME` (default `temur-llama`).
 
 > **`--jinja` is STRONGLY RECOMMENDED for tool calls.** Many model chat
 > templates need it before llama-server presents tool definitions

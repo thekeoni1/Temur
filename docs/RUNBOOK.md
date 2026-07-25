@@ -574,3 +574,35 @@ fenced block) is frame-asserted at two widths and end-to-end through
 the headless seam over `tests/fixtures/markdown_sample.sse`; the
 severed-fence limitation is pinned in
 `severed_fence_across_cells_renders_without_panic` (tests/tui.rs).
+
+## T8-P3 acceptance (2026-07-25)
+
+`scripts/serve.sh` (background llama.cpp launcher, `start|stop|status`)
+live-verified end to end on the dev machine, model
+`Qwen3-1.7B-Q4_K_M.gguf`, pinned image `server-b10068`:
+
+- cold `start` → `/health` OK inside the 30×2s budget; prints the
+  base_url match hint.
+- `status` while healthy → exit 0 with container/image/model/port
+  summary.
+- One-window proof: a real keyless temur turn (`--plain`, isolated XDG,
+  musl-static host binary) through the published port — the model ran
+  `echo serve-one-window-ok > proof.txt` via the bash tool and the file
+  content was verified from the host.
+- `start` while running → "OK: already running", exit 0, still exactly
+  one container.
+- `stop` → removed; `status` → "not running", exit 1; `stop` again →
+  "OK: not running", exit 0 (idempotent both ways).
+- `MODEL_GGUF=/nonexistent start` → preflight FAIL, exit 1, no
+  container created; unknown/missing subcommand → usage, exit 2.
+- Final `podman ps -a` → no `temur-llama` residue.
+
+Untested live (desk-checked only): the health-timeout branch (logs
+tail, fail-closed `rm -f`, exit 1) — forcing an honest 60s health
+failure with a real model was not practical.
+
+Live testing caught a real environment collision: WSL exports
+`NAME=<hostname>`, so the planned `NAME` knob silently named the
+container `MSI`; the knob shipped as `CONTAINER_NAME`. Full `check.sh`
+(both paths) green at the P1 and P2 gates. No release: version stays
+0.1.1 until the v0.2.0 close-out.
