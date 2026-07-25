@@ -177,6 +177,69 @@ impl Session {
         }
     }
 
+    // ------------------------------------------------- T8 between-turns seam
+    // INVARIANT: everything in this block is callable only BETWEEN turns.
+    // The driver loop serializes input — it reads the next line only while
+    // the agent is at the prompt — so none of these can run while `turn` is
+    // on the stack.
+
+    /// Swap the active provider/model in place (`/model`). The CALLER builds
+    /// the new provider first — including any credential read — and calls
+    /// this only on success, so a failed switch leaves the session untouched:
+    /// atomicity holds at the call site by construction. History, usage, and
+    /// todos survive — switching models continues the same conversation.
+    /// `context_warned` re-arms because the once-per-session warning was
+    /// about the OLD window.
+    pub fn switch_provider(
+        &mut self,
+        provider: Box<dyn Provider>,
+        model: String,
+        max_tokens: u32,
+        context_window: Option<u64>,
+    ) {
+        self.provider = provider;
+        self.cfg.model = model;
+        self.cfg.max_tokens = max_tokens;
+        self.cfg.context_window = context_window;
+        self.context_warned = false;
+    }
+
+    /// Wipe the conversation (`/clear`): history, usage totals, context
+    /// estimate, warning latch, and todos. Provider, model, and config stay.
+    pub fn clear_history(&mut self) {
+        self.history.clear();
+        self.session_usage = Usage::default();
+        self.last_context_used = None;
+        self.context_warned = false;
+        self.tool_ctx.todos.clear();
+    }
+
+    /// Flip adaptive thinking for THIS session (`/thinking`); the config
+    /// default is untouched.
+    pub fn set_thinking(&mut self, on: bool) {
+        self.cfg.thinking = on;
+    }
+
+    // `/status` getters: read-only session facts, no key material anywhere.
+    pub fn model(&self) -> &str {
+        &self.cfg.model
+    }
+    pub fn thinking(&self) -> bool {
+        self.cfg.thinking
+    }
+    pub fn max_tokens(&self) -> u32 {
+        self.cfg.max_tokens
+    }
+    pub fn context_window(&self) -> Option<u64> {
+        self.cfg.context_window
+    }
+    pub fn last_context_used(&self) -> Option<u64> {
+        self.last_context_used
+    }
+    pub fn session_usage(&self) -> Usage {
+        self.session_usage
+    }
+
     /// Run one user turn to completion (which may involve many provider
     /// round-trips for tool use). Tool failures feed back to the model;
     /// only provider-level failures return `Err`.

@@ -1357,3 +1357,195 @@ fn ambiguous_fuzzy_edit_round_trips_as_nonfatal_error_result() {
     }
     assert_eq!(session.history().len(), 4, "turn completed normally");
 }
+
+// ---------------------------------------------------- T8: between-turns seam
+
+/// Minimal recording transport over the openai fixture set, for proving
+/// what actually goes on the wire after a `/model`-style switch.
+struct RecordingTransport {
+    fixture: &'static str,
+    urls: Rc<RefCell<Vec<String>>>,
+    bodies: Rc<RefCell<Vec<String>>>,
+}
+
+impl temur::provider::transport::Transport for RecordingTransport {
+    fn post_stream(
+        &self,
+        url: &str,
+        _api_key: &str,
+        body: &str,
+    ) -> Result<Box<dyn std::io::Read>, temur::provider::transport::TransportError> {
+        self.urls.borrow_mut().push(url.to_string());
+        self.bodies.borrow_mut().push(body.to_string());
+        let path = format!(
+            "{}/tests/fixtures/openai/{}.sse",
+            env!("CARGO_MANIFEST_DIR"),
+            self.fixture
+        );
+        Ok(Box::new(std::fs::File::open(path).unwrap()))
+    }
+}
+
+#[test]
+fn switch_provider_next_turn_hits_new_provider_with_full_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests_a) = session_with(
+        dir.path(),
+        vec![msg(vec![text("first answer")], StopReason::EndTurn)],
+    );
+    collect_events(&mut session, "first question");
+    assert_eq!(requests_a.borrow().len(), 1);
+    assert_eq!(session.model(), "claude-sonnet-5");
+
+    let requests_b = Rc::new(RefCell::new(vec![]));
+    let provider_b = MockProvider {
+        responses: RefCell::new(vec![msg(vec![text("second answer")], StopReason::EndTurn)]),
+        requests: requests_b.clone(),
+    };
+    session.switch_provider(Box::new(provider_b), "model-b".into(), 512, Some(9_999));
+    assert_eq!(session.model(), "model-b");
+    assert_eq!(session.max_tokens(), 512);
+    assert_eq!(session.context_window(), Some(9_999));
+
+    collect_events(&mut session, "second question");
+    assert_eq!(
+        requests_a.borrow().len(),
+        1,
+        "the old provider must never be called again"
+    );
+    let reqs = requests_b.borrow();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].model, "model-b");
+    assert_eq!(reqs[0].max_tokens, 512);
+    // The FULL pre-switch history rides along: user1, assistant1, user2.
+    assert_eq!(reqs[0].messages.len(), 3);
+    match &reqs[0].messages[0].content[0] {
+        ContentBlock::Text { text } => assert_eq!(text, "first question"),
+        other => panic!("expected text, got {other:?}"),
+    }
+    assert_eq!(session.history().len(), 4, "both exchanges kept");
+}
+
+#[test]
+fn switch_to_compat_hits_new_base_url_and_drops_thinking_blocks() {
+    // Turn 1 (anthropic-flavored mock) leaves a SIGNED thinking block in
+    // history; after switching to a real OpenAiCompatProvider the next
+    // request must go to the new base_url with the new model, carry the
+    // full history, and drop the thinking block at the wire boundary —
+    // pre-switch behavior, regression-asserted across a switch.
+    let dir = tempfile::tempdir().unwrap();
+    let thinking = ContentBlock::Thinking {
+        thinking: "private reasoning".into(),
+        signature: Some("sig".into()),
+    };
+    let (mut session, _requests_a) = session_with(
+        dir.path(),
+        vec![msg(vec![thinking, text("first answer")], StopReason::EndTurn)],
+    );
+    collect_events(&mut session, "first question");
+
+    let urls = Rc::new(RefCell::new(vec![]));
+    let bodies = Rc::new(RefCell::new(vec![]));
+    let compat = temur::provider::openai_compat::OpenAiCompatProvider::new(
+        "http://switched.test/v1",
+        None,
+        Box::new(RecordingTransport {
+            fixture: "text_simple",
+            urls: urls.clone(),
+            bodies: bodies.clone(),
+        }),
+    );
+    session.switch_provider(Box::new(compat), "qwen-sw".into(), 1024, None);
+    collect_events(&mut session, "second question");
+
+    assert_eq!(urls.borrow().len(), 1);
+    assert!(
+        urls.borrow()[0].starts_with("http://switched.test/v1"),
+        "request went to the switched endpoint: {}",
+        urls.borrow()[0]
+    );
+    let body: serde_json::Value = serde_json::from_str(&bodies.borrow()[0]).unwrap();
+    assert_eq!(body["model"], "qwen-sw");
+    assert!(
+        !bodies.borrow()[0].contains("private reasoning"),
+        "thinking must be dropped at the compat wire boundary"
+    );
+    // Full history still crosses: system + user1 + assistant1 + user2.
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 4);
+}
+
+#[test]
+fn failed_switch_is_never_partial_by_construction() {
+    // Atomicity lives at the call site: the provider is built BEFORE
+    // switch_provider is called. This asserts the session side — nothing
+    // about a session changes until switch_provider actually runs.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![msg(vec![text("answer")], StopReason::EndTurn)],
+    );
+    collect_events(&mut session, "question");
+    let history_before = session.history().len();
+    // A failed build (e.g. unreadable key file) simply never reaches
+    // switch_provider; the command layer test proves that path end-to-end.
+    assert_eq!(session.model(), "claude-sonnet-5");
+    assert_eq!(session.history().len(), history_before);
+}
+
+#[test]
+fn clear_history_wipes_state_and_next_turn_starts_fresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(
+                vec![tool_use(
+                    "t1",
+                    "todowrite",
+                    serde_json::json!({"todos": [{"content": "a task", "status": "pending"}]}),
+                )],
+                StopReason::ToolUse,
+            ),
+            msg(vec![text("done")], StopReason::EndTurn),
+            msg(vec![text("fresh answer")], StopReason::EndTurn),
+        ],
+    );
+    collect_events(&mut session, "make a todo");
+    assert!(!session.history().is_empty());
+    assert_eq!(session.snapshot().todos.len(), 1);
+    assert!(session.session_usage().input_tokens.is_some());
+    assert!(session.last_context_used().is_some());
+
+    session.clear_history();
+    assert!(session.history().is_empty());
+    let snap = session.snapshot();
+    assert!(snap.todos.is_empty(), "todos cleared via ToolCtx");
+    assert_eq!(snap.session_usage, Usage::default());
+    assert!(snap.last_context_used.is_none());
+
+    // A fresh turn after /clear starts from scratch: exactly one message.
+    collect_events(&mut session, "fresh question");
+    let reqs = requests.borrow();
+    assert_eq!(reqs.last().unwrap().messages.len(), 1);
+}
+
+#[test]
+fn set_thinking_flips_the_next_request_and_getters_track() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(vec![text("a")], StopReason::EndTurn),
+            msg(vec![text("b")], StopReason::EndTurn),
+        ],
+    );
+    assert!(!session.thinking());
+    collect_events(&mut session, "one");
+    assert!(!requests.borrow()[0].thinking);
+
+    session.set_thinking(true);
+    assert!(session.thinking());
+    collect_events(&mut session, "two");
+    assert!(requests.borrow()[1].thinking);
+}

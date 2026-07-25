@@ -207,58 +207,46 @@ fn repl(
                 ))
             }
         }
-        None if is_compat => {
-            // Keyless is first-class for local endpoints; a keyed
-            // endpoint reads its credential BY PATH from config — the
-            // same isolation rule as APP_SECRET_FILE, never env/argv.
-            let key = match &resolved.api_key_file {
-                Some(p) => Some(secret::load_api_key_from(std::path::Path::new(p))?),
-                None => None,
-            };
-            if !use_tui {
-                println!("temur {VERSION} (model={model}, thinking={})", cfg.thinking);
-            }
-            match &capture {
-                Some(base) => {
-                    println!("[capture-sse: writing raw streams to {base}.<n>.sse]");
-                    Box::new(OpenAiCompatProvider::new(
-                        resolved.base_url.clone(),
-                        key,
-                        Box::new(temur::provider::transport::CaptureTransport::new(
-                            temur::provider::openai_compat::transport::HttpTransport::new(),
-                            std::path::PathBuf::from(base),
-                        )),
-                    ))
-                }
-                None => Box::new(OpenAiCompatProvider::with_http(resolved.base_url.clone(), key)),
-            }
-        }
         None => {
-            // Credential comes BY PATH: the profile's api_key_file when set,
-            // else APP_SECRET_FILE (appsvc launcher). Deliberately never
-            // read from ANTHROPIC_API_KEY.
-            let key = match &resolved.api_key_file {
-                Some(p) => secret::load_api_key_from(std::path::Path::new(p))?,
-                None => secret::load_api_key()?,
-            };
             if !use_tui {
                 println!("temur {VERSION} (model={model}, thinking={})", cfg.thinking);
             }
             match &capture {
+                // Tee raw SSE bodies to <base>.<n>.sse for the golden
+                // conformance fixtures (operator-run, one-time). Credentials
+                // here follow the same by-path rule as build_live.
                 Some(base) => {
-                    // Tee raw SSE bodies to <base>.<n>.sse for the golden
-                    // conformance fixtures (operator-run, one-time).
                     println!("[capture-sse: writing raw streams to {base}.<n>.sse]");
-                    Box::new(AnthropicProvider::new(
-                        resolved.base_url.clone(),
-                        key,
-                        Box::new(temur::provider::transport::CaptureTransport::new(
-                            temur::provider::anthropic::transport::HttpTransport::new(),
-                            std::path::PathBuf::from(base),
-                        )),
-                    ))
+                    if is_compat {
+                        let key = match &resolved.api_key_file {
+                            Some(p) => Some(secret::load_api_key_from(std::path::Path::new(p))?),
+                            None => None,
+                        };
+                        Box::new(OpenAiCompatProvider::new(
+                            resolved.base_url.clone(),
+                            key,
+                            Box::new(temur::provider::transport::CaptureTransport::new(
+                                temur::provider::openai_compat::transport::HttpTransport::new(),
+                                std::path::PathBuf::from(base),
+                            )),
+                        ))
+                    } else {
+                        let key = match &resolved.api_key_file {
+                            Some(p) => secret::load_api_key_from(std::path::Path::new(p))?,
+                            None => secret::load_api_key()?,
+                        };
+                        Box::new(AnthropicProvider::new(
+                            resolved.base_url.clone(),
+                            key,
+                            Box::new(temur::provider::transport::CaptureTransport::new(
+                                temur::provider::anthropic::transport::HttpTransport::new(),
+                                std::path::PathBuf::from(base),
+                            )),
+                        ))
+                    }
                 }
-                None => Box::new(AnthropicProvider::with_http(resolved.base_url.clone(), key)),
+                // The one live construction path, shared with `/model` (T8).
+                None => temur::provider::build_live(&resolved)?,
             }
         }
     };

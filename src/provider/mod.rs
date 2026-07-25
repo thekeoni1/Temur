@@ -73,6 +73,42 @@ pub enum ProviderError {
     Incomplete,
 }
 
+/// The ONE live-provider construction path (T8): startup and `/model`
+/// switches both come through here, so there is a single place where
+/// credentials are read — by path, at activation time, never cached across
+/// switches — and a single mapping from a resolved selection onto a
+/// provider. Replay (`--mock`) and capture transports are startup-only
+/// concerns and stay in main.
+pub fn build_live(
+    p: &crate::config::ResolvedProfile,
+) -> Result<Box<dyn Provider>, crate::error::Error> {
+    if p.provider == "openai-compat" {
+        // Keyless is first-class for local endpoints; a keyed endpoint reads
+        // its credential BY PATH — the same isolation rule as
+        // APP_SECRET_FILE, never env/argv.
+        let key = match &p.api_key_file {
+            Some(path) => Some(crate::secret::load_api_key_from(std::path::Path::new(path))?),
+            None => None,
+        };
+        Ok(Box::new(openai_compat::OpenAiCompatProvider::with_http(
+            p.base_url.clone(),
+            key,
+        )))
+    } else {
+        // Credential BY PATH: the profile's api_key_file when set, else
+        // APP_SECRET_FILE (appsvc launcher). Deliberately never
+        // ANTHROPIC_API_KEY.
+        let key = match &p.api_key_file {
+            Some(path) => crate::secret::load_api_key_from(std::path::Path::new(path))?,
+            None => crate::secret::load_api_key()?,
+        };
+        Ok(Box::new(anthropic::AnthropicProvider::with_http(
+            p.base_url.clone(),
+            key,
+        )))
+    }
+}
+
 pub trait Provider {
     /// Send one request; invoke `on_event` for each incremental UI event;
     /// return the fully assembled assistant message.
