@@ -115,6 +115,54 @@ Two more optional keys: `sessions_dir` overrides where saved sessions live
 (default: the state dir, see below), and `session_max_bytes` caps the saved
 session file's size (default 4 MiB, minimum 64 KiB).
 
+### Named profiles and in-session switching
+
+Define named profiles — nicknames bundling provider + model + endpoint +
+key file + limits — and switch between them from inside a session with
+`/model <name>`, no quit-and-edit-JSON round trip:
+
+```json
+{
+  "profiles": {
+    "local":  { "provider": "openai-compat", "model": "qwen3-1.7b",
+                "max_tokens": 1024, "context_window": 8192 },
+    "sonnet": { "provider": "anthropic", "model": "claude-sonnet-5",
+                "max_tokens": 32000 }
+  },
+  "profile": "local"
+}
+```
+
+Optional `profile` picks the startup profile; omit it and the base
+provider/model fields apply exactly as before profiles existed. Profile
+fields: `provider` (`"anthropic"` or `"openai-compat"`), `model`
+(required), and optional `base_url` (default: the provider's own default
+endpoint), `api_key_file` (path to a key file — openai-compat profiles
+without one are keyless, anthropic profiles without one fall back to
+`APP_SECRET_FILE`), `max_tokens` (default: the global value), and
+`context_window`. Every profile is validated at startup, so `/model` can
+only fail on a credential/IO problem — and a failed switch leaves the
+session untouched. History continues across a switch (it is stored
+provider-neutrally), and each save records whichever provider/model is
+active at that moment.
+
+## Commands
+
+Inside a session, any input line starting with `/` is a command — it
+never reaches the model or the history (which also means a literal
+message starting with `/` cannot be sent):
+
+- `/help` — list commands
+- `/status` — profile, provider, model, thinking, context use, session file
+- `/model` — list profiles · `/model <name>` — switch profiles mid-session
+- `/clear` — wipe the session; the empty state is persisted immediately,
+  so quitting and `--continue` resumes empty
+- `/thinking` · `/thinking on|off` — show or flip adaptive thinking for
+  this session (only the anthropic provider uses it)
+
+Under `--mock`/`--capture-sse` the state-mutating commands report
+themselves unavailable to keep replays deterministic.
+
 ## Sessions
 
 Every live run saves the conversation after each turn — one file per working

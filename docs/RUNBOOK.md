@@ -501,3 +501,62 @@ operator flips visibility, run the README one-liner verbatim into a
 temp `HOME` (live raw-URL download of install.sh at the `v0.1.1` tag,
 live artifact + SHA256SUMS from the release, checksum verified,
 `--version` 0.1.1) and record the result here.
+
+## T8-P1 acceptance — recorded result (no release)
+
+2026-07-25: **T8-P1 (slash commands + named-profile switching) landed**
+across five gated commits (P1 config profiles → P2 build_live +
+Session seam → P3 command layer → P4 TUI rendering → P5 docs); full
+`check.sh` (both paths) green at every phase; no tag, no version bump —
+T8 releases as v0.2.0 when the milestone completes.
+
+Live verification, scripted llama.cpp proof (build session, local
+server only — cached `server-b10068` image, Qwen3-1.7B Q4_K_M, two
+keyless profiles at the same endpoint with distinct nicknames/model
+strings/max_tokens; isolated XDG config/state dirs). Transcript
+excerpts, verbatim:
+
+```
+temur 0.1.1 (model=qwen-nickname-a, thinking=false)
+>   [!] response truncated: max_tokens reached
+>   [!] switched to qwen-b (openai-compat · qwen-nickname-b)
+>   [!] profile: qwen-b
+  [!] provider: openai-compat · model: qwen-nickname-b
+  [!] thinking: off · max_tokens: 640
+  [!] context: ~3161 of 8192 tokens used
+> banana
+  (turn: 2666 in / 259 out, cache read 2649 ...)
+>   [!] session cleared
+```
+
+Then `--continue`:
+
+```
+  [!] resumed session was recorded with model "qwen-nickname-b"; this
+      run uses "qwen-nickname-a" — continuing
+  [!] resumed session: 0 messages, ~— tokens in / — out
+```
+
+Reading of the evidence: startup profile applied (banner model =
+nickname-a); the switch confirmation and post-switch `/status` show the
+second profile active with its own max_tokens; the second turn's
+`cache read 2649` proves the full pre-switch history rode along to the
+server; `/clear` + `--continue` resumes EMPTY, and the saved file on
+disk records the POST-switch provider/model (`"model":
+"qwen-nickname-b", "history":[]`) — the advisory mismatch notice on
+resume is the documented, correct behavior. Turn 1's truncation is
+Qwen3 spending its 512-token budget on thinking — model behavior, not
+a switching defect; turn 2 (640 tokens) answered as instructed. The
+anthropic-switch path is proven by mock/fixture tests (atomic failed
+switch through the real `build_live` with an unreadable key file and
+with `APP_SECRET_FILE` unset); the operator dogfoods a real
+local→sonnet switch with their own key file.
+
+Environment note for future gate runs: the host TUI pty smoke in
+`check.sh` reads the REAL `~/.config/temur/config.json`; with the
+operator's config now selecting openai-compat, the Anthropic-fixture
+smoke fails on an unmodified tree. All T8-P1 gate runs used a neutral
+`XDG_CONFIG_HOME`; folding config isolation into check.sh itself is a
+candidate for the sanctioned check.sh edit in a later T8 piece
+(alongside the still-punted container-suite-list + `tests/sigint.rs`
+follow-up).

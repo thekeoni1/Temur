@@ -178,6 +178,7 @@ payload.
 | T5 | Session persistence | JSON save/resume in the neutral vocabulary |
 | T6 | Editing + interruption | Fuzzy-match edit fallback; cancellable turns |
 | T7 | Multi-arch packaging | armv7/aarch64/x86_64 musl-static releases, install story |
+| T8 | Daily-driver UX (in progress) | Slash commands + named-profile switching (P1, done); markdown rendering; TUI styling — releases as v0.2.0 when complete |
 
 ### T0 — Identity + honest gate
 - Rename `opencode-rust` → `temur`: package name, `--version`, binary name,
@@ -335,6 +336,37 @@ spans/trims once; **F9** one private `Session::build` behind new/resume;
 **F10** `INTERRUPT_MARKER` const + one synthesis helper. Every fix
 carries regression tests; gates: full `check.sh` per phase, installer
 matrix (host + busybox), SIGINT black-box matrix, full `release.sh`.
+
+### T8 — Daily-driver UX (in progress)
+
+Post-v0.1.1 direction (operator-decided): daily-dogfooding ergonomics,
+landed as independently gated pieces with no per-piece release — T8 ships
+as v0.2.0 when the milestone is complete. Remaining pieces (open):
+markdown rendering in the TUI transcript, and a TUI styling pass.
+
+**T8-P1 (as-built, 2026-07-25): slash commands + named-profile model
+switching.** Config gains `profiles` (nickname → provider/model/base_url/
+api_key_file/max_tokens/context_window) plus a startup `profile`
+selector; every profile is validated eagerly at startup, so `/model` can
+only fail on credential/IO, and absent profiles are byte-identical to
+pre-T8 behavior (error strings unit-asserted). Any leading-`/` input
+line is command-space, intercepted between turns and never reaching the
+model or history: `/help`, `/status`, `/model [name]`, `/clear`,
+`/thinking [on|off]`. One live construction path (`provider::build_live`)
+serves startup AND switches — credentials read by path at activation
+time, never cached across switches; `/model` builds the new provider
+first and mutates the session only on success (atomicity proven through
+the real path with an unreadable key file and with `APP_SECRET_FILE`
+unset); `/clear` persists the emptied session immediately so
+`--continue` resumes empty. Command feedback travels as `AgentEvent`s —
+`Notice` text plus `ModelSwitched`/`ThinkingChanged`/`SessionCleared`
+chrome signals (`ThinkingChanged` is a small scope addition over the
+plan so TUI footer chrome cannot go stale). TUI: commands echo as dim
+`Cell::Command` lines, recallable via ↑, and never claim the title, a
+User cell, or the busy spinner. Mutating commands are disabled under
+`--mock`/`--capture-sse`. Deliberately punted from this piece: the
+`scripts/check.sh` container-suite-list edit and the `tests/sigint.rs`
+fold-in that would ride with it (RUNBOOK note stands).
 
 ## 4. Invariants (every milestone)
 
