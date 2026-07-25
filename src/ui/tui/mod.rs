@@ -9,6 +9,7 @@
 //! decision. See docs/TUI.md for the seam assumptions and known limits.
 
 pub mod app;
+pub mod markdown;
 pub mod view;
 pub mod wrap;
 
