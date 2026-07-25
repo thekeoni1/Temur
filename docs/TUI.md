@@ -13,6 +13,54 @@ modifiers plus exactly three named accents: **Red** (tool errors),
 inline code in markdown). No themes, no backgrounds, no borders, no other
 colors — the transcript inherits whatever palette the terminal runs.
 
+## Markdown rendering (T8-P2)
+
+Assistant prose — and ONLY assistant prose — renders as markdown in the
+transcript (`src/ui/tui/markdown.rs`, pulldown-cmark with default
+features off and strikethrough as the only extension; we wrote the
+terminal renderer). User echoes, notices, `/command` echoes, and tool
+titles stay verbatim, and the plain REPL's output is byte-identical to
+before. The renderer is a pure function of (cell text, width), re-run
+per frame on the accumulating cell string — no incremental parser state.
+
+Within the style contract above:
+
+- Paragraphs: 3-space indent, word-wrapped at width−3; single newlines
+  are CommonMark soft breaks and reflow as spaces.
+- Headings: BOLD, H1/H2 also UNDERLINED.
+- `**bold**` → BOLD · `*italic*` → ITALIC · `~~strike~~` → DIM.
+- Inline code: cyan.
+- Code blocks (fenced + indented): dim `▌` gutter (mirroring the
+  block-tool form), language tag dim on the first gutter line, lines
+  VERBATIM — overlong lines hard-split, never word-wrapped or trimmed.
+  No syntax highlighting.
+- Lists: `•` bullets / `N.` numbers, two-space nesting, hanging indent.
+- Blockquotes: dim `│` prefix, content wrapped inside, bar continuous
+  across paragraphs.
+- Horizontal rule: dim `─` run to width.
+- Links: text UNDERLINED + dim ` (url)`; bare autolinks just dim.
+
+Streaming behavior (pinned by tests): pulldown-cmark closes everything
+at end-of-input, so an unclosed fence renders as a code block until its
+closer streams in, and unclosed emphasis stays literal.
+
+**Limitations (documented, tested where observable):**
+
+- **Severed fence.** A tool call or notice mid-reply splits one logical
+  reply across `AssistantText` cells, and each cell re-parses alone. A
+  fence severed by the split renders its opener's cell as code, while
+  the closer's cell re-parses from scratch: prose until the orphan
+  ```` ``` ````, which opens a NEW fence that swallows the rest of that
+  cell as code. Nothing panics, nothing is lost — the styling is just
+  inverted for that cell.
+- **Tables / footnotes / task lists** are not enabled and render as the
+  plain paragraphs pulldown-cmark emits without those extensions (table
+  rows come out as one reflowed paragraph of `|`-text).
+- **No syntax highlighting** (syntect and kin are punted — dependency
+  surface vs. the static-musl constraint).
+- Thinking text is still discarded (unit `Cell::Thinking` marker), so
+  markdown never applies to it.
+
 ## UI selection
 
 - Default: TUI when **stdin and stdout are both TTYs**, plain line REPL
@@ -116,7 +164,12 @@ Ctrl+C) remain the documented escape hatch, both exiting 130.
 Also deferred, noted during the port: input queuing while a turn runs
 (OpenCode queues prompts; we disable Enter and show a hint), tool output
 in `ToolEnd` (OpenCode shows capped bash output; our seam carries only a
-title), mouse support, themes, multi-pane layouts.
+title), mouse support, themes, multi-pane layouts. Deferred from the
+markdown pass (T8-P2): syntax highlighting in code blocks, markdown for
+thinking text, table/footnote/tasklist extensions, and any
+cell-finalized flag or incremental parse state (per-frame re-parse of
+the streaming cell has not measured as a problem at transcript sizes —
+revisit only with evidence).
 
 ## Keys
 

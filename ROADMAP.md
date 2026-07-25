@@ -178,7 +178,7 @@ payload.
 | T5 | Session persistence | JSON save/resume in the neutral vocabulary |
 | T6 | Editing + interruption | Fuzzy-match edit fallback; cancellable turns |
 | T7 | Multi-arch packaging | armv7/aarch64/x86_64 musl-static releases, install story |
-| T8 | Daily-driver UX (in progress) | Slash commands + named-profile switching (P1, done); markdown rendering; TUI styling — releases as v0.2.0 when complete |
+| T8 | Daily-driver UX (in progress) | Slash commands + named-profile switching (P1, done); markdown rendering + TUI styling pass (P2, done) — releases as v0.2.0 when complete |
 
 ### T0 — Identity + honest gate
 - Rename `opencode-rust` → `temur`: package name, `--version`, binary name,
@@ -341,8 +341,9 @@ matrix (host + busybox), SIGINT black-box matrix, full `release.sh`.
 
 Post-v0.1.1 direction (operator-decided): daily-dogfooding ergonomics,
 landed as independently gated pieces with no per-piece release — T8 ships
-as v0.2.0 when the milestone is complete. Remaining pieces (open):
-markdown rendering in the TUI transcript, and a TUI styling pass.
+as v0.2.0 when the milestone is complete. Remaining before the v0.2.0
+close-out: the release itself (version bump, tag, release.sh) — the
+planned feature pieces are done.
 
 **T8-P1 (as-built, 2026-07-25): slash commands + named-profile model
 switching.** Config gains `profiles` (nickname → provider/model/base_url/
@@ -366,7 +367,32 @@ plan so TUI footer chrome cannot go stale). TUI: commands echo as dim
 User cell, or the busy spinner. Mutating commands are disabled under
 `--mock`/`--capture-sse`. Deliberately punted from this piece: the
 `scripts/check.sh` container-suite-list edit and the `tests/sigint.rs`
-fold-in that would ride with it (RUNBOOK note stands).
+fold-in that would ride with it (RUNBOOK note stands — since closed by
+T8-P2's check.sh hygiene pass).
+
+**T8-P2 (as-built, 2026-07-25): markdown rendering + monochrome styling
+pass + check.sh hygiene.** Landed as its own gated sub-phases. (1)
+check.sh hygiene — the milestone's sanctioned check.sh edit: every
+host-side product invocation now runs with isolated
+`XDG_CONFIG_HOME`/`XDG_STATE_HOME` in the run's temp dir, so the
+operator's real config can no longer break the host TUI pty smoke (the
+T8-P1 neutral-XDG workaround is retired), and `tests/sigint.rs` joined
+the container suite list on both paths. (2) Markdown rendering —
+`src/ui/tui/markdown.rs`, a pure `render(text, width) → Vec<Line>` over
+pulldown-cmark 0.13 (default features off, strikethrough the only
+extension; lock delta: pulldown-cmark + unicase only, no *-sys crates;
+stripped i686-musl release grew ~260 KiB to ~5.6 MiB). Applies ONLY to
+assistant prose in the TUI; the plain REPL and all other cell types are
+byte-identical. Streaming re-parses the accumulating cell per frame;
+unclosed fences render as code until the closer arrives. Documented
+limitations: severed fences across tool-split cells re-parse per cell
+(styling inverts, nothing lost), table/footnote/tasklist extensions off,
+no syntax highlighting. (3) Styling — the accent contract formalized
+(DIM/BOLD/ITALIC/UNDERLINED + Red errors / Yellow notices / Cyan
+accents, bringing the pre-existing cyan uses in-contract) and the
+running-tool line dimmed to match its finished form. Deviation from the
+plan sketch: none of substance; soft breaks reflow as spaces (CommonMark
+semantics), pinned by test.
 
 ## 4. Invariants (every milestone)
 

@@ -163,6 +163,11 @@ message starting with `/` cannot be sent):
 Under `--mock`/`--capture-sse` the state-mutating commands report
 themselves unavailable to keep replays deterministic.
 
+In the TUI (the default on a terminal), assistant replies render as
+markdown — headings, emphasis, lists, quotes, links, and code blocks
+behind a dim gutter — in the same monochrome, default-terminal-color
+style; the plain REPL prints raw text unchanged.
+
 ## Sessions
 
 Every live run saves the conversation after each turn — one file per working

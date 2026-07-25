@@ -552,11 +552,25 @@ switch through the real `build_live` with an unreadable key file and
 with `APP_SECRET_FILE` unset); the operator dogfoods a real
 local→sonnet switch with their own key file.
 
-Environment note for future gate runs: the host TUI pty smoke in
-`check.sh` reads the REAL `~/.config/temur/config.json`; with the
-operator's config now selecting openai-compat, the Anthropic-fixture
-smoke fails on an unmodified tree. All T8-P1 gate runs used a neutral
-`XDG_CONFIG_HOME`; folding config isolation into check.sh itself is a
-candidate for the sanctioned check.sh edit in a later T8 piece
-(alongside the still-punted container-suite-list + `tests/sigint.rs`
-follow-up).
+Environment note for future gate runs — RETIRED 2026-07-25 by T8-P2:
+`check.sh` itself now isolates every host-side product invocation with
+per-run `XDG_CONFIG_HOME`/`XDG_STATE_HOME` temp dirs, and
+`tests/sigint.rs` is in the container suite list, so gate runs need no
+workaround env regardless of what the operator's real config selects.
+(Historical context: during T8-P1 the host TUI pty smoke read the real
+`~/.config/temur/config.json` and failed whenever it selected
+openai-compat; those gate runs used a neutral `XDG_CONFIG_HOME` by
+hand. The failure mode was reproduced once more before the fix and
+proven gone after it — a full no-workaround check.sh run is green with
+the operator's openai-compat config in place.)
+
+## T8-P2 acceptance (2026-07-25)
+
+Markdown rendering + styling pass: full `check.sh` (gnu-debug +
+musl-release paths, 26 container-suite results, REPL/TUI/pty smokes,
+busybox) green at every sub-phase gate with no workaround env. The
+representative markdown sample (heading + inline code + styled list +
+fenced block) is frame-asserted at two widths and end-to-end through
+the headless seam over `tests/fixtures/markdown_sample.sse`; the
+severed-fence limitation is pinned in
+`severed_fence_across_cells_renders_without_panic` (tests/tui.rs).
