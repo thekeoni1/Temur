@@ -263,6 +263,19 @@ fn frame_mid_turn_streaming_with_busy_row() {
     assert!(rows.iter().any(|r| r.contains("~ read…")), "running tool: {rows:?}");
     assert!(rows[8].contains("⠙ working…"), "busy row: {}", rows[8]);
     assert!(rows[8].contains("enter disabled during turn"));
+
+    // T8-P2 styling pass: the running-tool line is dim, matching the
+    // thinking indicator and the ⚙ of a completed inline tool.
+    let backend = TestBackend::new(60, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| draw(&mut a, f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let y = rows.iter().position(|r| r.contains("~ read…")).unwrap() as u16;
+    let x = rows[y as usize].find('~').unwrap() as u16;
+    assert!(
+        buf[(x, y)].style().add_modifier.contains(ratatui::style::Modifier::DIM),
+        "running tool line renders dim"
+    );
 }
 
 #[test]

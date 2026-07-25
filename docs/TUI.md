@@ -5,6 +5,14 @@ The TUI is a second `Ui` implementation (`src/ui/tui/`) over the unchanged
 behavioral port of OpenCode's session view (header band / scrollback with
 sticky bottom / prompt / status row / footer), monochrome-adapted.
 
+## Style contract (T8-P2, formalized)
+
+Default terminal colors, restyled only with the DIM/BOLD/ITALIC/UNDERLINED
+modifiers plus exactly three named accents: **Red** (tool errors),
+**Yellow** (notices/warnings), **Cyan** (accents: the turn-tail ▣ mark and
+inline code in markdown). No themes, no backgrounds, no borders, no other
+colors — the transcript inherits whatever palette the terminal runs.
+
 ## UI selection
 
 - Default: TUI when **stdin and stdout are both TTYs**, plain line REPL

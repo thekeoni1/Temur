@@ -1,7 +1,11 @@
 //! Frame rendering: App state → ratatui buffer. A behavioral port of
 //! OpenCode's session view (header band / scrollback / prompt / status /
-//! footer), monochrome-adapted: default terminal colors, dim/bold/red/yellow
-//! accents only. Pure function of `App` + area, so TestBackend snapshots are
+//! footer), monochrome-adapted. The accent contract (T8-P2, formalized):
+//! default terminal colors with DIM/BOLD/ITALIC/UNDERLINED modifiers, plus
+//! exactly three named accents — Red (tool errors), Yellow
+//! (notices/warnings), Cyan (accents: the turn-tail mark, inline code in
+//! markdown). No themes, no backgrounds, no borders, no other colors.
+//! Pure function of `App` + area, so TestBackend snapshots are
 //! deterministic.
 
 use super::app::{App, Cell};
@@ -85,7 +89,11 @@ fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             Cell::Tool(t) => {
                 let title_budget = width.saturating_sub(6);
                 match (&t.title, t.is_block()) {
-                    (None, _) => out.push(Line::from(format!("   ~ {}…", t.name))),
+                    // Still running: dim, like the thinking indicator and
+                    // the ⚙ of a completed inline tool.
+                    (None, _) => {
+                        out.push(Line::from(Span::styled(format!("   ~ {}…", t.name), dim())))
+                    }
                     (Some(title), false) => {
                         let (mark, style) = if t.is_error {
                             ("✗", Style::default().fg(Color::Red))
