@@ -117,6 +117,11 @@ fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                     }
                 }
             }
+            Cell::Command(text) => {
+                for l in wrap(text, width.saturating_sub(3)) {
+                    out.push(Line::from(Span::styled(format!("   {l}"), dim())));
+                }
+            }
             Cell::Notice(n) => {
                 for l in wrap(&format!("[!] {n}"), width.saturating_sub(2)) {
                     out.push(Line::from(vec![

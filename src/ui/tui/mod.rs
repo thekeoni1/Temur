@@ -248,6 +248,14 @@ fn render_loop<B: Backend>(
                 Action::Submit(line) => {
                     if line == "exit" || line == "quit" {
                         let _ = tx_input.send(None);
+                    } else if line.starts_with('/') {
+                        // T8 command line: recorded + echoed dim and
+                        // recallable, but NOT a prompt — no App::submit (no
+                        // User cell, no title, no busy spinner) and no
+                        // cancel-token clear (no turn starts). The main
+                        // loop executes it and events fold back as usual.
+                        app.submit_command(&line);
+                        let _ = tx_input.send(Some(line));
                     } else {
                         // F7: clear the cancel token at SUBMISSION, on the
                         // same thread that processes Esc — a stale Esc from

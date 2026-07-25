@@ -23,6 +23,8 @@ pub enum Cell {
     Tool(ToolCell),
     /// Out-of-band notice (refusal, guard trip, provider error): warning block.
     Notice(String),
+    /// A submitted `/command` line (T8): echoed dim, never a prompt.
+    Command(String),
     /// Per-response tail, OpenCode's `▣ mode · model · duration` line.
     TurnTail { secs: u64, usage: Usage },
 }
@@ -213,6 +215,19 @@ impl App {
         self.busy = true;
         self.force_quit_armed = false;
         self.turn_started_ms = self.now_ms;
+        self.stick_bottom = true;
+    }
+
+    /// Record a submitted COMMAND line (T8): echoed dim in the transcript
+    /// and recallable via ↑ like any input, but never a prompt — no title
+    /// claim, no User cell, no busy state (commands execute between turns).
+    pub fn submit_command(&mut self, line: &str) {
+        self.cells.push(Cell::Command(line.to_string()));
+        self.history.push(line.to_string());
+        self.hist_pos = None;
+        self.draft.clear();
+        self.input.clear();
+        self.cursor = 0;
         self.stick_bottom = true;
     }
 

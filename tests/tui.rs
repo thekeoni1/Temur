@@ -731,3 +731,269 @@ fn headless_esc_interrupts_a_blocked_turn_end_to_end() {
     assert!(body.contains("▣"), "turn tail rendered:\n{body}");
     assert!(!body.contains("interrupting…"), "state cleared:\n{body}");
 }
+
+// ------------------------------------------------------------ T8: commands
+
+#[test]
+fn submit_command_no_title_no_user_cell_no_busy_and_recallable() {
+    let mut a = app();
+    a.submit_command("/status");
+    assert_eq!(a.cells.last(), Some(&Cell::Command("/status".into())));
+    assert!(a.title.is_none(), "commands never claim the title");
+    assert!(!a.busy, "commands never spin");
+    assert!(!a.cells.iter().any(|c| matches!(c, Cell::User(_))));
+    // Recallable via ↑ like any input.
+    a.handle_key(key(KeyCode::Up));
+    assert_eq!(a.input, "/status");
+}
+
+#[test]
+fn fold_model_switched_and_thinking_changed_update_chrome() {
+    let mut a = app();
+    a.fold(&AgentEvent::ModelSwitched { model: "model-b".into() });
+    assert_eq!(a.model, "model-b");
+    a.fold(&AgentEvent::ThinkingChanged(true));
+    assert!(a.thinking);
+    let rows = render(&mut a, 90, 12);
+    let body = rows.join("\n");
+    assert!(body.contains("model-b"), "header/footer chrome:\n{body}");
+    assert!(body.contains("thinking on"), "footer chrome:\n{body}");
+}
+
+#[test]
+fn fold_session_cleared_resets_transcript_title_and_usage() {
+    let mut a = app();
+    a.submit("hello");
+    a.fold(&AgentEvent::TextDelta("answer".into()));
+    a.fold(&AgentEvent::TurnComplete {
+        turn_usage: usage(5, 7),
+        session_usage: usage(5, 7),
+    });
+    assert!(a.title.is_some());
+    a.fold(&AgentEvent::SessionCleared);
+    a.fold(&AgentEvent::Notice("session cleared".into()));
+    assert_eq!(a.cells.len(), 1, "only the post-clear notice survives");
+    assert!(a.title.is_none());
+    assert_eq!(a.session_usage, Usage::default());
+    let rows = render(&mut a, 80, 12);
+    let body = rows.join("\n");
+    assert!(body.contains("new session"), "{body}");
+    assert!(!body.contains("hello"), "{body}");
+    assert!(body.contains("session cleared"), "{body}");
+}
+
+#[test]
+fn frame_command_cell_renders_as_dim_line_not_user_block() {
+    let mut a = app();
+    a.submit_command("/model local");
+    a.fold(&AgentEvent::Notice(
+        "switched to local (openai-compat · qwen3-1.7b)".into(),
+    ));
+    let rows = render(&mut a, 90, 10);
+    let body = rows.join("\n");
+    assert!(body.contains("/model local"), "{body}");
+    assert!(body.contains("switched to local"), "{body}");
+    assert!(!body.contains("▌ /model"), "no user-block bar: {body}");
+    assert!(rows[0].contains("new session"), "no title from a command: {body}");
+}
+
+/// The real render-thread Submit arm routes `/`-lines through
+/// `submit_command` (no busy, no title, no User cell) and still forwards
+/// them to the agent thread. The test plays the driver-loop role exactly as
+/// main.rs does: read_input → commands::run → events back through the seam.
+#[test]
+fn headless_command_flow_status_leaves_title_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens: 32_000,
+        system: Some("test system".into()),
+        thinking: false,
+        cwd: dir.path().to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+    };
+    let mut session = Session::new(
+        Box::new(BlockUntilCancelled), // never called: only commands run
+        Registry::standard(),
+        cfg,
+    );
+
+    // The final "exit" makes the Submit arm send None, ending the driver
+    // loop below — without it read_input would block forever.
+    let mut script: Vec<Event> = Vec::new();
+    for line in ["/status", "exit"] {
+        script.extend(line.chars().map(|c| Event::Key(key(KeyCode::Char(c)))));
+        script.push(Event::Key(key(KeyCode::Enter)));
+    }
+
+    let (mut ui, snapshot) = TuiUi::headless(
+        SessionInfo {
+            model: "claude-sonnet-5".into(),
+            thinking: false,
+            cwd: dir.path().display().to_string(),
+            version: "test".into(),
+        },
+        100,
+        30,
+        script,
+        session.cancel_token(),
+    );
+
+    let mut profiles = std::collections::BTreeMap::new();
+    profiles.insert(
+        "sonnet-next".to_string(),
+        temur::config::ResolvedProfile {
+            provider: "anthropic".into(),
+            model: "sonnet-next".into(),
+            base_url: "https://mock.invalid".into(),
+            api_key_file: None,
+            max_tokens: 32_000,
+            context_window: None,
+        },
+    );
+    let mut active: Option<String> = None;
+    let mut provider_name = "anthropic".to_string();
+    let mut model = "claude-sonnet-5".to_string();
+    let build = |_: &temur::config::ResolvedProfile| -> Result<
+        Box<dyn Provider>,
+        temur::error::Error,
+    > { unreachable!("/status builds nothing") };
+
+    while let Some(line) = ui.read_input() {
+        assert!(line.starts_with('/'), "script only sends commands");
+        let mut ctx = temur::commands::CommandCtx {
+            session: &mut session,
+            profiles: &profiles,
+            active_profile: &mut active,
+            provider_name: &mut provider_name,
+            model: &mut model,
+            persist_path: None,
+            session_max_bytes: temur::config::DEFAULT_SESSION_MAX_BYTES,
+            cwd_display: "/test",
+            replay_mode: false,
+            build_provider: &build,
+        };
+        for ev in temur::commands::run(temur::commands::parse(&line), &mut ctx) {
+            ui.event(&ev);
+        }
+    }
+    drop(ui);
+
+    let rows = snapshot.lock().unwrap().clone();
+    let body = rows.join("\n");
+    assert!(rows[0].contains("new session"), "no title from commands:\n{body}");
+    assert!(body.contains("/status"), "dim command echo:\n{body}");
+    assert!(body.contains("no usage reported yet"), "status output:\n{body}");
+    assert!(!body.contains("▌ /status"), "never a user cell:\n{body}");
+}
+
+/// Full switch-then-clear flow through the real runtime: `/model` updates
+/// the header chrome; `/clear` wipes the transcript (including the command
+/// echoes) and resets the title; the post-clear notice survives.
+#[test]
+fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = AnthropicProvider::new(
+        "https://mock.invalid",
+        "mock-key".into(),
+        Box::new(ReplayTransport::new(vec![format!(
+            "{}/tests/fixtures/text_simple.sse",
+            env!("CARGO_MANIFEST_DIR")
+        )
+        .into()])),
+    );
+    let cfg = SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens: 32_000,
+        system: Some("test system".into()),
+        thinking: false,
+        cwd: dir.path().to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+    };
+    let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
+
+    let mut script: Vec<Event> = Vec::new();
+    for line in ["hi", "/model sonnet-next", "/clear", "exit"] {
+        script.extend(line.chars().map(|c| Event::Key(key(KeyCode::Char(c)))));
+        script.push(Event::Key(key(KeyCode::Enter)));
+    }
+
+    let (mut ui, snapshot) = TuiUi::headless(
+        SessionInfo {
+            model: "claude-sonnet-5".into(),
+            thinking: false,
+            cwd: dir.path().display().to_string(),
+            version: "test".into(),
+        },
+        100,
+        30,
+        script,
+        session.cancel_token(),
+    );
+
+    let mut profiles = std::collections::BTreeMap::new();
+    profiles.insert(
+        "sonnet-next".to_string(),
+        temur::config::ResolvedProfile {
+            provider: "anthropic".into(),
+            model: "sonnet-next".into(),
+            base_url: "https://mock.invalid".into(),
+            api_key_file: None,
+            max_tokens: 32_000,
+            context_window: None,
+        },
+    );
+    let mut active: Option<String> = None;
+    let mut provider_name = "anthropic".to_string();
+    let mut model = "claude-sonnet-5".to_string();
+    let build = |p: &temur::config::ResolvedProfile| -> Result<
+        Box<dyn Provider>,
+        temur::error::Error,
+    > {
+        // The switched-to provider is never exercised in this test; a
+        // blocking stand-in proves construction happened without a network.
+        assert_eq!(p.model, "sonnet-next");
+        Ok(Box::new(BlockUntilCancelled))
+    };
+
+    while let Some(line) = ui.read_input() {
+        if line.starts_with('/') {
+            let mut ctx = temur::commands::CommandCtx {
+                session: &mut session,
+                profiles: &profiles,
+                active_profile: &mut active,
+                provider_name: &mut provider_name,
+                model: &mut model,
+                persist_path: None,
+                session_max_bytes: temur::config::DEFAULT_SESSION_MAX_BYTES,
+                cwd_display: "/test",
+                replay_mode: false,
+                build_provider: &build,
+            };
+            for ev in temur::commands::run(temur::commands::parse(&line), &mut ctx) {
+                ui.event(&ev);
+            }
+        } else {
+            session.turn(&line, &mut |ev| ui.event(&ev)).unwrap();
+        }
+    }
+    drop(ui);
+
+    assert_eq!(active.as_deref(), Some("sonnet-next"));
+    assert_eq!(session.model(), "sonnet-next");
+    assert!(session.history().is_empty(), "cleared");
+
+    let rows = snapshot.lock().unwrap().clone();
+    let body = rows.join("\n");
+    assert!(rows[0].contains("sonnet-next"), "header chrome switched:\n{body}");
+    assert!(rows[0].contains("new session"), "title reset by /clear:\n{body}");
+    assert!(body.contains("session cleared"), "post-clear notice:\n{body}");
+    assert!(!body.contains("Hello, world!"), "turn output wiped:\n{body}");
+    assert!(!body.contains("/model sonnet-next"), "command echoes wiped too:\n{body}");
+}
