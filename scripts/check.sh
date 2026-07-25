@@ -17,10 +17,20 @@ BARE_IMG=docker.io/library/busybox:stable
 PROJ="$(pwd)"
 FIXTURES="$PROJ/tests/fixtures/tool_use_parallel.sse,$PROJ/tests/fixtures/text_simple.sse"
 
+# Host-side product invocations must never read the operator's real config
+# or state (the host pty smoke used to fail whenever ~/.config/temur selected
+# a non-default provider): every one of them runs with isolated XDG dirs
+# inside this run's temp dir. Container invocations already mount their own
+# config (or none) and are left alone.
+HOST_XDG=$(mktemp -d)
+trap 'rm -rf "$HOST_XDG"' EXIT
+mkdir -p "$HOST_XDG/config" "$HOST_XDG/state"
+HOST_ISOLATION="XDG_CONFIG_HOME=$HOST_XDG/config XDG_STATE_HOME=$HOST_XDG/state"
+
 # --- shared checks, parameterized by binary/deps dir -------------------------
 
 container_suites() { # $1 = deps dir, $2 = label
-    for suite in sse_parser provider openai_compat request_golden tools agent live_conformance live_conformance_openai weak_model session_store skills tui; do
+    for suite in sse_parser provider openai_compat request_golden tools agent live_conformance live_conformance_openai weak_model session_store skills tui sigint; do
         TBIN=$(ls -t "$1/${suite}"-* 2>/dev/null | grep -v '\.d$' | head -1 || true)
         [ -n "$TBIN" ] || continue
         echo "-- $suite ($(basename "$TBIN")) --"
@@ -114,10 +124,10 @@ echo "== binary is 32-bit =="
 file "$GNU_BIN" | grep -q "ELF 32-bit" || { echo "FAIL: not a 32-bit ELF"; exit 1; }
 
 echo "== host: --version =="
-"$GNU_BIN" --version
+env $HOST_ISOLATION "$GNU_BIN" --version
 
 echo "== host: tls-probe =="
-"$GNU_BIN" tls-probe
+env $HOST_ISOLATION "$GNU_BIN" tls-probe
 
 echo "== container: --version =="
 podman run --rm -v "$(dirname "$GNU_BIN")":/app:ro "$IMG" /app/temur --version
@@ -135,7 +145,7 @@ echo "== container: mock REPL via openai-compat provider (gnu-debug) =="
 mock_repl_openai "$(dirname "$GNU_BIN")" "$IMG" gnu
 
 echo "== host: TUI pty smoke =="
-tui_input | script -qec "stty rows 24 cols 100; $GNU_BIN $MOCKARGS" /tmp/tui-check-host.log >/dev/null
+tui_input | script -qec "stty rows 24 cols 100; env $HOST_ISOLATION $GNU_BIN $MOCKARGS" /tmp/tui-check-host.log >/dev/null
 check_tui_log /tmp/tui-check-host.log host
 echo "TUI pty smoke OK (host)"
 
