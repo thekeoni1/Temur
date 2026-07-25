@@ -1549,3 +1549,339 @@ fn set_thinking_flips_the_next_request_and_getters_track() {
     collect_events(&mut session, "two");
     assert!(requests.borrow()[1].thinking);
 }
+
+// ------------------------------------------------------- T8: command layer
+
+use temur::commands::{self, CommandCtx};
+use temur::config::ResolvedProfile;
+use std::collections::BTreeMap;
+
+fn two_profiles() -> BTreeMap<String, ResolvedProfile> {
+    let mut m = BTreeMap::new();
+    m.insert(
+        "a".to_string(),
+        ResolvedProfile {
+            provider: "anthropic".into(),
+            model: "model-a".into(),
+            base_url: "https://a.test".into(),
+            api_key_file: None,
+            max_tokens: 111,
+            context_window: None,
+        },
+    );
+    m.insert(
+        "b".to_string(),
+        ResolvedProfile {
+            provider: "openai-compat".into(),
+            model: "model-b".into(),
+            base_url: "http://b.test/v1".into(),
+            api_key_file: None,
+            max_tokens: 222,
+            context_window: Some(4_096),
+        },
+    );
+    m
+}
+
+/// Owns every loop-local the driver would; hands out a `CommandCtx` the same
+/// way main.rs builds one per command line.
+struct CmdHarness {
+    profiles: BTreeMap<String, ResolvedProfile>,
+    active: Option<String>,
+    provider_name: String,
+    model: String,
+    persist: Option<std::path::PathBuf>,
+    cwd_display: String,
+    replay: bool,
+}
+
+impl CmdHarness {
+    fn new() -> Self {
+        CmdHarness {
+            profiles: two_profiles(),
+            active: None,
+            provider_name: "anthropic".into(),
+            model: "claude-sonnet-5".into(),
+            persist: None,
+            cwd_display: "/test".into(),
+            replay: false,
+        }
+    }
+
+    fn ctx<'a>(
+        &'a mut self,
+        session: &'a mut Session,
+        build: &'a dyn Fn(
+            &ResolvedProfile,
+        ) -> Result<Box<dyn Provider>, temur::error::Error>,
+    ) -> CommandCtx<'a> {
+        CommandCtx {
+            session,
+            profiles: &self.profiles,
+            active_profile: &mut self.active,
+            provider_name: &mut self.provider_name,
+            model: &mut self.model,
+            persist_path: self.persist.as_deref(),
+            session_max_bytes: temur::config::DEFAULT_SESSION_MAX_BYTES,
+            cwd_display: &self.cwd_display,
+            replay_mode: self.replay,
+            build_provider: build,
+        }
+    }
+}
+
+#[test]
+fn model_switch_updates_everything_and_next_turn_uses_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+
+    let requests_b = Rc::new(RefCell::new(vec![]));
+    let rb = requests_b.clone();
+    let build = move |p: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        assert_eq!(p.model, "model-b");
+        assert_eq!(p.base_url, "http://b.test/v1");
+        Ok(Box::new(MockProvider {
+            responses: RefCell::new(vec![msg(vec![text("hi from b")], StopReason::EndTurn)]),
+            requests: rb.clone(),
+        }))
+    };
+    let events = commands::run(
+        commands::parse("/model b"),
+        &mut h.ctx(&mut session, &build),
+    );
+    assert!(
+        events.contains(&AgentEvent::ModelSwitched { model: "model-b".into() }),
+        "chrome signal present: {events:?}"
+    );
+    assert!(
+        notices(&events).iter().any(|n| n == "switched to b (openai-compat · model-b)"),
+        "confirmation notice: {events:?}"
+    );
+    assert_eq!(h.active.as_deref(), Some("b"));
+    assert_eq!(h.provider_name, "openai-compat");
+    assert_eq!(h.model, "model-b");
+    assert_eq!(session.model(), "model-b");
+    assert_eq!(session.max_tokens(), 222);
+    assert_eq!(session.context_window(), Some(4_096));
+
+    collect_events(&mut session, "hello");
+    assert_eq!(requests_b.borrow()[0].model, "model-b");
+    assert_eq!(requests_b.borrow()[0].max_tokens, 222);
+}
+
+#[test]
+fn failed_switch_is_atomic_via_the_real_build_path() {
+    // The REAL construction path (provider::build_live) with a key file
+    // that does not exist: the switch must fail with a notice and leave
+    // every observable session/loop fact untouched.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![msg(vec![text("answer")], StopReason::EndTurn)],
+    );
+    collect_events(&mut session, "question");
+    let history_before = session.history().len();
+
+    let mut h = CmdHarness::new();
+    h.profiles.get_mut("b").unwrap().api_key_file =
+        Some("/nonexistent/temur-test/keyfile".into());
+    let build = |p: &ResolvedProfile| temur::provider::build_live(p);
+    let events = commands::run(
+        commands::parse("/model b"),
+        &mut h.ctx(&mut session, &build),
+    );
+    let ns = notices(&events);
+    assert!(
+        ns.iter().any(|n| n.contains("switch to \"b\" failed") && n.contains("session unchanged")),
+        "failure notice: {ns:?}"
+    );
+    assert!(!events.iter().any(|e| matches!(e, AgentEvent::ModelSwitched { .. })));
+    assert_eq!(h.active, None, "active profile unchanged");
+    assert_eq!(h.provider_name, "anthropic");
+    assert_eq!(h.model, "claude-sonnet-5");
+    assert_eq!(session.model(), "claude-sonnet-5");
+    assert_eq!(session.history().len(), history_before);
+}
+
+#[test]
+fn anthropic_profile_without_key_sources_is_a_notice_not_a_crash() {
+    // Profile "a" has no api_key_file; with APP_SECRET_FILE unset the real
+    // build path must surface a secret error as a switch-failed notice.
+    if std::env::var_os("APP_SECRET_FILE").is_some() {
+        // The build environment never sets this (CLAUDE.md); if some outer
+        // harness does, this specific failure shape cannot be asserted.
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    let build = |p: &ResolvedProfile| temur::provider::build_live(p);
+    let events = commands::run(
+        commands::parse("/model a"),
+        &mut h.ctx(&mut session, &build),
+    );
+    let ns = notices(&events);
+    assert!(
+        ns.iter().any(|n| n.contains("failed") && n.contains("session unchanged")),
+        "notice, not crash: {ns:?}"
+    );
+    assert_eq!(session.model(), "claude-sonnet-5");
+}
+
+#[test]
+fn same_profile_switch_is_a_friendly_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    h.active = Some("b".into());
+    let calls = Rc::new(RefCell::new(0u32));
+    let c = calls.clone();
+    let build = move |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        *c.borrow_mut() += 1;
+        unreachable!("builder must not run for a same-profile switch")
+    };
+    let events = commands::run(
+        commands::parse("/model b"),
+        &mut h.ctx(&mut session, &build),
+    );
+    assert!(notices(&events).iter().any(|n| n.contains("already on profile")));
+    assert_eq!(*calls.borrow(), 0);
+}
+
+#[test]
+fn unknown_profile_unknown_command_and_bare_slash_touch_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!("no command here builds a provider")
+    };
+    for (line, needle) in [
+        ("/model nope", "no profile named"),
+        ("/frobnicate", "unknown command"),
+        ("/", "unknown command"),
+        ("/thinking maybe", "usage: /thinking"),
+    ] {
+        let events = commands::run(commands::parse(line), &mut h.ctx(&mut session, &build));
+        assert!(
+            notices(&events).iter().any(|n| n.contains(needle)),
+            "{line}: {events:?}"
+        );
+    }
+    assert_eq!(session.history().len(), 0, "nothing reached history");
+    assert_eq!(h.active, None);
+}
+
+#[test]
+fn clear_persists_the_empty_session_immediately() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![msg(vec![text("answer")], StopReason::EndTurn)],
+    );
+    collect_events(&mut session, "question");
+
+    let path = dir.path().join("session.json");
+    // Mimic the driver-loop save that would have happened after the turn.
+    let snap = session.snapshot();
+    let file = temur::session_store::SessionFileRef {
+        version: temur::session_store::FORMAT_VERSION,
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        cwd: "/test",
+        history: snap.history,
+        session_usage: snap.session_usage,
+        todos: snap.todos,
+        last_context_used: snap.last_context_used,
+    };
+    temur::session_store::save(&path, &file, temur::config::DEFAULT_SESSION_MAX_BYTES, &mut |_| {})
+        .unwrap();
+    assert!(!temur::session_store::load(&path).unwrap().history.is_empty());
+
+    let mut h = CmdHarness::new();
+    h.persist = Some(path.clone());
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!("clear builds nothing")
+    };
+    let events = commands::run(commands::parse("/clear"), &mut h.ctx(&mut session, &build));
+    assert!(events.contains(&AgentEvent::SessionCleared));
+    assert!(notices(&events).iter().any(|n| n == "session cleared"));
+    assert!(session.history().is_empty());
+
+    // The file on disk is already empty — quit + --continue resumes empty.
+    let loaded = temur::session_store::load(&path).unwrap();
+    assert!(loaded.history.is_empty());
+    let (seed, _) = temur::session_store::prepare_seed(loaded);
+    assert!(seed.history.is_empty());
+}
+
+#[test]
+fn status_before_any_turn_renders_placeholders_and_no_key_material() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!()
+    };
+    let events = commands::run(commands::parse("/status"), &mut h.ctx(&mut session, &build));
+    let ns = notices(&events);
+    assert!(ns.iter().any(|n| n.contains("(none — base config)")), "{ns:?}");
+    assert!(ns.iter().any(|n| n.contains("anthropic") && n.contains("claude-sonnet-5")));
+    assert!(ns.iter().any(|n| n.contains("no usage reported yet")));
+    assert!(ns.iter().any(|n| n.contains("persistence disabled (--mock)")));
+    assert!(
+        !ns.iter().any(|n| n.contains("key")),
+        "no key-related output at all: {ns:?}"
+    );
+}
+
+#[test]
+fn thinking_set_under_compat_notes_anthropic_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    h.provider_name = "openai-compat".into();
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!()
+    };
+    let events = commands::run(
+        commands::parse("/thinking on"),
+        &mut h.ctx(&mut session, &build),
+    );
+    assert!(events.contains(&AgentEvent::ThinkingChanged(true)));
+    assert!(notices(&events).iter().any(|n| n.contains("only used by the anthropic provider")));
+    assert!(session.thinking());
+    // Show reflects it.
+    let events = commands::run(
+        commands::parse("/thinking"),
+        &mut h.ctx(&mut session, &build),
+    );
+    assert!(notices(&events).iter().any(|n| n == "thinking: on"));
+}
+
+#[test]
+fn replay_mode_disables_mutating_commands_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    h.replay = true;
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!("mutating commands are disabled under replay")
+    };
+    for line in ["/model b", "/clear", "/thinking on"] {
+        let events = commands::run(commands::parse(line), &mut h.ctx(&mut session, &build));
+        assert!(
+            notices(&events).iter().any(|n| n.contains("unavailable in replay/capture mode")),
+            "{line}: {events:?}"
+        );
+    }
+    assert_eq!(session.model(), "claude-sonnet-5");
+    assert!(!session.thinking());
+    assert_eq!(h.active, None);
+    // Read-only commands still work.
+    for line in ["/help", "/status", "/model", "/thinking"] {
+        let events = commands::run(commands::parse(line), &mut h.ctx(&mut session, &build));
+        assert!(!notices(&events).is_empty(), "{line} still answers");
+    }
+}

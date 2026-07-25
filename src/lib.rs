@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod cancel;
+pub mod commands;
 pub mod config;
 pub mod error;
 pub mod provider;

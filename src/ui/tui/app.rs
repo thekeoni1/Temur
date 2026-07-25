@@ -170,6 +170,19 @@ impl App {
                 }
             }
             AgentEvent::Notice(n) => self.cells.push(Cell::Notice(n.clone())),
+            // T8 chrome/state signals; the confirmation Notice arrives
+            // separately, so these fold silently into chrome.
+            AgentEvent::ModelSwitched { model } => self.model = model.clone(),
+            AgentEvent::ThinkingChanged(on) => self.thinking = *on,
+            AgentEvent::SessionCleared => {
+                // The wipe mirrors Session::clear_history: transcript,
+                // title claim, and usage totals all reset; the post-clear
+                // Notice (sent after this event) survives into the fresh
+                // transcript.
+                self.cells.clear();
+                self.title = None;
+                self.session_usage = Usage::default();
+            }
             AgentEvent::TurnComplete {
                 turn_usage,
                 session_usage,

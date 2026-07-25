@@ -22,6 +22,15 @@ pub enum AgentEvent {
     /// Out-of-band condition the user should see (refusal, truncation,
     /// guard trips). Never contains secret material.
     Notice(String),
+    /// T8 `/model`: the active model changed. A chrome/state signal — the
+    /// human-readable confirmation travels as a separate [`Notice`](Self::Notice).
+    ModelSwitched { model: String },
+    /// T8 `/thinking`: session thinking flipped (chrome/state signal, like
+    /// [`ModelSwitched`](Self::ModelSwitched)).
+    ThinkingChanged(bool),
+    /// T8 `/clear`: the conversation was wiped. UIs reset transcript state;
+    /// the confirmation Notice follows this event.
+    SessionCleared,
     TurnComplete {
         turn_usage: Usage,
         session_usage: Usage,

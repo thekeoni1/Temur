@@ -148,7 +148,7 @@ fn repl(
     // fixtures through the SELECTED provider, so the selection path itself
     // is exercised offline.
     let profiles = cfg.resolved_profiles()?;
-    let (_active_profile, resolved) = cfg.startup_selection(&profiles)?;
+    let (mut active_profile, resolved) = cfg.startup_selection(&profiles)?;
     let is_compat = resolved.provider == "openai-compat";
     let model = resolved.model.clone();
     let cwd_display = cwd.display().to_string();
@@ -316,9 +316,37 @@ fn repl(
     // clear also resets the SIGINT flag — F4).
     let plain_cancel = session.cancel_token();
     let mut save_failure_notified = false;
+    // T8 command state: what the NEXT save records — a /model switch
+    // updates these, so a session saved after switching describes what is
+    // actually active (the advisory mismatch notice on a later resume under
+    // different config is then correct behavior).
+    let mut provider_name = resolved.provider.clone();
+    let mut current_model = model.clone();
+    let replay_mode = mock.is_some() || capture.is_some();
+    let build = |p: &temur::config::ResolvedProfile| temur::provider::build_live(p);
     while let Some(line) = ui.read_input() {
         if !use_tui {
             plain_cancel.clear();
+        }
+        // T8: any `/`-line is command-space — it never reaches the model or
+        // the history. Commands run here, between turns, by construction.
+        if line.starts_with('/') {
+            let mut cctx = temur::commands::CommandCtx {
+                session: &mut session,
+                profiles: &profiles,
+                active_profile: &mut active_profile,
+                provider_name: &mut provider_name,
+                model: &mut current_model,
+                persist_path: persist_path.as_deref(),
+                session_max_bytes,
+                cwd_display: &cwd_display,
+                replay_mode,
+                build_provider: &build,
+            };
+            for ev in temur::commands::run(temur::commands::parse(&line), &mut cctx) {
+                ui.event(&ev);
+            }
+            continue;
         }
         if let Err(e) = session.turn(&line, &mut |ev| ui.event(&ev)) {
             // Provider-level failure: surface through the UI seam and keep
@@ -333,8 +361,8 @@ fn repl(
             let snap = session.snapshot();
             let file = temur::session_store::SessionFileRef {
                 version: temur::session_store::FORMAT_VERSION,
-                provider: &resolved.provider,
-                model: &model,
+                provider: &provider_name,
+                model: &current_model,
                 cwd: &cwd_display,
                 history: snap.history,
                 session_usage: snap.session_usage,

@@ -61,6 +61,11 @@ impl Ui for ReplUi {
                 self.break_line();
                 println!("  [!] {n}");
             }
+            // Chrome/state signals (T8): the plain REPL has no chrome; the
+            // human-readable confirmation arrives as a separate Notice.
+            AgentEvent::ModelSwitched { .. }
+            | AgentEvent::ThinkingChanged(_)
+            | AgentEvent::SessionCleared => {}
             AgentEvent::TurnComplete {
                 turn_usage,
                 session_usage,
