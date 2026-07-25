@@ -74,10 +74,10 @@ fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                     ]));
                 }
             }
+            // Assistant prose is the ONLY markdown surface: user echoes,
+            // notices, commands, and tool titles stay verbatim.
             Cell::AssistantText(text) => {
-                for l in wrap(text.trim_end(), width.saturating_sub(3)) {
-                    out.push(Line::from(format!("   {l}")));
-                }
+                out.extend(super::markdown::render(text, width));
             }
             Cell::Thinking => {
                 out.push(Line::from(Span::styled("   ~ thinking…", dim())));

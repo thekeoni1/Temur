@@ -365,8 +365,11 @@ fn frame_wrapping_at_narrow_width() {
 fn scroll_unsticks_on_pageup_and_resticks_at_bottom() {
     let mut a = app();
     a.submit("fill");
+    // Markdown-era migration: single newlines are CommonMark soft breaks
+    // (reflowed as spaces), so the fill uses hard breaks (trailing double
+    // space) to keep the original one-row-per-line scroll math.
     for i in 0..30 {
-        a.fold(&AgentEvent::TextDelta(format!("line {i}\n")));
+        a.fold(&AgentEvent::TextDelta(format!("line {i}  \n")));
     }
     // First render pins to bottom and records metrics.
     let rows = render(&mut a, 40, 12);
@@ -996,4 +999,170 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
     assert!(body.contains("session cleared"), "post-clear notice:\n{body}");
     assert!(!body.contains("Hello, world!"), "turn output wiped:\n{body}");
     assert!(!body.contains("/model sonnet-next"), "command echoes wiped too:\n{body}");
+}
+
+// ------------------------------------------------ T8-P2: markdown rendering
+
+#[test]
+fn frame_markdown_sample_at_two_widths() {
+    let sample = "## Plan\n\nFirst `cargo build`, then:\n\n- fix the *parser*\n- run **all** tests\n\n```rust\nfn main() {}\n```";
+    let mut a = app();
+    a.submit("plan it");
+    a.fold(&AgentEvent::TextDelta(sample.into()));
+
+    // Wide: every construct on its own row (leading column is the margin).
+    let rows = render(&mut a, 46, 22);
+    let body = rows.join("\n");
+    for expect in [
+        "    Plan",
+        "    First cargo build, then:",
+        "    • fix the parser",
+        "    • run all tests",
+        "    ▌ rust",
+        "    ▌ fn main() {}",
+    ] {
+        assert!(rows.iter().any(|r| r == expect), "missing {expect:?}:\n{body}");
+    }
+    // Styles land where they should: heading bold+underlined, inline code
+    // cyan, gutter dim (buffer probe like the red-✗ check above).
+    let backend = TestBackend::new(46, 22);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| draw(&mut a, f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let y = rows.iter().position(|r| r == "    Plan").unwrap() as u16;
+    let style = buf[(4, y)].style();
+    assert!(style.add_modifier.contains(ratatui::style::Modifier::BOLD));
+    assert!(style.add_modifier.contains(ratatui::style::Modifier::UNDERLINED));
+    let y = rows.iter().position(|r| r.contains("First cargo")).unwrap() as u16;
+    let x = rows[y as usize].find("cargo").unwrap() as u16;
+    assert_eq!(buf[(x, y)].style().fg, Some(ratatui::style::Color::Cyan));
+    let y = rows.iter().position(|r| r.contains("▌ rust")).unwrap() as u16;
+    let x = rows[y as usize].find('▌').unwrap() as u16;
+    assert!(buf[(x, y)].style().add_modifier.contains(ratatui::style::Modifier::DIM));
+
+    // Narrow: same content wraps with hanging indent, code stays verbatim.
+    let rows = render(&mut a, 20, 24);
+    let body = rows.join("\n");
+    for expect in [
+        "    Plan",
+        "    First cargo",
+        "    build, then:",
+        "    • fix the",
+        "      parser",
+        "    • run all tests",
+        "    ▌ rust",
+        "    ▌ fn main() {}",
+    ] {
+        assert!(rows.iter().any(|r| r == expect), "missing {expect:?}:\n{body}");
+    }
+}
+
+#[test]
+fn markdown_applies_only_to_assistant_cells() {
+    let mut a = app();
+    a.submit("**stars** stay `raw` here");
+    a.fold(&AgentEvent::Notice("*not* markdown".into()));
+    a.fold(&AgentEvent::TextDelta("**is** markdown".into()));
+    let rows = render(&mut a, 60, 12);
+    let body = rows.join("\n");
+    assert!(body.contains("▌ **stars** stay `raw` here"), "user verbatim:\n{body}");
+    assert!(body.contains("[!] *not* markdown"), "notice verbatim:\n{body}");
+    assert!(!body.contains("**is**"), "assistant cell renders markdown:\n{body}");
+    assert!(body.contains("is markdown"), "bold text survives:\n{body}");
+}
+
+/// Documented limitation: a tool call mid-reply splits one logical reply
+/// across AssistantText cells, and each cell re-parses alone. A fence
+/// severed by the split renders its opener-cell as code (unclosed fence →
+/// code to end of cell) while the closer's cell re-parses from scratch:
+/// prose until the orphan ```, which opens a NEW fence swallowing the
+/// tail as code. Nothing panics and nothing is lost.
+#[test]
+fn severed_fence_across_cells_renders_without_panic() {
+    let mut a = app();
+    a.submit("go");
+    a.fold(&AgentEvent::TextDelta("Setup:\n\n```rust\nlet a = 1;".into()));
+    a.fold(&AgentEvent::ToolStart { name: "read".into() });
+    a.fold(&AgentEvent::ToolEnd {
+        name: "read".into(),
+        title: "f.rs".into(),
+        is_error: false,
+    });
+    a.fold(&AgentEvent::TextDelta("let b = 2;\n```\n\nafter".into()));
+    let rows = render(&mut a, 50, 24);
+    let body = rows.join("\n");
+    // Opener cell: unclosed fence renders as a code block (gutter + lang).
+    assert!(rows.iter().any(|r| r.contains("▌ rust")), "{body}");
+    assert!(rows.iter().any(|r| r.contains("▌ let a = 1;")), "{body}");
+    // Closer cell head renders as prose (no gutter)…
+    assert!(
+        rows.iter().any(|r| r.trim_start().starts_with("let b = 2;") && !r.contains('▌')),
+        "{body}"
+    );
+    // …and the orphan closer opens a new fence: the tail renders as code.
+    assert!(rows.iter().any(|r| r.contains("▌ after")), "{body}");
+}
+
+/// Headless e2e over a markdown-bearing fixture: deltas split mid-word and
+/// mid-fence accumulate into ONE cell and the final frame renders the
+/// parsed markdown, not the raw text.
+#[test]
+fn headless_markdown_fixture_renders_in_final_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = AnthropicProvider::new(
+        "https://mock.invalid",
+        "mock-key".into(),
+        Box::new(ReplayTransport::new(vec![format!(
+            "{}/tests/fixtures/markdown_sample.sse",
+            env!("CARGO_MANIFEST_DIR")
+        )
+        .into()])),
+    );
+    let cfg = SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens: 32_000,
+        system: Some("test system".into()),
+        thinking: false,
+        cwd: dir.path().to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+    };
+    let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
+
+    let mut script: Vec<Event> = "show the plan"
+        .chars()
+        .map(|c| Event::Key(key(KeyCode::Char(c))))
+        .collect();
+    script.push(Event::Key(key(KeyCode::Enter)));
+
+    let (mut ui, snapshot) = TuiUi::headless(
+        SessionInfo {
+            model: "claude-sonnet-5".into(),
+            thinking: false,
+            cwd: dir.path().display().to_string(),
+            version: "test".into(),
+        },
+        60,
+        30,
+        script,
+        session.cancel_token(),
+    );
+
+    let line = ui.read_input().expect("scripted submit reaches read_input");
+    session.turn(&line, &mut |ev| ui.event(&ev)).unwrap();
+    drop(ui);
+
+    let rows = snapshot.lock().unwrap().clone();
+    let body = rows.join("\n");
+    assert!(rows.iter().any(|r| r.trim_end() == "    Plan"), "heading:\n{body}");
+    assert!(body.contains("First cargo build, then:"), "inline code text:\n{body}");
+    assert!(body.contains("• fix the parser"), "bullet:\n{body}");
+    assert!(body.contains("• run all tests"), "bold text flattened:\n{body}");
+    assert!(body.contains("▌ rust"), "fence lang gutter:\n{body}");
+    assert!(body.contains("▌ fn main() {}"), "fence body:\n{body}");
+    assert!(!body.contains("```"), "no raw fence markers:\n{body}");
+    assert!(!body.contains("**all**"), "no raw emphasis markers:\n{body}");
+    assert!(body.contains("▣ temur · claude-sonnet-5"), "turn tail:\n{body}");
 }
