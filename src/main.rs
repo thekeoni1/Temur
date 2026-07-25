@@ -139,31 +139,18 @@ fn repl(
         temur::skills::skill_dirs(skill_override.as_deref(), &cwd, home.as_deref());
     let installed_skills = temur::skills::enumerate(&skill_dirs);
 
-    // Provider selection (T2). The default stays anthropic — selecting
-    // "openai-compat" is a config change, never inferred. --mock replays
+    // Provider selection (T2; named profiles T8). The default stays
+    // anthropic — selecting anything else is a config change, never
+    // inferred. Every named profile is validated eagerly here, so a later
+    // `/model` switch can only fail on credential/IO problems; with no
+    // startup profile the base fields resolve through the pre-T8 path,
+    // byte-identical behavior (and error strings) included. --mock replays
     // fixtures through the SELECTED provider, so the selection path itself
     // is exercised offline.
-    let openai_cfg = match cfg.provider.as_str() {
-        "anthropic" => None,
-        "openai-compat" => {
-            let oc = cfg.openai_compat.clone().unwrap_or_default();
-            if oc.model.is_empty() {
-                return Err(error::Error::Config(
-                    "provider \"openai-compat\" requires openai_compat.model".into(),
-                ));
-            }
-            Some(oc)
-        }
-        other => {
-            return Err(error::Error::Config(format!(
-                "unknown provider {other:?} (expected \"anthropic\" or \"openai-compat\")"
-            )))
-        }
-    };
-    let model = openai_cfg
-        .as_ref()
-        .map(|oc| oc.model.clone())
-        .unwrap_or_else(|| cfg.model.clone());
+    let profiles = cfg.resolved_profiles()?;
+    let (_active_profile, resolved) = cfg.startup_selection(&profiles)?;
+    let is_compat = resolved.provider == "openai-compat";
+    let model = resolved.model.clone();
     let cwd_display = cwd.display().to_string();
 
     // --continue: load BEFORE provider construction — "you have no session
@@ -188,7 +175,7 @@ fn repl(
         };
         pending_notices.extend(temur::session_store::mismatch_notices(
             &file,
-            &cfg.provider,
+            &resolved.provider,
             &model,
             &cwd_display,
         ));
@@ -210,67 +197,70 @@ fn repl(
                 println!("temur {VERSION} [MOCK replay: {} response(s)]", files.len());
             }
             let replay = Box::new(ReplayTransport::new(files));
-            match &openai_cfg {
-                Some(oc) => Box::new(OpenAiCompatProvider::new(oc.base_url.clone(), None, replay)),
-                None => Box::new(AnthropicProvider::new(
+            if is_compat {
+                Box::new(OpenAiCompatProvider::new(resolved.base_url.clone(), None, replay))
+            } else {
+                Box::new(AnthropicProvider::new(
                     "https://mock.invalid",
                     "mock-key".into(),
                     replay,
-                )),
+                ))
             }
         }
-        None => match &openai_cfg {
-            Some(oc) => {
-                // Keyless is first-class for local endpoints; a keyed
-                // endpoint reads its credential BY PATH from config — the
-                // same isolation rule as APP_SECRET_FILE, never env/argv.
-                let key = match &oc.api_key_file {
-                    Some(p) => Some(secret::load_api_key_from(std::path::Path::new(p))?),
-                    None => None,
-                };
-                if !use_tui {
-                    println!("temur {VERSION} (model={model}, thinking={})", cfg.thinking);
-                }
-                match &capture {
-                    Some(base) => {
-                        println!("[capture-sse: writing raw streams to {base}.<n>.sse]");
-                        Box::new(OpenAiCompatProvider::new(
-                            oc.base_url.clone(),
-                            key,
-                            Box::new(temur::provider::transport::CaptureTransport::new(
-                                temur::provider::openai_compat::transport::HttpTransport::new(),
-                                std::path::PathBuf::from(base),
-                            )),
-                        ))
-                    }
-                    None => Box::new(OpenAiCompatProvider::with_http(oc.base_url.clone(), key)),
-                }
+        None if is_compat => {
+            // Keyless is first-class for local endpoints; a keyed
+            // endpoint reads its credential BY PATH from config — the
+            // same isolation rule as APP_SECRET_FILE, never env/argv.
+            let key = match &resolved.api_key_file {
+                Some(p) => Some(secret::load_api_key_from(std::path::Path::new(p))?),
+                None => None,
+            };
+            if !use_tui {
+                println!("temur {VERSION} (model={model}, thinking={})", cfg.thinking);
             }
-            None => {
-                // Credential comes BY PATH via APP_SECRET_FILE (appsvc launcher).
-                // Deliberately never read from ANTHROPIC_API_KEY.
-                let key = secret::load_api_key()?;
-                if !use_tui {
-                    println!("temur {VERSION} (model={model}, thinking={})", cfg.thinking);
+            match &capture {
+                Some(base) => {
+                    println!("[capture-sse: writing raw streams to {base}.<n>.sse]");
+                    Box::new(OpenAiCompatProvider::new(
+                        resolved.base_url.clone(),
+                        key,
+                        Box::new(temur::provider::transport::CaptureTransport::new(
+                            temur::provider::openai_compat::transport::HttpTransport::new(),
+                            std::path::PathBuf::from(base),
+                        )),
+                    ))
                 }
-                match &capture {
-                    Some(base) => {
-                        // Tee raw SSE bodies to <base>.<n>.sse for the golden
-                        // conformance fixtures (operator-run, one-time).
-                        println!("[capture-sse: writing raw streams to {base}.<n>.sse]");
-                        Box::new(AnthropicProvider::new(
-                            cfg.base_url.clone(),
-                            key,
-                            Box::new(temur::provider::transport::CaptureTransport::new(
-                                temur::provider::anthropic::transport::HttpTransport::new(),
-                                std::path::PathBuf::from(base),
-                            )),
-                        ))
-                    }
-                    None => Box::new(AnthropicProvider::with_http(cfg.base_url.clone(), key)),
-                }
+                None => Box::new(OpenAiCompatProvider::with_http(resolved.base_url.clone(), key)),
             }
-        },
+        }
+        None => {
+            // Credential comes BY PATH: the profile's api_key_file when set,
+            // else APP_SECRET_FILE (appsvc launcher). Deliberately never
+            // read from ANTHROPIC_API_KEY.
+            let key = match &resolved.api_key_file {
+                Some(p) => secret::load_api_key_from(std::path::Path::new(p))?,
+                None => secret::load_api_key()?,
+            };
+            if !use_tui {
+                println!("temur {VERSION} (model={model}, thinking={})", cfg.thinking);
+            }
+            match &capture {
+                Some(base) => {
+                    // Tee raw SSE bodies to <base>.<n>.sse for the golden
+                    // conformance fixtures (operator-run, one-time).
+                    println!("[capture-sse: writing raw streams to {base}.<n>.sse]");
+                    Box::new(AnthropicProvider::new(
+                        resolved.base_url.clone(),
+                        key,
+                        Box::new(temur::provider::transport::CaptureTransport::new(
+                            temur::provider::anthropic::transport::HttpTransport::new(),
+                            std::path::PathBuf::from(base),
+                        )),
+                    ))
+                }
+                None => Box::new(AnthropicProvider::with_http(resolved.base_url.clone(), key)),
+            }
+        }
     };
 
     let base_system = cfg.system_prompt.clone().unwrap_or_else(|| {
@@ -289,9 +279,12 @@ fn repl(
 
     let mut session_cfg = SessionConfig::from_config(&cfg, cwd);
     session_cfg.model = model.clone();
+    // Profile overrides (T8): identical to the global values when no profile
+    // is active — resolve_base copies them through.
+    session_cfg.max_tokens = resolved.max_tokens;
     // Advisory context awareness: the window is a property of the served
-    // model, so it comes from the openai_compat section (None elsewhere).
-    session_cfg.context_window = openai_cfg.as_ref().and_then(|oc| oc.context_window);
+    // model, so it comes from the selection that knows the server.
+    session_cfg.context_window = resolved.context_window;
     session_cfg.system = Some(system);
     let registry = Registry::standard_with_skills(skill_dirs).with_profile(prompt_profile);
     let mut session = match seed {
@@ -352,7 +345,7 @@ fn repl(
             let snap = session.snapshot();
             let file = temur::session_store::SessionFileRef {
                 version: temur::session_store::FORMAT_VERSION,
-                provider: &cfg.provider,
+                provider: &resolved.provider,
                 model: &model,
                 cwd: &cwd_display,
                 history: snap.history,

@@ -69,6 +69,59 @@ pub struct Config {
     pub session_max_bytes: Option<u64>,
     /// Settings for `provider: "openai-compat"`; ignored otherwise.
     pub openai_compat: Option<OpenAiCompatConfig>,
+    /// Named provider+model bundles selectable at runtime with `/model <name>`
+    /// (T8). Absent = the feature is unused and everything behaves exactly as
+    /// before profiles existed. Validated eagerly at startup — a typo in any
+    /// profile is a startup error, never a surprise at switch time.
+    pub profiles: Option<std::collections::BTreeMap<String, ProfileConfig>>,
+    /// Startup profile name; must name an entry in `profiles`. Applied over
+    /// the base provider/model fields at startup. Absent = the base fields
+    /// select the provider, byte-identical to pre-T8 behavior.
+    pub profile: Option<String>,
+}
+
+/// One named profile: a nickname bundling provider + model + endpoint +
+/// credential path + limits, so switching between a local server and a hosted
+/// model is one `/model` command instead of quit → edit JSON → `--continue`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ProfileConfig {
+    /// `"anthropic"` or `"openai-compat"` — anything else is a startup error.
+    pub provider: String,
+    /// Required and non-empty: there is no sensible cross-profile default.
+    pub model: String,
+    /// `None` = the provider's own default endpoint ([`DEFAULT_BASE_URL`] /
+    /// [`DEFAULT_OPENAI_COMPAT_BASE_URL`]), NOT the top-level `base_url`
+    /// field — a profile is self-contained.
+    pub base_url: Option<String>,
+    /// Path to a file holding the API key — by path only, the same isolation
+    /// rule as `APP_SECRET_FILE`. `None` for openai-compat = keyless; `None`
+    /// for anthropic = fall back to `APP_SECRET_FILE` at switch time (a
+    /// deliberate, documented fallback within the by-path rule). The key is
+    /// read when the profile is activated, never cached across switches.
+    pub api_key_file: Option<String>,
+    /// `None` = the global `max_tokens`.
+    pub max_tokens: Option<u32>,
+    /// Advisory context-window size of the served model; `None` = awareness
+    /// off (same contract as `openai_compat.context_window`).
+    pub context_window: Option<u64>,
+}
+
+/// A fully resolved provider selection — every default already applied, so
+/// provider construction and `/status` read plain values. Produced only by
+/// the validated paths ([`Config::resolved_profiles`] /
+/// [`Config::resolve_base`]); holding one is proof the selection was checked.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedProfile {
+    /// `"anthropic"` or `"openai-compat"`, already validated.
+    pub provider: String,
+    pub model: String,
+    pub base_url: String,
+    /// See [`ProfileConfig::api_key_file`] for the `None` semantics per
+    /// provider.
+    pub api_key_file: Option<String>,
+    pub max_tokens: u32,
+    pub context_window: Option<u64>,
 }
 
 /// Per-provider settings for an OpenAI-compatible endpoint (llama.cpp,
@@ -121,6 +174,8 @@ impl Default for Config {
             sessions_dir: None,
             session_max_bytes: None,
             openai_compat: None,
+            profiles: None,
+            profile: None,
         }
     }
 }
@@ -152,6 +207,110 @@ impl Config {
             Some(v) => Err(crate::error::Error::Config(format!(
                 "session_max_bytes {v} is below the {MIN_SESSION_MAX_BYTES}-byte minimum"
             ))),
+        }
+    }
+
+    /// Resolve and validate EVERY named profile eagerly. Called at startup so
+    /// a bad provider name or missing model is a config error before the
+    /// first prompt — a later `/model` switch can then only fail on
+    /// credential/IO problems, never on a typo discovered late.
+    pub fn resolved_profiles(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, ResolvedProfile>, crate::error::Error> {
+        let mut out = std::collections::BTreeMap::new();
+        if let Some(profiles) = &self.profiles {
+            for (name, p) in profiles {
+                out.insert(name.clone(), self.resolve_profile_entry(name, p)?);
+            }
+        }
+        Ok(out)
+    }
+
+    fn resolve_profile_entry(
+        &self,
+        name: &str,
+        p: &ProfileConfig,
+    ) -> Result<ResolvedProfile, crate::error::Error> {
+        match p.provider.as_str() {
+            "anthropic" | "openai-compat" => {}
+            other => {
+                return Err(crate::error::Error::Config(format!(
+                    "profile {name:?}: unknown provider {other:?} (expected \"anthropic\" or \"openai-compat\")"
+                )))
+            }
+        }
+        if p.model.is_empty() {
+            return Err(crate::error::Error::Config(format!(
+                "profile {name:?}: model must be set and non-empty"
+            )));
+        }
+        let base_url = p.base_url.clone().unwrap_or_else(|| {
+            if p.provider == "openai-compat" {
+                DEFAULT_OPENAI_COMPAT_BASE_URL.to_string()
+            } else {
+                DEFAULT_BASE_URL.to_string()
+            }
+        });
+        Ok(ResolvedProfile {
+            provider: p.provider.clone(),
+            model: p.model.clone(),
+            base_url,
+            api_key_file: p.api_key_file.clone(),
+            max_tokens: p.max_tokens.unwrap_or(self.max_tokens),
+            context_window: p.context_window,
+        })
+    }
+
+    /// Resolve the BASE (non-profile) selection — the pre-T8 startup path,
+    /// error messages included byte-for-byte. Used when no startup `profile`
+    /// is set, so absent-profiles configs behave exactly as they always did.
+    pub fn resolve_base(&self) -> Result<ResolvedProfile, crate::error::Error> {
+        match self.provider.as_str() {
+            "anthropic" => Ok(ResolvedProfile {
+                provider: self.provider.clone(),
+                model: self.model.clone(),
+                base_url: self.base_url.clone(),
+                api_key_file: None,
+                max_tokens: self.max_tokens,
+                context_window: None,
+            }),
+            "openai-compat" => {
+                let oc = self.openai_compat.clone().unwrap_or_default();
+                if oc.model.is_empty() {
+                    return Err(crate::error::Error::Config(
+                        "provider \"openai-compat\" requires openai_compat.model".into(),
+                    ));
+                }
+                Ok(ResolvedProfile {
+                    provider: self.provider.clone(),
+                    model: oc.model,
+                    base_url: oc.base_url,
+                    api_key_file: oc.api_key_file,
+                    max_tokens: self.max_tokens,
+                    context_window: oc.context_window,
+                })
+            }
+            other => Err(crate::error::Error::Config(format!(
+                "unknown provider {other:?} (expected \"anthropic\" or \"openai-compat\")"
+            ))),
+        }
+    }
+
+    /// The startup selection: `(active profile name, resolved selection)`.
+    /// `profile` set → that named profile (unknown name = startup error);
+    /// absent → the base fields via [`Config::resolve_base`].
+    pub fn startup_selection(
+        &self,
+        profiles: &std::collections::BTreeMap<String, ResolvedProfile>,
+    ) -> Result<(Option<String>, ResolvedProfile), crate::error::Error> {
+        match self.profile.as_deref() {
+            Some(name) => match profiles.get(name) {
+                Some(r) => Ok((Some(name.to_string()), r.clone())),
+                None => Err(crate::error::Error::Config(format!(
+                    "startup profile {name:?} is not defined in \"profiles\""
+                ))),
+            },
+            None => Ok((None, self.resolve_base()?)),
         }
     }
 
@@ -312,6 +471,146 @@ mod tests {
             serde_json::from_str(r#"{"model":"claude-opus-4-8","future_field":123}"#).unwrap();
         assert_eq!(c.model, "claude-opus-4-8");
         assert_eq!(c.max_tokens, DEFAULT_MAX_TOKENS); // default preserved
+    }
+
+    // ------------------------------------------------------- T8: profiles
+
+    const PROFILES_JSON: &str = r#"{
+        "max_tokens": 2048,
+        "profiles": {
+            "local":  { "provider": "openai-compat", "model": "qwen3-1.7b",
+                        "max_tokens": 1024, "context_window": 8192 },
+            "sonnet": { "provider": "anthropic", "model": "claude-sonnet-5",
+                        "max_tokens": 32000 }
+        },
+        "profile": "local"
+    }"#;
+
+    #[test]
+    fn profiles_parse_resolve_and_apply_defaults() {
+        let c: Config = serde_json::from_str(PROFILES_JSON).unwrap();
+        let profiles = c.resolved_profiles().unwrap();
+        assert_eq!(profiles.len(), 2);
+
+        let local = &profiles["local"];
+        assert_eq!(local.provider, "openai-compat");
+        assert_eq!(local.model, "qwen3-1.7b");
+        // Absent base_url = the PROVIDER's default endpoint, per kind.
+        assert_eq!(local.base_url, DEFAULT_OPENAI_COMPAT_BASE_URL);
+        assert_eq!(local.max_tokens, 1024);
+        assert_eq!(local.context_window, Some(8192));
+        assert!(local.api_key_file.is_none()); // keyless
+
+        let sonnet = &profiles["sonnet"];
+        assert_eq!(sonnet.provider, "anthropic");
+        assert_eq!(sonnet.base_url, DEFAULT_BASE_URL);
+        assert_eq!(sonnet.max_tokens, 32000);
+        assert!(sonnet.context_window.is_none());
+    }
+
+    #[test]
+    fn profile_max_tokens_falls_back_to_global() {
+        let c: Config = serde_json::from_str(
+            r#"{"max_tokens": 4096,
+                "profiles": {"p": {"provider": "anthropic", "model": "m"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(c.resolved_profiles().unwrap()["p"].max_tokens, 4096);
+    }
+
+    #[test]
+    fn profile_explicit_base_url_and_key_file_survive() {
+        let c: Config = serde_json::from_str(
+            r#"{"profiles": {"p": {"provider": "openai-compat", "model": "m",
+                "base_url": "http://10.0.0.2:9999/v1",
+                "api_key_file": "/etc/keys/p"}}}"#,
+        )
+        .unwrap();
+        let p = &c.resolved_profiles().unwrap()["p"];
+        assert_eq!(p.base_url, "http://10.0.0.2:9999/v1");
+        assert_eq!(p.api_key_file.as_deref(), Some("/etc/keys/p"));
+    }
+
+    #[test]
+    fn invalid_profiles_are_startup_errors_naming_the_profile() {
+        // Unknown provider.
+        let c: Config = serde_json::from_str(
+            r#"{"profiles": {"bad": {"provider": "gemini", "model": "m"}}}"#,
+        )
+        .unwrap();
+        let err = c.resolved_profiles().unwrap_err().to_string();
+        assert!(err.contains("bad") && err.contains("gemini"), "{err}");
+
+        // Missing/empty model.
+        let c: Config = serde_json::from_str(
+            r#"{"profiles": {"nomodel": {"provider": "anthropic"}}}"#,
+        )
+        .unwrap();
+        let err = c.resolved_profiles().unwrap_err().to_string();
+        assert!(err.contains("nomodel") && err.contains("model"), "{err}");
+
+        // Missing provider (empty by default) is also invalid.
+        let c: Config =
+            serde_json::from_str(r#"{"profiles": {"nop": {"model": "m"}}}"#).unwrap();
+        assert!(c.resolved_profiles().is_err());
+    }
+
+    #[test]
+    fn startup_selection_uses_named_profile_and_rejects_unknown() {
+        let c: Config = serde_json::from_str(PROFILES_JSON).unwrap();
+        let profiles = c.resolved_profiles().unwrap();
+        let (name, r) = c.startup_selection(&profiles).unwrap();
+        assert_eq!(name.as_deref(), Some("local"));
+        assert_eq!(r.model, "qwen3-1.7b");
+        assert_eq!(r.max_tokens, 1024);
+
+        let mut c2 = c.clone();
+        c2.profile = Some("nope".into());
+        let err = c2.startup_selection(&profiles).unwrap_err().to_string();
+        assert!(err.contains("nope"), "{err}");
+    }
+
+    #[test]
+    fn absent_profiles_resolve_base_is_byte_identical_to_pre_t8() {
+        // Anthropic defaults: same fields main.rs used to read directly.
+        let c: Config = serde_json::from_str(r#"{"model":"claude-sonnet-5"}"#).unwrap();
+        let profiles = c.resolved_profiles().unwrap();
+        assert!(profiles.is_empty());
+        let (name, r) = c.startup_selection(&profiles).unwrap();
+        assert!(name.is_none());
+        assert_eq!(r.provider, DEFAULT_PROVIDER);
+        assert_eq!(r.model, DEFAULT_MODEL);
+        assert_eq!(r.base_url, DEFAULT_BASE_URL);
+        assert!(r.api_key_file.is_none()); // = APP_SECRET_FILE fallback
+        assert_eq!(r.max_tokens, DEFAULT_MAX_TOKENS);
+        assert!(r.context_window.is_none());
+
+        // openai-compat pulls the section fields, same as before.
+        let c: Config = serde_json::from_str(
+            r#"{"provider":"openai-compat","max_tokens":1024,
+                "openai_compat":{"model":"qwen3-1.7b","context_window":8192,
+                                 "api_key_file":"/etc/k"}}"#,
+        )
+        .unwrap();
+        let r = c.resolve_base().unwrap();
+        assert_eq!(r.provider, "openai-compat");
+        assert_eq!(r.model, "qwen3-1.7b");
+        assert_eq!(r.base_url, DEFAULT_OPENAI_COMPAT_BASE_URL);
+        assert_eq!(r.api_key_file.as_deref(), Some("/etc/k"));
+        assert_eq!(r.max_tokens, 1024);
+        assert_eq!(r.context_window, Some(8192));
+
+        // Error strings unchanged from the pre-T8 startup path.
+        let c: Config = serde_json::from_str(r#"{"provider":"openai-compat"}"#).unwrap();
+        assert_eq!(
+            c.resolve_base().unwrap_err().to_string(),
+            "config: provider \"openai-compat\" requires openai_compat.model"
+        );
+        let c: Config = serde_json::from_str(r#"{"provider":"bedrock"}"#).unwrap();
+        assert_eq!(
+            c.resolve_base().unwrap_err().to_string(),
+            "config: unknown provider \"bedrock\" (expected \"anthropic\" or \"openai-compat\")"
+        );
     }
 
     #[test]
