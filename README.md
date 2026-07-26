@@ -170,6 +170,14 @@ message starting with `/` cannot be sent):
   feed `/model` Tab completion in the TUI)
 - `/clear` — wipe the session; the empty state is persisted immediately,
   so quitting and `--continue` resumes empty
+- `/sessions` — list every saved session, all projects: name (or
+  `(default)`), the directory it was recorded in, message count, file
+  name, and a title derived from its first prompt; the active session
+  is starred
+- `/resume <session>` — switch to a saved session by name or file-name
+  prefix; the saved history renders into the transcript as backscroll
+- `/new <name>` — start a fresh named session for this project (the
+  file is created on the first turn)
 - `/thinking` · `/thinking on|off` — show or flip adaptive thinking for
   this session (only the anthropic provider uses it)
 
@@ -184,23 +192,44 @@ style; the plain REPL prints raw text unchanged. TUI command
 ergonomics: `/`-input renders in the cyan accent, the status row shows
 a live hint for the command being typed, and Tab cycles completions
 in place (command names; profile names and `/models`-cached ids after
-`/model`; `on|off` after `/thinking`) with BackTab reversing.
+`/model`; `/sessions`-cached session keys after `/resume`; `on|off`
+after `/thinking`) with BackTab reversing.
 
 ## Sessions
 
-Every live run saves the conversation after each turn — one file per working
-directory, under `$XDG_STATE_HOME/temur/sessions/` (fallback
+Every live run saves the conversation after each turn, under
+`$XDG_STATE_HOME/temur/sessions/` (fallback
 `~/.local/state/temur/sessions/`; state, not config, because transcripts
-carry tool output and grow to megabytes). `temur --continue` resumes the
-current directory's session; the saved history is provider-neutral, so a
-session recorded against one provider resumes against another. Saves are
-atomic (write, fsync, rename) and the format contains no timestamps, so a
-power cut at any instant leaves the previous complete file — resumable on a
-clock-less device. Past the size cap the file drops its oldest exchanges,
-always cutting at a message boundary that keeps the remainder replayable;
-the in-memory conversation is never trimmed. Two processes in one directory
-don't corrupt anything: last complete writer wins. To start over, delete the
-directory's file from the sessions dir.
+carry tool output and grow to megabytes). Each working directory has a
+**default session**, plus any number of **named sessions** created with
+`/new <name>` — names keep `[A-Za-z0-9._-]` and cap at 32 chars. A plain
+start uses the default session; `temur --continue` resumes it.
+
+`/sessions` lists everything saved, across all projects, newest first.
+`/resume <key>` — or `temur --resume <key>` at startup — switches to a
+saved session: a key is a session name (a name in the current project
+wins; a globally-unique name works from anywhere; a duplicated one is an
+error listing the candidates) or a file-name prefix, which is how
+default sessions are addressed. Resuming renders the saved history into
+the transcript as backscroll (prompts, replies, and tool names — tool
+output and arguments are not replayed) and redirects saving to the
+resumed file. Resuming another project's session warns that tools still
+run in the current directory. A failed `/resume` — unknown key,
+ambiguous key, unreadable file — changes nothing.
+
+The saved history is provider-neutral, so a session recorded against
+one provider resumes against another. Saves are atomic (write, fsync,
+rename) and the FORMAT contains no timestamps, so a power cut at any
+instant leaves the previous complete file — resumable on a clock-less
+device. The `/sessions` listing order (newest first) comes from
+filesystem mtimes, which is display-only metadata read at list time: on
+a clock-less device every file sorts equal and the listing falls back
+to name order, and nothing else depends on it. Past the size cap the
+file drops its oldest exchanges, always cutting at a message boundary
+that keeps the remainder replayable; the in-memory conversation is
+never trimmed. Two processes in one directory don't corrupt anything:
+last complete writer wins. To start over, `/new` a fresh name or delete
+the file from the sessions dir.
 
 ## Scope
 

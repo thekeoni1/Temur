@@ -119,6 +119,40 @@ non-command input keep the standard idle hint.
 - Profile names arrive via `SessionInfo.profiles`; model ids from the
   most recent `/models` fold (session-lifetime cache, last listing
   wins).
+- T10 extends the same machinery to `/resume`: session keys from the
+  most recent `/sessions` fold complete after `/resume ` (same
+  session-lifetime cache policy). `/new` deliberately never completes —
+  its argument is a name that does not exist yet.
+
+## Sessions (T10)
+
+Named multi-session stays list-plus-commands: no full-screen picker, no
+modal input machinery — `/sessions`, `/resume <key>`, and `/new <name>`
+run through the same between-turns command path as everything else.
+Two folds carry the TUI side:
+
+- **`Cell::Sessions(Vec<String>)`** — the `/sessions` listing, rendered
+  in the `Models` notice-style block (yellow bar, count line, indented
+  preformatted lines; the active session's line starts with `*`). The
+  fold also caches the listing's keys for Tab completion.
+- **`SessionLoaded { items, notice }`** — emitted by `/resume` and by
+  startup `--continue`/`--resume`. The fold applies SessionCleared
+  semantics first (transcript, title claim, usage totals), then
+  rebuilds the transcript from the replayed items: user prompts as
+  user blocks, assistant text as markdown-rendered prose, tools as
+  `⚙ name` one-liners, then the resume summary as a notice cell.
+  Advisory notices (mismatches, the dropped-prompt rule, the
+  cross-project cwd warning) arrive AFTER the event, so they land in
+  the rebuilt transcript. The title is claimed by the first replayed
+  user prompt — a resumed session's header no longer reads
+  "new session". `busy` resets; the input line is deliberately
+  untouched (resuming must not eat a half-typed line).
+
+Replay is lossy by design: tool output and arguments are not replayed,
+so replayed tool cells render as one-liners even for tools that render
+block-form live (a `ToolCell::replay` flag; there is no body to box).
+Replay cells are always completed, so ToolStart/ToolEnd FIFO pairing
+never touches them.
 
 ## UI selection
 

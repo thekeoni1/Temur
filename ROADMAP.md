@@ -180,6 +180,7 @@ payload.
 | T7 | Multi-arch packaging | armv7/aarch64/x86_64 musl-static releases, install story |
 | T8 | Daily-driver UX (shipped as v0.2.0) | Slash commands + named-profile switching (P1); markdown rendering + TUI styling pass (P2); serve.sh background server launcher (P3) — released 2026-07-25 as v0.2.0 (private) |
 | T9 | Command ergonomics | Per-profile prompt profiles (P1); /models listing + raw-model-id switching (P2); TUI command styling + Tab completion (P3); serve.sh MODEL_GGUF default (P4) — feature-complete 2026-07-25; ships later as v0.3.0 after dogfooding |
+| T10 | Session management | Named multi-session per project (store P1); resume seam + lossy replay (P2); /sessions + /resume + /new + --resume (P3); TUI listing cell + backscroll rebuild (P4) — feature-complete 2026-07-26; ships with T9 as v0.3.0 after dogfooding |
 
 ### T0 — Identity + honest gate
 - Rename `opencode-rust` → `temur`: package name, `--version`, binary name,
@@ -469,6 +470,68 @@ render loop.
 glob, no-match safe under `set -eu`), printing the chosen path; zero or
 several files extend the existing FAIL with the searched dir and count.
 Sibling scripts stay explicit-only.
+
+### T10 — Session management (as-built, 2026-07-26)
+
+Named multi-session, list + commands only (no picker, no modal input).
+FORMAT_VERSION and the FNV-1a digest are untouched; pre-T10 files load
+unchanged as each project's default session, and default-session files
+written by T10 stay byte-identical to the pre-T10 shape (`name` is
+`#[serde(default)]` + skip-when-`None`, pinned by goldens both ways).
+
+- **Store (P1).** Default session keeps EXACTLY the old
+  `{base}-{hash}.json` name; a named session is `{stem}-{name}.json`,
+  name sanitized to `[A-Za-z0-9._-]` (disallowed chars DROPPED, so
+  `"///"` errors instead of becoming `"---"`), capped at 32.
+  `list_sessions` reads cwd/name/message-count from INSIDE each file
+  and derives a display title from the first user prompt at list time
+  (never stored); unreadable files list as `(unreadable)` entries
+  rather than aborting the listing. `resolve_session_key`: exact name
+  in the current project → globally-unique name → unique file-name
+  prefix (how default sessions are addressed); ambiguity and misses
+  are errors listing candidates with cwds. Pure, table-tested.
+- **Ordering decision (defended).** `/sessions` sorts by filesystem
+  mtime, newest first, `UNIX_EPOCH` fallback, file-name tie-break.
+  This does NOT weaken the clock-less invariant: that invariant is
+  about the FORMAT (a format depending on a clock lies on RTC-less
+  hardware — nothing in the file or its name carries a timestamp,
+  before or after T10). mtime is filesystem metadata that exists
+  whether or not we read it, is read only at list time, and decides
+  display order alone — no load/save/resume path consults it. On a
+  clock-less device every mtime collapses to the epoch fallback and
+  the listing degrades to stable name order; nothing else changes.
+  Precedent: `tools/glob.rs` has sorted hits mtime-desc since v1.
+- **Seam + replay (P2).** `Session::load_seed` joins the T8
+  between-turns seam (same INVARIANT block): replaces
+  history/usage/todos/context estimate, re-arms the context warning.
+  `replay_items` flattens saved history into
+  `User`/`Assistant`/`Tool{name}` items — deliberately lossy (tool
+  output/args and thinking never replay; tool-result messages,
+  including interrupt markers, produce nothing). New events mirror T9
+  shapes: `SessionsListed { lines, keys }`, `SessionLoaded { items,
+  notice }`. `--continue` now renders backscroll through the same
+  event.
+- **Commands + CLI (P3).** `/sessions`, `/resume <key>`, `/new <name>`
+  (all replay-guarded). `/resume` is atomic the way `/model` is:
+  resolution, load, and prepare_seed all run BEFORE any mutation;
+  then load_seed + persist-path redirect + name bookkeeping together.
+  Same-session keys no-op; cross-project resume warns that ToolCtx.cwd
+  stays the current directory; the dropped-prompt rule reuses the T5
+  notice. `/new` never writes a file — the first turn's save creates
+  it. `--resume <key>` resolves at startup, is mutually exclusive with
+  `--continue`, and is rejected under `--mock`; saves record the live
+  session name; `/status` gained `· session: <name or (default)>`.
+- **TUI (P4).** `Cell::Sessions` renders the listing notice-style;
+  `SessionLoaded` folds as SessionCleared-then-rebuild (title claimed
+  by the first replayed prompt — the header finally stops reading
+  "new session" after a resume); replayed tools are `⚙ name`
+  one-liners via `ToolCell::replay` (no body to box; FIFO pairing
+  untouched). Input line survives a resume untouched.
+
+Plain-REPL compatibility: every pre-T10 output shape is byte-identical
+except the deliberate `/status` session-file line extension; the resume
+summary line kept its exact `[!]`-notice rendering (now emitted from
+the SessionLoaded arm, after the new backscroll lines).
 
 ## 4. Invariants (every milestone)
 

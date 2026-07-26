@@ -730,3 +730,57 @@ Plain-REPL compatibility: all pre-T9 output shapes are byte-identical
 except the two deliberate T9 surface changes (`/status` gained the
 `· prompt:` field; `/help` is now derived from the COMMANDS table and
 includes `/models`), both pinned by updated tests.
+
+## T10 acceptance — recorded result (no release)
+
+2026-07-26, builder session. T10 (session management: named
+multi-session, /sessions + /resume + /new, --resume, rendered
+backscroll) verified feature-complete at the P5 gate. No tag, no
+release, no version bump — T10 ships with T9 as v0.3.0 after
+dogfooding.
+
+Gates: full `scripts/check.sh` (both paths — gnu-debug and
+musl-release, host + i386 container + busybox bare, pty TUI smokes)
+green after every phase P1–P4 and again at P5 on the final tree.
+
+Live verification (offline llama.cpp via `scripts/serve.sh`, Qwen3-1.7B
+Q4_K_M, keyless openai-compat, MUSL RELEASE binary, isolated
+XDG_STATE_HOME/XDG_CONFIG_HOME under /home/dev/t10-live):
+
+- Default session two live turns in proj-a; `/new alpha` printed
+  `new session "alpha" — the file is created on the first turn`, and
+  the named file appeared only after the next turn's save. `/status`
+  showed `session file: …-alpha.json · session: alpha`.
+- `/sessions` listed both with derived titles and the active star:
+  `* (default) · /home/dev/t10-live/proj-a · 4 msg(s) ·
+  proj-a-573ab248a33104e8.json · Reply with exactly the word ALPHA
+  and nothing else. /no_thin…` (60-col ellipsis); after
+  `/resume alpha` the star moved to alpha's line.
+- `/resume alpha` rendered backscroll (`> Reply with exactly the word
+  GAMMA…` + the reply) then `[!] resumed session: 2 messages, ~6680
+  tokens in / 8 out`; `/resume proj-a-573ab248a33104e8.` (file-name
+  prefix) switched back to the default with its full two-turn
+  backscroll.
+- TUI: `--tui --continue` over a pty (script(1), 24x100) showed the
+  resumed backscroll in the live alternate screen — header title =
+  first prompt, `▌`-bar user blocks, replies, yellow resumed-session
+  notice — proving --continue still resumes the DEFAULT session even
+  with a named sibling present.
+- Cross-project (from proj-b): `/sessions` listed all three sessions
+  newest-first; `/resume alpha` (globally-unique name) worked and
+  printed `session was recorded in /home/dev/t10-live/proj-a; tools
+  run in the current directory /home/dev/t10-live/proj-b`. Startup
+  `--resume alpha` did the same with the T5 cwd mismatch advisory.
+- CLI shapes, all exit 1 with clean messages: `--continue --resume`
+  (mutually exclusive), `--resume` + `--mock` (unavailable),
+  `--resume zzz` (`no saved session matches "zzz"`), `--resume` over
+  an empty sessions dir (helpful "nothing to --resume yet"), and
+  `--resume proj-a-` (ambiguous: both candidate files listed with
+  their cwds).
+- On disk: the named file carries `"name":"alpha"`; the default file
+  has NO name key — byte-shape identical to pre-T10 (version still 1;
+  FNV filenames unchanged, pinned by goldens).
+
+Plain-REPL compatibility: pre-T10 output shapes byte-identical except
+the deliberate `/status` session-file line extension; the resume
+summary kept its exact `[!]` rendering, now preceded by backscroll.
