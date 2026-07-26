@@ -1,6 +1,6 @@
 [package]
 name = "temur"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Dependency-free single static binary coding agent for any Linux — down to 32-bit and embedded — that runs fully offline against local models"
 license = "MIT"

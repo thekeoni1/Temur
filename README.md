@@ -63,11 +63,11 @@ One-liner (detects your arch, downloads, verifies the checksum, installs to
 `~/.local/bin`; refuses to install anything unverified):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/thekeoni1/Temur/v0.2.0/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/thekeoni1/Temur/v0.3.0/scripts/install.sh | sh
 ```
 
 Piping to `sh` is a trust decision: [read the script
-first](https://github.com/thekeoni1/Temur/blob/v0.2.0/scripts/install.sh) if
+first](https://github.com/thekeoni1/Temur/blob/v0.3.0/scripts/install.sh) if
 you prefer. The checksum step defends against transport corruption and a
 mismatched artifact; it is not a substitute for trusting the release source,
 since the sums come from the same place as the binaries.
@@ -75,10 +75,10 @@ since the sums come from the same place as the binaries.
 Manual install (example: x86_64; substitute your triple):
 
 ```sh
-curl -fsSLO https://github.com/thekeoni1/Temur/releases/download/v0.2.0/temur-v0.2.0-x86_64-unknown-linux-musl
-curl -fsSLO https://github.com/thekeoni1/Temur/releases/download/v0.2.0/SHA256SUMS
+curl -fsSLO https://github.com/thekeoni1/Temur/releases/download/v0.3.0/temur-v0.3.0-x86_64-unknown-linux-musl
+curl -fsSLO https://github.com/thekeoni1/Temur/releases/download/v0.3.0/SHA256SUMS
 sha256sum -c --ignore-missing SHA256SUMS
-install -m 755 temur-v0.2.0-x86_64-unknown-linux-musl ~/.local/bin/temur
+install -m 755 temur-v0.3.0-x86_64-unknown-linux-musl ~/.local/bin/temur
 ```
 
 Build from source (any Rust-supported target, e.g. pre-armv7 ARM): the
