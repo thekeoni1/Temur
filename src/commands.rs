@@ -31,6 +31,12 @@ pub enum Command {
     ModelSwitch(String),
     /// `/models`: list model ids from the active provider (T9).
     ModelsList,
+    /// `/sessions`: list every saved session, all projects (T10).
+    SessionsList,
+    /// `/resume <key>`: switch to a saved session (T10).
+    Resume(String),
+    /// `/new <name>`: start a fresh named session for this project (T10).
+    New(String),
     /// Recognized command, unusable arguments; the payload is the notice.
     Invalid(String),
     /// Not a command at all (also a bare `/`).
@@ -56,7 +62,12 @@ pub fn parse(line: &str) -> Command {
         ("/model", Some(name), None) => Command::ModelSwitch(name.to_string()),
         ("/model", ..) => Command::Invalid("usage: /model [<profile>|<model-id>]".into()),
         ("/models", None, _) => Command::ModelsList,
-        ("/help" | "/status" | "/clear" | "/models", Some(_), _) => {
+        ("/sessions", None, _) => Command::SessionsList,
+        ("/resume", Some(key), None) => Command::Resume(key.to_string()),
+        ("/resume", ..) => Command::Invalid("usage: /resume <session>".into()),
+        ("/new", Some(name), None) => Command::New(name.to_string()),
+        ("/new", ..) => Command::Invalid("usage: /new <name>".into()),
+        ("/help" | "/status" | "/clear" | "/models" | "/sessions", Some(_), _) => {
             Command::Invalid(format!("{head} takes no arguments"))
         }
         _ => Command::Unknown(head.to_string()),
@@ -77,10 +88,20 @@ pub struct CommandCtx<'a> {
     /// after `/model` describes what is actually active.
     pub provider_name: &'a mut String,
     pub model: &'a mut String,
-    /// `None` = persistence disabled (`--mock`).
-    pub persist_path: Option<&'a Path>,
+    /// `None` = persistence disabled (`--mock`). Mutable since T10:
+    /// `/resume` and `/new` REDIRECT where the driver loop saves — the
+    /// pointer they update is the same local the loop reads next turn.
+    pub persist_path: &'a mut Option<std::path::PathBuf>,
     pub session_max_bytes: u64,
+    /// The sessions directory (T10), resolved once at startup.
+    pub sessions_dir: &'a Path,
+    /// The real working directory (T10) — named-session filenames hash its
+    /// canonicalized form, so the PATH is needed, not just the display.
+    pub cwd: &'a Path,
     pub cwd_display: &'a str,
+    /// The live session's name (T10); `None` = the default session. What
+    /// the NEXT save records, like `provider_name`/`model` above.
+    pub session_name: &'a mut Option<String>,
     /// `--mock` / `--capture-sse`: state-mutating commands are disabled to
     /// keep fixture determinism.
     pub replay_mode: bool,
@@ -144,6 +165,13 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     ("/models", "", "list model ids from the active provider"),
     ("/clear", "", "wipe this session's history and start fresh"),
+    ("/sessions", "", "list saved sessions (all projects)"),
+    (
+        "/resume",
+        "<session>",
+        "switch to a saved session (name or file-name prefix)",
+    ),
+    ("/new", "<name>", "start a fresh named session for this project"),
     (
         "/thinking",
         "[on|off]",
@@ -151,12 +179,20 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Tab-completion candidates (T9), returned as FULL input lines, in a
-/// stable order. Exactly three things complete: command names (while the
-/// head word is still being typed), `/model` arguments (profile names
-/// first, then cached model ids, deduplicated), and `/thinking` arguments
-/// (on|off). Nothing else completes. Pure — the TUI owns the cycle state.
-pub fn complete(input: &str, profiles: &[String], model_ids: &[String]) -> Vec<String> {
+/// Tab-completion candidates (T9; session keys T10), returned as FULL input
+/// lines, in a stable order. Exactly four things complete: command names
+/// (while the head word is still being typed), `/model` arguments (profile
+/// names first, then cached model ids, deduplicated), `/resume` arguments
+/// (session keys cached from the last `/sessions` listing), and `/thinking`
+/// arguments (on|off). Nothing else completes — a `/new` name is by
+/// definition something that does not exist yet. Pure — the TUI owns the
+/// cycle state.
+pub fn complete(
+    input: &str,
+    profiles: &[String],
+    model_ids: &[String],
+    session_keys: &[String],
+) -> Vec<String> {
     if !input.starts_with('/') {
         return vec![];
     }
@@ -184,6 +220,7 @@ pub fn complete(input: &str, profiles: &[String], model_ids: &[String]) -> Vec<S
             }
             args
         }
+        "/resume" => session_keys.iter().map(String::as_str).collect(),
         "/thinking" => vec!["on", "off"],
         _ => return vec![],
     };
@@ -222,6 +259,9 @@ pub fn run(cmd: Command, ctx: &mut CommandCtx) -> Vec<AgentEvent> {
         Command::ModelList => model_list(ctx),
         Command::ModelSwitch(name) => model_switch(ctx, name),
         Command::ModelsList => models_list(ctx),
+        Command::SessionsList => sessions_list(ctx),
+        Command::Resume(key) => resume_session(ctx, key),
+        Command::New(name) => new_session(ctx, name),
         Command::Invalid(msg) => vec![notice(msg)],
         Command::Unknown(cmd) => vec![notice(format!(
             "unknown command {cmd:?} — /help lists commands"
@@ -252,8 +292,12 @@ fn status(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
             (None, Some(u)) => format!("context: ~{u} tokens used (window size unknown)"),
             _ => "context: no usage reported yet".into(),
         }),
-        notice(match ctx.persist_path {
-            Some(p) => format!("session file: {}", p.display()),
+        notice(match ctx.persist_path.as_deref() {
+            Some(p) => format!(
+                "session file: {} · session: {}",
+                p.display(),
+                ctx.session_name.as_deref().unwrap_or("(default)")
+            ),
             None => "session file: persistence disabled (--mock)".into(),
         }),
     ]
@@ -267,7 +311,7 @@ fn clear(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
     let mut out = vec![AgentEvent::SessionCleared, notice("session cleared")];
     // Persist the emptied session NOW: quit-then---continue must resume
     // empty, never resurrect the pre-clear file.
-    if let Some(path) = ctx.persist_path {
+    if let Some(path) = ctx.persist_path.as_deref() {
         let snap = ctx.session.snapshot();
         let file = session_store::SessionFileRef {
             version: session_store::FORMAT_VERSION,
@@ -278,7 +322,7 @@ fn clear(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
             session_usage: snap.session_usage,
             todos: snap.todos,
             last_context_used: snap.last_context_used,
-            name: None,
+            name: ctx.session_name.as_deref(),
         };
         if let Err(e) = session_store::save(path, &file, ctx.session_max_bytes, &mut |_| {}) {
             out.push(notice(format!(
@@ -434,6 +478,145 @@ fn models_list(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
     }
 }
 
+/// `/sessions` (T10): list every saved session, all projects. Read-only
+/// toward the session but replay-guarded like its siblings — persistence is
+/// off under `--mock`, so a listing there could only describe state the run
+/// cannot touch. Lines carry the active marker; keys feed Tab completion.
+fn sessions_list(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
+    if ctx.replay_mode {
+        return vec![notice("/sessions is unavailable in replay/capture mode")];
+    }
+    let entries = session_store::list_sessions(ctx.sessions_dir);
+    if entries.is_empty() {
+        return vec![notice(format!(
+            "no saved sessions in {} — sessions are created by the first turn",
+            ctx.sessions_dir.display()
+        ))];
+    }
+    let active = active_file_name(ctx);
+    let mut lines = Vec::with_capacity(entries.len());
+    let mut keys = Vec::with_capacity(entries.len());
+    for e in &entries {
+        let marker = if Some(e.file_name.as_str()) == active.as_deref() {
+            "*"
+        } else {
+            " "
+        };
+        if e.cwd == "(unreadable)" {
+            lines.push(format!("{marker} (unreadable) · {}", e.file_name));
+        } else {
+            let title = match &e.title {
+                Some(t) => format!(" · {t}"),
+                None => String::new(),
+            };
+            lines.push(format!(
+                "{marker} {} · {} · {} msg(s) · {}{title}",
+                e.name.as_deref().unwrap_or("(default)"),
+                e.cwd,
+                e.messages,
+                e.file_name,
+            ));
+        }
+        // The key a user would type back at /resume: the name where one
+        // exists, the (prefix-resolvable) file name otherwise.
+        keys.push(e.name.clone().unwrap_or_else(|| e.file_name.clone()));
+    }
+    vec![AgentEvent::SessionsListed { lines, keys }]
+}
+
+/// The file name the driver loop currently saves to — what "active" means.
+fn active_file_name(ctx: &CommandCtx) -> Option<String> {
+    ctx.persist_path
+        .as_deref()
+        .and_then(Path::file_name)
+        .map(|s| s.to_string_lossy().into_owned())
+}
+
+/// `/resume <key>` (T10). LOAD FIRST, mutate only on success: resolution,
+/// the file read, and prepare_seed all happen before the session, the
+/// persist target, or the name bookkeeping change — any failure leaves the
+/// live session exactly as it was (the `/model` atomicity rule applied to
+/// sessions).
+fn resume_session(ctx: &mut CommandCtx, key: String) -> Vec<AgentEvent> {
+    if ctx.replay_mode {
+        return vec![notice("/resume is unavailable in replay/capture mode")];
+    }
+    let entries = session_store::list_sessions(ctx.sessions_dir);
+    let entry = match session_store::resolve_session_key(&entries, ctx.cwd_display, &key) {
+        Ok(e) => e.clone(),
+        Err(msg) => return vec![notice(msg)],
+    };
+    if active_file_name(ctx).as_deref() == Some(entry.file_name.as_str()) {
+        return vec![notice(format!(
+            "already on this session ({})",
+            entry.file_name
+        ))];
+    }
+    let path = ctx.sessions_dir.join(&entry.file_name);
+    let file = match session_store::load(&path) {
+        Ok(f) => f,
+        Err(e) => return vec![notice(format!("/resume failed: {e} — session unchanged"))],
+    };
+    let name = file.name.clone();
+    let file_cwd = file.cwd.clone();
+    let (seed, mut notices) = session_store::prepare_seed(file);
+    let summary = notices
+        .pop()
+        .expect("prepare_seed always appends the resume summary");
+    let items = session_store::replay_items(&seed.history);
+
+    // Everything fallible is done — now the switch, atomically.
+    ctx.session.load_seed(seed);
+    *ctx.persist_path = Some(path);
+    *ctx.session_name = name;
+
+    let mut out = vec![AgentEvent::SessionLoaded {
+        items,
+        notice: summary,
+    }];
+    out.extend(notices.into_iter().map(notice)); // the dropped-prompt rule
+    if file_cwd != ctx.cwd_display {
+        out.push(notice(format!(
+            "session was recorded in {file_cwd}; tools run in the current directory {}",
+            ctx.cwd_display
+        )));
+    }
+    out
+}
+
+/// `/new <name>` (T10): start a fresh NAMED session for this project. The
+/// name is required (the default session needs no command — it is what a
+/// plain start uses) and must survive sanitizing; a name that already has a
+/// file is an error pointing at `/resume`. No file is written here: the
+/// first turn's save creates it, same as a fresh start.
+fn new_session(ctx: &mut CommandCtx, raw: String) -> Vec<AgentEvent> {
+    if ctx.replay_mode {
+        return vec![notice("/new is unavailable in replay/capture mode")];
+    }
+    let Some(name) = session_store::sanitize_session_name(&raw) else {
+        return vec![notice(format!(
+            "session name {raw:?} has no usable characters (allowed: letters, digits, . _ -)"
+        ))];
+    };
+    let path = ctx
+        .sessions_dir
+        .join(session_store::named_session_file_name(ctx.cwd, &name));
+    if path.exists() {
+        return vec![notice(format!(
+            "session {name:?} already exists — /resume {name} switches to it"
+        ))];
+    }
+    ctx.session.clear_history();
+    *ctx.persist_path = Some(path);
+    *ctx.session_name = Some(name.clone());
+    vec![
+        AgentEvent::SessionCleared,
+        notice(format!(
+            "new session {name:?} — the file is created on the first turn"
+        )),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,6 +638,15 @@ mod tests {
             ("/model a b", Command::Invalid("usage: /model [<profile>|<model-id>]".into())),
             ("/models", Command::ModelsList),
             ("/models extra", Command::Invalid("/models takes no arguments".into())),
+            ("/sessions", Command::SessionsList),
+            ("/sessions extra", Command::Invalid("/sessions takes no arguments".into())),
+            ("/resume alpha", Command::Resume("alpha".into())),
+            ("/resume", Command::Invalid("usage: /resume <session>".into())),
+            ("/resume a b", Command::Invalid("usage: /resume <session>".into())),
+            ("/new alpha", Command::New("alpha".into())),
+            ("/new", Command::Invalid("usage: /new <name>".into())),
+            ("/new a b", Command::Invalid("usage: /new <name>".into())),
+            ("/RESUME x", Command::Unknown("/RESUME".into())), // exact lowercase only
             ("/MODELS", Command::Unknown("/MODELS".into())), // exact lowercase only
             ("/help me", Command::Invalid("/help takes no arguments".into())),
             ("/status now", Command::Invalid("/status takes no arguments".into())),
@@ -474,15 +666,29 @@ mod tests {
     fn complete_table() {
         let profiles = vec!["local".to_string(), "sonnet".to_string()];
         let ids = vec!["qwen3-1.7b".to_string(), "local".to_string()];
-        let c = |input: &str| complete(input, &profiles, &ids);
+        let keys = vec!["alpha".to_string(), "temur-9591.json".to_string()];
+        let c = |input: &str| complete(input, &profiles, &ids, &keys);
         // (input, expected full-line candidates)
         let cases: Vec<(&str, Vec<&str>)> = vec![
             // Command names while the head is being typed; "/" offers all.
             ("/sta", vec!["/status"]),
             ("/model", vec!["/model", "/models"]),
             ("/models", vec!["/models"]),
-            ("/", vec!["/help", "/status", "/model", "/models", "/clear", "/thinking"]),
+            (
+                "/",
+                vec![
+                    "/help", "/status", "/model", "/models", "/clear", "/sessions",
+                    "/resume", "/new", "/thinking",
+                ],
+            ),
             ("/zzz", vec![]),
+            // /resume args: the cached session keys (T10), prefix-filtered.
+            ("/resume ", vec!["/resume alpha", "/resume temur-9591.json"]),
+            ("/resume al", vec!["/resume alpha"]),
+            ("/resume nope-", vec![]),
+            // /new never completes: its argument is a NEW name by definition.
+            ("/new ", vec![]),
+            ("/sessions ", vec![]),
             // /model args: profiles first, then cached ids, deduplicated
             // ("local" is both), prefix-filtered.
             ("/model ", vec!["/model local", "/model sonnet", "/model qwen3-1.7b"]),
@@ -504,7 +710,8 @@ mod tests {
         for (input, want) in cases {
             assert_eq!(c(input), want, "input: {input:?}");
         }
-        // No profiles and no cached ids: /model args have no candidates.
-        assert!(complete("/model ", &[], &[]).is_empty());
+        // No profiles and no cached ids/keys: no argument candidates.
+        assert!(complete("/model ", &[], &[], &[]).is_empty());
+        assert!(complete("/resume ", &[], &[], &[]).is_empty());
     }
 }

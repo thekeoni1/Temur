@@ -880,6 +880,8 @@ fn headless_command_flow_status_leaves_title_alone() {
     let mut provider_name = "anthropic".to_string();
     let mut model = "claude-sonnet-5".to_string();
     let mut prompt_profile = temur::tools::PromptProfile::Full;
+    let mut persist_path: Option<std::path::PathBuf> = None;
+    let mut session_name: Option<String> = None;
     let rebuild = |_: temur::tools::PromptProfile| -> String { "test system".into() };
     let mut active_resolved = temur::config::ResolvedProfile {
         provider: "anthropic".into(),
@@ -906,9 +908,12 @@ fn headless_command_flow_status_leaves_title_alone() {
             active_profile: &mut active,
             provider_name: &mut provider_name,
             model: &mut model,
-            persist_path: None,
+            persist_path: &mut persist_path,
             session_max_bytes: temur::config::DEFAULT_SESSION_MAX_BYTES,
+            sessions_dir: std::path::Path::new("/nonexistent/temur-test-sessions"),
+            cwd: std::path::Path::new("/test"),
             cwd_display: "/test",
+            session_name: &mut session_name,
             replay_mode: false,
             prompt_profile: &mut prompt_profile,
             active_resolved: &mut active_resolved,
@@ -995,6 +1000,8 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
     let mut provider_name = "anthropic".to_string();
     let mut model = "claude-sonnet-5".to_string();
     let mut prompt_profile = temur::tools::PromptProfile::Full;
+    let mut persist_path: Option<std::path::PathBuf> = None;
+    let mut session_name: Option<String> = None;
     let rebuild = |_: temur::tools::PromptProfile| -> String { "test system".into() };
     let mut active_resolved = temur::config::ResolvedProfile {
         provider: "anthropic".into(),
@@ -1026,9 +1033,12 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
                 active_profile: &mut active,
                 provider_name: &mut provider_name,
                 model: &mut model,
-                persist_path: None,
+                persist_path: &mut persist_path,
                 session_max_bytes: temur::config::DEFAULT_SESSION_MAX_BYTES,
+                sessions_dir: std::path::Path::new("/nonexistent/temur-test-sessions"),
+                cwd: std::path::Path::new("/test"),
                 cwd_display: "/test",
+                session_name: &mut session_name,
                 replay_mode: false,
                 prompt_profile: &mut prompt_profile,
                 active_resolved: &mut active_resolved,
@@ -1489,6 +1499,8 @@ fn headless_tab_completion_submits_the_completed_command() {
     let mut provider_name = "anthropic".to_string();
     let mut model = "claude-sonnet-5".to_string();
     let mut prompt_profile = temur::tools::PromptProfile::Full;
+    let mut persist_path: Option<std::path::PathBuf> = None;
+    let mut session_name: Option<String> = None;
     let rebuild = |_: temur::tools::PromptProfile| -> String { "test system".into() };
     let mut active_resolved = temur::config::ResolvedProfile {
         provider: "anthropic".into(),
@@ -1515,9 +1527,12 @@ fn headless_tab_completion_submits_the_completed_command() {
             active_profile: &mut active,
             provider_name: &mut provider_name,
             model: &mut model,
-            persist_path: None,
+            persist_path: &mut persist_path,
             session_max_bytes: temur::config::DEFAULT_SESSION_MAX_BYTES,
+            sessions_dir: std::path::Path::new("/nonexistent/temur-test-sessions"),
+            cwd: std::path::Path::new("/test"),
             cwd_display: "/test",
+            session_name: &mut session_name,
             replay_mode: false,
             prompt_profile: &mut prompt_profile,
             active_resolved: &mut active_resolved,

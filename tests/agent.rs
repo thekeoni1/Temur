@@ -1655,7 +1655,14 @@ struct CmdHarness {
     provider_name: String,
     model: String,
     persist: Option<std::path::PathBuf>,
+    /// Mirrors main's sessions_dir local (T10). Defaults to a path that
+    /// does not exist — session commands then see an empty listing.
+    sessions_dir: std::path::PathBuf,
+    /// Mirrors main's real-cwd local (T10; named-filename hashing).
+    cwd: std::path::PathBuf,
     cwd_display: String,
+    /// Mirrors main's session_name local (T10).
+    session_name: Option<String>,
     replay: bool,
     prompt_profile: PromptProfile,
     /// Mirrors main's rebuild_system closure; tests swap it to model the
@@ -1699,7 +1706,10 @@ impl CmdHarness {
             provider_name: "anthropic".into(),
             model: "claude-sonnet-5".into(),
             persist: None,
+            sessions_dir: "/nonexistent/temur-test-sessions".into(),
+            cwd: "/test".into(),
             cwd_display: "/test".into(),
+            session_name: None,
             replay: false,
             prompt_profile: PromptProfile::Full,
             rebuild: Box::new(test_system_for),
@@ -1721,9 +1731,12 @@ impl CmdHarness {
             active_profile: &mut self.active,
             provider_name: &mut self.provider_name,
             model: &mut self.model,
-            persist_path: self.persist.as_deref(),
+            persist_path: &mut self.persist,
             session_max_bytes: temur::config::DEFAULT_SESSION_MAX_BYTES,
+            sessions_dir: &self.sessions_dir,
+            cwd: &self.cwd,
             cwd_display: &self.cwd_display,
+            session_name: &mut self.session_name,
             replay_mode: self.replay,
             prompt_profile: &mut self.prompt_profile,
             active_resolved: &mut self.active_resolved,
@@ -1982,7 +1995,16 @@ fn replay_mode_disables_mutating_commands_only() {
     let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
         unreachable!("mutating commands are disabled under replay")
     };
-    for line in ["/model b", "/model raw-id-9", "/models", "/clear", "/thinking on"] {
+    for line in [
+        "/model b",
+        "/model raw-id-9",
+        "/models",
+        "/clear",
+        "/thinking on",
+        "/sessions",
+        "/resume alpha",
+        "/new alpha",
+    ] {
         let events = commands::run(commands::parse(line), &mut h.ctx(&mut session, &build));
         assert!(
             notices(&events).iter().any(|n| n.contains("unavailable in replay/capture mode")),
@@ -2280,6 +2302,381 @@ fn raw_id_switch_with_unreadable_key_file_is_atomic() {
     assert_eq!(h.model, "claude-sonnet-5");
     assert_eq!(h.active_resolved.model, "claude-sonnet-5");
     assert_eq!(session.model(), "claude-sonnet-5");
+}
+
+// --------------------------------------------- T10: /sessions /resume /new
+
+use temur::session_store::ReplayItem;
+
+/// Write a session file the way the driver loop would, field for field.
+fn write_session(
+    dir: &std::path::Path,
+    file_name: &str,
+    cwd: &str,
+    name: Option<&str>,
+    history: Vec<RequestMessage>,
+) {
+    let f = SessionFile {
+        version: FORMAT_VERSION,
+        provider: "anthropic".into(),
+        model: "claude-sonnet-5".into(),
+        cwd: cwd.into(),
+        history,
+        session_usage: Usage {
+            input_tokens: Some(70),
+            output_tokens: Some(30),
+            ..Default::default()
+        },
+        todos: vec![],
+        last_context_used: None,
+        name: name.map(String::from),
+    };
+    let r = store::SessionFileRef {
+        version: f.version,
+        provider: &f.provider,
+        model: &f.model,
+        cwd: &f.cwd,
+        history: &f.history,
+        session_usage: f.session_usage,
+        todos: &f.todos,
+        last_context_used: f.last_context_used,
+        name: f.name.as_deref(),
+    };
+    store::save(
+        &dir.join(file_name),
+        &r,
+        temur::config::DEFAULT_SESSION_MAX_BYTES,
+        &mut |_| {},
+    )
+    .unwrap();
+}
+
+/// A no-build closure for commands that must not construct providers.
+fn no_build(_: &ResolvedProfile) -> Result<Box<dyn Provider>, temur::error::Error> {
+    unreachable!("session commands never build a provider")
+}
+
+#[test]
+fn sessions_listing_marks_the_active_file_and_caches_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let sdir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    h.sessions_dir = sdir.path().to_path_buf();
+    h.persist = Some(sdir.path().join("test-1111.json"));
+
+    write_session(
+        sdir.path(),
+        "test-1111.json",
+        "/test",
+        None,
+        vec![user_msg("current default work")],
+    );
+    write_session(
+        sdir.path(),
+        "other-2222-alpha.json",
+        "/other",
+        Some("alpha"),
+        vec![user_msg("alpha work elsewhere")],
+    );
+
+    let events = commands::run(commands::parse("/sessions"), &mut h.ctx(&mut session, &no_build));
+    let (lines, keys) = match &events[..] {
+        [AgentEvent::SessionsListed { lines, keys }] => (lines.clone(), keys.clone()),
+        other => panic!("expected one SessionsListed: {other:?}"),
+    };
+    assert_eq!(lines.len(), 2);
+    let active_line = lines.iter().find(|l| l.starts_with('*')).expect("an active marker");
+    assert!(active_line.contains("(default)") && active_line.contains("/test"), "{active_line}");
+    assert!(active_line.contains("test-1111.json"), "file name shown: {active_line}");
+    assert!(active_line.contains("current default work"), "derived title: {active_line}");
+    let other_line = lines.iter().find(|l| l.contains("alpha")).unwrap();
+    assert!(!other_line.starts_with('*'), "only the active file is marked: {other_line}");
+    assert!(other_line.contains("/other"), "cwd read from inside the file: {other_line}");
+    // Keys: the name where one exists, the file name otherwise.
+    assert!(keys.contains(&"alpha".to_string()));
+    assert!(keys.contains(&"test-1111.json".to_string()));
+
+    // Empty dir: a notice, not an empty listing.
+    h.sessions_dir = "/nonexistent/temur-test-sessions".into();
+    let events = commands::run(commands::parse("/sessions"), &mut h.ctx(&mut session, &no_build));
+    assert!(notices(&events).iter().any(|n| n.contains("no saved sessions")), "{events:?}");
+}
+
+#[test]
+fn resume_switches_session_and_redirects_persistence() {
+    let dir = tempfile::tempdir().unwrap();
+    let sdir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![msg(vec![text("post-resume answer")], StopReason::EndTurn)],
+    );
+    let mut h = CmdHarness::new();
+    h.sessions_dir = sdir.path().to_path_buf();
+    h.persist = Some(sdir.path().join("test-1111.json"));
+
+    write_session(
+        sdir.path(),
+        "test-1111-alpha.json",
+        "/test",
+        Some("alpha"),
+        vec![user_msg("older prompt"), assistant_msg(vec![text("older answer")])],
+    );
+
+    let events = commands::run(
+        commands::parse("/resume alpha"),
+        &mut h.ctx(&mut session, &no_build),
+    );
+    match &events[0] {
+        AgentEvent::SessionLoaded { items, notice } => {
+            assert_eq!(
+                items,
+                &vec![
+                    ReplayItem::User("older prompt".into()),
+                    ReplayItem::Assistant("older answer".into()),
+                ]
+            );
+            assert!(notice.contains("resumed session: 2 messages"), "{notice}");
+        }
+        other => panic!("first event must be SessionLoaded: {other:?}"),
+    }
+    // Same-project resume: no cwd advisory.
+    assert!(!notices(&events).iter().any(|n| n.contains("recorded in")), "{events:?}");
+    // Bookkeeping: saves now target the named file under its name.
+    assert_eq!(h.persist.as_deref(), Some(sdir.path().join("test-1111-alpha.json").as_path()));
+    assert_eq!(h.session_name.as_deref(), Some("alpha"));
+    assert_eq!(session.history().len(), 2);
+    // Next turn continues the RESUMED conversation.
+    collect_events(&mut session, "next");
+    let req = requests.borrow()[0].clone();
+    assert_eq!(req.messages.len(), 3);
+
+    // Same-session key again: a friendly no-op, nothing re-loaded.
+    let events = commands::run(
+        commands::parse("/resume alpha"),
+        &mut h.ctx(&mut session, &no_build),
+    );
+    assert!(
+        notices(&events).iter().any(|n| n.contains("already on this session")),
+        "{events:?}"
+    );
+    assert!(!events.iter().any(|e| matches!(e, AgentEvent::SessionLoaded { .. })));
+    assert_eq!(session.history().len(), 4, "history untouched by the no-op");
+}
+
+#[test]
+fn resume_failures_are_atomic_ambiguous_and_missing_are_clean_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let sdir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![msg(vec![text("answer")], StopReason::EndTurn)],
+    );
+    collect_events(&mut session, "live conversation");
+    let history_before = session.history().len();
+
+    let mut h = CmdHarness::new();
+    h.sessions_dir = sdir.path().to_path_buf();
+    h.persist = Some(sdir.path().join("test-1111.json"));
+
+    // Ambiguous: the same name in two OTHER projects.
+    write_session(sdir.path(), "othera-2222-beta.json", "/other-a", Some("beta"), vec![]);
+    write_session(sdir.path(), "otherb-3333-beta.json", "/other-b", Some("beta"), vec![]);
+    // Corrupt: resolvable by prefix, unloadable.
+    std::fs::write(sdir.path().join("broken-4444.json"), "{not json").unwrap();
+
+    for (line, needle) in [
+        ("/resume beta", "several projects"),
+        ("/resume zzz", "no saved session"),
+        ("/resume broken-", "session unchanged"),
+    ] {
+        let events = commands::run(commands::parse(line), &mut h.ctx(&mut session, &no_build));
+        assert!(
+            notices(&events).iter().any(|n| n.contains(needle)),
+            "{line}: {events:?}"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, AgentEvent::SessionLoaded { .. })),
+            "{line}: nothing loaded"
+        );
+        // Atomicity: the live session and its save target are untouched.
+        assert_eq!(session.history().len(), history_before, "{line}");
+        assert_eq!(h.persist.as_deref(), Some(sdir.path().join("test-1111.json").as_path()));
+        assert_eq!(h.session_name, None, "{line}");
+    }
+    // The ambiguous error lists both candidates with their cwds.
+    let events = commands::run(commands::parse("/resume beta"), &mut h.ctx(&mut session, &no_build));
+    let ns = notices(&events);
+    assert!(ns[0].contains("/other-a") && ns[0].contains("/other-b"), "{ns:?}");
+}
+
+#[test]
+fn resume_across_projects_warns_that_tools_stay_here() {
+    let dir = tempfile::tempdir().unwrap();
+    let sdir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    h.sessions_dir = sdir.path().to_path_buf();
+
+    write_session(
+        sdir.path(),
+        "elsewhere-5555-gamma.json",
+        "/elsewhere",
+        Some("gamma"),
+        vec![user_msg("remote work"), assistant_msg(vec![text("done")])],
+    );
+    let events = commands::run(
+        commands::parse("/resume gamma"),
+        &mut h.ctx(&mut session, &no_build),
+    );
+    assert!(matches!(&events[0], AgentEvent::SessionLoaded { .. }));
+    assert!(
+        notices(&events).iter().any(|n| n
+            == "session was recorded in /elsewhere; tools run in the current directory /test"),
+        "{events:?}"
+    );
+    assert_eq!(h.session_name.as_deref(), Some("gamma"));
+}
+
+#[test]
+fn resume_drops_a_trailing_unanswered_prompt_with_the_existing_notice() {
+    let dir = tempfile::tempdir().unwrap();
+    let sdir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    h.sessions_dir = sdir.path().to_path_buf();
+
+    write_session(
+        sdir.path(),
+        "test-1111-delta.json",
+        "/test",
+        Some("delta"),
+        vec![
+            user_msg("answered"),
+            assistant_msg(vec![text("the answer")]),
+            user_msg("never answered"),
+        ],
+    );
+    let events = commands::run(
+        commands::parse("/resume delta"),
+        &mut h.ctx(&mut session, &no_build),
+    );
+    match &events[0] {
+        AgentEvent::SessionLoaded { items, notice } => {
+            assert_eq!(items.len(), 2, "dropped prompt is not replayed: {items:?}");
+            assert!(notice.contains("2 messages"), "summary counts the seeded set: {notice}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        notices(&events).iter().any(|n| n.contains("never answered")),
+        "{events:?}"
+    );
+    assert_eq!(session.history().len(), 2);
+}
+
+#[test]
+fn new_session_redirects_persistence_without_writing_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let sdir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![msg(vec![text("answer")], StopReason::EndTurn)],
+    );
+    collect_events(&mut session, "old conversation");
+    let mut h = CmdHarness::new();
+    h.sessions_dir = sdir.path().to_path_buf();
+    h.cwd = dir.path().to_path_buf(); // a real directory, so the hash is stable
+    h.persist = Some(sdir.path().join("test-1111.json"));
+
+    // The name is sanitized: "my*alpha!" -> "myalpha".
+    let events = commands::run(
+        commands::parse("/new my*alpha!"),
+        &mut h.ctx(&mut session, &no_build),
+    );
+    assert!(events.contains(&AgentEvent::SessionCleared));
+    assert!(
+        notices(&events)
+            .iter()
+            .any(|n| n.contains("\"myalpha\"") && n.contains("created on the first turn")),
+        "{events:?}"
+    );
+    assert!(session.history().is_empty(), "in-memory state cleared");
+    assert_eq!(h.session_name.as_deref(), Some("myalpha"));
+    let new_path = h.persist.clone().unwrap();
+    assert!(new_path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .ends_with("-myalpha.json"));
+    // Quit before a first turn: NO file exists yet.
+    assert!(!new_path.exists(), "no empty-file write");
+    // The sessions dir holds only the pre-existing default file.
+    assert_eq!(std::fs::read_dir(sdir.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn new_session_rejects_duplicates_and_unusable_names_atomically() {
+    let dir = tempfile::tempdir().unwrap();
+    let sdir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![msg(vec![text("answer")], StopReason::EndTurn)],
+    );
+    collect_events(&mut session, "keep me");
+    let mut h = CmdHarness::new();
+    h.sessions_dir = sdir.path().to_path_buf();
+    h.cwd = dir.path().to_path_buf();
+    let original = sdir.path().join("test-1111.json");
+    h.persist = Some(original.clone());
+
+    // A session named "dup" already exists for THIS cwd.
+    let dup_file = temur::session_store::named_session_file_name(dir.path(), "dup");
+    write_session(sdir.path(), &dup_file, "/test", Some("dup"), vec![]);
+
+    for (line, needle) in [
+        // Duplicate name: error points at /resume.
+        ("/new dup", "/resume dup"),
+        // Sanitize collision: "du*p" sanitizes to the existing "dup".
+        ("/new du*p", "/resume dup"),
+        // Nothing survives sanitizing.
+        ("/new ///", "no usable characters"),
+    ] {
+        let events = commands::run(commands::parse(line), &mut h.ctx(&mut session, &no_build));
+        assert!(
+            notices(&events).iter().any(|n| n.contains(needle)),
+            "{line}: {events:?}"
+        );
+        assert!(!events.contains(&AgentEvent::SessionCleared), "{line}");
+        assert_eq!(session.history().len(), 2, "{line}: history untouched");
+        assert_eq!(h.persist.as_deref(), Some(original.as_path()), "{line}");
+        assert_eq!(h.session_name, None, "{line}");
+    }
+}
+
+#[test]
+fn status_reports_the_session_name_or_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    h.persist = Some("/state/sessions/test-1111.json".into());
+
+    let events = commands::run(commands::parse("/status"), &mut h.ctx(&mut session, &no_build));
+    assert!(
+        notices(&events)
+            .iter()
+            .any(|n| n.contains("session file: /state/sessions/test-1111.json")
+                && n.contains("session: (default)")),
+        "{events:?}"
+    );
+
+    h.persist = Some("/state/sessions/test-1111-alpha.json".into());
+    h.session_name = Some("alpha".into());
+    let events = commands::run(commands::parse("/status"), &mut h.ctx(&mut session, &no_build));
+    assert!(
+        notices(&events).iter().any(|n| n.contains("session: alpha")),
+        "{events:?}"
+    );
 }
 
 #[test]

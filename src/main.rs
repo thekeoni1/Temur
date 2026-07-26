@@ -49,6 +49,10 @@ fn run() -> Result<ExitCode, error::Error> {
     // --continue (`continue` is a keyword, hence the variable name): resume
     // this directory's saved session instead of starting fresh.
     let mut resume = false;
+    // --resume <key> (T10): resume a session by name / file-name prefix,
+    // resolved over ALL saved sessions. Distinct from --continue, which
+    // takes no key and always means this directory's default session.
+    let mut resume_key: Option<String> = None;
     // UI selection: --tui / --plain force it; default is TUI on a real
     // terminal, plain line REPL otherwise (so piped/scripted use — the mock
     // e2e, operator scripts — is unchanged without any flag).
@@ -63,6 +67,7 @@ fn run() -> Result<ExitCode, error::Error> {
             Long("mock") => mock = Some(parser.value()?.string()?),
             Long("capture-sse") => capture = Some(parser.value()?.string()?),
             Long("continue") => resume = true,
+            Long("resume") => resume_key = Some(parser.value()?.string()?),
             Long("tui") => force_tui = true,
             Long("plain") => force_plain = true,
             Value(v) if cmd.is_none() => cmd = Some(v.string()?),
@@ -72,10 +77,19 @@ fn run() -> Result<ExitCode, error::Error> {
     if force_tui && force_plain {
         return Err(error::Error::Usage("--tui and --plain are mutually exclusive".into()));
     }
+    // One resume flag at a time: they disagree about WHICH file to load.
+    if resume && resume_key.is_some() {
+        return Err(error::Error::Usage(
+            "--continue and --resume are mutually exclusive".into(),
+        ));
+    }
     // Persistence is disabled under --mock (fixtures must never touch real
-    // state), so a --continue there could only ever mislead.
+    // state), so a --continue/--resume there could only ever mislead.
     if resume && mock.is_some() {
         return Err(error::Error::Usage("--continue is unavailable with --mock".into()));
+    }
+    if resume_key.is_some() && mock.is_some() {
+        return Err(error::Error::Usage("--resume is unavailable with --mock".into()));
     }
     let use_tui = if force_plain {
         false
@@ -95,7 +109,7 @@ fn run() -> Result<ExitCode, error::Error> {
             Ok(ExitCode::SUCCESS)
         }
         Some(other) => Err(error::Error::Usage(format!("unknown command: {other}"))),
-        None => repl(mock, capture, use_tui, resume),
+        None => repl(mock, capture, use_tui, resume, resume_key),
     }
 }
 
@@ -104,6 +118,7 @@ fn repl(
     capture: Option<String>,
     use_tui: bool,
     resume: bool,
+    resume_key: Option<String>,
 ) -> Result<ExitCode, error::Error> {
     let cfg = config::Config::load()?;
     // Validated up front: an unknown GLOBAL prompt_profile is a startup
@@ -119,14 +134,17 @@ fn repl(
     // this directory's file on its FIRST SAVE, so launching and quitting
     // without a turn never destroys a resumable session.
     let session_max_bytes = cfg.session_max_bytes()?;
-    let persist_path = if mock.is_none() {
-        Some(temur::session_store::session_path(
-            &temur::session_store::sessions_dir(cfg.sessions_dir.as_deref()),
-            &cwd,
-        ))
+    // T10: resolved once; /sessions, /resume, /new, and --resume all work
+    // over this directory. `persist_path` is mutable now — /resume and /new
+    // redirect where the driver loop saves.
+    let sessions_dir = temur::session_store::sessions_dir(cfg.sessions_dir.as_deref());
+    let mut persist_path = if mock.is_none() {
+        Some(temur::session_store::session_path(&sessions_dir, &cwd))
     } else {
         None
     };
+    // The live session's name (None = default), recorded by every save.
+    let mut session_name: Option<String> = None;
 
     // Resolve the skill search path and enumerate installed skills once at
     // startup. Env override wins over config; both fall back to the always-included
@@ -173,19 +191,42 @@ fn repl(
     // the TUI's transcript rebuild.
     let mut pending_notices: Vec<String> = Vec::new();
     let mut pending_loaded: Option<AgentEvent> = None;
-    let seed = if resume {
-        let path = persist_path
-            .as_ref()
-            .expect("--continue with --mock is rejected at argument parsing");
-        let file = match temur::session_store::load(path) {
+    let seed = if resume || resume_key.is_some() {
+        // Which file: --continue = this directory's default session;
+        // --resume <key> = resolved over the full listing, exactly like
+        // /resume (and the resumed file becomes the save target).
+        let path: std::path::PathBuf = match &resume_key {
+            None => persist_path
+                .clone()
+                .expect("--continue with --mock is rejected at argument parsing"),
+            Some(key) => {
+                let entries = temur::session_store::list_sessions(&sessions_dir);
+                if entries.is_empty() {
+                    return Err(error::Error::Session(format!(
+                        "no saved sessions in {} — sessions are created by a first turn, so \
+                         there is nothing to --resume yet",
+                        sessions_dir.display()
+                    )));
+                }
+                match temur::session_store::resolve_session_key(&entries, &cwd_display, key) {
+                    Ok(e) => sessions_dir.join(&e.file_name),
+                    Err(msg) => return Err(error::Error::Session(msg)),
+                }
+            }
+        };
+        let file = match temur::session_store::load(&path) {
             Ok(f) => f,
-            Err(e @ temur::session_store::StoreError::Missing { .. }) => {
+            Err(e @ temur::session_store::StoreError::Missing { .. })
+                if resume_key.is_none() =>
+            {
                 return Err(error::Error::Session(format!(
                     "{e} — run without --continue to start one"
                 )))
             }
             Err(e) => return Err(e.into()),
         };
+        session_name = file.name.clone();
+        persist_path = Some(path);
         pending_notices.extend(temur::session_store::mismatch_notices(
             &file,
             &resolved.provider,
@@ -294,7 +335,7 @@ fn repl(
     };
     let system = rebuild_system(current_prompt_profile);
 
-    let mut session_cfg = SessionConfig::from_config(&cfg, cwd);
+    let mut session_cfg = SessionConfig::from_config(&cfg, cwd.clone());
     session_cfg.model = model.clone();
     // Profile overrides (T8): identical to the global values when no profile
     // is active — resolve_base copies them through.
@@ -374,9 +415,12 @@ fn repl(
                 active_profile: &mut active_profile,
                 provider_name: &mut provider_name,
                 model: &mut current_model,
-                persist_path: persist_path.as_deref(),
+                persist_path: &mut persist_path,
                 session_max_bytes,
+                sessions_dir: &sessions_dir,
+                cwd: &cwd,
                 cwd_display: &cwd_display,
+                session_name: &mut session_name,
                 replay_mode,
                 prompt_profile: &mut current_prompt_profile,
                 active_resolved: &mut active_resolved,
@@ -409,7 +453,7 @@ fn repl(
                 session_usage: snap.session_usage,
                 todos: snap.todos,
                 last_context_used: snap.last_context_used,
-                name: None,
+                name: session_name.as_deref(),
             };
             let mut trim_notices: Vec<String> = Vec::new();
             match temur::session_store::save(path, &file, session_max_bytes, &mut |n| {

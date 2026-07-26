@@ -98,6 +98,10 @@ pub struct App {
     pub model_ids: Vec<String>,
     /// Profile names for `/model` Tab completion (T9), from SessionInfo.
     pub profiles: Vec<String>,
+    /// Session keys from the most recent `/sessions` listing (T10): Tab
+    /// completion candidates for `/resume <key>`. Session-lifetime cache,
+    /// refreshed on every listing — same policy as `model_ids`.
+    pub session_keys: Vec<String>,
     /// T9 Tab cycle: `Some` only between a Tab/BackTab and the next
     /// non-Tab key (any edit, cursor, or history key invalidates it).
     completion: Option<Completion>,
@@ -133,6 +137,7 @@ impl App {
             version,
             model_ids: Vec::new(),
             profiles: Vec::new(),
+            session_keys: Vec::new(),
             completion: None,
             session_usage: Usage::default(),
             now_ms: 0,
@@ -200,9 +205,11 @@ impl App {
                 self.model_ids = ids.clone();
                 self.cells.push(Cell::Models(ids.clone()));
             }
-            // T10 placeholders (P2): the real folds — Cell::Sessions and the
-            // SessionLoaded transcript rebuild — land with the TUI phase.
-            AgentEvent::SessionsListed { .. } | AgentEvent::SessionLoaded { .. } => {}
+            // T10 (P3): cache the completion keys; the visible folds —
+            // Cell::Sessions and the SessionLoaded transcript rebuild —
+            // land with the TUI phase.
+            AgentEvent::SessionsListed { keys, .. } => self.session_keys = keys.clone(),
+            AgentEvent::SessionLoaded { .. } => {}
             // T8 chrome/state signals; the confirmation Notice arrives
             // separately, so these fold silently into chrome.
             AgentEvent::ModelSwitched { model } => self.model = model.clone(),
@@ -381,8 +388,12 @@ impl App {
                 self.input = c.candidates[c.index].clone();
             }
             None => {
-                let candidates =
-                    crate::commands::complete(&self.input, &self.profiles, &self.model_ids);
+                let candidates = crate::commands::complete(
+                    &self.input,
+                    &self.profiles,
+                    &self.model_ids,
+                    &self.session_keys,
+                );
                 if candidates.is_empty() {
                     return; // nothing to complete: strict no-op
                 }
