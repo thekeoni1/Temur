@@ -628,3 +628,54 @@ Sequencing note (unchanged from v0.1.1, made explicit): the skew gate
 reads the working tree and the RUNBOOK requires `release.sh` green at
 the exact head being tagged — so the bump commit and this docs commit
 land BEFORE the gate run, and the tag points at that head.
+
+## v0.2.0 release acceptance — recorded result
+
+2026-07-25: **v0.2.0 published (repo PRIVATE by decision) and
+closing-gate verified.** Annotated tag `v0.2.0` ("temur v0.2.0 — T8
+daily-driver UX") at head `104a629`, pushed with main
+(`35258c2..104a629`); release "temur v0.2.0" created with the four
+gated binaries + `SHA256SUMS`:
+<https://github.com/thekeoni1/Temur/releases/tag/v0.2.0> (404s for
+non-collaborators while private — by design).
+
+Preflight: tree clean at `35258c2` with origin/main already synced;
+`ANTHROPIC_API_KEY` absent; `gh auth` OK (repo scope); visibility
+confirmed PRIVATE before and after publish; both qemu-user statics on
+PATH; operator leak-patterns file present. The bump touched exactly the
+six pinned sites; Cargo.lock regenerated via `cargo update -p temur`.
+
+Gate results at the tagged head (no env overrides, check.sh under a
+pty): full `check.sh` ALL CHECKS PASSED both paths; leak gate clean
+(operator patterns + generic shapes, tracked files + all commit
+messages); skew gate "install.sh + README match version 0.2.0 and all
+targets"; `== RELEASE v0.2.0: 4/4 ARTIFACTS GATED ==` with all four
+`--version` asserts printing `temur 0.2.0` (i686 + x86_64 native,
+aarch64 + armv7 via qemu); SHA256SUMS self-verify 4/4 OK. Installer
+matrix 6/6 (host + busybox, pass/corrupt/unlisted). Local-mirror test:
+`python3 -m http.server` over the staged dir, `install.sh` via
+`TEMUR_BASE_URL` into a temp HOME → checksum verified → installed
+`temur --version` printed `0.2.0`.
+
+One deviation, resolved in-cycle: the FIRST release.sh run FAILED at
+the leak gate — the T8-P3 acceptance note above contained the literal
+machine hostname, matching an operator leak pattern (text committed
+with T8-P3, before this cycle; the pattern predates the commit). The
+hostname appeared in exactly one tracked line and in no commit
+message, so no history rewrite was needed: scrub commit `104a629`
+reworded the line, and the full gate re-ran green at that head, which
+is the head tagged. The gate did its job.
+
+Closing gate (private variant, fresh temp dir + temp HOME):
+authenticated `gh release download v0.2.0` → `sha256sum -c SHA256SUMS`
+all four OK → `scripts/install.sh` against the downloaded artifacts
+via `TEMUR_BASE_URL` (fetched, verified, installed) → installed
+`temur --version` printed `0.2.0` → installed binary sha256 equals the
+downloaded AND locally-staged `SHA256SUMS` entries byte-for-byte
+(`053a5227…ce53`, x86_64 artifact).
+
+**OPEN ITEM (unchanged, the only one): the PUBLIC one-liner gate.**
+When the operator flips visibility, run the README one-liner verbatim
+into a temp HOME (live raw-URL download of install.sh at the newest
+released tag, live artifact + SHA256SUMS from the release, checksum
+verified, `--version` matches) and record the result here.
