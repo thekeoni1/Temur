@@ -14,4 +14,8 @@ pub enum Error {
     Secret(String),
     #[error("session: {0}")]
     Session(String),
+    /// `/models` listing failures (T9). Displays as the bare message: the
+    /// command layer supplies its own "/models failed:" framing.
+    #[error("{0}")]
+    Models(String),
 }

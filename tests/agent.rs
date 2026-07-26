@@ -1600,6 +1600,25 @@ struct CmdHarness {
     /// Mirrors main's rebuild_system closure; tests swap it to model the
     /// config-override rule (a constant string regardless of profile).
     rebuild: Box<dyn Fn(PromptProfile) -> String>,
+    /// Mirrors main's active_resolved local: the full active selection.
+    active_resolved: ResolvedProfile,
+    /// Mirrors main's list_models injection; tests swap in fakes.
+    #[allow(clippy::type_complexity)]
+    list: Box<dyn Fn(&ResolvedProfile) -> Result<Vec<String>, temur::error::Error>>,
+}
+
+/// The base (non-profile) selection the harness starts on, mirroring what
+/// main's resolve_base produces for a default config.
+fn base_resolved() -> ResolvedProfile {
+    ResolvedProfile {
+        provider: "anthropic".into(),
+        model: "claude-sonnet-5".into(),
+        base_url: "https://api.anthropic.com".into(),
+        api_key_file: None,
+        max_tokens: 32_000,
+        context_window: None,
+        prompt_profile: PromptProfile::Full,
+    }
 }
 
 /// What the default harness rebuild closure returns per profile — the
@@ -1623,6 +1642,8 @@ impl CmdHarness {
             replay: false,
             prompt_profile: PromptProfile::Full,
             rebuild: Box::new(test_system_for),
+            active_resolved: base_resolved(),
+            list: Box::new(|_| unreachable!("no list_models injected")),
         }
     }
 
@@ -1644,7 +1665,9 @@ impl CmdHarness {
             cwd_display: &self.cwd_display,
             replay_mode: self.replay,
             prompt_profile: &mut self.prompt_profile,
+            active_resolved: &mut self.active_resolved,
             build_provider: build,
+            list_models: &*self.list,
             rebuild_system: &*self.rebuild,
         }
     }
@@ -1688,6 +1711,8 @@ fn model_switch_updates_everything_and_next_turn_uses_it() {
     collect_events(&mut session, "hello");
     assert_eq!(requests_b.borrow()[0].model, "model-b");
     assert_eq!(requests_b.borrow()[0].max_tokens, 222);
+    // T9: the full active selection tracked the switch too.
+    assert_eq!(h.active_resolved, h.profiles["b"]);
 }
 
 #[test]
@@ -1777,8 +1802,10 @@ fn unknown_profile_unknown_command_and_bare_slash_touch_nothing() {
     let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
         unreachable!("no command here builds a provider")
     };
+    // NOTE (T9): "/model nope" no longer belongs here — an unknown argument
+    // is a raw-id switch attempt now (covered by the raw-id tests), not a
+    // "no profile named" rejection.
     for (line, needle) in [
-        ("/model nope", "no profile named"),
         ("/frobnicate", "unknown command"),
         ("/", "unknown command"),
         ("/thinking maybe", "usage: /thinking"),
@@ -1893,7 +1920,7 @@ fn replay_mode_disables_mutating_commands_only() {
     let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
         unreachable!("mutating commands are disabled under replay")
     };
-    for line in ["/model b", "/clear", "/thinking on"] {
+    for line in ["/model b", "/model raw-id-9", "/models", "/clear", "/thinking on"] {
         let events = commands::run(commands::parse(line), &mut h.ctx(&mut session, &build));
         assert!(
             notices(&events).iter().any(|n| n.contains("unavailable in replay/capture mode")),
@@ -2043,4 +2070,170 @@ fn failed_switch_leaves_system_and_registry_untouched() {
     let req = requests.borrow()[0].clone();
     assert_eq!(req.system.as_deref(), Some("test system"));
     assert_eq!(req_descriptions(&req), descriptions(PromptProfile::Full));
+}
+
+// ------------------------------------------ T9: /models + raw-id switching
+
+#[test]
+fn models_list_renders_ids_empty_and_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!("/models builds no provider")
+    };
+
+    // Non-empty listing → the typed event, verbatim ids. The listing fn
+    // sees the ACTIVE resolved selection.
+    let mut h = CmdHarness::new();
+    h.list = Box::new(|p| {
+        assert_eq!(p.model, "claude-sonnet-5", "listing sees the active selection");
+        Ok(vec!["m-1".into(), "m-2".into()])
+    });
+    let events = commands::run(commands::parse("/models"), &mut h.ctx(&mut session, &build));
+    assert_eq!(
+        events,
+        vec![AgentEvent::ModelsListed(vec!["m-1".into(), "m-2".into()])]
+    );
+
+    // Empty listing → a notice, not an empty listing event.
+    let mut h = CmdHarness::new();
+    h.list = Box::new(|_| Ok(vec![]));
+    let events = commands::run(commands::parse("/models"), &mut h.ctx(&mut session, &build));
+    assert!(!events.iter().any(|e| matches!(e, AgentEvent::ModelsListed(_))));
+    assert!(notices(&events).iter().any(|n| n.contains("no models")), "{events:?}");
+
+    // Network/HTTP error → error notice carrying the message; no key
+    // material anywhere in any /models output by construction (ids only).
+    let mut h = CmdHarness::new();
+    h.list = Box::new(|_| {
+        Err(temur::error::Error::Models(
+            "model listing GET https://x.test/v1/models: HTTP 500".into(),
+        ))
+    });
+    let events = commands::run(commands::parse("/models"), &mut h.ctx(&mut session, &build));
+    assert!(
+        notices(&events).iter().any(|n| n.starts_with("/models failed:") && n.contains("HTTP 500")),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn raw_id_switch_keeps_profile_settings_and_the_save_records_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+
+    // Start ON profile "b" (as a prior /model b would have left things).
+    h.active = Some("b".into());
+    h.provider_name = "openai-compat".into();
+    h.model = "model-b".into();
+    h.active_resolved = h.profiles["b"].clone();
+
+    let requests = Rc::new(RefCell::new(vec![]));
+    let r = requests.clone();
+    let build = move |p: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        // The target is the active selection with ONLY the model replaced.
+        assert_eq!(p.model, "raw-model-x");
+        assert_eq!(p.provider, "openai-compat");
+        assert_eq!(p.base_url, "http://b.test/v1");
+        assert_eq!(p.max_tokens, 222);
+        Ok(Box::new(MockProvider {
+            responses: RefCell::new(vec![msg(vec![text("hi")], StopReason::EndTurn)]),
+            requests: r.clone(),
+        }))
+    };
+    let events = commands::run(
+        commands::parse("/model raw-model-x"),
+        &mut h.ctx(&mut session, &build),
+    );
+    assert!(events.contains(&AgentEvent::ModelSwitched { model: "raw-model-x".into() }));
+    assert!(
+        notices(&events)
+            .iter()
+            .any(|n| n == "switched model to raw-model-x (openai-compat · profile settings kept)"),
+        "{events:?}"
+    );
+    // Profile NAME kept; model bookkeeping updated; limits stay b's.
+    assert_eq!(h.active.as_deref(), Some("b"));
+    assert_eq!(h.model, "raw-model-x");
+    assert_eq!(h.active_resolved.model, "raw-model-x");
+    assert_eq!(session.model(), "raw-model-x");
+    assert_eq!(session.max_tokens(), 222);
+    assert_eq!(session.context_window(), Some(4_096));
+    assert_eq!(h.prompt_profile, PromptProfile::Full, "raw-id switch never touches the prompt profile");
+
+    // /status: profile line unchanged, model line new.
+    let build_none = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!()
+    };
+    let events = commands::run(commands::parse("/status"), &mut h.ctx(&mut session, &build_none));
+    let ns = notices(&events);
+    assert!(ns.iter().any(|n| n == "profile: b"), "{ns:?}");
+    assert!(ns.iter().any(|n| n == "provider: openai-compat · model: raw-model-x"), "{ns:?}");
+
+    // The next request goes out under the raw id…
+    collect_events(&mut session, "hello");
+    assert_eq!(requests.borrow()[0].model, "raw-model-x");
+    assert_eq!(requests.borrow()[0].max_tokens, 222);
+
+    // …and the driver-loop save (mirrored here field-for-field) records it.
+    let path = dir.path().join("session.json");
+    let snap = session.snapshot();
+    let file = temur::session_store::SessionFileRef {
+        version: temur::session_store::FORMAT_VERSION,
+        provider: &h.provider_name,
+        model: &h.model,
+        cwd: &h.cwd_display,
+        history: snap.history,
+        session_usage: snap.session_usage,
+        todos: snap.todos,
+        last_context_used: snap.last_context_used,
+    };
+    temur::session_store::save(&path, &file, temur::config::DEFAULT_SESSION_MAX_BYTES, &mut |_| {})
+        .unwrap();
+    assert_eq!(temur::session_store::load(&path).unwrap().model, "raw-model-x");
+}
+
+#[test]
+fn raw_id_switch_with_unreadable_key_file_is_atomic() {
+    // Anthropic active selection whose key file cannot be read: the raw-id
+    // switch must fail through the REAL build path and change nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    h.active_resolved.api_key_file = Some("/nonexistent/temur-test/keyfile".into());
+    let build = |p: &ResolvedProfile| temur::provider::build_live(p);
+    let events = commands::run(
+        commands::parse("/model raw-model-x"),
+        &mut h.ctx(&mut session, &build),
+    );
+    assert!(
+        notices(&events)
+            .iter()
+            .any(|n| n.contains("switch to model \"raw-model-x\" failed") && n.contains("session unchanged")),
+        "{events:?}"
+    );
+    assert!(!events.iter().any(|e| matches!(e, AgentEvent::ModelSwitched { .. })));
+    assert_eq!(h.model, "claude-sonnet-5");
+    assert_eq!(h.active_resolved.model, "claude-sonnet-5");
+    assert_eq!(session.model(), "claude-sonnet-5");
+}
+
+#[test]
+fn help_derives_from_the_command_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!()
+    };
+    let events = commands::run(commands::parse("/help"), &mut h.ctx(&mut session, &build));
+    let ns = notices(&events);
+    // One line per table row plus the exit line; /models present.
+    assert_eq!(ns.len(), commands::COMMANDS.len() + 1);
+    for (name, _, _) in commands::COMMANDS {
+        assert!(ns.iter().any(|l| l.starts_with(name)), "{name} missing: {ns:?}");
+    }
+    assert!(ns.iter().any(|l| l.starts_with("/models ")), "{ns:?}");
+    assert_eq!(ns.last().unwrap(), "exit or quit — leave");
 }

@@ -61,6 +61,14 @@ impl Ui for ReplUi {
                 self.break_line();
                 println!("  [!] {n}");
             }
+            // T9 `/models`: a count line, then one indented line per id.
+            AgentEvent::ModelsListed(ids) => {
+                self.break_line();
+                println!("  {} model id(s) from the provider:", ids.len());
+                for id in ids {
+                    println!("    {id}");
+                }
+            }
             // Chrome/state signals (T8): the plain REPL has no chrome; the
             // human-readable confirmation arrives as a separate Notice.
             AgentEvent::ModelSwitched { .. }

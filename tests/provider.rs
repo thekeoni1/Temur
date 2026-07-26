@@ -695,3 +695,61 @@ fn read_error_without_cancel_is_still_an_error() {
         .unwrap_err();
     assert!(matches!(err, ProviderError::Stream(_)), "got {err:?}");
 }
+
+// ------------------------------------------------ T9: model-listing parse
+
+/// Anthropic wire shape: GET /v1/models envelope with type/display_name
+/// noise around each id.
+#[test]
+fn parse_models_json_anthropic_shape() {
+    let body = r#"{
+        "data": [
+            {"type": "model", "id": "claude-sonnet-5", "display_name": "Claude Sonnet 5", "created_at": "2025-09-29T00:00:00Z"},
+            {"type": "model", "id": "claude-opus-4-8", "display_name": "Claude Opus 4.8", "created_at": "2025-08-05T00:00:00Z"}
+        ],
+        "has_more": false,
+        "first_id": "claude-sonnet-5",
+        "last_id": "claude-opus-4-8"
+    }"#;
+    assert_eq!(
+        parse_models_json(body).unwrap(),
+        vec!["claude-sonnet-5".to_string(), "claude-opus-4-8".to_string()]
+    );
+}
+
+/// OpenAI-compat wire shape: llama.cpp-style GET /models envelope.
+#[test]
+fn parse_models_json_openai_shape() {
+    let body = r#"{
+        "object": "list",
+        "data": [
+            {"id": "/model.gguf", "object": "model", "created": 1753300000, "owned_by": "llamacpp",
+             "meta": {"vocab_type": 2, "n_ctx_train": 40960}}
+        ]
+    }"#;
+    assert_eq!(parse_models_json(body).unwrap(), vec!["/model.gguf".to_string()]);
+}
+
+#[test]
+fn parse_models_json_empty_list_is_ok_and_empty() {
+    assert_eq!(parse_models_json(r#"{"data": [], "has_more": false}"#).unwrap(), Vec::<String>::new());
+    assert_eq!(parse_models_json(r#"{"object":"list","data":[]}"#).unwrap(), Vec::<String>::new());
+}
+
+#[test]
+fn parse_models_json_malformed_is_a_clean_error() {
+    // Not JSON at all.
+    let err = parse_models_json("<html>502 Bad Gateway</html>").unwrap_err().to_string();
+    assert!(err.contains("bad JSON"), "{err}");
+    // JSON but no data array.
+    let err = parse_models_json(r#"{"models": ["x"]}"#).unwrap_err().to_string();
+    assert!(err.contains("data"), "{err}");
+    // data present but not an array.
+    let err = parse_models_json(r#"{"data": "nope"}"#).unwrap_err().to_string();
+    assert!(err.contains("data"), "{err}");
+    // Entries without a string id are skipped, not errors.
+    assert_eq!(
+        parse_models_json(r#"{"data": [{"id": 7}, {"id": "ok-1"}, {"name": "x"}]}"#).unwrap(),
+        vec!["ok-1".to_string()]
+    );
+}

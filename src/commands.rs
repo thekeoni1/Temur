@@ -29,6 +29,8 @@ pub enum Command {
     /// `/model` with no argument: list profiles.
     ModelList,
     ModelSwitch(String),
+    /// `/models`: list model ids from the active provider (T9).
+    ModelsList,
     /// Recognized command, unusable arguments; the payload is the notice.
     Invalid(String),
     /// Not a command at all (also a bare `/`).
@@ -52,8 +54,9 @@ pub fn parse(line: &str) -> Command {
         ("/thinking", ..) => Command::Invalid("usage: /thinking [on|off]".into()),
         ("/model", None, _) => Command::ModelList,
         ("/model", Some(name), None) => Command::ModelSwitch(name.to_string()),
-        ("/model", ..) => Command::Invalid("usage: /model [<profile>]".into()),
-        ("/help" | "/status" | "/clear", Some(_), _) => {
+        ("/model", ..) => Command::Invalid("usage: /model [<profile>|<model-id>]".into()),
+        ("/models", None, _) => Command::ModelsList,
+        ("/help" | "/status" | "/clear" | "/models", Some(_), _) => {
             Command::Invalid(format!("{head} takes no arguments"))
         }
         _ => Command::Unknown(head.to_string()),
@@ -85,9 +88,19 @@ pub struct CommandCtx<'a> {
     /// updated here on a switch so `/status` and the next switch's
     /// differs-check read what is actually live.
     pub prompt_profile: &'a mut PromptProfile,
+    /// The FULL resolved selection currently active (T9) — endpoint,
+    /// credential path, limits, model — updated on every successful switch.
+    /// `/models` lists against it; a raw-id `/model` switch derives its
+    /// target from it (same provider, only the model replaced).
+    pub active_resolved: &'a mut ResolvedProfile,
     #[allow(clippy::type_complexity)]
     pub build_provider:
         &'a dyn Fn(&ResolvedProfile) -> Result<Box<dyn Provider>, crate::error::Error>,
+    /// The `/models` listing GET, injected like `build_provider` so the
+    /// live/network decision stays in main and tests script results.
+    #[allow(clippy::type_complexity)]
+    pub list_models:
+        &'a dyn Fn(&ResolvedProfile) -> Result<Vec<String>, crate::error::Error>,
     /// Assembles the full system prompt for a prompt profile (T9). Injected
     /// from main — the default-prompt consts, the config override rule, the
     /// skills section, and `{cwd}` all stay there. Infallible, so a switch
@@ -114,18 +127,49 @@ fn profile_word(p: PromptProfile) -> &'static str {
     }
 }
 
-const HELP_LINES: &[&str] = &[
-    "/help — this list",
-    "/status — profile, provider, model, thinking, prompt, context, session file",
-    "/model — list profiles · /model <name> — switch to a profile",
-    "/clear — wipe this session's history and start fresh",
-    "/thinking — show · /thinking on|off — flip adaptive thinking (this session)",
-    "exit or quit — leave",
+/// The machine-readable command table (T9): `(name, argument hint, help)`.
+/// `/help`, the TUI status-row hint, and Tab completion all derive from it;
+/// [`parse`]'s match stays the authority for argument shapes.
+pub const COMMANDS: &[(&str, &str, &str)] = &[
+    ("/help", "", "this list"),
+    (
+        "/status",
+        "",
+        "profile, provider, model, thinking, prompt, context, session file",
+    ),
+    (
+        "/model",
+        "[<profile>|<model-id>]",
+        "list profiles · switch to a profile or a raw model id",
+    ),
+    ("/models", "", "list model ids from the active provider"),
+    ("/clear", "", "wipe this session's history and start fresh"),
+    (
+        "/thinking",
+        "[on|off]",
+        "show · flip adaptive thinking (this session)",
+    ),
 ];
+
+/// `/help` body: one line per [`COMMANDS`] row, plus the non-command exit line.
+pub fn help_lines() -> Vec<String> {
+    let mut out: Vec<String> = COMMANDS
+        .iter()
+        .map(|(name, arg, help)| {
+            if arg.is_empty() {
+                format!("{name} — {help}")
+            } else {
+                format!("{name} {arg} — {help}")
+            }
+        })
+        .collect();
+    out.push("exit or quit — leave".into());
+    out
+}
 
 pub fn run(cmd: Command, ctx: &mut CommandCtx) -> Vec<AgentEvent> {
     match cmd {
-        Command::Help => HELP_LINES.iter().map(|l| notice(*l)).collect(),
+        Command::Help => help_lines().into_iter().map(notice).collect(),
         Command::Status => status(ctx),
         Command::Clear => clear(ctx),
         Command::ThinkingShow => vec![notice(format!(
@@ -135,6 +179,7 @@ pub fn run(cmd: Command, ctx: &mut CommandCtx) -> Vec<AgentEvent> {
         Command::ThinkingSet(on) => thinking_set(ctx, on),
         Command::ModelList => model_list(ctx),
         Command::ModelSwitch(name) => model_switch(ctx, name),
+        Command::ModelsList => models_list(ctx),
         Command::Invalid(msg) => vec![notice(msg)],
         Command::Unknown(cmd) => vec![notice(format!(
             "unknown command {cmd:?} — /help lists commands"
@@ -249,10 +294,11 @@ fn model_switch(ctx: &mut CommandCtx, name: String) -> Vec<AgentEvent> {
     if ctx.active_profile.as_deref() == Some(name.as_str()) {
         return vec![notice(format!("already on profile {name:?}"))];
     }
+    // Profile names win on collision (T9): a raw model id shadowed by a
+    // profile name is unreachable — use the profile. Anything that is not a
+    // profile name is treated as a raw model id for the ACTIVE provider.
     let Some(profile) = ctx.profiles.get(&name) else {
-        return vec![notice(format!(
-            "no profile named {name:?} — /model lists profiles"
-        ))];
+        return raw_model_switch(ctx, name);
     };
     // Build FIRST — this is where a key file is read, by path, right now.
     // The session mutates only on success: a failed switch changes nothing.
@@ -281,6 +327,7 @@ fn model_switch(ctx: &mut CommandCtx, name: String) -> Vec<AgentEvent> {
     *ctx.active_profile = Some(name.clone());
     *ctx.provider_name = profile.provider.clone();
     *ctx.model = profile.model.clone();
+    *ctx.active_resolved = profile.clone();
     vec![
         AgentEvent::ModelSwitched {
             model: profile.model.clone(),
@@ -290,6 +337,58 @@ fn model_switch(ctx: &mut CommandCtx, name: String) -> Vec<AgentEvent> {
             profile.provider, profile.model
         )),
     ]
+}
+
+/// `/model <raw-id>` (T9): the active resolved selection with ONLY the model
+/// replaced — same provider, endpoint, credential path, and limits, so the
+/// active profile NAME stays (its max_tokens/context/prompt settings remain
+/// genuinely in effect; `/status` reports profile and model separately).
+/// Raw ids are not validated offline: a bad id surfaces as the provider's
+/// own clean error on the next turn. Does NOT touch the prompt profile.
+/// Same build-first atomicity as the profile path; the replay guard already
+/// fired in [`model_switch`].
+fn raw_model_switch(ctx: &mut CommandCtx, id: String) -> Vec<AgentEvent> {
+    let mut target = ctx.active_resolved.clone();
+    target.model = id.clone();
+    let provider = match (ctx.build_provider)(&target) {
+        Ok(p) => p,
+        Err(e) => {
+            return vec![notice(format!(
+                "switch to model {id:?} failed: {e} — session unchanged"
+            ))]
+        }
+    };
+    ctx.session.switch_provider(
+        provider,
+        target.model.clone(),
+        target.max_tokens,
+        target.context_window,
+    );
+    *ctx.model = id.clone();
+    *ctx.active_resolved = target;
+    vec![
+        AgentEvent::ModelSwitched { model: id.clone() },
+        notice(format!(
+            "switched model to {id} ({} · profile settings kept)",
+            ctx.active_resolved.provider
+        )),
+    ]
+}
+
+/// `/models`: list model ids from the active provider. Read-only toward the
+/// session but a LIVE network GET — so it is replay-guarded like the
+/// mutators (ReplayTransport ignores URLs and pops fixtures; a live GET
+/// under --mock/--capture-sse would desync the stream). Output is session
+/// facts only: never key material.
+fn models_list(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
+    if ctx.replay_mode {
+        return vec![notice("/models is unavailable in replay/capture mode")];
+    }
+    match (ctx.list_models)(ctx.active_resolved) {
+        Ok(ids) if ids.is_empty() => vec![notice("the provider reported no models")],
+        Ok(ids) => vec![AgentEvent::ModelsListed(ids)],
+        Err(e) => vec![notice(format!("/models failed: {e}"))],
+    }
 }
 
 #[cfg(test)]
@@ -310,7 +409,10 @@ mod tests {
             ("/thinking on off", Command::Invalid("usage: /thinking [on|off]".into())),
             ("/model", Command::ModelList),
             ("/model local", Command::ModelSwitch("local".into())),
-            ("/model a b", Command::Invalid("usage: /model [<profile>]".into())),
+            ("/model a b", Command::Invalid("usage: /model [<profile>|<model-id>]".into())),
+            ("/models", Command::ModelsList),
+            ("/models extra", Command::Invalid("/models takes no arguments".into())),
+            ("/MODELS", Command::Unknown("/MODELS".into())), // exact lowercase only
             ("/help me", Command::Invalid("/help takes no arguments".into())),
             ("/status now", Command::Invalid("/status takes no arguments".into())),
             ("/clear all", Command::Invalid("/clear takes no arguments".into())),

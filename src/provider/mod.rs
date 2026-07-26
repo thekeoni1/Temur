@@ -109,6 +109,80 @@ pub fn build_live(
     }
 }
 
+/// The `/models` listing GET (T9). Follows [`build_live`]'s construction
+/// rules exactly: credentials by path at call time, never cached, never
+/// echoed. Anthropic: GET `{base}/v1/models` with `x-api-key` (profile key
+/// file, else `APP_SECRET_FILE`) + `anthropic-version`. OpenAI-compat: GET
+/// `{base}/models` (the base carries `/v1` by SDK convention) with
+/// `Authorization: Bearer` only when a key file is configured — keyless
+/// local endpoints send no auth header at all. Body read capped at 64 KiB
+/// like the streaming transports; non-2xx is a clean error naming the
+/// status, never echoing headers.
+pub fn list_models_live(
+    p: &crate::config::ResolvedProfile,
+) -> Result<Vec<String>, crate::error::Error> {
+    use std::io::Read;
+    rustls::crypto::ring::default_provider().install_default().ok();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .new_agent();
+    let (url, result) = if p.provider == "openai-compat" {
+        let url = format!("{}/models", p.base_url.trim_end_matches('/'));
+        let mut req = agent.get(&url);
+        if let Some(path) = &p.api_key_file {
+            let key = crate::secret::load_api_key_from(std::path::Path::new(path))?;
+            req = req.header("authorization", &format!("Bearer {key}"));
+        }
+        (url, req.call())
+    } else {
+        let key = match &p.api_key_file {
+            Some(path) => crate::secret::load_api_key_from(std::path::Path::new(path))?,
+            None => crate::secret::load_api_key()?,
+        };
+        let url = format!("{}/v1/models", p.base_url.trim_end_matches('/'));
+        let req = agent
+            .get(&url)
+            .header("x-api-key", &key)
+            .header("anthropic-version", "2023-06-01");
+        (url, req.call())
+    };
+    let res = result
+        .map_err(|e| crate::error::Error::Models(format!("model listing GET {url}: {e}")))?;
+    let status = res.status().as_u16();
+    let mut body = String::new();
+    let _ = res
+        .into_body()
+        .into_reader()
+        .take(64 * 1024)
+        .read_to_string(&mut body);
+    if !(200..300).contains(&status) {
+        return Err(crate::error::Error::Models(format!(
+            "model listing GET {url}: HTTP {status}"
+        )));
+    }
+    parse_models_json(&body)
+}
+
+/// Extract `data[].id` from a model-listing body — the envelope BOTH wires
+/// share (Anthropic `GET /v1/models` and OpenAI-compat `GET /models`).
+/// Pure, so the parsing is unit-testable offline against literal JSON.
+/// Entries without a string `id` are skipped; an empty `data` array is a
+/// valid empty listing.
+pub fn parse_models_json(body: &str) -> Result<Vec<String>, crate::error::Error> {
+    let v: Value = serde_json::from_str(body)
+        .map_err(|e| crate::error::Error::Models(format!("model listing: bad JSON: {e}")))?;
+    let Some(data) = v.get("data").and_then(|d| d.as_array()) else {
+        return Err(crate::error::Error::Models(
+            "model listing: no \"data\" array in the response".into(),
+        ));
+    };
+    Ok(data
+        .iter()
+        .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(str::to_string))
+        .collect())
+}
+
 pub trait Provider {
     /// Send one request; invoke `on_event` for each incremental UI event;
     /// return the fully assembled assistant message.

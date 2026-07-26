@@ -23,6 +23,9 @@ pub enum Cell {
     Tool(ToolCell),
     /// Out-of-band notice (refusal, guard trip, provider error): warning block.
     Notice(String),
+    /// T9 `/models` listing: a count line plus one line per id,
+    /// notice-styled.
+    Models(Vec<String>),
     /// A submitted `/command` line (T8): echoed dim, never a prompt.
     Command(String),
     /// Per-response tail, OpenCode's `▣ mode · model · duration` line.
@@ -82,6 +85,10 @@ pub struct App {
     pub thinking: bool,
     pub cwd: String,
     pub version: String,
+    /// Model ids from the most recent `/models` listing (T9): Tab
+    /// completion candidates for `/model <id>`. Session-lifetime cache,
+    /// refreshed on every listing.
+    pub model_ids: Vec<String>,
     pub session_usage: Usage,
     /// Wall-clock milliseconds since app start; the runtime advances this,
     /// tests set it directly (spinner frame + turn duration derive from it).
@@ -112,6 +119,7 @@ impl App {
             thinking,
             cwd,
             version,
+            model_ids: Vec::new(),
             session_usage: Usage::default(),
             now_ms: 0,
             stick_bottom: true,
@@ -172,6 +180,12 @@ impl App {
                 }
             }
             AgentEvent::Notice(n) => self.cells.push(Cell::Notice(n.clone())),
+            // T9 `/models`: render the listing AND cache the ids as Tab
+            // completion candidates for `/model <id>`.
+            AgentEvent::ModelsListed(ids) => {
+                self.model_ids = ids.clone();
+                self.cells.push(Cell::Models(ids.clone()));
+            }
             // T8 chrome/state signals; the confirmation Notice arrives
             // separately, so these fold silently into chrome.
             AgentEvent::ModelSwitched { model } => self.model = model.clone(),

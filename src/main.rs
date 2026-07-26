@@ -156,6 +156,9 @@ fn repl(
     // T9: the ACTIVE prompt profile — starts as the startup selection's
     // (profile's own > global > full), then tracks `/model` switches.
     let mut current_prompt_profile = resolved.prompt_profile;
+    // T9: the FULL active selection, tracked for `/models` and raw-id
+    // `/model` switches (both derive endpoint/credentials/limits from it).
+    let mut active_resolved = resolved.clone();
 
     // --continue: load BEFORE provider construction — "you have no session
     // to resume" should not hide behind a credential error — and FAIL FAST
@@ -336,6 +339,7 @@ fn repl(
     let mut current_model = model.clone();
     let replay_mode = mock.is_some() || capture.is_some();
     let build = |p: &temur::config::ResolvedProfile| temur::provider::build_live(p);
+    let list_models = |p: &temur::config::ResolvedProfile| temur::provider::list_models_live(p);
     while let Some(line) = ui.read_input() {
         if !use_tui {
             plain_cancel.clear();
@@ -354,7 +358,9 @@ fn repl(
                 cwd_display: &cwd_display,
                 replay_mode,
                 prompt_profile: &mut current_prompt_profile,
+                active_resolved: &mut active_resolved,
                 build_provider: &build,
+                list_models: &list_models,
                 rebuild_system: &rebuild_system,
             };
             for ev in temur::commands::run(temur::commands::parse(&line), &mut cctx) {

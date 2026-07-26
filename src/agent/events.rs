@@ -28,6 +28,10 @@ pub enum AgentEvent {
     /// T8 `/thinking`: session thinking flipped (chrome/state signal, like
     /// [`ModelSwitched`](Self::ModelSwitched)).
     ThinkingChanged(bool),
+    /// T9 `/models`: the active provider's model listing, already parsed to
+    /// bare ids. Each UI renders it; the TUI also caches the ids as Tab
+    /// completion candidates. Never contains key material.
+    ModelsListed(Vec<String>),
     /// T8 `/clear`: the conversation was wiped. UIs reset transcript state;
     /// the confirmation Notice follows this event.
     SessionCleared,

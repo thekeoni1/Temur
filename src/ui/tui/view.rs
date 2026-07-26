@@ -138,6 +138,27 @@ fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                     ]));
                 }
             }
+            // T9 `/models` listing: the notice block pattern (yellow bar +
+            // text) minus the [!] — informational, not a warning. Ids are
+            // indented after wrapping (wrap trims leading whitespace).
+            Cell::Models(ids) => {
+                let yellow = Style::default().fg(Color::Yellow);
+                let count = format!("{} model id(s) from the provider:", ids.len());
+                for l in wrap(&count, width.saturating_sub(2)) {
+                    out.push(Line::from(vec![
+                        Span::styled(format!("{BAR} "), yellow),
+                        Span::styled(l, yellow),
+                    ]));
+                }
+                for id in ids {
+                    for l in wrap(id, width.saturating_sub(4)) {
+                        out.push(Line::from(vec![
+                            Span::styled(format!("{BAR} "), yellow),
+                            Span::styled(format!("  {l}"), yellow),
+                        ]));
+                    }
+                }
+            }
             Cell::TurnTail { secs, usage } => {
                 out.push(Line::from(vec![
                     Span::raw("   "),

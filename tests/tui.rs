@@ -876,6 +876,18 @@ fn headless_command_flow_status_leaves_title_alone() {
     let mut model = "claude-sonnet-5".to_string();
     let mut prompt_profile = temur::tools::PromptProfile::Full;
     let rebuild = |_: temur::tools::PromptProfile| -> String { "test system".into() };
+    let mut active_resolved = temur::config::ResolvedProfile {
+        provider: "anthropic".into(),
+        model: "claude-sonnet-5".into(),
+        base_url: "https://mock.invalid".into(),
+        api_key_file: None,
+        max_tokens: 32_000,
+        context_window: None,
+        prompt_profile: temur::tools::PromptProfile::Full,
+    };
+    let list = |_: &temur::config::ResolvedProfile| -> Result<Vec<String>, temur::error::Error> {
+        unreachable!("no /models in this script")
+    };
     let build = |_: &temur::config::ResolvedProfile| -> Result<
         Box<dyn Provider>,
         temur::error::Error,
@@ -894,7 +906,9 @@ fn headless_command_flow_status_leaves_title_alone() {
             cwd_display: "/test",
             replay_mode: false,
             prompt_profile: &mut prompt_profile,
+            active_resolved: &mut active_resolved,
             build_provider: &build,
+            list_models: &list,
             rebuild_system: &rebuild,
         };
         for ev in temur::commands::run(temur::commands::parse(&line), &mut ctx) {
@@ -976,6 +990,18 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
     let mut model = "claude-sonnet-5".to_string();
     let mut prompt_profile = temur::tools::PromptProfile::Full;
     let rebuild = |_: temur::tools::PromptProfile| -> String { "test system".into() };
+    let mut active_resolved = temur::config::ResolvedProfile {
+        provider: "anthropic".into(),
+        model: "claude-sonnet-5".into(),
+        base_url: "https://mock.invalid".into(),
+        api_key_file: None,
+        max_tokens: 32_000,
+        context_window: None,
+        prompt_profile: temur::tools::PromptProfile::Full,
+    };
+    let list = |_: &temur::config::ResolvedProfile| -> Result<Vec<String>, temur::error::Error> {
+        unreachable!("no /models in this script")
+    };
     let build = |p: &temur::config::ResolvedProfile| -> Result<
         Box<dyn Provider>,
         temur::error::Error,
@@ -999,7 +1025,9 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
                 cwd_display: "/test",
                 replay_mode: false,
                 prompt_profile: &mut prompt_profile,
+                active_resolved: &mut active_resolved,
                 build_provider: &build,
+                list_models: &list,
                 rebuild_system: &rebuild,
             };
             for ev in temur::commands::run(temur::commands::parse(&line), &mut ctx) {
@@ -1188,4 +1216,43 @@ fn headless_markdown_fixture_renders_in_final_frame() {
     assert!(!body.contains("```"), "no raw fence markers:\n{body}");
     assert!(!body.contains("**all**"), "no raw emphasis markers:\n{body}");
     assert!(body.contains("▣ temur · claude-sonnet-5"), "turn tail:\n{body}");
+}
+
+// -------------------------------------------------- T9: /models in the TUI
+
+#[test]
+fn models_listed_folds_to_a_cell_and_caches_completion_ids() {
+    let mut a = app();
+    assert!(a.model_ids.is_empty());
+    a.fold(&AgentEvent::ModelsListed(vec!["alpha-1".into(), "beta-2".into()]));
+    assert_eq!(a.model_ids, vec!["alpha-1".to_string(), "beta-2".to_string()]);
+    assert_eq!(
+        a.cells,
+        vec![Cell::Models(vec!["alpha-1".into(), "beta-2".into()])]
+    );
+    // A fresh listing REPLACES the cache (session-lifetime, last wins).
+    a.fold(&AgentEvent::ModelsListed(vec!["gamma-3".into()]));
+    assert_eq!(a.model_ids, vec!["gamma-3".to_string()]);
+}
+
+#[test]
+fn frame_models_listing_renders_notice_style() {
+    let mut a = app();
+    a.submit_command("/models");
+    a.fold(&AgentEvent::ModelsListed(vec!["alpha-1".into(), "beta-2".into()]));
+    let rows = render(&mut a, 80, 12);
+    let body = rows.join("\n");
+    assert!(body.contains("/models"), "command echo:\n{body}");
+    assert!(body.contains("▌ 2 model id(s) from the provider:"), "count line:\n{body}");
+    assert!(body.contains("▌   alpha-1"), "first id:\n{body}");
+    assert!(body.contains("▌   beta-2"), "second id:\n{body}");
+
+    // Notice-style = yellow bar, like Cell::Notice.
+    let backend = TestBackend::new(80, 12);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| draw(&mut a, f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let y = rows.iter().position(|r| r.contains("alpha-1")).unwrap() as u16;
+    let x = rows[y as usize].find('▌').unwrap() as u16;
+    assert_eq!(buf[(x, y)].style().fg, Some(ratatui::style::Color::Yellow));
 }
