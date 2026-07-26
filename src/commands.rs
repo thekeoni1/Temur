@@ -151,6 +151,48 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// Tab-completion candidates (T9), returned as FULL input lines, in a
+/// stable order. Exactly three things complete: command names (while the
+/// head word is still being typed), `/model` arguments (profile names
+/// first, then cached model ids, deduplicated), and `/thinking` arguments
+/// (on|off). Nothing else completes. Pure — the TUI owns the cycle state.
+pub fn complete(input: &str, profiles: &[String], model_ids: &[String]) -> Vec<String> {
+    if !input.starts_with('/') {
+        return vec![];
+    }
+    // Still inside the head word: complete command names.
+    if !input.contains(char::is_whitespace) {
+        return COMMANDS
+            .iter()
+            .filter(|(name, ..)| name.starts_with(input))
+            .map(|(name, ..)| name.to_string())
+            .collect();
+    }
+    let mut words = input.split_whitespace();
+    let head = words.next().unwrap_or("/");
+    let partial = words.next().unwrap_or("");
+    if words.next().is_some() {
+        return vec![]; // already past the one completable argument
+    }
+    let args: Vec<&str> = match head {
+        "/model" => {
+            let mut args: Vec<&str> = profiles.iter().map(String::as_str).collect();
+            for id in model_ids {
+                if !args.contains(&id.as_str()) {
+                    args.push(id);
+                }
+            }
+            args
+        }
+        "/thinking" => vec!["on", "off"],
+        _ => return vec![],
+    };
+    args.into_iter()
+        .filter(|a| a.starts_with(partial))
+        .map(|a| format!("{head} {a}"))
+        .collect()
+}
+
 /// `/help` body: one line per [`COMMANDS`] row, plus the non-command exit line.
 pub fn help_lines() -> Vec<String> {
     let mut out: Vec<String> = COMMANDS
@@ -425,5 +467,43 @@ mod tests {
         }
         // Whitespace-tolerant around words.
         assert_eq!(parse("/model   local  "), Command::ModelSwitch("local".into()));
+    }
+
+    #[test]
+    fn complete_table() {
+        let profiles = vec!["local".to_string(), "sonnet".to_string()];
+        let ids = vec!["qwen3-1.7b".to_string(), "local".to_string()];
+        let c = |input: &str| complete(input, &profiles, &ids);
+        // (input, expected full-line candidates)
+        let cases: Vec<(&str, Vec<&str>)> = vec![
+            // Command names while the head is being typed; "/" offers all.
+            ("/sta", vec!["/status"]),
+            ("/model", vec!["/model", "/models"]),
+            ("/models", vec!["/models"]),
+            ("/", vec!["/help", "/status", "/model", "/models", "/clear", "/thinking"]),
+            ("/zzz", vec![]),
+            // /model args: profiles first, then cached ids, deduplicated
+            // ("local" is both), prefix-filtered.
+            ("/model ", vec!["/model local", "/model sonnet", "/model qwen3-1.7b"]),
+            ("/model lo", vec!["/model local"]),
+            ("/model q", vec!["/model qwen3-1.7b"]),
+            ("/model nope-", vec![]),
+            // /thinking args.
+            ("/thinking ", vec!["/thinking on", "/thinking off"]),
+            ("/thinking o", vec!["/thinking on", "/thinking off"]),
+            ("/thinking of", vec!["/thinking off"]),
+            // Nothing else completes: not a command, past the first
+            // argument, or an argument to a no-arg command.
+            ("hello", vec![]),
+            ("", vec![]),
+            ("/model local extra", vec![]),
+            ("/status ", vec![]),
+            ("/clear x", vec![]),
+        ];
+        for (input, want) in cases {
+            assert_eq!(c(input), want, "input: {input:?}");
+        }
+        // No profiles and no cached ids: /model args have no candidates.
+        assert!(complete("/model ", &[], &[]).is_empty());
     }
 }

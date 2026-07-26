@@ -235,7 +235,19 @@ fn draw_input(app: &App, frame: &mut Frame, area: Rect) {
         })
         .collect();
 
-    let line = Line::from(vec![Span::styled(prefix.clone(), dim()), Span::raw(visible)]);
+    // T9: command-space input reads cyan (the accent color), applied to the
+    // WINDOWED slice — the `/` decides, even when scrolled out of view.
+    // Deleting the `/` reverts to default; the placeholder branch above and
+    // the width-computed cursor position are untouched by the style.
+    let text_style = if app.input.starts_with('/') {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default()
+    };
+    let line = Line::from(vec![
+        Span::styled(prefix.clone(), dim()),
+        Span::styled(visible, text_style),
+    ]);
     frame.render_widget(Paragraph::new(line), area);
     let cursor_x =
         area.x + (display_width(&prefix) + display_width(&app.input[start..app.cursor])) as u16;
@@ -263,6 +275,10 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
                 Span::styled("esc interrupt · (enter disabled during turn)", dim()),
             ]
         }
+    } else if app.input.starts_with('/') {
+        // T9: live command hint while typing a `/`-line (idle only; the
+        // empty and non-command states keep the standard hint).
+        vec![Span::styled(format!("  {}", command_hint(&app.input)), dim())]
     } else {
         vec![Span::styled(
             "  enter send · ↑↓ history · pgup/pgdn scroll · ctrl+c quit",
@@ -285,6 +301,38 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
         .areas(area);
         frame.render_widget(Paragraph::new(Line::from(left)), hint_area);
         frame.render_widget(Paragraph::new(Span::styled(indicator, dim())), ind_area);
+    }
+}
+
+/// The status-row hint for a `/`-line (T9), from the head word against
+/// [`crate::commands::COMMANDS`]: an exact or unique prefix match shows
+/// that command's `name arg-hint — help` row; several matches list the
+/// candidate names; none is a nudge to /help. (Exact wins so `/model`
+/// isn't drowned out by `/models`.)
+fn command_hint(input: &str) -> String {
+    let head = input.split_whitespace().next().unwrap_or("/");
+    let matches: Vec<&(&str, &str, &str)> = crate::commands::COMMANDS
+        .iter()
+        .filter(|(name, ..)| name.starts_with(head))
+        .collect();
+    let unique = match matches[..] {
+        [one] => Some(one),
+        _ => matches.iter().copied().find(|(name, ..)| *name == head),
+    };
+    match unique {
+        Some((name, arg, help)) => {
+            if arg.is_empty() {
+                format!("{name} — {help}")
+            } else {
+                format!("{name} {arg} — {help}")
+            }
+        }
+        None if matches.is_empty() => "unknown command — /help".into(),
+        None => matches
+            .iter()
+            .map(|(name, ..)| *name)
+            .collect::<Vec<_>>()
+            .join(" · "),
     }
 }
 

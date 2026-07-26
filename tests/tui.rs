@@ -442,6 +442,7 @@ fn headless_end_to_end_through_the_ui_seam() {
             thinking: false,
             cwd: dir.path().display().to_string(),
             version: "test".into(),
+            profiles: vec![],
         },
         100,
         30,
@@ -624,6 +625,7 @@ fn headless_submission_clears_a_stale_token() {
             thinking: false,
             cwd: dir.path().display().to_string(),
             version: "test".into(),
+            profiles: vec![],
         },
         100,
         30,
@@ -680,6 +682,7 @@ fn headless_coalesced_enter_esc_interrupt_survives() {
             thinking: false,
             cwd: dir.path().display().to_string(),
             version: "test".into(),
+            profiles: vec![],
         },
         100,
         30,
@@ -729,6 +732,7 @@ fn headless_esc_interrupts_a_blocked_turn_end_to_end() {
             thinking: false,
             cwd: dir.path().display().to_string(),
             version: "test".into(),
+            profiles: vec![],
         },
         100,
         30,
@@ -851,6 +855,7 @@ fn headless_command_flow_status_leaves_title_alone() {
             thinking: false,
             cwd: dir.path().display().to_string(),
             version: "test".into(),
+            profiles: vec![],
         },
         100,
         30,
@@ -965,6 +970,7 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
             thinking: false,
             cwd: dir.path().display().to_string(),
             version: "test".into(),
+            profiles: vec![],
         },
         100,
         30,
@@ -1194,6 +1200,7 @@ fn headless_markdown_fixture_renders_in_final_frame() {
             thinking: false,
             cwd: dir.path().display().to_string(),
             version: "test".into(),
+            profiles: vec![],
         },
         60,
         30,
@@ -1255,4 +1262,278 @@ fn frame_models_listing_renders_notice_style() {
     let y = rows.iter().position(|r| r.contains("alpha-1")).unwrap() as u16;
     let x = rows[y as usize].find('▌').unwrap() as u16;
     assert_eq!(buf[(x, y)].style().fg, Some(ratatui::style::Color::Yellow));
+}
+
+// ------------------------------------- T9: Tab completion + command styling
+
+/// App with completion sources set, mirroring what the runtime threads in.
+fn app_with_completion() -> App {
+    let mut a = app();
+    a.profiles = vec!["local".into(), "sonnet".into()];
+    a.model_ids = vec!["qwen3-1.7b".into()];
+    a
+}
+
+#[test]
+fn tab_applies_a_unique_completion_at_end_of_input() {
+    let mut a = app_with_completion();
+    type_str(&mut a, "/sta");
+    a.handle_key(key(KeyCode::Tab));
+    assert_eq!(a.input, "/status");
+    assert_eq!(a.cursor, a.input.len());
+}
+
+#[test]
+fn tab_cycles_wraps_and_backtab_reverses() {
+    let mut a = app_with_completion();
+    type_str(&mut a, "/model ");
+    a.handle_key(key(KeyCode::Tab));
+    assert_eq!(a.input, "/model local", "profiles first");
+    a.handle_key(key(KeyCode::Tab));
+    assert_eq!(a.input, "/model sonnet");
+    a.handle_key(key(KeyCode::Tab));
+    assert_eq!(a.input, "/model qwen3-1.7b", "then cached ids");
+    a.handle_key(key(KeyCode::Tab));
+    assert_eq!(a.input, "/model local", "cycle wraps");
+    a.handle_key(key(KeyCode::BackTab));
+    assert_eq!(a.input, "/model qwen3-1.7b", "backtab reverses across the wrap");
+    a.handle_key(key(KeyCode::BackTab));
+    assert_eq!(a.input, "/model sonnet");
+}
+
+#[test]
+fn edits_and_history_moves_invalidate_the_cycle() {
+    let mut a = app_with_completion();
+    // An edit invalidates: the next Tab recomputes from the NEW input.
+    type_str(&mut a, "/model ");
+    a.handle_key(key(KeyCode::Tab));
+    assert_eq!(a.input, "/model local");
+    type_str(&mut a, "x"); // "/model localx" — no candidates now
+    a.handle_key(key(KeyCode::Tab));
+    assert_eq!(a.input, "/model localx", "recompute found nothing: no-op");
+
+    // History moves invalidate too, and completion never corrupts
+    // history state: ↑ recalls the submitted line, ↓ restores the draft.
+    let mut a = app_with_completion();
+    a.submit("first prompt");
+    a.fold(&AgentEvent::TurnComplete {
+        turn_usage: Usage::default(),
+        session_usage: Usage::default(),
+    });
+    type_str(&mut a, "/sta");
+    a.handle_key(key(KeyCode::Tab));
+    assert_eq!(a.input, "/status");
+    a.handle_key(key(KeyCode::Up));
+    assert_eq!(a.input, "first prompt", "history recall after Tab");
+    a.handle_key(key(KeyCode::Down));
+    assert_eq!(a.input, "/status", "draft (the completed line) restored");
+}
+
+#[test]
+fn tab_is_a_noop_without_candidates_mid_input_or_while_busy() {
+    // No candidates.
+    let mut a = app_with_completion();
+    type_str(&mut a, "hello");
+    a.handle_key(key(KeyCode::Tab));
+    assert_eq!(a.input, "hello");
+    // Unknown command head.
+    let mut a = app_with_completion();
+    type_str(&mut a, "/zzz");
+    a.handle_key(key(KeyCode::Tab));
+    assert_eq!(a.input, "/zzz");
+    // Cursor not at end-of-input.
+    let mut a = app_with_completion();
+    type_str(&mut a, "/sta");
+    a.handle_key(key(KeyCode::Left));
+    a.handle_key(key(KeyCode::Tab));
+    assert_eq!(a.input, "/sta", "mid-input Tab is a no-op");
+    // Busy (a turn is running).
+    let mut a = app_with_completion();
+    a.submit("go");
+    assert!(a.busy);
+    type_str(&mut a, "/sta");
+    a.handle_key(key(KeyCode::Tab));
+    assert_eq!(a.input, "/sta", "busy Tab is a no-op");
+}
+
+#[test]
+fn tab_respects_the_force_quit_disarm() {
+    let mut a = app_with_completion();
+    a.submit("go"); // busy
+    assert_eq!(a.handle_key(ctrl('c')), Action::None);
+    assert!(a.force_quit_armed);
+    a.handle_key(key(KeyCode::Tab)); // any key disarms
+    assert!(!a.force_quit_armed, "Tab disarms like any other key");
+    assert_eq!(a.handle_key(ctrl('c')), Action::None, "so this re-arms, not force-quits");
+    assert!(a.force_quit_armed);
+}
+
+#[test]
+fn frame_command_input_renders_cyan_and_reverts_without_slash() {
+    let mut a = app();
+    type_str(&mut a, "/x");
+    let rows = render(&mut a, 60, 8);
+    let y = rows.iter().position(|r| r.contains("▌ > /x")).unwrap() as u16;
+    // Column = CHAR position ("▌" is multi-byte; find() returns bytes).
+    let x = rows[y as usize].chars().position(|c| c == '/').unwrap() as u16;
+    let backend = TestBackend::new(60, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| draw(&mut a, f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(buf[(x, y)].style().fg, Some(ratatui::style::Color::Cyan));
+    assert_eq!(buf[(x + 1, y)].style().fg, Some(ratatui::style::Color::Cyan));
+
+    // Deleting the "/" reverts the styling to default.
+    a.handle_key(key(KeyCode::Home));
+    a.handle_key(key(KeyCode::Delete));
+    assert_eq!(a.input, "x");
+    let rows = render(&mut a, 60, 8);
+    let y2 = rows.iter().position(|r| r.contains("▌ > x")).unwrap() as u16;
+    let x2 = rows[y2 as usize].chars().position(|c| c == 'x').unwrap() as u16;
+    let backend = TestBackend::new(60, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| draw(&mut a, f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(
+        buf[(x2, y2)].style().fg,
+        Some(ratatui::style::Color::Reset),
+        "no accent without the slash"
+    );
+
+    // The empty placeholder state is untouched (and stays dim, not cyan).
+    let mut a = app();
+    let rows = render(&mut a, 90, 8);
+    assert!(rows[5].contains("▌ > ask anything… (exit to quit)"));
+}
+
+#[test]
+fn frame_status_hint_tracks_command_input() {
+    // Unique prefix → the full table row.
+    let mut a = app();
+    type_str(&mut a, "/stat");
+    let rows = render(&mut a, 100, 8);
+    assert!(
+        rows[6].contains("/status — profile, provider, model, thinking, prompt, context, session file"),
+        "unique-match hint: {}",
+        rows[6]
+    );
+    // Exact match wins over the /model|/models ambiguity.
+    let mut a = app();
+    type_str(&mut a, "/model");
+    let rows = render(&mut a, 100, 8);
+    assert!(rows[6].contains("/model [<profile>|<model-id>]"), "exact match: {}", rows[6]);
+    // Multiple matches → names joined.
+    let mut a = app();
+    type_str(&mut a, "/mod");
+    let rows = render(&mut a, 100, 8);
+    assert!(rows[6].contains("/model · /models"), "candidates: {}", rows[6]);
+    // No match → the /help nudge.
+    let mut a = app();
+    type_str(&mut a, "/zzz");
+    let rows = render(&mut a, 100, 8);
+    assert!(rows[6].contains("unknown command — /help"), "{}", rows[6]);
+    // Non-command input keeps the standard idle hint; the EMPTY state is
+    // already pinned by frame_empty_welcome_state.
+    let mut a = app();
+    type_str(&mut a, "hello");
+    let rows = render(&mut a, 100, 8);
+    assert!(rows[6].contains("enter send"), "{}", rows[6]);
+}
+
+/// Tab completion through the REAL runtime: the render thread receives a
+/// scripted Tab, completes "/sta" to "/status", and the driver loop runs
+/// the completed command — proven by the status output in the final frame.
+#[test]
+fn headless_tab_completion_submits_the_completed_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens: 32_000,
+        system: Some("test system".into()),
+        thinking: false,
+        cwd: dir.path().to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+    };
+    let mut session = Session::new(
+        Box::new(BlockUntilCancelled), // never called: only commands run
+        Registry::standard(),
+        cfg,
+    );
+
+    let mut script: Vec<Event> = Vec::new();
+    script.extend("/sta".chars().map(|c| Event::Key(key(KeyCode::Char(c)))));
+    script.push(Event::Key(key(KeyCode::Tab)));
+    script.push(Event::Key(key(KeyCode::Enter)));
+    script.extend("exit".chars().map(|c| Event::Key(key(KeyCode::Char(c)))));
+    script.push(Event::Key(key(KeyCode::Enter)));
+
+    let (mut ui, snapshot) = TuiUi::headless(
+        SessionInfo {
+            model: "claude-sonnet-5".into(),
+            thinking: false,
+            cwd: dir.path().display().to_string(),
+            version: "test".into(),
+            profiles: vec![],
+        },
+        100,
+        30,
+        script,
+        session.cancel_token(),
+    );
+
+    let profiles = std::collections::BTreeMap::new();
+    let mut active: Option<String> = None;
+    let mut provider_name = "anthropic".to_string();
+    let mut model = "claude-sonnet-5".to_string();
+    let mut prompt_profile = temur::tools::PromptProfile::Full;
+    let rebuild = |_: temur::tools::PromptProfile| -> String { "test system".into() };
+    let mut active_resolved = temur::config::ResolvedProfile {
+        provider: "anthropic".into(),
+        model: "claude-sonnet-5".into(),
+        base_url: "https://mock.invalid".into(),
+        api_key_file: None,
+        max_tokens: 32_000,
+        context_window: None,
+        prompt_profile: temur::tools::PromptProfile::Full,
+    };
+    let list = |_: &temur::config::ResolvedProfile| -> Result<Vec<String>, temur::error::Error> {
+        unreachable!("no /models in this script")
+    };
+    let build = |_: &temur::config::ResolvedProfile| -> Result<
+        Box<dyn Provider>,
+        temur::error::Error,
+    > { unreachable!("/status builds nothing") };
+
+    while let Some(line) = ui.read_input() {
+        assert_eq!(line, "/status", "Tab completed the head word before submit");
+        let mut ctx = temur::commands::CommandCtx {
+            session: &mut session,
+            profiles: &profiles,
+            active_profile: &mut active,
+            provider_name: &mut provider_name,
+            model: &mut model,
+            persist_path: None,
+            session_max_bytes: temur::config::DEFAULT_SESSION_MAX_BYTES,
+            cwd_display: "/test",
+            replay_mode: false,
+            prompt_profile: &mut prompt_profile,
+            active_resolved: &mut active_resolved,
+            build_provider: &build,
+            list_models: &list,
+            rebuild_system: &rebuild,
+        };
+        for ev in temur::commands::run(temur::commands::parse(&line), &mut ctx) {
+            ui.event(&ev);
+        }
+    }
+    drop(ui);
+
+    let rows = snapshot.lock().unwrap().clone();
+    let body = rows.join("\n");
+    assert!(body.contains("/status"), "command echo:\n{body}");
+    assert!(body.contains("no usage reported yet"), "status ran:\n{body}");
+    assert!(body.contains("prompt: full"), "T9 status field:\n{body}");
 }

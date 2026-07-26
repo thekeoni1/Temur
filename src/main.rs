@@ -302,6 +302,8 @@ fn repl(
                 thinking: cfg.thinking,
                 cwd: cwd_display.clone(),
                 version: VERSION.to_string(),
+                // T9: profile names feed `/model` Tab completion.
+                profiles: profiles.keys().cloned().collect(),
             },
             // T6: the render thread holds the session's cancel token so
             // Esc can interrupt a running turn.

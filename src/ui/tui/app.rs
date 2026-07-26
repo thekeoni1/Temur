@@ -49,6 +49,13 @@ impl ToolCell {
     }
 }
 
+/// An in-flight Tab-completion cycle (T9): the candidate list computed when
+/// the cycle started, and the position the input currently shows.
+struct Completion {
+    candidates: Vec<String>,
+    index: usize,
+}
+
 /// What the runtime should do after a key event.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
@@ -89,6 +96,11 @@ pub struct App {
     /// completion candidates for `/model <id>`. Session-lifetime cache,
     /// refreshed on every listing.
     pub model_ids: Vec<String>,
+    /// Profile names for `/model` Tab completion (T9), from SessionInfo.
+    pub profiles: Vec<String>,
+    /// T9 Tab cycle: `Some` only between a Tab/BackTab and the next
+    /// non-Tab key (any edit, cursor, or history key invalidates it).
+    completion: Option<Completion>,
     pub session_usage: Usage,
     /// Wall-clock milliseconds since app start; the runtime advances this,
     /// tests set it directly (spinner frame + turn duration derive from it).
@@ -120,6 +132,8 @@ impl App {
             cwd,
             version,
             model_ids: Vec::new(),
+            profiles: Vec::new(),
+            completion: None,
             session_usage: Usage::default(),
             now_ms: 0,
             stick_bottom: true,
@@ -262,8 +276,23 @@ impl App {
         // Any key other than a second Ctrl+C disarms the force-quit prompt.
         let was_armed = self.force_quit_armed;
         self.force_quit_armed = false;
+        // T9: any non-Tab key ends a completion cycle — edits, cursor
+        // moves, and history recalls all restart completion from whatever
+        // the input then says. (history state is untouched by completion:
+        // applying a candidate edits `input` only, like typing does.)
+        if !matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+            self.completion = None;
+        }
 
         match key.code {
+            // T9 Tab completion: cycle-in-place, only while idle and only
+            // with the cursor at end-of-input; BackTab cycles backwards.
+            // (The unconditional disarm above already applies.)
+            KeyCode::Tab | KeyCode::BackTab => {
+                if !self.busy && self.cursor == self.input.len() {
+                    self.cycle_completion(key.code == KeyCode::BackTab);
+                }
+            }
             KeyCode::Char('c') if ctrl => {
                 if self.busy {
                     if was_armed {
@@ -336,6 +365,30 @@ impl App {
             _ => {}
         }
         Action::None
+    }
+
+    /// Start or advance the Tab cycle (T9). Candidates are computed ONCE
+    /// per cycle from the input the cycle started on; applying one replaces
+    /// the whole line and keeps the cursor at the end.
+    fn cycle_completion(&mut self, back: bool) {
+        match &mut self.completion {
+            Some(c) => {
+                let n = c.candidates.len();
+                c.index = if back { (c.index + n - 1) % n } else { (c.index + 1) % n };
+                self.input = c.candidates[c.index].clone();
+            }
+            None => {
+                let candidates =
+                    crate::commands::complete(&self.input, &self.profiles, &self.model_ids);
+                if candidates.is_empty() {
+                    return; // nothing to complete: strict no-op
+                }
+                let index = if back { candidates.len() - 1 } else { 0 };
+                self.input = candidates[index].clone();
+                self.completion = Some(Completion { candidates, index });
+            }
+        }
+        self.cursor = self.input.len();
     }
 
     fn prev_boundary(&self) -> Option<usize> {

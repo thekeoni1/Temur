@@ -30,6 +30,9 @@ pub struct SessionInfo {
     pub thinking: bool,
     pub cwd: String,
     pub version: String,
+    /// Profile names for `/model` Tab completion (T9); startup-validated in
+    /// main, so this is display/completion data only.
+    pub profiles: Vec<String>,
 }
 
 enum ToUi {
@@ -118,7 +121,8 @@ impl TuiUi {
                         return;
                     }
                 };
-                let app = App::new(info.model, info.thinking, info.cwd, info.version);
+                let mut app = App::new(info.model, info.thinking, info.cwd, info.version);
+                app.profiles = info.profiles;
                 let (_, end) =
                     render_loop(terminal, app, rx, tx_input, &mut CrosstermEvents, cancel);
                 ratatui::restore();
@@ -153,7 +157,8 @@ impl TuiUi {
             .spawn(move || {
                 let backend = ratatui::backend::TestBackend::new(width, height);
                 let terminal = Terminal::new(backend).expect("test backend");
-                let app = App::new(info.model, info.thinking, info.cwd, info.version);
+                let mut app = App::new(info.model, info.thinking, info.cwd, info.version);
+                app.profiles = info.profiles;
                 let mut source = ScriptedEvents::new(script);
                 let (terminal, _) =
                     render_loop(terminal, app, rx, tx_input, &mut source, cancel);
