@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased - v0.3.0
+## v0.3.0 - 2026-07-26
 
 T9 command ergonomics:
 
