@@ -18,7 +18,12 @@
 # PORT changes only the published host side.
 #
 # Usage:  MODEL_GGUF=/path/to/model.gguf scripts/serve.sh start|stop|status
-# Knobs:  MODEL_GGUF   path to the .gguf model file (required for start)
+# Knobs:  MODEL_GGUF   path to the .gguf model file (required for start;
+#                      defaulted from MODELS_DIR when exactly one .gguf
+#                      lives there — see below)
+#         MODELS_DIR   directory searched for that default (default
+#                      $HOME/models); with zero or several .gguf files
+#                      MODEL_GGUF stays required, nothing is guessed
 #         LLAMA_IMAGE  server image (pinned default below; never auto-pulled)
 #         CTX          server context size in tokens (default 8192)
 #         PORT         published host port (default 8080)
@@ -66,6 +71,22 @@ start_cmd() {
     # NEVER auto-pull (offline_demo.sh precedent): missing image => print
     # the exact command and stop.
     podman image exists "$LLAMA_IMAGE" || { echo "FAIL: image not present locally: $LLAMA_IMAGE"; echo "  fetch it first (on a connected machine):  podman pull $LLAMA_IMAGE"; exit 1; }
+    # T9 quality-of-life: with MODEL_GGUF unset, default it when MODELS_DIR
+    # holds EXACTLY one .gguf — one file is unambiguous, anything else stays
+    # an explicit choice. POSIX glob via set -- (an unmatched pattern stays
+    # literal under set -u; the -e test below rejects it, counting as zero).
+    MODELS_DIR="${MODELS_DIR:-$HOME/models}"
+    if [ -z "$MODEL_GGUF" ]; then
+        set -- "$MODELS_DIR"/*.gguf
+        if [ "$#" -eq 1 ] && [ -e "$1" ]; then
+            MODEL_GGUF=$1
+            echo "OK: defaulted MODEL_GGUF=$MODEL_GGUF"
+        else
+            [ -e "$1" ] || set -- # unmatched literal pattern = zero files
+            echo "FAIL: set MODEL_GGUF=/path/to/model.gguf (searched $MODELS_DIR: found $# .gguf files, need exactly 1 to default)"
+            exit 1
+        fi
+    fi
     [ -n "$MODEL_GGUF" ] || { echo "FAIL: set MODEL_GGUF=/path/to/model.gguf"; exit 1; }
     [ -f "$MODEL_GGUF" ] || { echo "FAIL: model file not found: $MODEL_GGUF (set the MODEL_GGUF knob)"; exit 1; }
     echo "OK: image and model present (nothing will be pulled)"

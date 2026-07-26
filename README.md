@@ -141,8 +141,12 @@ fields: `provider` (`"anthropic"` or `"openai-compat"`), `model`
 (required), and optional `base_url` (default: the provider's own default
 endpoint), `api_key_file` (path to a key file — openai-compat profiles
 without one are keyless, anthropic profiles without one fall back to
-`APP_SECRET_FILE`), `max_tokens` (default: the global value), and
-`context_window`. Every profile is validated at startup, so `/model` can
+`APP_SECRET_FILE`), `max_tokens` (default: the global value),
+`context_window`, and `prompt_profile` (`"full"` or `"compact"` for
+THIS profile; default: the global `prompt_profile` — switching between
+profiles swaps the system prompt and tool descriptions accordingly, and
+an explicit `system_prompt` still wins in either profile). Every
+profile is validated at startup, so `/model` can
 only fail on a credential/IO problem — and a failed switch leaves the
 session untouched. History continues across a switch (it is stored
 provider-neutrally), and each save records whichever provider/model is
@@ -155,20 +159,32 @@ never reaches the model or the history (which also means a literal
 message starting with `/` cannot be sent):
 
 - `/help` — list commands
-- `/status` — profile, provider, model, thinking, context use, session file
-- `/model` — list profiles · `/model <name>` — switch profiles mid-session
+- `/status` — profile, provider, model, thinking, prompt profile,
+  context use, session file
+- `/model` — list profiles · `/model <name>` — switch profiles
+  mid-session · `/model <model-id>` — switch the model WITHIN the
+  active provider (profile names win on collision; endpoint,
+  credentials, limits, and prompt profile stay; a bad id surfaces as
+  the provider's error on the next turn)
+- `/models` — list model ids from the active provider (live GET; ids
+  feed `/model` Tab completion in the TUI)
 - `/clear` — wipe the session; the empty state is persisted immediately,
   so quitting and `--continue` resumes empty
 - `/thinking` · `/thinking on|off` — show or flip adaptive thinking for
   this session (only the anthropic provider uses it)
 
-Under `--mock`/`--capture-sse` the state-mutating commands report
-themselves unavailable to keep replays deterministic.
+Under `--mock`/`--capture-sse` the state-mutating commands — and
+`/models`, which is a live network GET — report themselves unavailable
+to keep replays deterministic.
 
 In the TUI (the default on a terminal), assistant replies render as
 markdown — headings, emphasis, lists, quotes, links, and code blocks
 behind a dim gutter — in the same monochrome, default-terminal-color
-style; the plain REPL prints raw text unchanged.
+style; the plain REPL prints raw text unchanged. TUI command
+ergonomics: `/`-input renders in the cyan accent, the status row shows
+a live hint for the command being typed, and Tab cycles completions
+in place (command names; profile names and `/models`-cached ids after
+`/model`; `on|off` after `/thinking`) with BackTab reversing.
 
 ## Sessions
 

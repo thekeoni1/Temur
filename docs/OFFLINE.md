@@ -45,7 +45,12 @@ scripts/serve.sh stop                                   # idempotent teardown
 
 It publishes loopback-only (`127.0.0.1:8080`), which matches temur's
 default openai-compat `base_url` exactly — the keyless config above
-works unchanged. Knobs (env overrides): `MODEL_GGUF` (required),
+works unchanged. Knobs (env overrides): `MODEL_GGUF` (required — but
+`start` defaults it when `MODELS_DIR`, default `$HOME/models`, holds
+EXACTLY one `.gguf`; zero or several keep it required and the failure
+names the searched dir and count — nothing is ever guessed between
+models), `MODELS_DIR` (that search dir; serve.sh only — the demo and
+eval scripts stay explicit),
 `LLAMA_IMAGE` (the pin above; a missing image prints the exact
 `podman pull` command and stops — nothing is pulled for you), `CTX`,
 `PORT`/`BIND` (published host side only; the container-internal port is
@@ -150,6 +155,27 @@ The profile is **explicit-only**: absent or `"full"` means the stock
 prompts (byte-identical to pre-profile behavior), `"compact"` opts in,
 anything else is a startup config error. temur never auto-selects a
 profile from `context_window` or the model name.
+
+Named profiles can each carry their own `prompt_profile` (same values,
+same explicit-only rule; absent = the global setting above). That is
+the natural pairing for mixed setups — compact on the small local
+profile, full on a hosted one:
+
+```json
+{
+  "profiles": {
+    "local":  { "provider": "openai-compat", "model": "qwen3-1.7b",
+                "prompt_profile": "compact", "context_window": 8192 },
+    "sonnet": { "provider": "anthropic", "model": "claude-sonnet-5" }
+  }
+}
+```
+
+`/model local` ⇄ `/model sonnet` swaps the tool descriptions and the
+default system prompt together with the provider (`/status` shows the
+live value as `prompt: full|compact`); an explicit `system_prompt`
+override still wins in both profiles, and a raw-id switch
+(`/model <model-id>`) never changes the prompt profile.
 
 ## LAN topology
 

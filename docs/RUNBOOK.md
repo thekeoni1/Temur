@@ -679,3 +679,54 @@ When the operator flips visibility, run the README one-liner verbatim
 into a temp HOME (live raw-URL download of install.sh at the newest
 released tag, live artifact + SHA256SUMS from the release, checksum
 verified, `--version` matches) and record the result here.
+
+## T9 acceptance — recorded result (no release)
+
+2026-07-25: **T9 (command ergonomics) feature-complete on main** — four
+phases, one commit each (P1 per-profile prompt profiles, P2 `/models` +
+raw-id `/model`, P3 TUI command styling + Tab completion, P4 serve.sh
+MODEL_GGUF default + docs). **No tag, no release, no version bump —
+the version stays 0.2.0**; T9 ships later as v0.3.0 after dogfooding.
+
+Gates: full `check.sh` (pty, both paths, no env overrides) ALL CHECKS
+PASSED at the P0 baseline (head `241c2fe`, clean tree) and again at
+every phase gate before its commit. Host suites 16/16 green at each
+phase; container suites 13/13 per path (26 `test result: ok` per gate
+log), staticness asserts (no INTERP / no NEEDED), mock REPL smokes
+(anthropic + openai-compat wire), TUI pty smokes (host + container +
+musl), and the bare-busybox checks all green in every run.
+
+Live verification (offline-only, llama.cpp via `scripts/serve.sh`;
+never Anthropic — the anthropic listing path is covered by the
+parse_models_json unit tests against the documented wire shape, and
+the operator dogfoods real Anthropic `/models` after acceptance):
+
+- serve.sh default: `scripts/serve.sh start` with MODEL_GGUF unset
+  printed `OK: defaulted MODEL_GGUF=` + the single `.gguf` under
+  `$HOME/models` in preflight (the server was already up from earlier
+  dogfooding, so start took the healthy already-running path). Both
+  FAIL shapes exercised for real via `MODELS_DIR` pointed at prepared
+  dirs: zero files → "found 0 .gguf files, need exactly 1 to default";
+  two files → the same FAIL naming the dir and "found 2".
+- Prompt swap: two keyless openai-compat profiles at the same server,
+  `localc` (compact) and `localf` (full), startup on `localc`.
+  `/status` showed `prompt: compact`; after `/model localf`, `prompt:
+  full` — and the next live turn's 6.7k input tokens are consistent
+  with the full tool text being on the wire.
+- `/models` listed the server's id verbatim (count line + `/model.gguf`,
+  exactly what the server's `data[].id` reports).
+- `/model /model.gguf` (raw id) switched with `switched model to
+  /model.gguf (openai-compat · profile settings kept)`; a live turn
+  completed after the switch; `/status` then showed the profile line
+  unchanged (`profile: localf`) with the new model line, and the saved
+  session file recorded `"model": "/model.gguf"`.
+
+Tab completion and the styling/hint behaviors are proven headless (a
+scripted Tab through the real render loop completes and submits
+`/status`) plus buffer-level style probes — pty smokes in check.sh
+cover the terminal path as always.
+
+Plain-REPL compatibility: all pre-T9 output shapes are byte-identical
+except the two deliberate T9 surface changes (`/status` gained the
+`· prompt:` field; `/help` is now derived from the COMMANDS table and
+includes `/models`), both pinned by updated tests.

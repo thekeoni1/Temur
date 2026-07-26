@@ -179,6 +179,7 @@ payload.
 | T6 | Editing + interruption | Fuzzy-match edit fallback; cancellable turns |
 | T7 | Multi-arch packaging | armv7/aarch64/x86_64 musl-static releases, install story |
 | T8 | Daily-driver UX (shipped as v0.2.0) | Slash commands + named-profile switching (P1); markdown rendering + TUI styling pass (P2); serve.sh background server launcher (P3) — released 2026-07-25 as v0.2.0 (private) |
+| T9 | Command ergonomics | Per-profile prompt profiles (P1); /models listing + raw-model-id switching (P2); TUI command styling + Tab completion (P3); serve.sh MODEL_GGUF default (P4) — feature-complete 2026-07-25; ships later as v0.3.0 after dogfooding |
 
 ### T0 — Identity + honest gate
 - Rename `opencode-rust` → `temur`: package name, `--version`, binary name,
@@ -414,6 +415,60 @@ container. Scripts + docs only — no product code, no new dependencies.
 Deviation from the plan sketch: the container-name knob is
 `CONTAINER_NAME`, not `NAME` — live testing caught WSL exporting
 `NAME=<hostname>`, which silently overrode the default.
+
+**T9-P1 (as-built, 2026-07-25): per-profile prompt profiles.**
+`ProfileConfig.prompt_profile` (`"full"`/`"compact"`, validated eagerly
+per profile at startup; absent = the global setting, itself defaulting
+to full) resolves into `ResolvedProfile.prompt_profile`. main's inline
+system-prompt assembly became ONE `rebuild_system(profile)` closure —
+startup and switches share it, the config `system_prompt` override wins
+in either profile, skills section and `{cwd}` captured once. A `/model`
+switch onto a profile with a different prompt profile calls the new
+infallible `Session::set_prompt` + `Registry::set_profile` AFTER the
+provider build succeeds, so switch atomicity now covers system + tool
+descriptions too (description-swap-only contract unchanged, re-pinned
+by test both directions). `/status`'s thinking line gained
+`· prompt: full|compact`.
+
+**T9-P2 (as-built, 2026-07-25): `/models` + `/model <raw-id>`.** A
+machine-readable `commands::COMMANDS` table (name / arg-hint / help)
+now feeds `/help`, the TUI hint, and completion; `parse` stays the
+authority on argument shapes. `/models` lists model ids from the ACTIVE
+provider via injected `provider::list_models_live` — ureq GET
+(anthropic `{base}/v1/models` with x-api-key by path, openai-compat
+`{base}/models` with Bearer only when keyed), 64 KiB body cap, non-2xx
+a clean status-naming error; `parse_models_json` is a separate pure fn
+(both wire shapes share the `data[].id` envelope) unit-tested offline.
+New `AgentEvent::ModelsListed` renders in both UIs; the TUI caches ids
+for completion. `/model <arg>` with no matching profile is now a raw-id
+switch on the active selection (only the model replaced; profile name,
+limits, and prompt profile kept — names win on collision, making a
+shadowed raw id unreachable by design); build-first atomicity and the
+replay guards extend to both new paths. Raw ids are not validated
+offline — a bad id is the provider's own error on the next turn.
+
+**T9-P3 (as-built, 2026-07-25): TUI command styling + Tab
+completion.** TUI-only; the plain REPL is byte-identical. Command-space
+input renders cyan (windowed slice; within the existing accent
+contract). The idle status row live-hints `/`-lines from the COMMANDS
+table: unique-or-exact prefix match shows that command's row (exact
+wins so `/model` isn't drowned by `/models` — the one deviation from
+the plan sketch, which said only "unique"), several matches list names,
+none nudges to /help. Pure `commands::complete()` returns full-line
+candidates (command names; `/model` args = profile names then cached
+`/models` ids, deduped; `/thinking on|off`; nothing else); `App` owns a
+cycle-in-place Tab state — Tab applies/advances, BackTab reverses,
+wraps; end-of-input only; no-op while busy; any other key invalidates;
+the force-quit disarm behaves as for any key. `SessionInfo.profiles`
+threads names in; a headless e2e injects a real Tab through the
+render loop.
+
+**T9-P4 (as-built, 2026-07-25): serve.sh MODEL_GGUF default.** With
+`MODEL_GGUF` unset, `start` defaults it when `MODELS_DIR`
+(default `$HOME/models`) holds EXACTLY one `.gguf` (POSIX `set --`
+glob, no-match safe under `set -eu`), printing the chosen path; zero or
+several files extend the existing FAIL with the searched dir and count.
+Sibling scripts stay explicit-only.
 
 ## 4. Invariants (every milestone)
 

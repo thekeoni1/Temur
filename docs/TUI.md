@@ -61,6 +61,65 @@ closer streams in, and unclosed emphasis stays literal.
 - Thinking text is still discarded (unit `Cell::Thinking` marker), so
   markdown never applies to it.
 
+## Command ergonomics (T9)
+
+TUI-only ergonomics over the unchanged command layer; the plain REPL's
+output stays byte-identical. The single source of truth is
+`commands::COMMANDS` — a `(name, arg-hint, help)` table that `/help`,
+the status-row hint, and Tab completion all read (`parse` remains the
+authority on argument shapes).
+
+**Command reference** (`/help` prints exactly this, one row per line):
+
+- `/help` — this list
+- `/status` — profile, provider, model, thinking, prompt, context,
+  session file. The thinking line reads
+  `thinking: … · max_tokens: … · prompt: full|compact` — the LIVE
+  prompt profile, which follows profile switches.
+- `/model [<profile>|<model-id>]` — bare: list profiles. With an
+  argument: profile names win; anything else is a raw model id switched
+  WITHIN the active provider — endpoint, credentials, limits, profile
+  name, and prompt profile all stay (a shadowed raw id is unreachable
+  by design; use the profile). Raw ids are not validated offline — a
+  bad id is the provider's own error on the next turn.
+- `/models` — list model ids from the active provider (live GET —
+  therefore replay-guarded like the mutators). The TUI renders a
+  notice-style listing cell and caches the ids as completion
+  candidates.
+- `/clear`, `/thinking [on|off]` — unchanged from T8.
+
+**Input styling.** A `/`-line renders in the cyan accent (applied to
+the windowed slice, so it holds while horizontally scrolled); deleting
+the `/` reverts. Placeholder and non-command input are untouched. This
+stays inside the T8-P2 style contract (cyan is the accent color).
+
+**Status-row hint** (idle only; busy hints unchanged). While the input
+starts with `/`: a unique-or-EXACT prefix match on the head word shows
+that command's `name arg-hint — help` row (exact wins so `/model`
+isn't drowned out by `/models`); several matches list the candidate
+names; no match shows `unknown command — /help`. Empty and
+non-command input keep the standard idle hint.
+
+**Tab completion** — cycle-in-place, pure candidates from
+`commands::complete(input, profiles, model_ids)`:
+
+- Completes exactly three things: command names (while the head word is
+  being typed), `/model` arguments (profile names first, then
+  `/models`-cached ids, deduplicated, prefix-filtered), and `/thinking`
+  arguments (`on|off`). Nothing else completes.
+- Tab applies the first candidate or advances the cycle; BackTab
+  reverses; both wrap. Candidates are computed once per cycle from the
+  input the cycle started on; any other key (edit, cursor, history)
+  ends the cycle, and the next Tab recomputes.
+- Only fires with the cursor at end-of-input; strict no-op while busy,
+  with no candidates, or mid-input. The force-quit disarm treats Tab
+  like any other key. History state (`hist_pos`/draft) is never touched
+  by completion — applying a candidate edits the input exactly like
+  typing.
+- Profile names arrive via `SessionInfo.profiles`; model ids from the
+  most recent `/models` fold (session-lifetime cache, last listing
+  wins).
+
 ## UI selection
 
 - Default: TUI when **stdin and stdout are both TTYs**, plain line REPL
