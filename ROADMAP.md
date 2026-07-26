@@ -1,4 +1,4 @@
-# temur — Roadmap
+# temur - Roadmap
 
 > Adopted 2026-07-18. Supersedes the post-v1 milestone set (A–E). Builds on v1 +
 > v1.x as shipped: agent loop, seven tools + skill tool, Anthropic provider
@@ -14,10 +14,10 @@
 ## 1. Positioning
 
 The pitch: a single static binary with no runtime, running where OpenCode
-cannot — 32-bit Linux, embedded and constrained systems, bare machines, and
+cannot: 32-bit Linux, embedded and constrained systems, bare machines, and
 (with local models) fully offline. Claim by claim:
 
-**"Runs where OpenCode cannot" — true and defensible.** OpenCode is a
+**"Runs where OpenCode cannot" - true and defensible.** OpenCode is a
 Bun/Node/TypeScript system: no 32-bit x86 builds, no armv7 builds, and its
 "single executable" bundles embed a ~90 MB runtime. A ~5 MB musl-static ELF
 with zero `NEEDED` entries runs on machines OpenCode will never boot: old x86,
@@ -25,26 +25,26 @@ armv7 industrial controllers, OpenWrt-class devices, `FROM scratch` containers,
 initramfs environments, air-gapped hosts where installing a runtime is a
 change-control event.
 
-**"32-bit x86 is the niche" — weak as stated.** i686 desktop Linux is a
-retro-computing audience. i686 is the *discipline* — it forced 32-bit-safe
-sizes, static linking, and a tiny dependency tree — not the *market*. The
+**"32-bit x86 is the niche" - weak as stated.** i686 desktop Linux is a
+retro-computing audience. i686 is the *discipline* (it forced 32-bit-safe
+sizes, static linking, and a tiny dependency tree), not the *market*. The
 market that discipline implies is constrained and embedded Linux generally,
 which is overwhelmingly ARM, and the same build recipe reaches
 `armv7-musleabihf` and `aarch64-musl` nearly free (rustls/ring support both).
 So the claim is "any Linux, down to 32-bit and embedded"; i686 is the proof,
 not the point.
 
-**"Fully offline with local models" — the strongest leg, currently unbuilt.**
+**"Fully offline with local models" - the strongest leg, currently unbuilt.**
 Air-gapped, regulated, and privacy-constrained environments cannot use cloud
 agents, and no mainstream harness treats offline as a first-class mode. The
 honest topology: nobody runs a useful LLM *on* a 32-bit box. The realistic
 deployment is temur on the constrained device where the code lives, pointed at
-a llama.cpp/Ollama server elsewhere on the LAN — or both on one modern machine
+a llama.cpp/Ollama server elsewhere on the LAN, or both on one modern machine
 with no internet. The pitch must say that.
 
-**"Native performance, memory-safe" — true, not differentiating.** The agent
+**"Native performance, memory-safe" - true, not differentiating.** The agent
 idles waiting on the model. Low RSS matters on a 128 MB device; harness speed
-mostly doesn't. Say "small footprint," never "fast" — and never claim fast
+mostly doesn't. Say "small footprint," never "fast", and never claim fast
 compilation anywhere: Rust compiles slowly. The advantage is entirely the
 shipped artifact.
 
@@ -64,7 +64,7 @@ themselves.
 ### One-line positioning
 
 > **temur is a dependency-free single static binary coding agent for any Linux
-> system — down to 32-bit and embedded — that runs fully offline against local
+> system, down to 32-bit and embedded, that runs fully offline against local
 > models.**
 
 Decision rule: a feature is IN if it serves *constrained, offline, or
@@ -73,14 +73,14 @@ argue its way up.
 
 ## 2. Capabilities, ranked by the niche
 
-### P0 — OpenAI-compatible provider (highest-leverage addition)
+### P0 - OpenAI-compatible provider (highest-leverage addition)
 One implementation unlocks OpenAI, Groq, OpenRouter, Together, DeepSeek,
-Gemini's compat endpoint, **and llama.cpp/Ollama/vLLM/LM Studio** — the last
+Gemini's compat endpoint, **and llama.cpp/Ollama/vLLM/LM Studio**, the last
 four being the offline niche directly. It is also the first real test of the
 provider abstraction. Bespoke vendor providers are retired: Gemini is
 reachable through this endpoint.
 
-**Is the current trait provider-neutral? No — it is Anthropic with a trait in
+**Is the current trait provider-neutral? No: it is Anthropic with a trait in
 front.** `provider::mod` re-exports `anthropic::types::{ContentBlock,
 ResponseMessage, Role, StopReason, Usage}` as the "neutral" vocabulary, and
 they serialize 1:1 into Anthropic wire JSON. Known leak points a second
@@ -91,7 +91,7 @@ provider will hit:
    message. OpenAI: `tool_calls` on the assistant message with `arguments` as
    a **string** (streamed as text fragments), answered by separate
    `role:"tool"` messages. The neutral types survive conceptually; the derived
-   serialization does not — conversion moves to the provider boundary. Some
+   serialization does not: conversion moves to the provider boundary. Some
    local servers omit tool-call IDs; the provider must synthesize them.
 2. **Stop reasons.** `PauseTurn`, `Refusal`, `ModelContextWindowExceeded` are
    Anthropic-specific. OpenAI's `finish_reason` set (`stop`, `length`,
@@ -101,13 +101,13 @@ provider will hit:
 3. **Usage accounting.** Fields are Anthropic's (`cache_creation_input_tokens`
    etc.). OpenAI reports `prompt/completion_tokens`, cached tokens nested in
    `prompt_tokens_details`, **only in the final chunk, only if
-   `stream_options.include_usage` is set** — and many local servers omit it
+   `stream_options.include_usage` is set**, and many local servers omit it
    entirely. Usage becomes best-effort, possibly absent.
 4. **SSE framing.** Anthropic: named typed events. OpenAI: uniform `data:`
    chunks plus a `data: [DONE]` terminator. Line-level SSE framing is
    shareable; event interpretation is per-provider.
 5. **Thinking blocks.** `signature` / `RedactedThinking` are Anthropic
-   round-trip state — kept as opaque provider passthrough; others ignore them.
+   round-trip state, kept as opaque provider passthrough; others ignore them.
 6. **Auth + secret.** `x-api-key` vs `Authorization: Bearer` is trivial. Not
    trivial: **local providers need no key**, so the secret-file requirement
    becomes per-provider-optional. Key isolation rules are unchanged for any
@@ -116,45 +116,45 @@ provider will hit:
    local models want `temperature`/`top_p` and have small context windows.
    `ChatRequest` needs a few neutral optionals, mapped per provider.
 
-### P0 — Weak-model robustness (niche-critical, not optional)
+### P0 - Weak-model robustness (niche-critical, not optional)
 "Runs small local models well" is a pillar of the positioning, and small
 models are markedly worse at tool-calling. Needed in the agent core,
 provider-neutral: tolerant tool-argument handling (malformed/truncated JSON
 args → schema-error `tool_result` and a retry chance, plus argument repair for
 trivial cases and a bounded consecutive-failure cap); detection of tool calls
 emitted as plain text (a known small-model failure); **per-model prompt
-profiles** — a compact system prompt and trimmed tool descriptions for
+profiles**: a compact system prompt and trimmed tool descriptions for
 small-context models (the OpenCode-ported prompts are Claude-sized); doom-loop
 guard extensions (alternating-pair loops, empty responses). Plus a scripted
 offline eval harness so "works with weak models" is measured, not claimed.
 
-### P1 — Local/offline polish
+### P1 - Local/offline polish
 Beyond the compat provider: keyless operation, graceful handling of absent
 usage/IDs, context-window awareness (small local contexts → earlier, clearer
 overflow behavior), a llama.cpp/Ollama quickstart, and an end-to-end offline
 demo as the acceptance artifact.
 
-### P1 — Session persistence
+### P1 - Session persistence
 Serves the niche twice: constrained devices lose sessions (SSH drops, power
 cuts), and offline work is long-lived. Plain JSON transcript save/resume;
 neutral-typed history makes the format provider-independent.
 
-### P2 — Richer editing (fuzzy-match fallback)
-The deferred OpenCode-style matchers. Weak-model-relevant — small models
-reproduce `old_string` imperfectly, so exact-match `edit` fails more for them —
+### P2 - Richer editing (fuzzy-match fallback)
+The deferred OpenCode-style matchers. Weak-model-relevant: small models
+reproduce `old_string` imperfectly, so exact-match `edit` fails more for them,
 which promotes it above pure parity, but behind the loop hardening that
 decides whether weak models can drive the tools at all.
 
-### P2 — Turn interruption
+### P2 - Turn interruption
 Known TUI gap (a hung turn can only be force-quit). Provider-agnostic, small
 seam extension already scoped in `docs/TUI.md`.
 
-### P3 — Multi-arch release packaging
+### P3 - Multi-arch release packaging
 armv7/aarch64/x86_64 musl-static builds + install docs. Cheap, and it converts
 the positioning from claim to download link. x86_64-musl also lets
 contributors try temur without 32-bit ceremony.
 
-### LOW — parity for its own sake (explicitly deprioritized)
+### LOW - parity for its own sake (explicitly deprioritized)
 LSP integration, MCP support, IDE plugins, web UI, server/multi-client mode,
 plugin ecosystem, bespoke per-vendor providers, sub-agents, themes. Each adds
 dependency and maintenance surface (several threaten the static/musl
@@ -178,17 +178,17 @@ payload.
 | T5 | Session persistence | JSON save/resume in the neutral vocabulary |
 | T6 | Editing + interruption | Fuzzy-match edit fallback; cancellable turns |
 | T7 | Multi-arch packaging | armv7/aarch64/x86_64 musl-static releases, install story |
-| T8 | Daily-driver UX (shipped as v0.2.0) | Slash commands + named-profile switching (P1); markdown rendering + TUI styling pass (P2); serve.sh background server launcher (P3) — released 2026-07-25 as v0.2.0 (private) |
-| T9 | Command ergonomics | Per-profile prompt profiles (P1); /models listing + raw-model-id switching (P2); TUI command styling + Tab completion (P3); serve.sh MODEL_GGUF default (P4) — feature-complete 2026-07-25; ships later as v0.3.0 after dogfooding |
-| T10 | Session management | Named multi-session per project (store P1); resume seam + lossy replay (P2); /sessions + /resume + /new + --resume (P3); TUI listing cell + backscroll rebuild (P4) — feature-complete 2026-07-26; ships with T9 as v0.3.0 after dogfooding |
+| T8 | Daily-driver UX (shipped as v0.2.0) | Slash commands + named-profile switching (P1); markdown rendering + TUI styling pass (P2); serve.sh background server launcher (P3) - released 2026-07-25 as v0.2.0 (private) |
+| T9 | Command ergonomics | Per-profile prompt profiles (P1); /models listing + raw-model-id switching (P2); TUI command styling + Tab completion (P3); serve.sh MODEL_GGUF default (P4) - feature-complete 2026-07-25; ships later as v0.3.0 after dogfooding |
+| T10 | Session management | Named multi-session per project (store P1); resume seam + lossy replay (P2); /sessions + /resume + /new + --resume (P3); TUI listing cell + backscroll rebuild (P4) - feature-complete 2026-07-26; ships with T9 as v0.3.0 after dogfooding |
 
-### T0 — Identity + honest gate
+### T0 - Identity + honest gate
 - Rename `opencode-rust` → `temur`: package name, `--version`, binary name,
   doc headers, RUNBOOK. Keep an MIT attribution note for the OpenCode-ported
   tool prompts.
 - Skills dir: introduce `.temur/skills`; keep reading `.opencode/skills` as a
   fallback for one release.
-- **Close the gate gap — the shipped artifact is currently the least-tested
+- **Close the gate gap: the shipped artifact is currently the least-tested
   one.** The repo's build config and check.sh cover only the gnu *debug*
   target; the musl-static ship path is an undocumented build variant. check.sh
   additionally: builds `--release` for `i686-unknown-linux-musl`, asserts
@@ -198,22 +198,22 @@ payload.
   (busybox/near-scratch) container where a dynamic binary could not even load.
 - gnu-debug stays as the fast inner loop; musl-release is the acceptance path.
 
-### T1 — Provider-neutral core
+### T1 - Provider-neutral core
 Move `ContentBlock`, `StopReason`, `Usage`, `Role`, `ResponseMessage` into
 `provider::types` as plain data (serde retained only for temur's own use, e.g.
-T5 persistence — never as a wire format). `anthropic::types` keeps its wire
+T5 persistence, never as a wire format). `anthropic::types` keeps its wire
 shapes and gains explicit to/from-wire conversion; `cache_control` injection
 stays inside the Anthropic provider. `Usage` becomes best-effort; `ChatRequest`
 gains the neutral optionals from §2. Exit criterion: the entire existing
-fixture + live-conformance suite green with **zero fixture changes** — proof
+fixture + live-conformance suite green with **zero fixture changes**, proof
 the refactor is pure re-plumbing.
 
-### T2 — OpenAI-compatible provider
+### T2 - OpenAI-compatible provider
 - `provider/openai_compat/`: wire types, chunk-stream SSE decoder (shared
   line-framing extracted from the Anthropic parser), transport via the
   existing `Transport` seam, retry policy reused.
-- **Fixtures, same discipline as M1 — no live calls from the build session:**
-  (a) hand-authored chunk streams from the OpenAI API reference — critically
+- **Fixtures, same discipline as M1, no live calls from the build session:**
+  (a) hand-authored chunk streams from the OpenAI API reference, critically
   tool-call `arguments` fragmented across chunks, parallel tool calls,
   `[DONE]`, final-chunk usage; (b) cross-checked against openai-python/-node
   SDK test fixtures (read-only reference; divergences resolve toward the
@@ -223,7 +223,7 @@ the refactor is pure re-plumbing.
   layer 3, mirroring `tests/fixtures/live/`.
 - Config: `provider: "anthropic" | "openai-compat"` plus per-provider
   `base_url`/`model`/auth. API keys only by file path (`APP_SECRET_FILE` or a
-  per-provider path — never env, never argv), explicitly optional for keyless
+  per-provider path, never env, never argv), explicitly optional for keyless
   endpoints. Defaults stay `anthropic` / `claude-sonnet-5`; no default flips
   without a decision.
 - Write down the expected trait changes (§2's leak list) as predictions and
@@ -232,32 +232,32 @@ the refactor is pure re-plumbing.
   was done well, `provider::mod` should barely change; every place it does is
   a lesson.
 
-### T3 — Offline/local polish
+### T3 - Offline/local polish
 Keyless startup path; tolerant degradation when usage/IDs are absent; clear
 behavior at small context windows; `docs/OFFLINE.md` (llama.cpp + Ollama
 quickstart, LAN topology, recommended small models). Acceptance: a scripted,
-operator-run end-to-end demo — temur (musl-static, in the container) driving a
+operator-run end-to-end demo: temur (musl-static, in the container) driving a
 local llama.cpp server with zero internet. Running an inference server from a
-build session is new system surface — plan and ask first.
+build session is new system surface: plan and ask first.
 
-### T4 — Weak-model hardening
+### T4 - Weak-model hardening
 The §2 P0 list: argument repair, text-emitted-tool-call detection, bounded
 correction retries, compact prompt profile selected per model/config, guard
-extensions — plus `tests/weak_model.rs`: scripted fixture streams that *are*
+extensions, plus `tests/weak_model.rs`: scripted fixture streams that *are*
 the misbehaviors (malformed args, hallucinated tool names, loops), asserting
 the loop degrades politely.
 
-### T5 — Session persistence
+### T5 - Session persistence
 `--continue` / session files under a config dir; JSON in the neutral
-vocabulary; atomic writes (power-cut-friendly — it's the niche); size-capped
+vocabulary; atomic writes (power-cut-friendly, it's the niche); size-capped
 with `u64` discipline. Anthropic thinking signatures round-trip opaquely.
 
 > As-built note: session files live under the STATE dir
 > (`$XDG_STATE_HOME/temur/sessions`, fallback `~/.local/state`), not the
-> config dir as written above — megabyte transcripts of tool output don't
+> config dir as written above: megabyte transcripts of tool output don't
 > belong in a dotfile-synced `~/.config`.
 
-### T6 — Editing + interruption
+### T6 - Editing + interruption
 Port OpenCode's fuzzy matchers (whitespace-tolerant, block-anchor) behind the
 existing exact-match-first behavior, with offline table-driven tests; add the
 cancel flag/seam from `docs/TUI.md` so a turn can be interrupted without
@@ -270,9 +270,9 @@ killing the process.
 > batch; TUI Esc sets it. Landing keeps completed content, drops mid-JSON
 > `tool_use` (`input_raw`) and unsigned thinking, and answers kept
 > `tool_use` blocks with synthesized `[interrupted by user]` error results
-> in one message — history stays wire-valid and the driver-loop save
+> in one message: history stays wire-valid and the driver-loop save
 > persists it. Exclusions: plain-REPL interruption (blocked main thread,
-> SIGINT would need a new dependency) and fully stalled streams — ureq
+> SIGINT would need a new dependency) and fully stalled streams: ureq
 > timeouts are whole-phase deadlines, not idle timeouts (verified in
 > ureq 3.3.0 source), so they cannot implement cancel-polling and
 > double-Ctrl+C force-quit remains that escape hatch. Found en route:
@@ -280,44 +280,44 @@ killing the process.
 > GROUP via the sh *builtin* kill (minimal images ship no kill binary).
 > **Fuzzy edit:** OpenCode's line-trimmed and block-anchor matchers
 > ported behind exact-match-first; within a matcher ≥2 candidates is an
-> error demanding more context (stricter than OpenCode — never a guess);
+> error demanding more context (stricter than OpenCode, never a guess);
 > `replaceAll` stays exact-only; no Levenshtein scoring at all. Fuzzy
 > successes are marked in the tool output; the prompts still demand
 > exactness.
 
-### T7 — Multi-arch packaging
+### T7 - Multi-arch packaging
 Release builds for `i686-musl`, `armv7-musleabihf`, `aarch64-musl`,
 `x86_64-musl`; per-target readelf gates; checksums; an install page that leads
 with the one-liner. ARM targets get build-level verification even if hardware
 smoke-testing waits for hardware.
 
-**As-built (2026-07-22).** All four targets ship from the one proven recipe
-— rust-lld against rustup's self-contained musl; per-target CC for ring's
+**As-built (2026-07-22).** All four targets ship from the one proven recipe:
+rust-lld against rustup's self-contained musl; per-target CC for ring's
 C/asm (host gcc for the x86 pair, Ubuntu cross-gcc for the ARM pair) with
 `-U_FORTIFY_SOURCE -fno-stack-protector` on ARM. The planned fallback ladder
 (clang, vendored musl-cross toolchains, cross-rs) was never needed. Fortify
-data point: an aarch64 build *without* those CFLAGS also links — musl
+data point: an aarch64 build *without* those CFLAGS also links: musl
 provides the `__stack_chk_*` symbols ring's objects reference, and gcc
-13.3/ring 0.17.14 emits no fortify `__*_chk` at all — so the flags are
+13.3/ring 0.17.14 emits no fortify `__*_chk` at all, so the flags are
 defense-in-depth against toolchain drift, not currently load-bearing.
 Verification matrix: i686 = the unchanged full `check.sh`; x86_64 = native
 full test suite + host smokes + TUI pty + bare amd64-busybox proof; ARM =
 build-level gates (ELF class/machine, static, no INTERP/NEEDED, armv7
 VFP-args tag) plus qemu-user smokes (`--version`, live `tls-probe` through
-ring's real ARM asm, mock REPL). qemu is not hardware — scheduling, timing,
-and kernel-interface behavior differ — so the ARM hardware smoke stays an
+ring's real ARM asm, mock REPL). qemu is not hardware (scheduling, timing,
+and kernel-interface behavior differ), so the ARM hardware smoke stays an
 open follow-up until hardware exists; `scripts/release.sh` gates a release
 on all of the above plus the leak grep and checksum staging.
 
-### v0.1.1 — post-release review fixes (as-built, 2026-07-23)
+### v0.1.1 - post-release review fixes (as-built, 2026-07-23)
 
 A high-effort adversarially-verified code review of the shipped T6+T7
 range found 10 defects; v0.1.1 fixes all ten. CONFIRMED correctness:
 **F1** block_anchor bound the nearest closing anchor with no middle check
-(silent mis-splice — now: exact-expected-offset preference + a ≥½
+(silent mis-splice - now: exact-expected-offset preference + a ≥½
 order-preserving middle-similarity guard on the nearest fallback; match
 correctly or refuse); **F2** the installer's GNU-only `sha256sum -c`
-flags broke busybox/Alpine — the core musl audience (now portable
+flags broke busybox/Alpine, the core musl audience (now portable
 awk-extract + string compare, unlisted artifact = hard fail; tested in
 busybox itself via `scripts/install_test.sh`); **F3** the fuzzy splice
 kept the model's indentation verbatim, corrupting nested Python-style
@@ -332,17 +332,17 @@ the agent's notice carries a surviving real failure). PLAUSIBLE hazards:
 **F6** thinking-only interrupted landings persisted a message that 400s
 on replay (now: push nothing); **F7** Enter+Esc coalescing could drop
 the interrupt via turn-entry `cancel.clear()` (now: the clear moved to
-submission — TUI Submit arm / plain REPL post-read_input — documented
+submission (TUI Submit arm / plain REPL post-read_input), documented
 invariant on `Session::turn`). Cleanups: **F8** matchers precompute
 spans/trims once; **F9** one private `Session::build` behind new/resume;
 **F10** `INTERRUPT_MARKER` const + one synthesis helper. Every fix
 carries regression tests; gates: full `check.sh` per phase, installer
 matrix (host + busybox), SIGINT black-box matrix, full `release.sh`.
 
-### T8 — Daily-driver UX (shipped as v0.2.0)
+### T8 - Daily-driver UX (shipped as v0.2.0)
 
 Post-v0.1.1 direction (operator-decided): daily-dogfooding ergonomics,
-landed as independently gated pieces with no per-piece release — T8
+landed as independently gated pieces with no per-piece release: T8
 shipped as v0.2.0. All feature pieces (P1–P3) landed 2026-07-25; the
 close-out (version bump, docs, full release.sh + installer gates,
 annotated tag, private GitHub release with closing gate) ran the same
@@ -361,12 +361,12 @@ pre-T8 behavior (error strings unit-asserted). Any leading-`/` input
 line is command-space, intercepted between turns and never reaching the
 model or history: `/help`, `/status`, `/model [name]`, `/clear`,
 `/thinking [on|off]`. One live construction path (`provider::build_live`)
-serves startup AND switches — credentials read by path at activation
+serves startup AND switches, credentials read by path at activation
 time, never cached across switches; `/model` builds the new provider
 first and mutates the session only on success (atomicity proven through
 the real path with an unreadable key file and with `APP_SECRET_FILE`
 unset); `/clear` persists the emptied session immediately so
-`--continue` resumes empty. Command feedback travels as `AgentEvent`s —
+`--continue` resumes empty. Command feedback travels as `AgentEvent`s:
 `Notice` text plus `ModelSwitched`/`ThinkingChanged`/`SessionCleared`
 chrome signals (`ThinkingChanged` is a small scope addition over the
 plan so TUI footer chrome cannot go stale). TUI: commands echo as dim
@@ -374,17 +374,17 @@ plan so TUI footer chrome cannot go stale). TUI: commands echo as dim
 User cell, or the busy spinner. Mutating commands are disabled under
 `--mock`/`--capture-sse`. Deliberately punted from this piece: the
 `scripts/check.sh` container-suite-list edit and the `tests/sigint.rs`
-fold-in that would ride with it (RUNBOOK note stands — since closed by
+fold-in that would ride with it (RUNBOOK note stands, since closed by
 T8-P2's check.sh hygiene pass).
 
 **T8-P2 (as-built, 2026-07-25): markdown rendering + monochrome styling
 pass + check.sh hygiene.** Landed as its own gated sub-phases. (1)
-check.sh hygiene — the milestone's sanctioned check.sh edit: every
+check.sh hygiene, the milestone's sanctioned check.sh edit: every
 host-side product invocation now runs with isolated
 `XDG_CONFIG_HOME`/`XDG_STATE_HOME` in the run's temp dir, so the
 operator's real config can no longer break the host TUI pty smoke (the
 T8-P1 neutral-XDG workaround is retired), and `tests/sigint.rs` joined
-the container suite list on both paths. (2) Markdown rendering —
+the container suite list on both paths. (2) Markdown rendering:
 `src/ui/tui/markdown.rs`, a pure `render(text, width) → Vec<Line>` over
 pulldown-cmark 0.13 (default features off, strikethrough the only
 extension; lock delta: pulldown-cmark + unicase only, no *-sys crates;
@@ -394,14 +394,14 @@ byte-identical. Streaming re-parses the accumulating cell per frame;
 unclosed fences render as code until the closer arrives. Documented
 limitations: severed fences across tool-split cells re-parse per cell
 (styling inverts, nothing lost), table/footnote/tasklist extensions off,
-no syntax highlighting. (3) Styling — the accent contract formalized
+no syntax highlighting. (3) Styling: the accent contract formalized
 (DIM/BOLD/ITALIC/UNDERLINED + Red errors / Yellow notices / Cyan
 accents, bringing the pre-existing cyan uses in-contract) and the
 running-tool line dimmed to match its finished form. Deviation from the
 plan sketch: none of substance; soft breaks reflow as spaces (CommonMark
 semantics), pinned by test.
 
-**T8-P3 (as-built, 2026-07-25): `scripts/serve.sh` — background
+**T8-P3 (as-built, 2026-07-25): `scripts/serve.sh` - background
 llama.cpp server launcher.** Operator infrastructure for the
 third-party inference server (the roadmap's server/multi-client-mode
 exclusion is about temur-the-binary serving clients; temur gains no
@@ -409,19 +409,19 @@ server behavior). Command surface is `start|stop|status` only. It
 inverts `offline_demo.sh`'s sealed-pod bring-up for one-window use:
 plain `podman run -d` with a loopback-only published port
 (`127.0.0.1:8080`, matching the default openai-compat `base_url`),
-container-side bind `0.0.0.0`, and no exit trap — the server survives
+container-side bind `0.0.0.0`, and no exit trap: the server survives
 script exit. Same pinned image and never-pull preflight as the demos;
 host-side `/health` wait (30×2s) fails closed by removing the dead
-container. Scripts + docs only — no product code, no new dependencies.
+container. Scripts + docs only: no product code, no new dependencies.
 Deviation from the plan sketch: the container-name knob is
-`CONTAINER_NAME`, not `NAME` — live testing caught WSL exporting
+`CONTAINER_NAME`, not `NAME`: live testing caught WSL exporting
 `NAME=<hostname>`, which silently overrode the default.
 
 **T9-P1 (as-built, 2026-07-25): per-profile prompt profiles.**
 `ProfileConfig.prompt_profile` (`"full"`/`"compact"`, validated eagerly
 per profile at startup; absent = the global setting, itself defaulting
 to full) resolves into `ResolvedProfile.prompt_profile`. main's inline
-system-prompt assembly became ONE `rebuild_system(profile)` closure —
+system-prompt assembly became ONE `rebuild_system(profile)` closure:
 startup and switches share it, the config `system_prompt` override wins
 in either profile, skills section and `{cwd}` captured once. A `/model`
 switch onto a profile with a different prompt profile calls the new
@@ -435,7 +435,7 @@ by test both directions). `/status`'s thinking line gained
 machine-readable `commands::COMMANDS` table (name / arg-hint / help)
 now feeds `/help`, the TUI hint, and completion; `parse` stays the
 authority on argument shapes. `/models` lists model ids from the ACTIVE
-provider via injected `provider::list_models_live` — ureq GET
+provider via injected `provider::list_models_live`: ureq GET
 (anthropic `{base}/v1/models` with x-api-key by path, openai-compat
 `{base}/models` with Bearer only when keyed), 64 KiB body cap, non-2xx
 a clean status-naming error; `parse_models_json` is a separate pure fn
@@ -443,22 +443,22 @@ a clean status-naming error; `parse_models_json` is a separate pure fn
 New `AgentEvent::ModelsListed` renders in both UIs; the TUI caches ids
 for completion. `/model <arg>` with no matching profile is now a raw-id
 switch on the active selection (only the model replaced; profile name,
-limits, and prompt profile kept — names win on collision, making a
+limits, and prompt profile kept: names win on collision, making a
 shadowed raw id unreachable by design); build-first atomicity and the
 replay guards extend to both new paths. Raw ids are not validated
-offline — a bad id is the provider's own error on the next turn.
+offline: a bad id is the provider's own error on the next turn.
 
 **T9-P3 (as-built, 2026-07-25): TUI command styling + Tab
 completion.** TUI-only; the plain REPL is byte-identical. Command-space
 input renders cyan (windowed slice; within the existing accent
 contract). The idle status row live-hints `/`-lines from the COMMANDS
 table: unique-or-exact prefix match shows that command's row (exact
-wins so `/model` isn't drowned by `/models` — the one deviation from
+wins so `/model` isn't drowned by `/models`, the one deviation from
 the plan sketch, which said only "unique"), several matches list names,
 none nudges to /help. Pure `commands::complete()` returns full-line
 candidates (command names; `/model` args = profile names then cached
 `/models` ids, deduped; `/thinking on|off`; nothing else); `App` owns a
-cycle-in-place Tab state — Tab applies/advances, BackTab reverses,
+cycle-in-place Tab state: Tab applies/advances, BackTab reverses,
 wraps; end-of-input only; no-op while busy; any other key invalidates;
 the force-quit disarm behaves as for any key. `SessionInfo.profiles`
 threads names in; a headless e2e injects a real Tab through the
@@ -471,7 +471,7 @@ glob, no-match safe under `set -eu`), printing the chosen path; zero or
 several files extend the existing FAIL with the searched dir and count.
 Sibling scripts stay explicit-only.
 
-### T10 — Session management (as-built, 2026-07-26)
+### T10 - Session management (as-built, 2026-07-26)
 
 Named multi-session, list + commands only (no picker, no modal input).
 FORMAT_VERSION and the FNV-1a digest are untouched; pre-T10 files load
@@ -494,10 +494,10 @@ written by T10 stay byte-identical to the pre-T10 shape (`name` is
   mtime, newest first, `UNIX_EPOCH` fallback, file-name tie-break.
   This does NOT weaken the clock-less invariant: that invariant is
   about the FORMAT (a format depending on a clock lies on RTC-less
-  hardware — nothing in the file or its name carries a timestamp,
+  hardware: nothing in the file or its name carries a timestamp,
   before or after T10). mtime is filesystem metadata that exists
   whether or not we read it, is read only at list time, and decides
-  display order alone — no load/save/resume path consults it. On a
+  display order alone: no load/save/resume path consults it. On a
   clock-less device every mtime collapses to the epoch fallback and
   the listing degrades to stable name order; nothing else changes.
   Precedent: `tools/glob.rs` has sorted hits mtime-desc since v1.
@@ -505,7 +505,7 @@ written by T10 stay byte-identical to the pre-T10 shape (`name` is
   between-turns seam (same INVARIANT block): replaces
   history/usage/todos/context estimate, re-arms the context warning.
   `replay_items` flattens saved history into
-  `User`/`Assistant`/`Tool{name}` items — deliberately lossy (tool
+  `User`/`Assistant`/`Tool{name}` items, deliberately lossy (tool
   output/args and thinking never replay; tool-result messages,
   including interrupt markers, produce nothing). New events mirror T9
   shapes: `SessionsListed { lines, keys }`, `SessionLoaded { items,
@@ -517,13 +517,13 @@ written by T10 stay byte-identical to the pre-T10 shape (`name` is
   then load_seed + persist-path redirect + name bookkeeping together.
   Same-session keys no-op; cross-project resume warns that ToolCtx.cwd
   stays the current directory; the dropped-prompt rule reuses the T5
-  notice. `/new` never writes a file — the first turn's save creates
+  notice. `/new` never writes a file: the first turn's save creates
   it. `--resume <key>` resolves at startup, is mutually exclusive with
   `--continue`, and is rejected under `--mock`; saves record the live
   session name; `/status` gained `· session: <name or (default)>`.
 - **TUI (P4).** `Cell::Sessions` renders the listing notice-style;
   `SessionLoaded` folds as SessionCleared-then-rebuild (title claimed
-  by the first replayed prompt — the header finally stops reading
+  by the first replayed prompt: the header finally stops reading
   "new session" after a resume); replayed tools are `⚙ name`
   one-liners via `ToolCell::replay` (no body to box; FIFO pairing
   untouched). Input line survives a resume untouched.
@@ -540,7 +540,7 @@ the SessionLoaded arm, after the new backscroll lines).
   or OpenSSL before adoption; the `cargo tree` gates stay; anything pulling
   `*-sys` crates that break musl/32-bit is rejected or feature-gated off.
 - 32-bit discipline: `u64` for sizes/offsets; no large-allocation assumptions.
-- Two-identity key isolation: secrets by path only — never env, argv, logs, or
+- Two-identity key isolation: secrets by path only, never env, argv, logs, or
   the repo; the builder session never holds a live key; no live API calls from
   build sessions.
 - Green `check.sh` (host + container, gnu-debug + musl-release) before a
@@ -579,7 +579,7 @@ the SessionLoaded arm, after the new backscroll lines).
   This is the standing tax of the niche. The forbidden-dep and readelf gates
   make violations loud; prefer pure-Rust or minimal hand-rolled
   implementations (the skills frontmatter parser set the precedent).
-- **Scope/maintenance — becoming a worse OpenCode.** The pull is toward the
+- **Scope/maintenance: becoming a worse OpenCode.** The pull is toward the
   LOW list, where temur competes on OpenCode's terms with a fraction of the
   hands and loses. The §1 decision rule is the backlog filter; small surface
   is a feature of the product, not a deficit.
@@ -588,7 +588,7 @@ the SessionLoaded arm, after the new backscroll lines).
 
 **First:** T0 (days, and the gate gap genuinely matters), then T1→T2→T3→T4 as
 one arc. That arc *is* the differentiation: after it, the one-liner is fully
-true and demonstrable — before it, the offline pitch is a slide. T5–T7 follow
+true and demonstrable: before it, the offline pitch is a slide. T5–T7 follow
 by usability pull.
 
 **Not building:** bespoke vendor providers (the compat endpoint covers them),
@@ -597,7 +597,7 @@ system, sub-agents, any async-runtime migration (blocking ureq is correct for
 this niche), and any dependency that compromises musl-static purity for
 convenience.
 
-**Where the story is weak — kept visible on purpose:** i686 desktop alone is a
+**Where the story is weak, kept visible on purpose:** i686 desktop alone is a
 retro hobby, not a market (ARM/embedded is the market; i686 is the proof);
 Go-based single-binary agents narrow the binary-profile advantage, so the moat
 is the combination with offline + weak-model competence; and local-model

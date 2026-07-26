@@ -1,7 +1,7 @@
 # temur
 
-A dependency-free single static binary coding agent for any Linux system —
-down to 32-bit and embedded — that runs fully offline against local models.
+A dependency-free single static binary coding agent for any Linux system,
+down to 32-bit and embedded, that runs fully offline against local models.
 
 Mainstream Bun- and Node-based coding agents publish no 32-bit x86 or armv7 builds, and
 their "single executable" bundles embed a runtime on the order of 90 MB;
@@ -12,9 +12,9 @@ and rescue/initramfs environments. Offline is a first-class mode, not a
 degraded one: the OpenAI-compatible provider runs keyless against llama.cpp
 or Ollama, and quirky-local-server behavior (absent usage, missing tool-call
 IDs, malformed argument JSON) is defined, tested degradation. The agent loop
-is hardened for small models — schema-error feedback with bounded retries,
+is hardened for small models: schema-error feedback with bounded retries,
 detection of tool calls emitted as prose, a compact prompt profile sized for
-small context windows — and how well that works is measured by a scripted
+small context windows, and how well that works is measured by a scripted
 eval rather than asserted. The honest topology: no useful LLM runs *on* a
 32-bit box; temur runs on the constrained device where the code lives, and
 the model serves from a capable machine on the same LAN or the same host.
@@ -39,25 +39,25 @@ statically linked, stripped
 **Zero-internet operation.** `scripts/offline_demo.sh` creates a podman pod
 with `--network none`, asserts the negative first (a TLS probe to the
 internet MUST fail inside the pod), then requires the model to drive a real
-`bash` tool call whose output file is verified from the host — model prose
+`bash` tool call whose output file is verified from the host: model prose
 is never accepted as evidence. Recorded pass: llama.cpp `server-b10068`
 serving Qwen3-1.7B Q4_K_M, first attempt.
 
 **Weak-model floor, measured.** `scripts/weak_model_eval.sh` runs six fixed
 agent tasks (write, read-and-extract, targeted edit, bash, multi-file
 search, edit-then-bash chain), each scored only by host-verified filesystem
-assertions. Recorded score: **5/6** with Qwen3-1.7B Q4_K_M — a 1.1 GB model
-— through the compact prompt profile, llama.cpp `server-b10068`, 8192-token
+assertions. Recorded score: **5/6** with Qwen3-1.7B Q4_K_M (a 1.1 GB model)
+through the compact prompt profile, llama.cpp `server-b10068`, 8192-token
 context, in a `--network none` pod. The one failure is documented as a model
 capability floor (it batched a read and a dependent write in one parallel
 call), not excluded from the score.
 
 ## Install
 
-Prebuilt static binaries ship for `x86_64`, `aarch64`, `armv7` (hard-float —
+Prebuilt static binaries ship for `x86_64`, `aarch64`, `armv7` (hard-float,
 Raspberry Pi 2/3+ and other 32-bit ARM userlands), and `i686` (SSE2
 required). Because they are musl-static they run on any Linux distro,
-including Alpine and other musl systems — no glibc needed.
+including Alpine and other musl systems, no glibc needed.
 
 One-liner (detects your arch, downloads, verifies the checksum, installs to
 `~/.local/bin`; refuses to install anything unverified):
@@ -66,7 +66,7 @@ One-liner (detects your arch, downloads, verifies the checksum, installs to
 curl -fsSL https://raw.githubusercontent.com/thekeoni1/Temur/v0.2.0/scripts/install.sh | sh
 ```
 
-Piping to `sh` is a trust decision — [read the script
+Piping to `sh` is a trust decision: [read the script
 first](https://github.com/thekeoni1/Temur/blob/v0.2.0/scripts/install.sh) if
 you prefer. The checksum step defends against transport corruption and a
 mismatched artifact; it is not a substitute for trusting the release source,
@@ -82,9 +82,9 @@ install -m 755 temur-v0.2.0-x86_64-unknown-linux-musl ~/.local/bin/temur
 ```
 
 Build from source (any Rust-supported target, e.g. pre-armv7 ARM): the
-musl-static recipe is checked into `.cargo/config.toml` — rust-lld links
+musl-static recipe is checked into `.cargo/config.toml`: rust-lld links
 against the toolchain's bundled musl, and the host or cross `gcc` compiles
-ring's C — no musl-gcc or musl-tools package needed.
+ring's C, no musl-gcc or musl-tools package needed.
 
 ```sh
 rustup target add i686-unknown-linux-musl
@@ -119,8 +119,8 @@ session file's size (default 4 MiB, minimum 64 KiB).
 
 ### Named profiles and in-session switching
 
-Define named profiles — nicknames bundling provider + model + endpoint +
-key file + limits — and switch between them from inside a session with
+Define named profiles (nicknames bundling provider + model + endpoint +
+key file + limits) and switch between them from inside a session with
 `/model <name>`, no quit-and-edit-JSON round trip:
 
 ```json
@@ -139,55 +139,55 @@ Optional `profile` picks the startup profile; omit it and the base
 provider/model fields apply exactly as before profiles existed. Profile
 fields: `provider` (`"anthropic"` or `"openai-compat"`), `model`
 (required), and optional `base_url` (default: the provider's own default
-endpoint), `api_key_file` (path to a key file — openai-compat profiles
+endpoint), `api_key_file` (path to a key file: openai-compat profiles
 without one are keyless, anthropic profiles without one fall back to
 `APP_SECRET_FILE`), `max_tokens` (default: the global value),
 `context_window`, and `prompt_profile` (`"full"` or `"compact"` for
-THIS profile; default: the global `prompt_profile` — switching between
+THIS profile; default: the global `prompt_profile` - switching between
 profiles swaps the system prompt and tool descriptions accordingly, and
 an explicit `system_prompt` still wins in either profile). Every
 profile is validated at startup, so `/model` can
-only fail on a credential/IO problem — and a failed switch leaves the
+only fail on a credential/IO problem, and a failed switch leaves the
 session untouched. History continues across a switch (it is stored
 provider-neutrally), and each save records whichever provider/model is
 active at that moment.
 
 ## Commands
 
-Inside a session, any input line starting with `/` is a command — it
+Inside a session, any input line starting with `/` is a command: it
 never reaches the model or the history (which also means a literal
 message starting with `/` cannot be sent):
 
-- `/help` — list commands
-- `/status` — profile, provider, model, thinking, prompt profile,
+- `/help` - list commands
+- `/status` - profile, provider, model, thinking, prompt profile,
   context use, session file
-- `/model` — list profiles · `/model <name>` — switch profiles
-  mid-session · `/model <model-id>` — switch the model WITHIN the
+- `/model` - list profiles · `/model <name>` - switch profiles
+  mid-session · `/model <model-id>` - switch the model WITHIN the
   active provider (profile names win on collision; endpoint,
   credentials, limits, and prompt profile stay; a bad id surfaces as
   the provider's error on the next turn)
-- `/models` — list model ids from the active provider (live GET; ids
+- `/models` - list model ids from the active provider (live GET; ids
   feed `/model` Tab completion in the TUI)
-- `/clear` — wipe the session; the empty state is persisted immediately,
+- `/clear` - wipe the session; the empty state is persisted immediately,
   so quitting and `--continue` resumes empty
-- `/sessions` — list every saved session, all projects: name (or
+- `/sessions` - list every saved session, all projects: name (or
   `(default)`), the directory it was recorded in, message count, file
   name, and a title derived from its first prompt; the active session
   is starred
-- `/resume <session>` — switch to a saved session by name or file-name
+- `/resume <session>` - switch to a saved session by name or file-name
   prefix; the saved history renders into the transcript as backscroll
-- `/new <name>` — start a fresh named session for this project (the
+- `/new <name>` - start a fresh named session for this project (the
   file is created on the first turn)
-- `/thinking` · `/thinking on|off` — show or flip adaptive thinking for
+- `/thinking` · `/thinking on|off` - show or flip adaptive thinking for
   this session (only the anthropic provider uses it)
 
-Under `--mock`/`--capture-sse` the state-mutating commands — and
-`/models`, which is a live network GET — report themselves unavailable
+Under `--mock`/`--capture-sse` the state-mutating commands, and
+`/models`, which is a live network GET, report themselves unavailable
 to keep replays deterministic.
 
 In the TUI (the default on a terminal), assistant replies render as
-markdown — headings, emphasis, lists, quotes, links, and code blocks
-behind a dim gutter — in the same monochrome, default-terminal-color
+markdown (headings, emphasis, lists, quotes, links, and code blocks
+behind a dim gutter) in the same monochrome, default-terminal-color
 style; the plain REPL prints raw text unchanged. TUI command
 ergonomics: `/`-input renders in the cyan accent, the status row shows
 a live hint for the command being typed, and Tab cycles completions
@@ -202,25 +202,25 @@ Every live run saves the conversation after each turn, under
 `~/.local/state/temur/sessions/`; state, not config, because transcripts
 carry tool output and grow to megabytes). Each working directory has a
 **default session**, plus any number of **named sessions** created with
-`/new <name>` — names keep `[A-Za-z0-9._-]` and cap at 32 chars. A plain
+`/new <name>` (names keep `[A-Za-z0-9._-]` and cap at 32 chars). A plain
 start uses the default session; `temur --continue` resumes it.
 
 `/sessions` lists everything saved, across all projects, newest first.
-`/resume <key>` — or `temur --resume <key>` at startup — switches to a
+`/resume <key>`, or `temur --resume <key>` at startup, switches to a
 saved session: a key is a session name (a name in the current project
 wins; a globally-unique name works from anywhere; a duplicated one is an
 error listing the candidates) or a file-name prefix, which is how
 default sessions are addressed. Resuming renders the saved history into
-the transcript as backscroll (prompts, replies, and tool names — tool
+the transcript as backscroll (prompts, replies, and tool names - tool
 output and arguments are not replayed) and redirects saving to the
 resumed file. Resuming another project's session warns that tools still
-run in the current directory. A failed `/resume` — unknown key,
-ambiguous key, unreadable file — changes nothing.
+run in the current directory. A failed `/resume` (unknown key,
+ambiguous key, unreadable file) changes nothing.
 
 The saved history is provider-neutral, so a session recorded against
 one provider resumes against another. Saves are atomic (write, fsync,
 rename) and the FORMAT contains no timestamps, so a power cut at any
-instant leaves the previous complete file — resumable on a clock-less
+instant leaves the previous complete file, resumable on a clock-less
 device. The `/sessions` listing order (newest first) comes from
 filesystem mtimes, which is display-only metadata read at list time: on
 a clock-less device every file sorts equal and the listing falls back

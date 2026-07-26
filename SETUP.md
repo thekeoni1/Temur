@@ -1,12 +1,12 @@
-# Environment Setup — i686 Linux Rust project (from scratch)
+# Environment Setup - i686 Linux Rust project (from scratch)
 
 Executable recipe: run the stages top to bottom on a fresh **Windows 11 (x64)**
 machine to reproduce this project's build environment **including the security
-boundary**. Each stage ends with a verification — run it before moving on.
+boundary**. Each stage ends with a verification. Run it before moving on.
 Command sequences and file contents below were read from the reference
 machine's live state on 2026-07-03.
 
-> **SUBSTITUTIONS — read first.** These values are machine-specific; replace
+> **SUBSTITUTIONS - read first.** These values are machine-specific; replace
 > them with your own everywhere they appear:
 >
 > | Placeholder in this guide | Example value | Yours |
@@ -15,7 +15,7 @@ machine's live state on 2026-07-03.
 > | `<PROJECT>` (Windows) | `C:\Users\alice\Projects\temur` | wherever you clone the repo |
 > | `<PROJECT>` (WSL view) | `/mnt/c/Users/alice/Projects/temur` | `/mnt/c/...` equivalent |
 >
-> Avoid cloud-synced folders for the project tree if you can — build/tool
+> Avoid cloud-synced folders for the project tree if you can: build/tool
 > churn thrashes sync clients. If the tree must live in one, keeping
 > `target/` **off** the Windows mount entirely (stage 7) makes it tolerable;
 > do that regardless of where the tree lives.
@@ -24,7 +24,7 @@ Fixed names you should **not** change (scripts and docs assume them): the WSL
 users `dev` and `appsvc`, `/srv/rustcode-runtime`, `/srv/rustcode-secrets`,
 `/home/dev/rustcode-target`.
 
-## Stage 1 — WSL2 + Ubuntu 24.04 (Windows, admin PowerShell)
+## Stage 1 - WSL2 + Ubuntu 24.04 (Windows, admin PowerShell)
 
 ```powershell
 wsl --install -d Ubuntu-24.04
@@ -44,7 +44,7 @@ wsl -d Ubuntu -- sh -c '. /etc/os-release && echo "$PRETTY_NAME"; uname -r'
 # expect: Ubuntu 24.04.x LTS / 6.x-microsoft-standard-WSL2
 ```
 
-## Stage 2 — lock down `dev` (root: `wsl -d Ubuntu -u root` from Windows)
+## Stage 2 - lock down `dev` (root: `wsl -d Ubuntu -u root` from Windows)
 
 `dev` must be a genuinely unprivileged builder: no sudo, no password.
 
@@ -62,7 +62,7 @@ passwd -S dev                   # second field is L (locked)
 grep -r dev /etc/sudoers /etc/sudoers.d/ || echo OK-no-sudoers-entry
 ```
 
-## Stage 3 — system packages (root)
+## Stage 3 - system packages (root)
 
 ```sh
 apt-get update
@@ -84,7 +84,7 @@ runtime, with no dev headers. `scripts/check.sh` enforces the absence of
 dpkg -l | grep -i libssl        # expect ONLY libssl3t64:amd64
 ```
 
-## Stage 4 — /etc/wsl.conf: systemd + default user (root, then Windows)
+## Stage 4 - /etc/wsl.conf: systemd + default user (root, then Windows)
 
 Write `/etc/wsl.conf` with exactly:
 
@@ -107,10 +107,10 @@ wsl --shutdown
 
 ```powershell
 wsl -d Ubuntu -- sh -c 'whoami; systemctl is-system-running || true'
-# expect: dev / running (or degraded — fine)
+# expect: dev / running (or degraded - fine)
 ```
 
-## Stage 5 — Rust toolchain (as `dev`; no elevation needed)
+## Stage 5 - Rust toolchain (as `dev`; no elevation needed)
 
 ```sh
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --profile minimal -y
@@ -130,7 +130,7 @@ rustc -V && cargo -V
 rustup target list --installed   # must include i686-unknown-linux-gnu AND i686-unknown-linux-musl
 ```
 
-## Stage 6 — rootless podman (the fiddliest part on WSL2)
+## Stage 6 - rootless podman (the fiddliest part on WSL2)
 
 Rootless podman needs: a subuid/subgid range for `dev`, and linger so the
 user session infrastructure exists without an interactive login. As **root**:
@@ -146,13 +146,13 @@ End state to match (`/etc/subuid` and `/etc/subgid`, one line each):
 dev:100000:65536
 ```
 
-This exact range is the reference machine's — a fresh Ubuntu may already
+This exact range is the reference machine's. A fresh Ubuntu may already
 have assigned the default user a different range, and the requirement is
 that `dev` has *any* valid range not overlapping another user's, not that
 specific one.
 
 Then as **`dev`**, pull the validation images (they go into dev's rootless
-storage under `/home/dev/.local/share/containers/storage`) — the debian image
+storage under `/home/dev/.local/share/containers/storage`) - the debian image
 is the main test environment, busybox is the bare near-scratch container the
 musl-static gate loads the shipped binary in:
 
@@ -170,13 +170,13 @@ podman run --rm docker.io/i386/debian:stable linux32 uname -m            # i686
 ```
 
 Notes: podman prints `image platform (linux/386) does not match` on every
-run — expected and harmless (containers share the 64-bit WSL2 kernel, which
+run, expected and harmless (containers share the 64-bit WSL2 kernel, which
 is also why plain `uname -m` reports `x86_64` in-container). Podman was
 chosen over Docker deliberately: daemonless, no Docker Desktop dependency.
 
-## Stage 7 — project tree + build config (as `dev`)
+## Stage 7 - project tree + build config (as `dev`)
 
-Clone the repo to `<PROJECT>` (on the Windows side or via WSL — the tree
+Clone the repo to `<PROJECT>` (on the Windows side or via WSL: the tree
 lives on `/mnt/c`, source only). The repo already carries
 `.cargo/config.toml`:
 
@@ -190,7 +190,7 @@ Build output goes to **native ext4**, never the drvfs `/mnt/c` mount (slow,
 and thrashes any sync client). The default target is the fast inner-loop
 build; the shipped artifact is the `i686-unknown-linux-musl` static release,
 which `scripts/check.sh` builds explicitly. No action needed beyond having
-`/home/dev` exist — cargo creates the target dir.
+`/home/dev` exist: cargo creates the target dir.
 
 **Verify** (as `dev`, in `<PROJECT>`):
 
@@ -201,16 +201,16 @@ file /home/dev/rustcode-target/i686-unknown-linux-gnu/debug/temur
 #         interpreter /lib/ld-linux.so.2, for GNU/Linux 3.2.0
 ```
 
-## Stage 8 — the appsvc security boundary (root; order matters)
+## Stage 8 - the appsvc security boundary (root; order matters)
 
 The runtime identity `appsvc` owns the built artifact and the secret; `dev`
 (the builder) must be able to read **neither** the credential **nor** the
 installed binary's directory contents beyond listing. Everything here is on
-ext4 — `/mnt/c` (drvfs) does not enforce POSIX permissions and must never
+ext4: `/mnt/c` (drvfs) does not enforce POSIX permissions and must never
 hold anything sensitive.
 
 ```sh
-# 1. system user (uid/gid auto-allocated; 999/989 on the reference machine —
+# 1. system user (uid/gid auto-allocated; 999/989 on the reference machine,
 #    the exact numbers don't matter, the names do)
 adduser --system --group --home /srv/rustcode-runtime \
         --shell /usr/sbin/nologin appsvc
@@ -271,11 +271,11 @@ drwx------ appsvc appsvc /srv/rustcode-secrets
 -rw------- appsvc appsvc /srv/rustcode-secrets/credential
 ```
 
-The app binary is **not** installed here by the builder — deployment is
+The app binary is **not** installed here by the builder. Deployment is
 operator-mediated (`docs/RUNBOOK.md`): if `dev` could replace the binary
 `appsvc` executes, it could exfiltrate the secret, nullifying the boundary.
 
-**Verify the boundary actively restrains `dev`** (run as `dev` — all three
+**Verify the boundary actively restrains `dev`** (run as `dev`, all three
 must fail):
 
 ```sh
@@ -290,7 +290,7 @@ And as root, confirm `appsvc` itself can read it:
 runuser -u appsvc -- cat /srv/rustcode-secrets/credential >/dev/null && echo appsvc-read-OK
 ```
 
-## Stage 9 — inject the real credential (human, root; later)
+## Stage 9 - inject the real credential (human, root; later)
 
 Write the real credential as the **entire file content**, replacing the
 placeholder:
@@ -307,7 +307,7 @@ the project tree, or in any file under `/mnt/c`. The app reads it by path via
 listings of other users, or logs, and the app does not read
 `ANTHROPIC_API_KEY` at all.
 
-## Stage 10 — full verification
+## Stage 10 - full verification
 
 As `dev`, in `<PROJECT>`:
 
@@ -328,7 +328,7 @@ binary could not even load. It must end with `== ALL CHECKS PASSED ==`.
 
 ## Residual caveats (understand the boundary's real limits)
 
-- **Root bypass:** normal operation is genuinely restrained — `dev` has no
+- **Root bypass:** normal operation is genuinely restrained: `dev` has no
   sudo, a locked password, and cannot read the secret. But anyone on the
   Windows side can get root with `wsl -d Ubuntu -u root` (WSL by design lets
   the Windows user act as any distro user), and Windows admin access to the
