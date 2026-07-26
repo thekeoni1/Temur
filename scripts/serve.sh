@@ -17,22 +17,31 @@
 # with zero endpoint config. The container-internal port is always 8080;
 # PORT changes only the published host side.
 #
-# Usage:  MODEL_GGUF=/path/to/model.gguf scripts/serve.sh start|stop|status
-# Knobs:  MODEL_GGUF   path to the .gguf model file (required for start;
-#                      defaulted from MODELS_DIR when exactly one .gguf
-#                      lives there — see below)
-#         MODELS_DIR   directory searched for that default (default
-#                      $HOME/models); with zero or several .gguf files
-#                      MODEL_GGUF stays required, nothing is guessed
+# Usage:  scripts/serve.sh start [model]|stop|status
+# The optional [model] name selects a .gguf from MODELS_DIR by basename,
+# case-insensitively: an exact match ("name" or "name.gguf") wins, else a
+# unique substring match; zero or several matches fail and list the
+# candidates. A running server keeps its current model: switching models
+# is `stop` then `start <name>`.
+# Knobs:  MODEL_GGUF   explicit path to the .gguf model file; mutually
+#                      exclusive with the [model] argument
+#         MODELS_DIR   directory searched for models (default $HOME/models);
+#                      with exactly one .gguf there and no argument, that
+#                      file is auto-selected
 #         LLAMA_IMAGE  server image (pinned default below; never auto-pulled)
 #         CTX          server context size in tokens (default 8192)
 #         PORT         published host port (default 8080)
 #         BIND         published host address (default 127.0.0.1, loopback only)
 #         CONTAINER_NAME  container name (default temur-llama)
+#         MEMINFO      meminfo file read by the RAM fit warning (default
+#                      /proc/meminfo; a knob so the check is testable)
 set -eu
 cd "$(dirname "$0")/.."
 
 MODEL_GGUF="${MODEL_GGUF:-}"
+# Directory searched when MODEL_GGUF is not set: the start argument picks
+# among its *.gguf files by name, and a lone .gguf there is auto-selected.
+MODELS_DIR="${MODELS_DIR:-$HOME/models}"
 # Pinned llama.cpp server build (tag scheme: server-b<build>) — same pin as
 # offline_demo.sh; update deliberately, never track latest.
 LLAMA_IMAGE="${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b10068}"
@@ -44,7 +53,69 @@ BIND="${BIND:-127.0.0.1}"
 CONTAINER_NAME="${CONTAINER_NAME:-temur-llama}"
 
 usage() {
-    echo "Usage: [MODEL_GGUF=/path/to/model.gguf] scripts/serve.sh start|stop|status" >&2
+    echo "Usage: scripts/serve.sh start [model]|stop|status" >&2
+    echo "  start [model]  select a .gguf from \$MODELS_DIR by name (exact or" >&2
+    echo "                 unique substring, case-insensitive), or set" >&2
+    echo "                 MODEL_GGUF=/path/to/model.gguf explicitly" >&2
+}
+
+# Human-readable file size for candidate listings; byte math in awk (POSIX
+# sh integer width is not guaranteed).
+human_size() { # $1 = file
+    wc -c < "$1" | awk '{ b = $1
+        if (b >= 1073741824) printf "%.1fG", b / 1073741824
+        else printf "%.0fM", b / 1048576 }'
+}
+
+# Resolve a model name argument against the basenames of $MODELS_DIR/*.gguf,
+# case-insensitively. An exact basename match ("name" or "name.gguf") wins;
+# else a unique substring match selects; zero or several matches fail and
+# list every candidate (glob order is already name-sorted), marking the
+# matches when ambiguous. Sets MODEL_GGUF on success.
+select_model() { # $1 = requested name
+    req_raw=$1
+    req=$(printf '%s' "$req_raw" | tr '[:upper:]' '[:lower:]')
+    set -- "$MODELS_DIR"/*.gguf
+    if [ ! -e "$1" ]; then
+        echo "FAIL: no .gguf files in $MODELS_DIR"
+        exit 1
+    fi
+    exact=""
+    first_match=""
+    match_count=0
+    for f in "$@"; do
+        lower=$(basename "$f" | tr '[:upper:]' '[:lower:]')
+        if [ "$lower" = "$req" ] || [ "$lower" = "$req.gguf" ]; then
+            exact=$f
+        fi
+        case "$lower" in
+            *"$req"*)
+                [ -n "$first_match" ] || first_match=$f
+                match_count=$((match_count + 1)) ;;
+        esac
+    done
+    if [ -n "$exact" ]; then
+        MODEL_GGUF=$exact
+        echo "OK: selected $MODEL_GGUF"
+        return 0
+    fi
+    if [ "$match_count" -eq 1 ]; then
+        MODEL_GGUF=$first_match
+        echo "OK: selected $MODEL_GGUF"
+        return 0
+    fi
+    if [ "$match_count" -eq 0 ]; then
+        echo "FAIL: no .gguf in $MODELS_DIR matches '$req_raw'; candidates:"
+    else
+        echo "FAIL: '$req_raw' is ambiguous in $MODELS_DIR ($match_count matches, marked *); candidates:"
+    fi
+    for f in "$@"; do
+        lower=$(basename "$f" | tr '[:upper:]' '[:lower:]')
+        mark=" "
+        case "$lower" in *"$req"*) mark="*" ;; esac
+        echo "  $mark $(basename "$f")  ($(human_size "$f"))"
+    done
+    exit 1
 }
 
 # install.sh-style tool fallback, repurposed as an HTTP health probe.
@@ -65,30 +136,61 @@ summary() {
     echo "  published: $(podman ps --filter "name=$CONTAINER_NAME" --format '{{.Ports}}')"
 }
 
-start_cmd() {
+start_cmd() { # $1 (optional) = model name resolved via select_model
+    [ "$#" -le 1 ] || { usage; exit 2; }
+    model_arg="${1:-}"
     echo "==== serve: preflight ===="
     command -v podman >/dev/null 2>&1 || { echo "FAIL: podman not found"; exit 1; }
     # NEVER auto-pull (offline_demo.sh precedent): missing image => print
     # the exact command and stop.
     podman image exists "$LLAMA_IMAGE" || { echo "FAIL: image not present locally: $LLAMA_IMAGE"; echo "  fetch it first (on a connected machine):  podman pull $LLAMA_IMAGE"; exit 1; }
-    # T9 quality-of-life: with MODEL_GGUF unset, default it when MODELS_DIR
-    # holds EXACTLY one .gguf — one file is unambiguous, anything else stays
-    # an explicit choice. POSIX glob via set -- (an unmatched pattern stays
-    # literal under set -u; the -e test below rejects it, counting as zero).
-    MODELS_DIR="${MODELS_DIR:-$HOME/models}"
+    # Model resolution order: an explicit MODEL_GGUF path plus a name
+    # argument is a contradiction, fail; MODEL_GGUF alone wins untouched;
+    # a name argument alone goes through select_model; neither falls back
+    # to the T9 lone-gguf auto-default. POSIX glob via set -- (an unmatched
+    # pattern stays literal under set -u; the -e test rejects it as zero).
+    if [ -n "$MODEL_GGUF" ] && [ -n "$model_arg" ]; then
+        echo "FAIL: both MODEL_GGUF and a model name argument are set; choose one, not both"
+        exit 1
+    fi
+    if [ -z "$MODEL_GGUF" ] && [ -n "$model_arg" ]; then
+        select_model "$model_arg"
+    fi
     if [ -z "$MODEL_GGUF" ]; then
         set -- "$MODELS_DIR"/*.gguf
         if [ "$#" -eq 1 ] && [ -e "$1" ]; then
             MODEL_GGUF=$1
             echo "OK: defaulted MODEL_GGUF=$MODEL_GGUF"
+        elif [ ! -e "$1" ]; then
+            echo "FAIL: no .gguf files in $MODELS_DIR; set MODEL_GGUF=/path/to/model.gguf or pass a model name"
+            exit 1
         else
-            [ -e "$1" ] || set -- # unmatched literal pattern = zero files
-            echo "FAIL: set MODEL_GGUF=/path/to/model.gguf (searched $MODELS_DIR: found $# .gguf files, need exactly 1 to default)"
+            echo "FAIL: $# .gguf files in $MODELS_DIR, need exactly 1 to default; set MODEL_GGUF=/path/to/model.gguf or pass a model name:"
+            for f in "$@"; do
+                echo "    $(basename "$f")  ($(human_size "$f"))"
+            done
             exit 1
         fi
     fi
     [ -n "$MODEL_GGUF" ] || { echo "FAIL: set MODEL_GGUF=/path/to/model.gguf"; exit 1; }
     [ -f "$MODEL_GGUF" ] || { echo "FAIL: model file not found: $MODEL_GGUF (set the MODEL_GGUF knob)"; exit 1; }
+    # RAM fit check, WARN only: weights are mmap'd, so the model file plus
+    # KV cache and compute buffers should fit in MemAvailable or the server
+    # thrashes. CTX * 131072 bytes is a deliberately generous per-token
+    # allowance for f16 KV plus compute buffers at these defaults (CPU
+    # only, one slot). Unreadable meminfo or no MemAvailable line: skip
+    # silently. Byte math in awk (POSIX sh integer width is not guaranteed).
+    meminfo="${MEMINFO:-/proc/meminfo}"
+    if [ -r "$meminfo" ] && grep -q '^MemAvailable:' "$meminfo"; then
+        model_bytes=$(wc -c < "$MODEL_GGUF")
+        avail_kb=$(awk '/^MemAvailable:/ { print $2; exit }' "$meminfo")
+        awk -v m="$model_bytes" -v c="$CTX" -v a="$avail_kb" 'BEGIN {
+            over = c * 131072
+            if (m + over > a * 1024)
+                printf "WARN: model %.1f GiB + overhead %.1f GiB at ctx %d exceeds available %.1f GiB RAM; expect thrashing or OOM\n",
+                    m / 1073741824, over / 1073741824, c, a * 1024 / 1073741824
+        }'
+    fi
     echo "OK: image and model present (nothing will be pulled)"
 
     if is_running; then
@@ -155,7 +257,7 @@ status_cmd() {
 }
 
 case "${1:-}" in
-    start)  start_cmd ;;
+    start)  shift; start_cmd "$@" ;;
     stop)   stop_cmd ;;
     status) status_cmd ;;
     *)      usage; exit 2 ;;
