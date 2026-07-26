@@ -181,7 +181,7 @@ payload.
 | T8 | Daily-driver UX (shipped as v0.2.0) | Slash commands + named-profile switching (P1); markdown rendering + TUI styling pass (P2); serve.sh background server launcher (P3) - released 2026-07-25 as v0.2.0 (private) |
 | T9 | Command ergonomics (shipped as v0.3.0) | Per-profile prompt profiles (P1); /models listing + raw-model-id switching (P2); TUI command styling + Tab completion (P3); serve.sh MODEL_GGUF default (P4) - feature-complete 2026-07-25; shipped as v0.3.0 |
 | T10 | Session management (shipped as v0.3.0) | Named multi-session per project (store P1); resume seam + lossy replay (P2); /sessions + /resume + /new + --resume (P3); TUI listing cell + backscroll rebuild (P4) - feature-complete 2026-07-26; shipped with T9 as v0.3.0 |
-| T11 | Multi-model ergonomics | serve.sh model selection by name + candidate listing + RAM fit warn (P1); compact bash prompt file-ops hint (P2); weak-model eval indirect-tool-selection probe (P3); Ollama + LM Studio recipes + shortlist table (P4); live shortlist verification (P5) - feature work 2026-07-26, unreleased |
+| T11 | Multi-model ergonomics | serve.sh model selection by name + candidate listing + RAM fit warn (P1); compact bash prompt file-ops hint (P2); weak-model eval indirect-tool-selection probe (P3); Ollama + LM Studio recipes + shortlist table (P4); live shortlist verification (P5) - feature-complete 2026-07-26, unreleased |
 
 ### T0 - Identity + honest gate
 - Rename `opencode-rust` → `temur`: package name, `--version`, binary name,
@@ -612,6 +612,20 @@ at 8k ctx (the serve.sh warning's own arithmetic), tool calls, indirect
 selection, and a status column that distinguishes "verified <date>"
 (full eval run) from "reported" (earlier observation): P5 fills the
 verified rows from live runs.
+
+**T11-P5 (as-built, 2026-07-26): live shortlist verification.** Two
+candidates downloaded from the unsloth Hugging Face repos into
+`$HOME/models` (now genuinely multi-gguf, files kept): Qwen3-4B-
+Instruct-2507 Q4_K_M and Qwen2.5-Coder-3B-Instruct Q4_K_M. Each cycle
+exercised serve.sh name selection live, then ran the full seven-task
+eval in its own pod. Results: Qwen3-1.7B 7/7 (the P2 hint in play; the
+indirect probe that motivated it now passes), Qwen3-4B-Instruct-2507
+7/7 and faster per task than the 1.7B, Qwen2.5-Coder-3B-Instruct 0/7
+with a finding worth keeping: it chose the right tool every time
+(including bash rm on the indirect probe) but emitted only prose JSON,
+never structured tool calls, on llama.cpp server-b10068 with --jinja,
+so it fails on wire format, not reasoning. Details and verbatim
+transcripts: RUNBOOK "T11 acceptance".
 
 ## 4. Invariants (every milestone)
 

@@ -878,3 +878,186 @@ When the operator flips visibility, run the README one-liner verbatim
 into a temp HOME (live raw-URL download of install.sh at the newest
 released tag, live artifact + SHA256SUMS from the release, checksum
 verified, `--version` matches) and record the result here.
+
+## T11 acceptance - recorded result (no release)
+
+Recorded 2026-07-26. Feature work only, version stays 0.3.0: no tag, no
+release, no push. Gates per phase: full check.sh (both paths) after P1,
+P2, P4, and P5; cargo test for the P2 prompt caps (bash 766 of 1000
+chars; the compact description total stays under the 8192-byte budget,
+5804 by the test's own sum); sh -n for the P3 probe with its live run
+folded into P5. Quoted program output below is byte-exact (the em-dash
+carve-out applies); fixture paths live under the session scratchpad,
+abbreviated here as `$S`.
+
+### P1 serve.sh selection matrix (live, verbatim)
+
+Fixture dirs: `$S/mzero` (empty), `$S/mmulti` (three dummy ggufs:
+Llama-Tiny 1M, Qwen2.5-Coder-Test 2M, Qwen3-4B-Test 3M), fake meminfo
+with `MemAvailable: 2048 kB`. The real `$HOME/models` held exactly one
+gguf (Qwen3-1.7B) at matrix time.
+
+(a) zero-gguf, no arg (`MODELS_DIR=$S/mzero`), exit 1:
+
+```
+FAIL: no .gguf files in $S/mzero; set MODEL_GGUF=/path/to/model.gguf or pass a model name
+```
+
+(b) one-gguf, no arg (real dir), part of the live cycle below:
+
+```
+OK: defaulted MODEL_GGUF=/home/dev/models/Qwen3-1.7B-Q4_K_M.gguf
+```
+
+(c) multi-gguf, no arg (`MODELS_DIR=$S/mmulti`), exit 1:
+
+```
+FAIL: 3 .gguf files in $S/mmulti, need exactly 1 to default; set MODEL_GGUF=/path/to/model.gguf or pass a model name:
+    Llama-Tiny.gguf  (1M)
+    Qwen2.5-Coder-Test.gguf  (2M)
+    Qwen3-4B-Test.gguf  (3M)
+```
+
+(d) arg exact match, case-insensitive, with and without the `.gguf`
+suffix (`start QWEN3-1.7B-Q4_K_M` and `start qwen3-1.7b-q4_k_m.gguf`),
+both exit 0:
+
+```
+OK: selected /home/dev/models/Qwen3-1.7B-Q4_K_M.gguf
+```
+
+(e) arg unique substring (`start coder` in `$S/mmulti`), exit 0:
+
+```
+OK: selected $S/mmulti/Qwen2.5-Coder-Test.gguf
+```
+
+(f) arg ambiguous (`start qwen` in `$S/mmulti`), exit 1, matches marked:
+
+```
+FAIL: 'qwen' is ambiguous in $S/mmulti (2 matches, marked *); candidates:
+    Llama-Tiny.gguf  (1M)
+  * Qwen2.5-Coder-Test.gguf  (2M)
+  * Qwen3-4B-Test.gguf  (3M)
+```
+
+(g) arg no match (`start mistral` in `$S/mmulti`), exit 1:
+
+```
+FAIL: no .gguf in $S/mmulti matches 'mistral'; candidates:
+    Llama-Tiny.gguf  (1M)
+    Qwen2.5-Coder-Test.gguf  (2M)
+    Qwen3-4B-Test.gguf  (3M)
+```
+
+(h) `MODEL_GGUF` plus arg, exit 1:
+
+```
+FAIL: both MODEL_GGUF and a model name argument are set; choose one, not both
+```
+
+(i) WARN with `MEMINFO` pointing at the fake file, then CONTINUE (the
+run proceeded into the already-running short-circuit), as printed:
+
+```
+WARN: model 1.0 GiB + overhead 1.0 GiB at ctx 8192 exceeds available 0.0 GiB RAM; expect thrashing or OOM
+OK: image and model present (nothing will be pulled)
+OK: already running
+```
+
+(j) no WARN normally: the live cycle below printed no WARN line.
+
+Live cycle (real 1.7B model): `start` defaulted the model, reached
+healthy, and printed the base_url hint; `status` reported healthy with
+the mounted model; cases (d), (e), (i) then exercised selection against
+the running server (selection resolves before the short-circuit);
+`stop` removed the container. Verbatim start tail:
+
+```
+OK: llama.cpp serving /home/dev/models/Qwen3-1.7B-Q4_K_M.gguf on http://127.0.0.1:8080/v1
+  matches temur's default base_url — a keyless openai-compat profile needs no base_url
+```
+
+### P5 per-model eval runs (compact profile, server-b10068, ctx 8192)
+
+Downloads: `unsloth/Qwen3-4B-Instruct-2507-GGUF` Q4_K_M (2,497,281,120
+bytes) and `unsloth/Qwen2.5-Coder-3B-Instruct-GGUF` Q4_K_M
+(1,929,902,496 bytes) into `$HOME/models`, making the dir genuinely
+multi-gguf (three files, kept on disk). Free RAM before sizing: 6.3 GiB
+available of 7.6 total, so both candidates fit one at a time. Per
+model: `serve.sh start <name>` (live selection), `status`, `stop`, then
+the eval (its own pod; the serve.sh server was stopped first so two
+copies of a model are never resident together, a deliberate reorder of
+the listed start/eval/stop sequence).
+
+Qwen3-1.7B (baseline re-run with the P2 hint in play), SCORE 7/7:
+
+```
+task name           result seconds
+---- -------------- ------ -------
+1    write-file     PASS   36
+2    read-extract   PASS   82
+3    edit-config    PASS   43
+4    bash-mkdir     PASS   104
+5    find-needle    PASS   120
+6    bump-and-copy  PASS   40
+7    indirect-delete PASS   20
+```
+
+Task 7 transcript core (the P2 hint appears to have closed the T11
+dogfood gap; pre-T11 the same model refused "delete the file"):
+
+```
+>   → bash
+  ✓ bash: rm -f obsolete.tmp
+The file `obsolete.tmp` has been successfully deleted. You can verify the removal by checking the current directory contents.
+```
+
+Qwen3-4B-Instruct-2507 (`serve.sh start qwen3-4b` selected it live),
+SCORE 7/7, notably faster per task than the 1.7B:
+
+```
+task name           result seconds
+---- -------------- ------ -------
+1    write-file     PASS   47
+2    read-extract   PASS   16
+3    edit-config    PASS   17
+4    bash-mkdir     PASS   10
+5    find-needle    PASS   42
+6    bump-and-copy  PASS   16
+7    indirect-delete PASS   8
+```
+
+Task 7 transcript core:
+
+```
+>   → bash
+  ✓ bash: rm obsolete.tmp
+```
+
+Qwen2.5-Coder-3B-Instruct (`serve.sh start coder` selected it live),
+SCORE 0/7. Every task failed the same way: the model chose the RIGHT
+tool, including bash with rm on the indirect probe, but emitted every
+call as a fenced JSON block instead of a structured tool call on this
+stack; temur's prose-tool-call detection asked for the tool interface,
+the model repeated the prose, and the turn ended. Wire format, not
+reasoning. Task 7 transcript core (outer fence elided from the quote;
+the model's output was a ```json code block):
+
+```
+{
+  "name": "bash",
+  "arguments": {
+    "command": "rm obsolete.tmp"
+  }
+}
+  [!] the model wrote a tool call as plain text; asked it to use the tool interface
+```
+
+### Shortlist outcome
+
+Verified 2026-07-26: Qwen3-1.7B yes/yes (7/7), Qwen3-4B-Instruct-2507
+yes/yes (7/7), Qwen2.5-Coder-3B-Instruct no/n-a (0/7, prose-only tool
+calls). Qwen2.5-Coder-1.5B and Qwen3-0.6B stay "reported (pre-T11)".
+Full table with sizes and RAM estimates: OFFLINE.md, "Recommended
+small models".

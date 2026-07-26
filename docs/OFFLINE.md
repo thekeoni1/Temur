@@ -279,18 +279,26 @@ earlier observations not re-run through the current harness.
 
 | Model | Quant | File size | Est. RAM at 8k ctx | Tool calls | Indirect selection | Status |
 |---|---|---|---|---|---|---|
-| **Qwen3-1.7B** (primary) | Q4_K_M | ~1.1 GB | ~2.1 GB | yes | pending | pending re-run (T11 P5) |
-| Qwen3-4B-Instruct | Q4_K_M | ~2.4 GB | ~3.4 GB | pending | pending | pending (T11 P5) |
-| Qwen2.5-Coder-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | pending | pending | pending (T11 P5) |
+| **Qwen3-1.7B** (primary) | Q4_K_M | ~1.1 GB | ~2.1 GB | yes | yes | verified 2026-07-26 (eval 7/7) |
+| Qwen3-4B-Instruct-2507 | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | verified 2026-07-26 (eval 7/7) |
+| Qwen2.5-Coder-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | no (prose-only) | n/a | verified 2026-07-26 (eval 0/7) |
 | Qwen2.5-Coder-1.5B-Instruct | Q4_K_M | ~1.0 GB | ~2.0 GB | yes | untested | reported (pre-T11) |
 | Qwen3-0.6B | Q4_K_M | ~0.5 GB | ~1.5 GB | degraded | untested | reported (pre-T11) |
 
 Est. RAM uses the serve.sh warning's own arithmetic: file size plus
 128 KiB per context token of KV and compute allowance at 8192 ctx
-(about 1.0 GB). Notes carried from earlier observation: Qwen3-1.7B has
-the best tool-calling reliability per byte of the small trio and is the
-default recommendation; Qwen2.5-Coder-1.5B is a code-tuned alternative
-with strong edits but slightly weaker tool discipline; Qwen3-0.6B fits
+(about 1.0 GB). Verified rows ran the full seven-task eval (compact
+profile, llama.cpp `server-b10068`, ctx 8192, `--jinja`) on the stated
+date. The Qwen2.5-Coder-3B result deserves its honest detail: it
+consistently picked the RIGHT tool, including bash with `rm` on the
+indirect probe, but emitted every call as a fenced JSON block instead
+of a structured tool call on this stack, so temur's prose-tool-call
+detection asked for the tool interface, the model repeated the prose,
+and all seven tasks failed on wire format, not on reasoning. Notes
+carried from earlier observation: Qwen3-1.7B has the best tool-calling
+reliability per byte of the small trio and is the default
+recommendation; Qwen2.5-Coder-1.5B is a code-tuned alternative with
+strong edits but slightly weaker tool discipline; Qwen3-0.6B fits
 almost anywhere but degrades to single-tool tasks.
 
 Download source: the Q4_K_M quants above are published in the community
