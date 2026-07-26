@@ -603,7 +603,8 @@ failure with a real model was not practical.
 
 Live testing caught a real environment collision: WSL exports
 `NAME=<hostname>`, so the planned `NAME` knob silently named the
-container `MSI`; the knob shipped as `CONTAINER_NAME`. Full `check.sh`
+container after the machine's hostname; the knob shipped as
+`CONTAINER_NAME`. Full `check.sh`
 (both paths) green at the P1 and P2 gates. No release: version stays
 0.1.1 until the v0.2.0 close-out.
 
