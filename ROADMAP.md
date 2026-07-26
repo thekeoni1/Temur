@@ -181,6 +181,7 @@ payload.
 | T8 | Daily-driver UX (shipped as v0.2.0) | Slash commands + named-profile switching (P1); markdown rendering + TUI styling pass (P2); serve.sh background server launcher (P3) - released 2026-07-25 as v0.2.0 (private) |
 | T9 | Command ergonomics (shipped as v0.3.0) | Per-profile prompt profiles (P1); /models listing + raw-model-id switching (P2); TUI command styling + Tab completion (P3); serve.sh MODEL_GGUF default (P4) - feature-complete 2026-07-25; shipped as v0.3.0 |
 | T10 | Session management (shipped as v0.3.0) | Named multi-session per project (store P1); resume seam + lossy replay (P2); /sessions + /resume + /new + --resume (P3); TUI listing cell + backscroll rebuild (P4) - feature-complete 2026-07-26; shipped with T9 as v0.3.0 |
+| T11 | Multi-model ergonomics | serve.sh model selection by name + candidate listing + RAM fit warn (P1); compact bash prompt file-ops hint (P2); weak-model eval indirect-tool-selection probe (P3); Ollama + LM Studio recipes + shortlist table (P4); live shortlist verification (P5) - feature work 2026-07-26, unreleased |
 
 ### T0 - Identity + honest gate
 - Rename `opencode-rust` → `temur`: package name, `--version`, binary name,
@@ -552,6 +553,65 @@ quotes of immutable artifacts (tag annotations and quoted program
 output); no product code and no dependency changes rode along. The
 PUBLIC one-liner gate remains the one open release item, deferred to
 the visibility flip (RUNBOOK).
+
+### T11 - Multi-model ergonomics (as-built, 2026-07-26)
+
+Theme: make switching between local models routine instead of a
+hand-edited chore, and measure (not assert) which small models can
+actually drive the tools.
+
+**T11-P1 (as-built, 2026-07-26): serve.sh selection.** `start` takes an
+optional model name resolved against the basenames of
+`$MODELS_DIR/*.gguf`, case-insensitively: an exact basename match
+("name" or "name.gguf") wins outright, else a unique substring match
+selects, and zero or several matches fail while listing every candidate
+with a human-readable size (matches marked when ambiguous). Precedence
+is explicit: `MODEL_GGUF` plus a name argument is a hard error (choose
+one), `MODEL_GGUF` alone keeps its pre-T11 meaning, the lone-gguf
+auto-default remains the no-argument path, and its zero/many failures
+now list candidates instead of a bare count. The RAM fit check is WARN
+only, by design: need = gguf file size + CTX x 128 KiB (a deliberately
+generous per-token allowance for f16 KV plus compute buffers at the
+CPU-only single-slot defaults) vs `MemAvailable`; warn-only because
+mmap'd weights can run undersized (slowly), the estimate is coarse, and
+a hard gate would turn an estimate into a false blocker. All byte math
+is in awk (POSIX sh integer width is not guaranteed); `MEMINFO` is an
+env knob so the check is testable against a fake meminfo file. A
+running server keeps its model; switching is stop then start.
+
+**T11-P2 (as-built, 2026-07-26): compact bash prompt hint.** Dogfood
+finding: qwen3-1.7b executed tools when told which to use, but on
+"delete the file" claimed it had no delete tool (while listing shell
+execution among its capabilities); a direct "run rm via bash" worked.
+The registry genuinely has no delete/move/chmod tool; bash is the
+intended path, and the compact bash description never said so. Fix: one
+appended sentence in `src/tools/prompts/compact/bash.txt` naming
+delete/move/copy/chmod (rm, mv, cp, chmod) as bash's job. The full
+profile stays untouched (Claude-class models have not shown the gap),
+caps hold with margin (766 of 1000 chars; the swapped-profile total
+stays far under the 8 KiB budget), and FORMAT_VERSION plus the FNV
+digest are unaffected (prompt text is not part of the session format).
+
+**T11-P3 (as-built, 2026-07-26): indirect-tool-selection probe.**
+weak_model_eval.sh task 7 (indirect-delete): pre-seed a scratch file,
+prompt "Delete the file obsolete.tmp in the current directory", naming
+neither bash nor rm. PASS requires BOTH the file gone (host-verified)
+and a bash rm call in the transcript, a deliberate, documented widening
+of the filesystem-only scoring rule: the probe measures tool SELECTION,
+and end state alone cannot prove which tool acted. SCORE becomes N/7.
+
+**T11-P4 (as-built, 2026-07-26): backend recipes + shortlist.**
+OFFLINE.md gained a fleshed-out Ollama recipe (profile JSON, /models
+note, the num_ctx trap kept) and a new LM Studio recipe (GUI-loads-the-
+model caveat, port 1234 profile, /models as the id-discovery path, and
+an honest WSL2-to-Windows-host orientation: mirrored networking makes
+localhost work, classic NAT needs the gateway-route host IP plus
+listen-on-all-interfaces plus a firewall allowance; docs only, nothing
+scripted). The models table became a shortlist with file size, est. RAM
+at 8k ctx (the serve.sh warning's own arithmetic), tool calls, indirect
+selection, and a status column that distinguishes "verified <date>"
+(full eval run) from "reported" (earlier observation): P5 fills the
+verified rows from live runs.
 
 ## 4. Invariants (every milestone)
 

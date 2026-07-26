@@ -2,6 +2,33 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
+## Unreleased
+
+T11 multi-model ergonomics:
+
+- `scripts/serve.sh start [model]` selects a `.gguf` from `MODELS_DIR`
+  by name: exact basename beats unique substring, case-insensitive;
+  zero or several matches fail and list every candidate with its size.
+  The no-argument lone-gguf auto-default stays; its failure now lists
+  candidates too. `MODEL_GGUF` remains an explicit override and
+  conflicts with a name argument.
+- serve.sh RAM fit warning (advisory only): model file size plus a
+  generous context allowance (128 KiB per context token) checked
+  against `MemAvailable` before start; a single WARN line, then the
+  start proceeds. `MEMINFO` knob makes the check testable.
+- Compact bash prompt gained one sentence steering models to bash for
+  file operations no dedicated tool covers (delete, move, copy, chmod):
+  closes the observed qwen3-1.7b gap where "delete the file" was
+  refused for lack of a delete tool.
+- weak_model_eval.sh task 7, indirect-delete: "delete the file" naming
+  no tool; PASS requires the file gone AND a bash rm call in the
+  transcript. SCORE is now N/7.
+- docs: expanded Ollama recipe (profile example, /models note), new
+  LM Studio recipe including WSL2-to-Windows-host networking, serve.sh
+  selection and RAM warn docs, and the small-model shortlist table
+  (file size, est. RAM at 8k ctx, tool calls, indirect selection,
+  verification status).
+
 ## v0.3.0 - 2026-07-26
 
 T9 command ergonomics:

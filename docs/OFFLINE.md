@@ -38,24 +38,41 @@ form as a detached background server, so the server and temur share one
 terminal, no second WSL window:
 
 ```sh
-MODEL_GGUF=/path/to/model.gguf scripts/serve.sh start   # detached; waits on /health
-scripts/serve.sh status                                 # health + summary
-scripts/serve.sh stop                                   # idempotent teardown
+scripts/serve.sh start           # lone .gguf in MODELS_DIR auto-selected
+scripts/serve.sh start qwen3-4b  # pick by name from MODELS_DIR
+scripts/serve.sh status          # health + summary (shows the mounted model)
+scripts/serve.sh stop            # idempotent teardown
 ```
 
-It publishes loopback-only (`127.0.0.1:8080`), which matches temur's
-default openai-compat `base_url` exactly: the keyless config above
-works unchanged. Knobs (env overrides): `MODEL_GGUF` (required, but
-`start` defaults it when `MODELS_DIR`, default `$HOME/models`, holds
-EXACTLY one `.gguf`; zero or several keep it required and the failure
-names the searched dir and count: nothing is ever guessed between
-models), `MODELS_DIR` (that search dir; serve.sh only - the demo and
-eval scripts stay explicit),
+Model selection: the optional `start` argument matches case-insensitively
+against the basenames of `$MODELS_DIR/*.gguf` (default `$HOME/models`).
+An exact basename match (`name` or `name.gguf`) wins; otherwise a unique
+substring match selects; zero or several matches fail and list every
+candidate with its size (matches marked when ambiguous). With no
+argument, a lone `.gguf` in the dir is auto-selected; zero or several
+fail and list the candidates: nothing is ever guessed between models.
+`MODEL_GGUF=/path/to/model.gguf` still works as an explicit override,
+but combining it with a name argument is an error (choose one). A
+running server keeps its current model: `start` against a running
+container just reports it, so switching models is `stop` then
+`start <name>`.
+
+RAM fit warning: before starting, the script compares the model file
+size plus a deliberately generous context allowance (128 KiB per
+context token, covering f16 KV cache and compute buffers at these
+defaults) against `MemAvailable` and prints a single WARN line when it
+does not fit. It is advisory only: the start proceeds, because mmap'd
+weights can still limp along (expect thrashing).
+
+Knobs (env overrides): `MODEL_GGUF` (explicit path, see above),
+`MODELS_DIR` (the search dir; serve.sh only - the demo and eval scripts
+stay explicit),
 `LLAMA_IMAGE` (the pin above; a missing image prints the exact
 `podman pull` command and stops, nothing is pulled for you), `CTX`,
 `PORT`/`BIND` (published host side only; the container-internal port is
 always 8080 - a non-default `PORT` prints the `base_url` to set),
-`CONTAINER_NAME` (default `temur-llama`).
+`CONTAINER_NAME` (default `temur-llama`), `MEMINFO` (the meminfo file
+the RAM warning reads; default `/proc/meminfo`).
 
 > **`--jinja` is STRONGLY RECOMMENDED for tool calls.** Many model chat
 > templates need it before llama-server presents tool definitions
@@ -73,15 +90,73 @@ reality.
 
 ```sh
 ollama pull qwen3:1.7b
+ollama list    # confirm the model and its size
 ollama serve   # if not already running as a service
 ```
 
 Ollama exposes the OpenAI-compatible API at `http://127.0.0.1:11434/v1`.
+A keyless temur profile only needs the `base_url` and the model name as
+`ollama list` prints it:
+
+```json
+{
+  "provider": "openai-compat",
+  "max_tokens": 1024,
+  "openai_compat": {
+    "base_url": "http://127.0.0.1:11434/v1",
+    "model": "qwen3:1.7b",
+    "context_window": 8192
+  }
+}
+```
+
+temur's `/models` command works against Ollama (it serves
+`GET /v1/models`), so a typo'd model name is easy to spot from inside
+the session.
+
 Mind the context size: Ollama defaults to a small `num_ctx` regardless of
 what the model supports. Raise it (e.g. `OLLAMA_CONTEXT_LENGTH=8192`, or
 `num_ctx` in a Modelfile) and set temur's `context_window` to the same
 value: an agent conversation with tool definitions overflows a default
 window quickly, and Ollama silently truncates rather than erroring.
+
+## Quickstart: LM Studio
+
+LM Studio's local server speaks the same OpenAI-compatible API, default
+port 1234. Load a model in the GUI first, then enable the server (the
+Developer tab); the server serves whatever is loaded. A keyless profile:
+
+```json
+{
+  "provider": "openai-compat",
+  "max_tokens": 1024,
+  "openai_compat": {
+    "base_url": "http://127.0.0.1:1234/v1",
+    "model": "loaded-model-id",
+    "context_window": 8192
+  }
+}
+```
+
+`/models` works here too (`GET /v1/models` lists the loaded and
+downloaded models), which is the quickest way to find the exact model
+id to put in the profile.
+
+**Reaching a Windows-host LM Studio from WSL2:** this varies by setup;
+what follows is orientation, not automation, and nothing in the repo
+scripts it.
+
+- Mirrored networking (Windows 11: `networkingMode=mirrored` in
+  `%USERPROFILE%\.wslconfig`, then `wsl --shutdown`): WSL2 shares the
+  host's interfaces, so `http://127.0.0.1:1234/v1` works as-is.
+- Classic NAT (the default on Windows 10 and unconfigured Win11): WSL2
+  is a separate network. Use the Windows host's IP as seen from WSL2,
+  usually the default-gateway address (`ip route show default`). Note
+  `/etc/resolv.conf`'s nameserver is a common suggestion but lies
+  whenever DNS is overridden, so prefer the route. Two host-side
+  requirements: LM Studio must listen on all interfaces (serve on
+  network / bind `0.0.0.0`, not just localhost), and Windows Defender
+  Firewall must allow inbound connections to it on port 1234.
 
 ## temur configuration
 
@@ -195,13 +270,28 @@ llama.cpp (or Ollama) and a `.gguf` file.
 
 Small-model tool-calling is a real floor, not a marketing detail; these
 are the smallest models observed to drive temur's tools with acceptable
-reliability, smallest-first is NOT best-first:
+reliability, smallest-first is NOT best-first. "Tool calls" means the
+model reliably emits structured tool calls when told which tool to use;
+"indirect selection" means it picks the right tool on its own when the
+task does not name one (the weak-model eval's task 7). "Verified" rows
+ran the full eval harness on the stated date; "reported" rows carry
+earlier observations not re-run through the current harness.
 
-| Model | Quant | ~Size | Notes |
-|---|---|---|---|
-| **Qwen3-1.7B** (primary) | Q4_K_M | ~1.1 GB | Best tool-calling reliability per byte of the trio; the default recommendation. |
-| Qwen2.5-Coder-1.5B-Instruct | Q4_K_M | ~1.0 GB | Code-tuned alternative; strong edits, slightly weaker tool discipline. |
-| Qwen3-0.6B | Q4_K_M | ~0.5 GB | Fits almost anywhere; expect degraded tool reliability: acceptable for single-tool tasks, frustrating for long chains. |
+| Model | Quant | File size | Est. RAM at 8k ctx | Tool calls | Indirect selection | Status |
+|---|---|---|---|---|---|---|
+| **Qwen3-1.7B** (primary) | Q4_K_M | ~1.1 GB | ~2.1 GB | yes | pending | pending re-run (T11 P5) |
+| Qwen3-4B-Instruct | Q4_K_M | ~2.4 GB | ~3.4 GB | pending | pending | pending (T11 P5) |
+| Qwen2.5-Coder-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | pending | pending | pending (T11 P5) |
+| Qwen2.5-Coder-1.5B-Instruct | Q4_K_M | ~1.0 GB | ~2.0 GB | yes | untested | reported (pre-T11) |
+| Qwen3-0.6B | Q4_K_M | ~0.5 GB | ~1.5 GB | degraded | untested | reported (pre-T11) |
+
+Est. RAM uses the serve.sh warning's own arithmetic: file size plus
+128 KiB per context token of KV and compute allowance at 8192 ctx
+(about 1.0 GB). Notes carried from earlier observation: Qwen3-1.7B has
+the best tool-calling reliability per byte of the small trio and is the
+default recommendation; Qwen2.5-Coder-1.5B is a code-tuned alternative
+with strong edits but slightly weaker tool discipline; Qwen3-0.6B fits
+almost anywhere but degrades to single-tool tasks.
 
 Download source: the Q4_K_M quants above are published in the community
 `unsloth/…-GGUF` repositories on Hugging Face (e.g.
@@ -267,14 +357,17 @@ is verified from the host: model prose is never trusted as evidence).
 `scripts/weak_model_eval.sh` measures, instead of claiming, how well a
 small model drives temur's tools. Same setup discipline as the demo
 (operator-run, not part of `check.sh`; podman pod with `--network none`;
-nothing ever pulled; musl binary readelf-checked), then six fixed tasks,
-each in a fresh work directory with a fresh temur process: a plain file
-write, a read-and-extract, a targeted edit that must leave the rest of
-the file unchanged, a bash mkdir+write, a search across three files, and
-an edit-then-bash chain where order matters. Every task is scored by a
-host-verified filesystem assertion only (model prose is never evidence),
-and the run ends with a fixed-width PASS/FAIL table plus a `SCORE: N/6`
-line.
+nothing ever pulled; musl binary readelf-checked), then seven fixed
+tasks, each in a fresh work directory with a fresh temur process: a
+plain file write, a read-and-extract, a targeted edit that must leave
+the rest of the file unchanged, a bash mkdir+write, a search across
+three files, an edit-then-bash chain where order matters, and an
+indirect-tool-selection probe ("delete the file", naming no tool: the
+registry has no delete tool, so the model must choose bash by itself).
+Every task is scored by a host-verified filesystem assertion (model
+prose is never evidence; the indirect probe additionally requires a bash
+`rm` call in the transcript), and the run ends with a fixed-width
+PASS/FAIL table plus a `SCORE: N/7` line.
 
 ```sh
 MODEL_GGUF=/path/to/model.gguf scripts/weak_model_eval.sh

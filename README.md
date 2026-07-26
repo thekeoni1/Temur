@@ -9,8 +9,8 @@ temur's release binary is a ~5 MB statically linked ELF with no interpreter
 and no shared-library dependencies, so it loads on old x86 machines, armv7
 industrial controllers, OpenWrt-class devices, `FROM scratch` containers,
 and rescue/initramfs environments. Offline is a first-class mode, not a
-degraded one: the OpenAI-compatible provider runs keyless against llama.cpp
-or Ollama, and quirky-local-server behavior (absent usage, missing tool-call
+degraded one: the OpenAI-compatible provider runs keyless against llama.cpp,
+Ollama, or LM Studio, and quirky-local-server behavior (absent usage, missing tool-call
 IDs, malformed argument JSON) is defined, tested degradation. The agent loop
 is hardened for small models: schema-error feedback with bounded retries,
 detection of tool calls emitted as prose, a compact prompt profile sized for
@@ -105,7 +105,8 @@ against a local llama.cpp server (`base_url` defaults to
 }
 ```
 
-Server setup for llama.cpp and Ollama, LAN topology, recommended small
+Server setup for llama.cpp, Ollama, and LM Studio (including reaching a
+Windows-host server from WSL2), LAN topology, recommended small
 models, and the compact prompt profile: [docs/OFFLINE.md](docs/OFFLINE.md).
 From a checkout, `scripts/serve.sh start|stop|status` runs the containerized
 llama.cpp server detached in the same terminal (details in OFFLINE.md).
