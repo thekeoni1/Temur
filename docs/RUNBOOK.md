@@ -784,3 +784,42 @@ XDG_STATE_HOME/XDG_CONFIG_HOME under /home/dev/t10-live):
 Plain-REPL compatibility: pre-T10 output shapes byte-identical except
 the deliberate `/status` session-file line extension; the resume
 summary kept its exact `[!]` rendering, now preceded by backscroll.
+
+## v0.3.0 - T9+T10 close-out (release procedure delta)
+
+What ships: T9 command ergonomics (per-profile prompt profiles, /models
+listing + raw-model-id switching, TUI command styling + Tab completion,
+serve.sh single-gguf MODEL_GGUF default) and T10 session management
+(named multi-session per project, /sessions + /resume + /new, --resume
+CLI, rendered backscroll on resume and --continue; session format
+unchanged, FORMAT_VERSION 1, compat both directions).
+
+Procedure deltas vs v0.2.0:
+
+- **CHANGELOG.md introduced** (repo root, newest first, retroactive
+  0.1.0..0.2.0 plus the unreleased 0.3.0 entry). From v0.3.0 on the
+  release body derives from the matching CHANGELOG section instead of
+  being written ad hoc at publish time.
+- **Em-dash sweep (operator-decided 2026-07-26):** all tracked repo
+  markdown was rewritten without em-dashes, meaning-preserving, line by
+  line. Byte-exact carve-out kept for verbatim quotes of immutable
+  artifacts; the retained lines are exactly: docs/OFFLINE.md:239 and
+  :301 plus docs/RUNBOOK.md:120 and :217 (the quoted `fmt_tokens`
+  absent-usage glyph), docs/RUNBOOK.md:536-537 (fenced --continue
+  transcript excerpt), docs/RUNBOOK.md:635 (the v0.2.0 tag annotation),
+  docs/RUNBOOK.md:751 (the quoted /new notice string), and
+  docs/TUI.md:98 and :100 (the quoted status-row hint format and the
+  quoted unknown-command hint). Source, script, and test em-dashes are
+  out of scope this cycle (no-source-changes rule) and remain a
+  possible later sweep.
+- **DECIDED (operator, 2026-07-26): PRIVATE release again,** repeating
+  the v0.1.1/v0.2.0 procedure; the PUBLIC one-liner gate stays deferred
+  to the visibility flip.
+- **Tag and publish held until operator dogfood sign-off:** stage 1
+  stops at gated artifacts (full release.sh + installer matrix over the
+  close-out commits, artifacts staged under
+  /home/dev/dist/release/v0.3.0), with NO tag, NO push, and NO GitHub
+  release. Stage 2 (tag at the dogfooded head, push, private release,
+  closing gate, acceptance record) runs as a separate prompt after
+  sign-off. New vs v0.2.0, where the tag followed the gates the same
+  day.

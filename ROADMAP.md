@@ -179,8 +179,8 @@ payload.
 | T6 | Editing + interruption | Fuzzy-match edit fallback; cancellable turns |
 | T7 | Multi-arch packaging | armv7/aarch64/x86_64 musl-static releases, install story |
 | T8 | Daily-driver UX (shipped as v0.2.0) | Slash commands + named-profile switching (P1); markdown rendering + TUI styling pass (P2); serve.sh background server launcher (P3) - released 2026-07-25 as v0.2.0 (private) |
-| T9 | Command ergonomics | Per-profile prompt profiles (P1); /models listing + raw-model-id switching (P2); TUI command styling + Tab completion (P3); serve.sh MODEL_GGUF default (P4) - feature-complete 2026-07-25; ships later as v0.3.0 after dogfooding |
-| T10 | Session management | Named multi-session per project (store P1); resume seam + lossy replay (P2); /sessions + /resume + /new + --resume (P3); TUI listing cell + backscroll rebuild (P4) - feature-complete 2026-07-26; ships with T9 as v0.3.0 after dogfooding |
+| T9 | Command ergonomics (shipped as v0.3.0) | Per-profile prompt profiles (P1); /models listing + raw-model-id switching (P2); TUI command styling + Tab completion (P3); serve.sh MODEL_GGUF default (P4) - feature-complete 2026-07-25; shipped as v0.3.0 |
+| T10 | Session management (shipped as v0.3.0) | Named multi-session per project (store P1); resume seam + lossy replay (P2); /sessions + /resume + /new + --resume (P3); TUI listing cell + backscroll rebuild (P4) - feature-complete 2026-07-26; shipped with T9 as v0.3.0 |
 
 ### T0 - Identity + honest gate
 - Rename `opencode-rust` → `temur`: package name, `--version`, binary name,
@@ -417,6 +417,8 @@ Deviation from the plan sketch: the container-name knob is
 `CONTAINER_NAME`, not `NAME`: live testing caught WSL exporting
 `NAME=<hostname>`, which silently overrode the default.
 
+### T9 - Command ergonomics (as-built, 2026-07-25)
+
 **T9-P1 (as-built, 2026-07-25): per-profile prompt profiles.**
 `ProfileConfig.prompt_profile` (`"full"`/`"compact"`, validated eagerly
 per profile at startup; absent = the global setting, itself defaulting
@@ -532,6 +534,24 @@ Plain-REPL compatibility: every pre-T10 output shape is byte-identical
 except the deliberate `/status` session-file line extension; the resume
 summary line kept its exact `[!]`-notice rendering (now emitted from
 the SessionLoaded arm, after the new backscroll lines).
+
+### v0.3.0 - T9+T10 close-out (as-built)
+
+T9 and T10 ship together as v0.3.0 after operator dogfooding, with the
+close-out split in two stages: stage 1 (bump, CHANGELOG, docs, full
+release.sh + installer gates to staged artifacts) runs first, and the
+tag + private GitHub release are held until operator dogfood sign-off
+(a procedural change vs v0.2.0, where the tag followed the gates the
+same day). Close-out as-built: the bump touched exactly the six pinned
+sites (Cargo.toml/Cargo.lock, install.sh VERSION, three README pin
+groups); CHANGELOG.md was introduced (retroactive 0.1.0..0.2.0 plus the
+unreleased 0.3.0 entry) as the source for release bodies from v0.3.0
+on; all repo markdown was rewritten without em-dashes
+(operator-decided 2026-07-26), with a byte-exact carve-out for verbatim
+quotes of immutable artifacts (tag annotations and quoted program
+output); no product code and no dependency changes rode along. The
+PUBLIC one-liner gate remains the one open release item, deferred to
+the visibility flip (RUNBOOK).
 
 ## 4. Invariants (every milestone)
 
