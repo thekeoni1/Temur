@@ -1,4 +1,5 @@
 use crate::provider::Usage;
+use crate::session_store::ReplayItem;
 
 /// Events the agent core emits toward the UI seam. A line REPL renders these
 /// today; a TUI can replace it without touching the core.
@@ -35,6 +36,22 @@ pub enum AgentEvent {
     /// T8 `/clear`: the conversation was wiped. UIs reset transcript state;
     /// the confirmation Notice follows this event.
     SessionCleared,
+    /// T10 `/sessions`: preformatted listing lines (active marker included)
+    /// plus the keys a UI caches as `/resume` Tab-completion candidates —
+    /// the same display+cache split as [`ModelsListed`](Self::ModelsListed).
+    /// Never contains key material.
+    SessionsListed {
+        lines: Vec<String>,
+        keys: Vec<String>,
+    },
+    /// T10 resume (startup `--continue`/`--resume` and `/resume`): the
+    /// seeded history flattened for display, plus the one-line resume
+    /// summary. UIs wipe their transcript state and rebuild from `items`;
+    /// advisory notices follow as separate [`Notice`](Self::Notice)s.
+    SessionLoaded {
+        items: Vec<ReplayItem>,
+        notice: String,
+    },
     TurnComplete {
         turn_usage: Usage,
         session_usage: Usage,

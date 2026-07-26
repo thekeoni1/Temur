@@ -615,6 +615,65 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<(), StoreError> {
     Ok(())
 }
 
+// ------------------------------------------------------------------- replay
+
+/// One unit of resumed backscroll (T10), in display vocabulary.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReplayItem {
+    /// A prompt the user typed.
+    User(String),
+    /// Assistant prose (one item per text block).
+    Assistant(String),
+    /// A tool the assistant called — name only.
+    Tool { name: String },
+}
+
+/// Flatten a saved history into displayable backscroll.
+///
+/// DELIBERATELY LOSSY: tool outputs and arguments are not replayed (a
+/// resumed transcript shows what happened, not every byte of it), thinking
+/// blocks are skipped (same as live rendering, which only shows an
+/// indicator), and tool-result user messages — including the synthesized
+/// `[interrupted by user]` markers — produce nothing: the `tool_use` they
+/// answer already produced its `Tool` item. Pure; the UIs decide how each
+/// item renders.
+pub fn replay_items(history: &[RequestMessage]) -> Vec<ReplayItem> {
+    let mut out = Vec::new();
+    for m in history {
+        match m.role {
+            Role::User => {
+                // A results-carrying message is wire bookkeeping, not
+                // something the user said.
+                if m.content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+                {
+                    continue;
+                }
+                for b in &m.content {
+                    if let ContentBlock::Text { text } = b {
+                        out.push(ReplayItem::User(text.clone()));
+                    }
+                }
+            }
+            Role::Assistant => {
+                for b in &m.content {
+                    match b {
+                        ContentBlock::Text { text } => {
+                            out.push(ReplayItem::Assistant(text.clone()))
+                        }
+                        ContentBlock::ToolUse { name, .. } => {
+                            out.push(ReplayItem::Tool { name: name.clone() })
+                        }
+                        _ => {} // thinking (both kinds), results, unknown: skipped
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 // ------------------------------------------------------------------- resume
 
 /// Move a loaded file into the seed a `Session` resumes from.

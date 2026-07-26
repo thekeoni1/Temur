@@ -1,5 +1,6 @@
 use super::Ui;
 use crate::agent::events::AgentEvent;
+use crate::session_store::ReplayItem;
 use std::io::{BufRead, Write};
 
 pub struct ReplUi {
@@ -68,6 +69,30 @@ impl Ui for ReplUi {
                 for id in ids {
                     println!("    {id}");
                 }
+            }
+            // T10 `/sessions`: a count line, then one indented line per
+            // session (the active marker is already inside each line).
+            AgentEvent::SessionsListed { lines, .. } => {
+                self.break_line();
+                println!("  {} session(s):", lines.len());
+                for l in lines {
+                    println!("    {l}");
+                }
+            }
+            // T10 resume: plain backscroll — user prompts as "> "-prefixed
+            // lines, assistant text verbatim, tools as one-liners — then the
+            // resume summary in the exact Notice shape (so the summary line
+            // stays byte-identical to its pre-T10 rendering).
+            AgentEvent::SessionLoaded { items, notice } => {
+                self.break_line();
+                for item in items {
+                    match item {
+                        ReplayItem::User(t) => println!("> {t}"),
+                        ReplayItem::Assistant(t) => println!("{t}"),
+                        ReplayItem::Tool { name } => println!("  ⚙ {name}"),
+                    }
+                }
+                println!("  [!] {notice}");
             }
             // Chrome/state signals (T8): the plain REPL has no chrome; the
             // human-readable confirmation arrives as a separate Notice.

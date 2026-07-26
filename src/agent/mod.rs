@@ -215,6 +215,21 @@ impl Session {
         self.registry.set_profile(profile);
     }
 
+    /// Swap in a saved session (T10 `/resume`): the resume constructor's
+    /// work applied to a LIVE session between turns. Replaces history, usage
+    /// totals, todos, and the context estimate; re-arms the context
+    /// pre-warning (it was about the old conversation). Provider, model, and
+    /// config stay — resuming a session never switches providers. Infallible
+    /// by the same construction as [`Session::resume`]: every replay-safety
+    /// decision was already made in `session_store::prepare_seed`.
+    pub fn load_seed(&mut self, seed: SessionSeed) {
+        self.history = seed.history;
+        self.session_usage = seed.session_usage;
+        self.tool_ctx.todos = seed.todos;
+        self.last_context_used = seed.last_context_used;
+        self.context_warned = false;
+    }
+
     /// Wipe the conversation (`/clear`): history, usage totals, context
     /// estimate, warning latch, and todos. Provider, model, and config stay.
     pub fn clear_history(&mut self) {

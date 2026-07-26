@@ -1551,6 +1551,66 @@ fn set_thinking_flips_the_next_request_and_getters_track() {
     assert!(requests.borrow()[1].thinking);
 }
 
+// ------------------------------------------------------- T10: load_seed seam
+
+#[test]
+fn load_seed_swaps_state_between_turns_and_the_next_request_replays_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(vec![text("first answer")], StopReason::EndTurn),
+            msg(vec![text("post-load answer")], StopReason::EndTurn),
+        ],
+    );
+    collect_events(&mut session, "original conversation");
+    assert_eq!(session.history().len(), 2);
+
+    // A saved session from elsewhere, through the same prepare_seed gate
+    // the commands layer uses.
+    let file = saved(
+        vec![
+            user_msg("older prompt"),
+            RequestMessage {
+                role: Role::Assistant,
+                content: vec![text("older answer")],
+            },
+        ],
+        vec![temur::tools::TodoItem {
+            id: Some("1".into()),
+            content: "carried todo".into(),
+            status: "in_progress".into(),
+        }],
+    );
+    let (seed, _) = store::prepare_seed(file);
+    session.load_seed(seed);
+
+    // The snapshot now describes the LOADED session — history, usage
+    // totals, todos, and the context estimate all replaced.
+    let snap = session.snapshot();
+    assert_eq!(snap.history.len(), 2);
+    assert_eq!(snap.session_usage.input_tokens, Some(1000));
+    assert_eq!(snap.session_usage.output_tokens, Some(200));
+    assert_eq!(snap.todos.len(), 1);
+    assert_eq!(snap.last_context_used, Some(1200));
+
+    // And the next turn goes out on the loaded history + the new prompt.
+    collect_events(&mut session, "next");
+    let req = requests.borrow()[1].clone();
+    assert_eq!(req.messages.len(), 3);
+    assert!(matches!(
+        &req.messages[0].content[0],
+        ContentBlock::Text { text } if text == "older prompt"
+    ));
+    assert!(matches!(
+        &req.messages[2].content[0],
+        ContentBlock::Text { text } if text == "next"
+    ));
+    // Session totals continue FROM the seeded usage (1000+10 in, 200+5 out).
+    assert_eq!(session.session_usage().input_tokens, Some(1010));
+    assert_eq!(session.session_usage().output_tokens, Some(205));
+}
+
 // ------------------------------------------------------- T8: command layer
 
 use temur::commands::{self, CommandCtx};

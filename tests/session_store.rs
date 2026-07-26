@@ -701,6 +701,103 @@ fn seed_carries_todos_and_context_estimate() {
     assert_eq!(seed.session_usage.input_tokens, Some(120));
 }
 
+// --------------------------------------------------------------- T10 replay
+
+#[test]
+fn replay_flattens_interleaved_history_and_is_documented_lossy() {
+    use temur::session_store::ReplayItem;
+    let history = vec![
+        user_text("do the thing"),
+        assistant(vec![
+            // Thinking (signed or not) never replays — live rendering only
+            // ever showed an indicator.
+            ContentBlock::Thinking {
+                thinking: "step one".into(),
+                signature: Some("sig".into()),
+            },
+            ContentBlock::Text {
+                text: "I'll read the file.".into(),
+            },
+            ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "read".into(),
+                input: serde_json::json!({"file_path": "/a"}),
+                input_raw: None,
+            },
+            ContentBlock::ToolUse {
+                id: "t2".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "ls"}),
+                input_raw: None,
+            },
+        ]),
+        RequestMessage {
+            role: Role::User,
+            content: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "big file contents".into(),
+                    is_error: false,
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "t2".into(),
+                    content: "listing".into(),
+                    is_error: false,
+                },
+            ],
+        },
+        assistant(vec![ContentBlock::Text { text: "done".into() }]),
+        user_text("thanks"),
+    ];
+    let items = store::replay_items(&history);
+    assert_eq!(
+        items,
+        vec![
+            ReplayItem::User("do the thing".into()),
+            ReplayItem::Assistant("I'll read the file.".into()),
+            ReplayItem::Tool { name: "read".into() },
+            ReplayItem::Tool { name: "bash".into() },
+            ReplayItem::Assistant("done".into()),
+            ReplayItem::User("thanks".into()),
+        ]
+    );
+    // Lossy by design: tool outputs and arguments are nowhere in the replay.
+    let flat = format!("{items:?}");
+    assert!(!flat.contains("big file contents"));
+    assert!(!flat.contains("/a") && !flat.contains("ls"));
+}
+
+#[test]
+fn replay_handles_interrupt_markers_and_empty_history() {
+    use temur::session_store::ReplayItem;
+    // The T6 interrupted-turn shape: the tool_use replays as a Tool item;
+    // its synthesized "[interrupted by user]" answer replays as nothing.
+    let history = vec![
+        user_text("go"),
+        assistant(vec![ContentBlock::ToolUse {
+            id: "t1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command": "sleep 60"}),
+            input_raw: None,
+        }]),
+        tool_result("t1", temur::agent::INTERRUPT_MARKER, true),
+    ];
+    assert_eq!(
+        store::replay_items(&history),
+        vec![
+            ReplayItem::User("go".into()),
+            ReplayItem::Tool { name: "bash".into() },
+        ]
+    );
+    // Empty history: no items, no panic — the caller renders notice-only.
+    assert!(store::replay_items(&[]).is_empty());
+    // A redacted-thinking-only assistant message produces nothing either.
+    let odd = vec![assistant(vec![ContentBlock::RedactedThinking {
+        data: "opaque".into(),
+    }])];
+    assert!(store::replay_items(&odd).is_empty());
+}
+
 // ------------------------------------------------------------------- config
 
 #[test]

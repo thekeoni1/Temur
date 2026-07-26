@@ -163,10 +163,16 @@ fn repl(
     // --continue: load BEFORE provider construction — "you have no session
     // to resume" should not hide behind a credential error — and FAIL FAST
     // on a missing, corrupt, or wrong-version file: never silently start a
-    // fresh session over the very file the user asked to resume. Notices are
-    // collected here but emitted only after UI construction (the TUI
-    // swallows pre-alt-screen printlns).
+    // fresh session over the very file the user asked to resume. The replay
+    // event and notices are collected here but emitted only after UI
+    // construction (the TUI swallows pre-alt-screen printlns).
+    //
+    // T10: the seeded history is also flattened into a SessionLoaded event,
+    // so BOTH UIs render the resumed backscroll; advisory notices (provider/
+    // model/cwd mismatches, the dropped-prompt rule) follow it, surviving
+    // the TUI's transcript rebuild.
     let mut pending_notices: Vec<String> = Vec::new();
+    let mut pending_loaded: Option<AgentEvent> = None;
     let seed = if resume {
         let path = persist_path
             .as_ref()
@@ -186,8 +192,17 @@ fn repl(
             &model,
             &cwd_display,
         ));
-        let (seed, notices) = temur::session_store::prepare_seed(file);
+        let (seed, mut notices) = temur::session_store::prepare_seed(file);
+        // prepare_seed's contract: notices end with the resume summary; any
+        // drop notice precedes it. The summary rides inside SessionLoaded.
+        let summary = notices
+            .pop()
+            .expect("prepare_seed always appends the resume summary");
         pending_notices.extend(notices);
+        pending_loaded = Some(AgentEvent::SessionLoaded {
+            items: temur::session_store::replay_items(&seed.history),
+            notice: summary,
+        });
         Some(seed)
     } else {
         None
@@ -312,8 +327,12 @@ fn repl(
     } else {
         Box::new(ReplUi::new())
     };
-    // Resume notices (mismatches, dangling-prompt drop, the summary line)
-    // surface through the same seam as everything else, after the UI exists.
+    // Resume output surfaces through the same seam as everything else, after
+    // the UI exists: the replay event first (it rebuilds the TUI transcript),
+    // then the advisory notices so they land in the fresh backscroll.
+    if let Some(ev) = &pending_loaded {
+        ui.event(ev);
+    }
     for n in &pending_notices {
         ui.event(&AgentEvent::Notice(n.clone()));
     }

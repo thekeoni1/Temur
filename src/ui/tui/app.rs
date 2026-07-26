@@ -200,6 +200,9 @@ impl App {
                 self.model_ids = ids.clone();
                 self.cells.push(Cell::Models(ids.clone()));
             }
+            // T10 placeholders (P2): the real folds — Cell::Sessions and the
+            // SessionLoaded transcript rebuild — land with the TUI phase.
+            AgentEvent::SessionsListed { .. } | AgentEvent::SessionLoaded { .. } => {}
             // T8 chrome/state signals; the confirmation Notice arrives
             // separately, so these fold silently into chrome.
             AgentEvent::ModelSwitched { model } => self.model = model.clone(),
