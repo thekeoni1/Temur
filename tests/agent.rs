@@ -1554,6 +1554,7 @@ fn set_thinking_flips_the_next_request_and_getters_track() {
 
 use temur::commands::{self, CommandCtx};
 use temur::config::ResolvedProfile;
+use temur::tools::PromptProfile;
 use std::collections::BTreeMap;
 
 fn two_profiles() -> BTreeMap<String, ResolvedProfile> {
@@ -1567,6 +1568,7 @@ fn two_profiles() -> BTreeMap<String, ResolvedProfile> {
             api_key_file: None,
             max_tokens: 111,
             context_window: None,
+            prompt_profile: PromptProfile::Full,
         },
     );
     m.insert(
@@ -1578,6 +1580,7 @@ fn two_profiles() -> BTreeMap<String, ResolvedProfile> {
             api_key_file: None,
             max_tokens: 222,
             context_window: Some(4_096),
+            prompt_profile: PromptProfile::Full,
         },
     );
     m
@@ -1593,6 +1596,19 @@ struct CmdHarness {
     persist: Option<std::path::PathBuf>,
     cwd_display: String,
     replay: bool,
+    prompt_profile: PromptProfile,
+    /// Mirrors main's rebuild_system closure; tests swap it to model the
+    /// config-override rule (a constant string regardless of profile).
+    rebuild: Box<dyn Fn(PromptProfile) -> String>,
+}
+
+/// What the default harness rebuild closure returns per profile — the
+/// per-profile analogue of main's DEFAULT_SYSTEM / DEFAULT_SYSTEM_COMPACT.
+fn test_system_for(p: PromptProfile) -> String {
+    match p {
+        PromptProfile::Full => "full test system".into(),
+        PromptProfile::Compact => "compact test system".into(),
+    }
 }
 
 impl CmdHarness {
@@ -1605,6 +1621,8 @@ impl CmdHarness {
             persist: None,
             cwd_display: "/test".into(),
             replay: false,
+            prompt_profile: PromptProfile::Full,
+            rebuild: Box::new(test_system_for),
         }
     }
 
@@ -1625,7 +1643,9 @@ impl CmdHarness {
             session_max_bytes: temur::config::DEFAULT_SESSION_MAX_BYTES,
             cwd_display: &self.cwd_display,
             replay_mode: self.replay,
+            prompt_profile: &mut self.prompt_profile,
             build_provider: build,
+            rebuild_system: &*self.rebuild,
         }
     }
 }
@@ -1828,6 +1848,10 @@ fn status_before_any_turn_renders_placeholders_and_no_key_material() {
     let ns = notices(&events);
     assert!(ns.iter().any(|n| n.contains("(none — base config)")), "{ns:?}");
     assert!(ns.iter().any(|n| n.contains("anthropic") && n.contains("claude-sonnet-5")));
+    assert!(
+        ns.iter().any(|n| n == "thinking: off · max_tokens: 32000 · prompt: full"),
+        "T9 prompt field on the thinking line: {ns:?}"
+    );
     assert!(ns.iter().any(|n| n.contains("no usage reported yet")));
     assert!(ns.iter().any(|n| n.contains("persistence disabled (--mock)")));
     assert!(
@@ -1884,4 +1908,139 @@ fn replay_mode_disables_mutating_commands_only() {
         let events = commands::run(commands::parse(line), &mut h.ctx(&mut session, &build));
         assert!(!notices(&events).is_empty(), "{line} still answers");
     }
+}
+
+// ------------------------------------------- T9: per-profile prompt profiles
+
+/// Descriptions the registry serves for a profile, for request assertions.
+fn descriptions(profile: PromptProfile) -> Vec<String> {
+    Registry::standard()
+        .with_profile(profile)
+        .definitions()
+        .into_iter()
+        .map(|d| d.description)
+        .collect()
+}
+
+fn req_descriptions(req: &ChatRequest) -> Vec<String> {
+    req.tools.iter().map(|t| t.description.clone()).collect()
+}
+
+/// full → compact switch swaps the NEXT request's system string AND tool
+/// descriptions; switching back restores both. Asserted on the recorded
+/// `ChatRequest`s of mock providers installed by the switches themselves.
+#[test]
+fn switch_swaps_system_and_tool_descriptions_and_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    h.profiles.get_mut("b").unwrap().prompt_profile = PromptProfile::Compact;
+
+    // Switch onto the compact profile "b".
+    let requests_b = Rc::new(RefCell::new(vec![]));
+    let rb = requests_b.clone();
+    let build_b = move |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        Ok(Box::new(MockProvider {
+            responses: RefCell::new(vec![msg(vec![text("from b")], StopReason::EndTurn)]),
+            requests: rb.clone(),
+        }))
+    };
+    commands::run(commands::parse("/model b"), &mut h.ctx(&mut session, &build_b));
+    assert_eq!(h.prompt_profile, PromptProfile::Compact);
+    collect_events(&mut session, "hello");
+    let req = requests_b.borrow()[0].clone();
+    assert_eq!(req.system.as_deref(), Some("compact test system"));
+    assert_eq!(req_descriptions(&req), descriptions(PromptProfile::Compact));
+
+    // Switch back to the full profile "a": both restored.
+    let requests_a = Rc::new(RefCell::new(vec![]));
+    let ra = requests_a.clone();
+    let build_a = move |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        Ok(Box::new(MockProvider {
+            responses: RefCell::new(vec![msg(vec![text("from a")], StopReason::EndTurn)]),
+            requests: ra.clone(),
+        }))
+    };
+    commands::run(commands::parse("/model a"), &mut h.ctx(&mut session, &build_a));
+    assert_eq!(h.prompt_profile, PromptProfile::Full);
+    collect_events(&mut session, "again");
+    let req = requests_a.borrow()[0].clone();
+    assert_eq!(req.system.as_deref(), Some("full test system"));
+    assert_eq!(req_descriptions(&req), descriptions(PromptProfile::Full));
+
+    // /status reflects the live profile.
+    let build_none = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!("/status builds nothing")
+    };
+    let events = commands::run(commands::parse("/status"), &mut h.ctx(&mut session, &build_none));
+    assert!(notices(&events).iter().any(|n| n.ends_with("prompt: full")), "{events:?}");
+}
+
+/// The config system_prompt override rule, as main's rebuild_system closure
+/// implements it: the SAME string comes back for either profile, so a
+/// prompt-profile switch changes nothing about the system string (tool
+/// descriptions still swap — that contract is independent).
+#[test]
+fn system_prompt_override_wins_in_both_profiles_across_switches() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    h.profiles.get_mut("b").unwrap().prompt_profile = PromptProfile::Compact;
+    h.rebuild = Box::new(|_| "override system".into());
+    // Startup under the override (what main would have assembled).
+    session.set_prompt("override system".into(), PromptProfile::Full);
+
+    let requests = Rc::new(RefCell::new(vec![]));
+    for (cmd, expected_descs) in [
+        ("/model b", descriptions(PromptProfile::Compact)),
+        ("/model a", descriptions(PromptProfile::Full)),
+    ] {
+        let r = requests.clone();
+        let build = move |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+            Ok(Box::new(MockProvider {
+                responses: RefCell::new(vec![msg(vec![text("ok")], StopReason::EndTurn)]),
+                requests: r.clone(),
+            }))
+        };
+        commands::run(commands::parse(cmd), &mut h.ctx(&mut session, &build));
+        collect_events(&mut session, "turn");
+        let req = requests.borrow().last().unwrap().clone();
+        assert_eq!(
+            req.system.as_deref(),
+            Some("override system"),
+            "{cmd}: override wins in both profiles"
+        );
+        assert_eq!(req_descriptions(&req), expected_descs, "{cmd}: descriptions still swap");
+    }
+}
+
+/// Extended atomicity (T9): a FAILED switch whose target has a different
+/// prompt_profile leaves the system string and the registry untouched too.
+#[test]
+fn failed_switch_leaves_system_and_registry_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![msg(vec![text("still here")], StopReason::EndTurn)],
+    );
+    let mut h = CmdHarness::new();
+    {
+        let b = h.profiles.get_mut("b").unwrap();
+        b.prompt_profile = PromptProfile::Compact;
+        b.api_key_file = Some("/nonexistent/temur-test/keyfile".into());
+    }
+    let build = |p: &ResolvedProfile| temur::provider::build_live(p);
+    let events = commands::run(commands::parse("/model b"), &mut h.ctx(&mut session, &build));
+    assert!(
+        notices(&events).iter().any(|n| n.contains("failed") && n.contains("session unchanged")),
+        "{events:?}"
+    );
+    assert_eq!(h.prompt_profile, PromptProfile::Full, "loop-local profile unchanged");
+
+    // The next request proves session internals: original system string and
+    // FULL descriptions, through the still-installed mock provider.
+    collect_events(&mut session, "probe");
+    let req = requests.borrow()[0].clone();
+    assert_eq!(req.system.as_deref(), Some("test system"));
+    assert_eq!(req_descriptions(&req), descriptions(PromptProfile::Full));
 }

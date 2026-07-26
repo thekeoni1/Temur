@@ -204,6 +204,17 @@ impl Session {
         self.context_warned = false;
     }
 
+    /// Swap the system prompt and tool-prompt profile in place (T9: a
+    /// `/model` switch onto a profile with a different `prompt_profile`).
+    /// Infallible by design — the caller assembles the system string first —
+    /// so it composes with [`Session::switch_provider`] without breaking the
+    /// build-first atomicity of a switch. The next request picks both up via
+    /// the per-iteration rebuild in [`Session::turn`].
+    pub fn set_prompt(&mut self, system: String, profile: crate::tools::PromptProfile) {
+        self.cfg.system = Some(system);
+        self.registry.set_profile(profile);
+    }
+
     /// Wipe the conversation (`/clear`): history, usage totals, context
     /// estimate, warning latch, and todos. Provider, model, and config stay.
     pub fn clear_history(&mut self) {

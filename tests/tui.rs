@@ -868,11 +868,14 @@ fn headless_command_flow_status_leaves_title_alone() {
             api_key_file: None,
             max_tokens: 32_000,
             context_window: None,
+            prompt_profile: temur::tools::PromptProfile::Full,
         },
     );
     let mut active: Option<String> = None;
     let mut provider_name = "anthropic".to_string();
     let mut model = "claude-sonnet-5".to_string();
+    let mut prompt_profile = temur::tools::PromptProfile::Full;
+    let rebuild = |_: temur::tools::PromptProfile| -> String { "test system".into() };
     let build = |_: &temur::config::ResolvedProfile| -> Result<
         Box<dyn Provider>,
         temur::error::Error,
@@ -890,7 +893,9 @@ fn headless_command_flow_status_leaves_title_alone() {
             session_max_bytes: temur::config::DEFAULT_SESSION_MAX_BYTES,
             cwd_display: "/test",
             replay_mode: false,
+            prompt_profile: &mut prompt_profile,
             build_provider: &build,
+            rebuild_system: &rebuild,
         };
         for ev in temur::commands::run(temur::commands::parse(&line), &mut ctx) {
             ui.event(&ev);
@@ -963,11 +968,14 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
             api_key_file: None,
             max_tokens: 32_000,
             context_window: None,
+            prompt_profile: temur::tools::PromptProfile::Full,
         },
     );
     let mut active: Option<String> = None;
     let mut provider_name = "anthropic".to_string();
     let mut model = "claude-sonnet-5".to_string();
+    let mut prompt_profile = temur::tools::PromptProfile::Full;
+    let rebuild = |_: temur::tools::PromptProfile| -> String { "test system".into() };
     let build = |p: &temur::config::ResolvedProfile| -> Result<
         Box<dyn Provider>,
         temur::error::Error,
@@ -990,7 +998,9 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
                 session_max_bytes: temur::config::DEFAULT_SESSION_MAX_BYTES,
                 cwd_display: "/test",
                 replay_mode: false,
+                prompt_profile: &mut prompt_profile,
                 build_provider: &build,
+                rebuild_system: &rebuild,
             };
             for ev in temur::commands::run(temur::commands::parse(&line), &mut ctx) {
                 ui.event(&ev);

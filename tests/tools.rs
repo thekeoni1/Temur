@@ -62,6 +62,25 @@ fn compact_profile_swaps_descriptions_only() {
     assert!(total <= 8 * 1024, "compact tool text is {total} bytes, budget 8KB");
 }
 
+/// T9: the in-place mutator serves byte-identical definitions to the
+/// builder path, both directions — so a `/model` prompt swap is exactly the
+/// startup profile selection, description-swap-only contract included.
+#[test]
+fn set_profile_matches_with_profile_both_directions() {
+    for profile in [PromptProfile::Compact, PromptProfile::Full] {
+        let mut mutated = Registry::standard();
+        mutated.set_profile(profile);
+        let built = Registry::standard().with_profile(profile).definitions();
+        let mutated = mutated.definitions();
+        assert_eq!(mutated.len(), built.len());
+        for (m, b) in mutated.iter().zip(built.iter()) {
+            assert_eq!(m.name, b.name);
+            assert_eq!(m.description, b.description, "description differs for {}", m.name);
+            assert_eq!(m.input_schema, b.input_schema, "schema differs for {}", m.name);
+        }
+    }
+}
+
 fn run(reg: &Registry, ctx: &mut ToolCtx, name: &str, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
     reg.execute(name, input, ctx)
 }

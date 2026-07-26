@@ -14,6 +14,7 @@ use crate::agent::Session;
 use crate::config::ResolvedProfile;
 use crate::provider::Provider;
 use crate::session_store;
+use crate::tools::PromptProfile;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -80,9 +81,18 @@ pub struct CommandCtx<'a> {
     /// `--mock` / `--capture-sse`: state-mutating commands are disabled to
     /// keep fixture determinism.
     pub replay_mode: bool,
+    /// The ACTIVE prompt profile (T9). A main-loop local like `model`:
+    /// updated here on a switch so `/status` and the next switch's
+    /// differs-check read what is actually live.
+    pub prompt_profile: &'a mut PromptProfile,
     #[allow(clippy::type_complexity)]
     pub build_provider:
         &'a dyn Fn(&ResolvedProfile) -> Result<Box<dyn Provider>, crate::error::Error>,
+    /// Assembles the full system prompt for a prompt profile (T9). Injected
+    /// from main — the default-prompt consts, the config override rule, the
+    /// skills section, and `{cwd}` all stay there. Infallible, so a switch
+    /// stays atomic: it runs only after the provider build succeeded.
+    pub rebuild_system: &'a dyn Fn(PromptProfile) -> String,
 }
 
 fn notice(s: impl Into<String>) -> AgentEvent {
@@ -97,9 +107,16 @@ fn onoff(b: bool) -> &'static str {
     }
 }
 
+fn profile_word(p: PromptProfile) -> &'static str {
+    match p {
+        PromptProfile::Full => "full",
+        PromptProfile::Compact => "compact",
+    }
+}
+
 const HELP_LINES: &[&str] = &[
     "/help — this list",
-    "/status — profile, provider, model, thinking, context, session file",
+    "/status — profile, provider, model, thinking, prompt, context, session file",
     "/model — list profiles · /model <name> — switch to a profile",
     "/clear — wipe this session's history and start fresh",
     "/thinking — show · /thinking on|off — flip adaptive thinking (this session)",
@@ -138,9 +155,10 @@ fn status(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
             ctx.provider_name, ctx.model
         )),
         notice(format!(
-            "thinking: {} · max_tokens: {}",
+            "thinking: {} · max_tokens: {} · prompt: {}",
             onoff(s.thinking()),
-            s.max_tokens()
+            s.max_tokens(),
+            profile_word(*ctx.prompt_profile)
         )),
         notice(match (s.context_window(), s.last_context_used()) {
             (Some(w), Some(u)) => format!("context: ~{u} of {w} tokens used"),
@@ -252,6 +270,14 @@ fn model_switch(ctx: &mut CommandCtx, name: String) -> Vec<AgentEvent> {
         profile.max_tokens,
         profile.context_window,
     );
+    // Prompt-profile swap (T9), only when the target differs. After the
+    // build succeeded, so the switch stays atomic: rebuild_system and
+    // set_prompt are both infallible.
+    if profile.prompt_profile != *ctx.prompt_profile {
+        let system = (ctx.rebuild_system)(profile.prompt_profile);
+        ctx.session.set_prompt(system, profile.prompt_profile);
+        *ctx.prompt_profile = profile.prompt_profile;
+    }
     *ctx.active_profile = Some(name.clone());
     *ctx.provider_name = profile.provider.clone();
     *ctx.model = profile.model.clone();

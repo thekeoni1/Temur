@@ -105,6 +105,11 @@ pub struct ProfileConfig {
     /// Advisory context-window size of the served model; `None` = awareness
     /// off (same contract as `openai_compat.context_window`).
     pub context_window: Option<u64>,
+    /// Tool-prompt profile for THIS profile: `"full"` or `"compact"` (T9).
+    /// `None` = the global `prompt_profile` (which itself defaults to full).
+    /// Same explicit-only contract as the global field — never inferred
+    /// from context_window; any other value is a startup error.
+    pub prompt_profile: Option<String>,
 }
 
 /// A fully resolved provider selection — every default already applied, so
@@ -122,6 +127,9 @@ pub struct ResolvedProfile {
     pub api_key_file: Option<String>,
     pub max_tokens: u32,
     pub context_window: Option<u64>,
+    /// Already resolved: this profile's own setting, else the global, else
+    /// [`crate::tools::PromptProfile::Full`].
+    pub prompt_profile: crate::tools::PromptProfile,
 }
 
 /// Per-provider settings for an OpenAI-compatible endpoint (llama.cpp,
@@ -244,6 +252,18 @@ impl Config {
                 "profile {name:?}: model must be set and non-empty"
             )));
         }
+        // Per-profile prompt profile (T9), validated as eagerly as the
+        // provider name above: absent = the global setting.
+        let prompt_profile = match p.prompt_profile.as_deref() {
+            None => self.prompt_profile()?,
+            Some("full") => crate::tools::PromptProfile::Full,
+            Some("compact") => crate::tools::PromptProfile::Compact,
+            Some(other) => {
+                return Err(crate::error::Error::Config(format!(
+                    "profile {name:?}: unknown prompt_profile {other:?} (expected \"full\" or \"compact\")"
+                )))
+            }
+        };
         let base_url = p.base_url.clone().unwrap_or_else(|| {
             if p.provider == "openai-compat" {
                 DEFAULT_OPENAI_COMPAT_BASE_URL.to_string()
@@ -258,6 +278,7 @@ impl Config {
             api_key_file: p.api_key_file.clone(),
             max_tokens: p.max_tokens.unwrap_or(self.max_tokens),
             context_window: p.context_window,
+            prompt_profile,
         })
     }
 
@@ -273,6 +294,7 @@ impl Config {
                 api_key_file: None,
                 max_tokens: self.max_tokens,
                 context_window: None,
+                prompt_profile: self.prompt_profile()?,
             }),
             "openai-compat" => {
                 let oc = self.openai_compat.clone().unwrap_or_default();
@@ -288,6 +310,7 @@ impl Config {
                     api_key_file: oc.api_key_file,
                     max_tokens: self.max_tokens,
                     context_window: oc.context_window,
+                    prompt_profile: self.prompt_profile()?,
                 })
             }
             other => Err(crate::error::Error::Config(format!(
@@ -553,6 +576,57 @@ mod tests {
         let c: Config =
             serde_json::from_str(r#"{"profiles": {"nop": {"model": "m"}}}"#).unwrap();
         assert!(c.resolved_profiles().is_err());
+    }
+
+    // -------------------------------------------- T9: per-profile prompt_profile
+
+    #[test]
+    fn profile_prompt_profile_resolution_own_then_global_then_full() {
+        use crate::tools::PromptProfile;
+        // Own value wins over the global; absent falls back to the global;
+        // both absent = Full.
+        let c: Config = serde_json::from_str(
+            r#"{"prompt_profile": "compact",
+                "profiles": {
+                    "own":    { "provider": "anthropic", "model": "m",
+                                "prompt_profile": "full" },
+                    "global": { "provider": "anthropic", "model": "m" }
+                }}"#,
+        )
+        .unwrap();
+        let profiles = c.resolved_profiles().unwrap();
+        assert_eq!(profiles["own"].prompt_profile, PromptProfile::Full);
+        assert_eq!(profiles["global"].prompt_profile, PromptProfile::Compact);
+
+        let c: Config = serde_json::from_str(
+            r#"{"profiles": {"p": {"provider": "anthropic", "model": "m"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            c.resolved_profiles().unwrap()["p"].prompt_profile,
+            PromptProfile::Full
+        );
+
+        // resolve_base carries the GLOBAL setting (per-profile values only
+        // exist on named profiles).
+        let c: Config = serde_json::from_str(r#"{"prompt_profile":"compact"}"#).unwrap();
+        assert_eq!(c.resolve_base().unwrap().prompt_profile, PromptProfile::Compact);
+        let c: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(c.resolve_base().unwrap().prompt_profile, PromptProfile::Full);
+    }
+
+    #[test]
+    fn invalid_profile_prompt_profile_is_a_startup_error_naming_the_profile() {
+        let c: Config = serde_json::from_str(
+            r#"{"profiles": {"bad": {"provider": "anthropic", "model": "m",
+                "prompt_profile": "tiny"}}}"#,
+        )
+        .unwrap();
+        let err = c.resolved_profiles().unwrap_err().to_string();
+        assert!(
+            err.contains("\"bad\"") && err.contains("tiny") && err.contains("expected"),
+            "error names profile and value: {err}"
+        );
     }
 
     #[test]

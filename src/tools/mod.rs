@@ -134,6 +134,14 @@ impl Registry {
         self
     }
 
+    /// In-place profile switch (T9 `/model` across profiles with different
+    /// prompt profiles). Same contract as [`Registry::with_profile`]: only
+    /// the description text served by `definitions()` changes — tool set,
+    /// order, and schemas are untouched.
+    pub fn set_profile(&mut self, profile: PromptProfile) {
+        self.profile = profile;
+    }
+
     /// The standard set plus the `skill` tool, which loads instruction files
     /// from the given resolved skill directories. Registered last so the
     /// stable prompt-cache prefix (standard tools) is unaffected.

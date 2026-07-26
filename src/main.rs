@@ -106,9 +106,10 @@ fn repl(
     resume: bool,
 ) -> Result<ExitCode, error::Error> {
     let cfg = config::Config::load()?;
-    // Validated up front: an unknown prompt_profile is a startup error, not
-    // a silent fallback.
-    let prompt_profile = cfg.prompt_profile()?;
+    // Validated up front: an unknown GLOBAL prompt_profile is a startup
+    // error even when every named profile overrides it (per-profile values
+    // are validated inside resolved_profiles below).
+    cfg.prompt_profile()?;
     let cwd = std::env::current_dir()?;
 
     // Session persistence (T5), resolved up front so a bad cap is a startup
@@ -152,6 +153,9 @@ fn repl(
     let is_compat = resolved.provider == "openai-compat";
     let model = resolved.model.clone();
     let cwd_display = cwd.display().to_string();
+    // T9: the ACTIVE prompt profile — starts as the startup selection's
+    // (profile's own > global > full), then tracks `/model` switches.
+    let mut current_prompt_profile = resolved.prompt_profile;
 
     // --continue: load BEFORE provider construction — "you have no session
     // to resume" should not hide behind a credential error — and FAIL FAST
@@ -251,19 +255,26 @@ fn repl(
         }
     };
 
-    let base_system = cfg.system_prompt.clone().unwrap_or_else(|| {
-        let default = match prompt_profile {
-            temur::tools::PromptProfile::Compact => DEFAULT_SYSTEM_COMPACT,
-            temur::tools::PromptProfile::Full => DEFAULT_SYSTEM,
-        };
-        default.replace("{cwd}", &cwd.display().to_string())
-    });
-    // Advertise installed skills so the model knows the skill tool is worth
-    // calling; nothing appended when no skills are installed.
-    let system = match temur::skills::system_prompt_section(&installed_skills) {
-        Some(section) => format!("{base_system}{section}"),
-        None => base_system,
+    // T9: ONE place assembles the system prompt for a given prompt profile —
+    // startup and `/model` prompt-profile swaps both call it. The config
+    // override wins in EITHER profile; the skills section (advertising
+    // installed skills so the model knows the skill tool is worth calling)
+    // and {cwd} are captured here. Infallible, so a switch can call it after
+    // its provider build already succeeded.
+    let rebuild_system = |profile: temur::tools::PromptProfile| -> String {
+        let base_system = cfg.system_prompt.clone().unwrap_or_else(|| {
+            let default = match profile {
+                temur::tools::PromptProfile::Compact => DEFAULT_SYSTEM_COMPACT,
+                temur::tools::PromptProfile::Full => DEFAULT_SYSTEM,
+            };
+            default.replace("{cwd}", &cwd_display)
+        });
+        match temur::skills::system_prompt_section(&installed_skills) {
+            Some(section) => format!("{base_system}{section}"),
+            None => base_system,
+        }
     };
+    let system = rebuild_system(current_prompt_profile);
 
     let mut session_cfg = SessionConfig::from_config(&cfg, cwd);
     session_cfg.model = model.clone();
@@ -274,7 +285,8 @@ fn repl(
     // model, so it comes from the selection that knows the server.
     session_cfg.context_window = resolved.context_window;
     session_cfg.system = Some(system);
-    let registry = Registry::standard_with_skills(skill_dirs).with_profile(prompt_profile);
+    let registry =
+        Registry::standard_with_skills(skill_dirs).with_profile(current_prompt_profile);
     let mut session = match seed {
         Some(seed) => Session::resume(provider, registry, session_cfg, seed),
         None => Session::new(provider, registry, session_cfg),
@@ -341,7 +353,9 @@ fn repl(
                 session_max_bytes,
                 cwd_display: &cwd_display,
                 replay_mode,
+                prompt_profile: &mut current_prompt_profile,
                 build_provider: &build,
+                rebuild_system: &rebuild_system,
             };
             for ev in temur::commands::run(temur::commands::parse(&line), &mut cctx) {
                 ui.event(&ev);
