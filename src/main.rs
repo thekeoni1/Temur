@@ -390,6 +390,7 @@ fn repl(
                 session_usage: snap.session_usage,
                 todos: snap.todos,
                 last_context_used: snap.last_context_used,
+                name: None,
             };
             let mut trim_notices: Vec<String> = Vec::new();
             match temur::session_store::save(path, &file, session_max_bytes, &mut |n| {

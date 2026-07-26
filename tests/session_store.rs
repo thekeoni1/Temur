@@ -46,6 +46,7 @@ fn file_with(history: Vec<RequestMessage>) -> SessionFile {
         },
         todos: vec![],
         last_context_used: Some(165),
+        name: None,
     }
 }
 
@@ -59,6 +60,7 @@ fn as_ref(f: &SessionFile) -> SessionFileRef<'_> {
         session_usage: f.session_usage,
         todos: &f.todos,
         last_context_used: f.last_context_used,
+        name: f.name.as_deref(),
     }
 }
 
@@ -459,6 +461,149 @@ fn filename_is_frozen_by_golden_hashes() {
         store::session_path(&dir, Path::new("/")),
         dir.join("root-af63a24c860189fe.json")
     );
+}
+
+#[test]
+fn named_filenames_are_frozen_by_golden_hashes_too() {
+    use std::path::Path;
+    // T10: a named session is the default stem + "-{name}". Same frozen
+    // FNV-1a digest — the default golden above pins the stem; this pins the
+    // suffix rule. If either fails, fix the code, never the strings.
+    assert_eq!(
+        store::named_session_file_name(Path::new("/tmp/temur-golden-session-path"), "alpha"),
+        "temur-golden-session-path-ff620d6a9bcc8310-alpha.json"
+    );
+    assert_eq!(
+        store::named_session_file_name(Path::new("/"), "x2"),
+        "root-af63a24c860189fe-x2.json"
+    );
+    // The default name is EXACTLY the pre-T10 name — no suffix, no change.
+    assert_eq!(
+        store::session_file_name(Path::new("/tmp/temur-golden-session-path")),
+        "temur-golden-session-path-ff620d6a9bcc8310.json"
+    );
+}
+
+#[test]
+fn name_field_round_trips_and_default_files_keep_the_pre_t10_shape() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Default session (name: None): the serialized file must not mention
+    // "name" at all — byte-compatible with what a pre-T10 binary writes.
+    let f = file_with(vec![user_text("hello")]);
+    let json = serde_json::to_string(&as_ref(&f)).unwrap();
+    assert!(!json.contains("\"name\""), "default file grew a name field: {json}");
+
+    // Named session: round-trips through save/load.
+    let mut named = file_with(vec![user_text("hello")]);
+    named.name = Some("alpha".into());
+    let path = dir.path().join("s-alpha.json");
+    store::save(&path, &as_ref(&named), 1_000_000, &mut quiet).unwrap();
+    assert_eq!(store::load(&path).unwrap().name.as_deref(), Some("alpha"));
+}
+
+#[test]
+fn pre_t10_files_load_as_the_default_session_and_tolerance_extends() {
+    let dir = tempfile::tempdir().unwrap();
+    // A file exactly as a pre-T10 binary wrote it: no name field.
+    let path = dir.path().join("old.json");
+    std::fs::write(
+        &path,
+        r#"{"version":1,"provider":"anthropic","model":"m","cwd":"/w",
+            "history":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}"#,
+    )
+    .unwrap();
+    assert_eq!(store::load(&path).unwrap().name, None);
+    // And a FUTURE file carrying both a name and unknown fields still loads
+    // (same tolerance rule the T5 test pins for the envelope).
+    let path = dir.path().join("future.json");
+    std::fs::write(
+        &path,
+        r#"{"version":1,"provider":"anthropic","model":"m","cwd":"/w","name":"beta",
+            "history":[],"some_future_field":42}"#,
+    )
+    .unwrap();
+    assert_eq!(store::load(&path).unwrap().name.as_deref(), Some("beta"));
+}
+
+#[test]
+fn list_sessions_reads_facts_from_inside_files_and_orders_newest_first() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut a = file_with(vec![user_text("first project task")]);
+    a.cwd = "/proj/a".into();
+    store::save(&dir.path().join("a-1111.json"), &as_ref(&a), 1_000_000, &mut quiet).unwrap();
+
+    // Ensure a strictly later mtime for the second file (ns-resolution
+    // filesystems make this cheap; the pure ordering rule is table-tested
+    // in the module).
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let mut b = file_with(vec![user_text("second project task"), user_text("more")]);
+    b.cwd = "/proj/b".into();
+    b.name = Some("alpha".into());
+    store::save(&dir.path().join("b-2222-alpha.json"), &as_ref(&b), 1_000_000, &mut quiet)
+        .unwrap();
+
+    let entries = store::list_sessions(dir.path());
+    assert_eq!(entries.len(), 2);
+    // Newest first.
+    assert_eq!(entries[0].file_name, "b-2222-alpha.json");
+    assert_eq!(entries[0].cwd, "/proj/b");
+    assert_eq!(entries[0].name.as_deref(), Some("alpha"));
+    assert_eq!(entries[0].title.as_deref(), Some("second project task"));
+    assert_eq!(entries[0].messages, 2);
+    assert!(entries[0].bytes > 0);
+    assert!(entries[0].mtime.is_some());
+    assert_eq!(entries[1].file_name, "a-1111.json");
+    assert_eq!(entries[1].name, None, "pre-T10 shape lists as the default session");
+    assert_eq!(entries[1].title.as_deref(), Some("first project task"));
+}
+
+#[test]
+fn list_sessions_reports_unreadable_files_and_never_panics() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = file_with(vec![user_text("fine")]);
+    store::save(&dir.path().join("good-1111.json"), &as_ref(&good), 1_000_000, &mut quiet)
+        .unwrap();
+    std::fs::write(dir.path().join("corrupt-2222.json"), "{not json").unwrap();
+    std::fs::write(
+        dir.path().join("future-3333.json"),
+        r#"{"version":99,"history":[]}"#,
+    )
+    .unwrap();
+    // tmp litter (the atomic-writer suffix shape) is not a session.
+    std::fs::write(dir.path().join("good-1111.json.tmp.999"), "x").unwrap();
+
+    let entries = store::list_sessions(dir.path());
+    assert_eq!(entries.len(), 3, "corrupt files are reported, tmp litter skipped");
+    let unreadable: Vec<&str> = entries
+        .iter()
+        .filter(|e| e.cwd == "(unreadable)")
+        .map(|e| e.file_name.as_str())
+        .collect();
+    assert_eq!(unreadable.len(), 2, "{entries:?}");
+    assert!(unreadable.contains(&"corrupt-2222.json"));
+    assert!(unreadable.contains(&"future-3333.json"));
+
+    // A missing directory is an empty listing, not an error.
+    assert!(store::list_sessions(&dir.path().join("nope")).is_empty());
+}
+
+#[test]
+fn trim_and_cap_are_unaffected_by_the_name_field() {
+    // The 4 MiB-cap trim path rebuilds SessionFileRef with a shorter history
+    // slice; the name must ride along unchanged.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.json");
+    let mut f = file_with(two_big_exchanges(4000));
+    f.name = Some("alpha".into());
+    let mut notices: Vec<String> = Vec::new();
+    store::save(&path, &as_ref(&f), 6_000, &mut |n| notices.push(n)).unwrap();
+    let loaded = store::load(&path).unwrap();
+    assert_eq!(loaded.name.as_deref(), Some("alpha"), "name survives a trim");
+    assert_eq!(loaded.history.len(), 4);
+    assert_eq!(notices.len(), 1);
 }
 
 #[test]

@@ -278,6 +278,7 @@ fn clear(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
             session_usage: snap.session_usage,
             todos: snap.todos,
             last_context_used: snap.last_context_used,
+            name: None,
         };
         if let Err(e) = session_store::save(path, &file, ctx.session_max_bytes, &mut |_| {}) {
             out.push(notice(format!(

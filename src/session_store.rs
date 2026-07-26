@@ -95,6 +95,13 @@ pub struct SessionFile {
     pub todos: Vec<TodoItem>,
     #[serde(default)]
     pub last_context_used: Option<u64>,
+    /// T10 named sessions. `None` is the project's default session, and is
+    /// deliberately NOT serialized: a default-session file stays
+    /// byte-identical to the pre-T10 shape, so older binaries and the
+    /// existing goldens are untouched. `#[serde(default)]` covers the other
+    /// direction — a pre-T10 file loads as the default session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// The saving half: borrowed fields so writing a multi-megabyte history never
@@ -111,6 +118,9 @@ pub struct SessionFileRef<'a> {
     pub session_usage: Usage,
     pub todos: &'a [TodoItem],
     pub last_context_used: Option<u64>,
+    /// See [`SessionFile::name`]; `Option<&str>` keeps the struct `Copy`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<&'a str>,
 }
 
 /// What a resumed `Session` is rebuilt from. Moved out of a `SessionFile`, so
@@ -196,23 +206,230 @@ fn sanitize_basename(s: &str) -> String {
     }
 }
 
-/// The session filename for a working directory: a readable basename (so an
-/// operator can tell files apart by eye) plus a 16-hex FNV-1a digest of the
-/// canonicalized path (so two different directories sharing a basename never
-/// collide). No timestamp — see the module docs.
-pub fn session_file_name(cwd: &Path) -> String {
+/// The per-directory filename stem shared by the default session and every
+/// named session of a project: readable basename + 16-hex FNV-1a digest of
+/// the canonicalized path. The digest input and format are FROZEN (see
+/// [`fnv1a64`]); T10 named sessions only append to this stem, they never
+/// change it.
+fn session_stem(cwd: &Path) -> String {
     let canonical = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let base = canonical
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     let hash = fnv1a64(canonical.to_string_lossy().as_bytes());
-    format!("{}-{:016x}.json", sanitize_basename(&base), hash)
+    format!("{}-{:016x}", sanitize_basename(&base), hash)
+}
+
+/// The DEFAULT session filename for a working directory: a readable basename
+/// (so an operator can tell files apart by eye) plus a 16-hex FNV-1a digest
+/// of the canonicalized path (so two different directories sharing a
+/// basename never collide). No timestamp — see the module docs. Unchanged by
+/// T10: this is exactly the pre-T10 name, so existing sessions keep working.
+pub fn session_file_name(cwd: &Path) -> String {
+    format!("{}.json", session_stem(cwd))
+}
+
+/// A NAMED session's filename (T10): the default stem plus `-{name}`.
+/// `name` must already be sanitized ([`sanitize_session_name`]) — the
+/// commands layer owns rejecting bad names; this function just formats.
+pub fn named_session_file_name(cwd: &Path, name: &str) -> String {
+    format!("{}-{name}.json", session_stem(cwd))
+}
+
+/// Sanitize a user-supplied session name (T10): keep the same character set
+/// as [`sanitize_basename`] (`[A-Za-z0-9._-]`), but DROP anything else
+/// rather than replacing it — a name is an identifier the user will type
+/// back at `/resume`, and `-`-padding junk would make `"///"` silently
+/// become `"---"`. Cap at 32 chars; `None` when nothing survives.
+pub fn sanitize_session_name(raw: &str) -> Option<String> {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '_' || *c == '-')
+        .take(32)
+        .collect();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
 }
 
 /// Full path of the session file for `cwd` inside `dir`.
 pub fn session_path(dir: &Path, cwd: &Path) -> PathBuf {
     dir.join(session_file_name(cwd))
+}
+
+// ------------------------------------------------------------------- listing
+
+/// One saved session as the listing sees it. Everything except `file_name`,
+/// `bytes`, and `mtime` is read from INSIDE the file — hashed filenames are
+/// uninformative on purpose, and `cwd` is stored precisely so listings can
+/// say where a session came from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionEntry {
+    pub file_name: String,
+    pub cwd: String,
+    pub name: Option<String>,
+    /// Derived at LIST TIME from the first user prompt in the history —
+    /// display-only, never stored (no format change).
+    pub title: Option<String>,
+    pub messages: usize,
+    pub bytes: u64,
+    pub mtime: Option<std::time::SystemTime>,
+}
+
+/// Display title for a saved history: the first plain-text block of the
+/// first `Role::User` message (tool-result messages carry no plain text and
+/// fall through), first line only, truncated to ~60 columns. Display-only by
+/// design — deriving beats storing, because a stored title could go stale
+/// against the history it summarizes.
+fn derived_title(history: &[RequestMessage]) -> Option<String> {
+    const TITLE_COLS: usize = 60;
+    for m in history {
+        if m.role != Role::User {
+            continue;
+        }
+        for b in &m.content {
+            if let ContentBlock::Text { text } = b {
+                let line = text.lines().next().unwrap_or("");
+                if line.is_empty() {
+                    continue;
+                }
+                let mut title: String = line.chars().take(TITLE_COLS).collect();
+                if line.chars().count() > TITLE_COLS {
+                    title.push('…');
+                }
+                return Some(title);
+            }
+        }
+    }
+    None
+}
+
+/// List every session file in `dir`, newest first.
+///
+/// Ordering is by filesystem mtime, descending, with `UNIX_EPOCH` as the
+/// fallback and the file name as the tie-break. The FORMAT stays clock-less
+/// (module docs): mtime is display-order metadata the filesystem already
+/// keeps, read at list time and never written into a file — the same
+/// precedent as `tools/glob.rs`. On a clock-less device every file sorts
+/// equal and the lexicographic tie-break takes over; nothing breaks.
+///
+/// A file that cannot be read or parsed becomes an `"(unreadable)"` entry —
+/// the listing REPORTS it rather than hiding it, and never panics or aborts
+/// the rest of the listing. A missing/unreadable directory lists as empty.
+pub fn list_sessions(dir: &Path) -> Vec<SessionEntry> {
+    let mut out: Vec<SessionEntry> = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return out,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue; // skips .tmp.<pid> litter and anything foreign
+        }
+        let file_name = match path.file_name() {
+            Some(n) => n.to_string_lossy().into_owned(),
+            None => continue,
+        };
+        let meta = entry.metadata().ok();
+        let bytes: u64 = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        let mtime = meta.and_then(|m| m.modified().ok());
+        let e = match load(&path) {
+            Ok(f) => SessionEntry {
+                file_name,
+                cwd: f.cwd.clone(),
+                name: f.name.clone(),
+                title: derived_title(&f.history),
+                messages: f.history.len(),
+                bytes,
+                mtime,
+            },
+            Err(_) => SessionEntry {
+                file_name,
+                cwd: "(unreadable)".to_string(),
+                name: None,
+                title: None,
+                messages: 0,
+                bytes,
+                mtime,
+            },
+        };
+        out.push(e);
+    }
+    sort_entries(&mut out);
+    out
+}
+
+/// mtime desc, `UNIX_EPOCH` fallback, file-name tie-break (see
+/// [`list_sessions`]). Split out so the ordering rule is table-testable
+/// without racing real filesystem timestamps.
+fn sort_entries(entries: &mut [SessionEntry]) {
+    entries.sort_by(|a, b| {
+        let am = a.mtime.unwrap_or(std::time::UNIX_EPOCH);
+        let bm = b.mtime.unwrap_or(std::time::UNIX_EPOCH);
+        bm.cmp(&am).then_with(|| a.file_name.cmp(&b.file_name))
+    });
+}
+
+/// Resolve a `/resume` key against a listing. Pure — no filesystem.
+///
+/// Precedence: (1) exact session name recorded in the CURRENT project
+/// (`entry.cwd == cwd`), (2) an exact session name that is globally unique
+/// across projects, (3) a unique file-name prefix (which is how the default
+/// session, having no name, is addressed). Several matches at the deciding
+/// tier is an error that lists the candidates WITH their cwds; no match at
+/// any tier is an error too. Never guesses.
+pub fn resolve_session_key<'a>(
+    entries: &'a [SessionEntry],
+    cwd: &str,
+    key: &str,
+) -> Result<&'a SessionEntry, String> {
+    let describe = |c: &[&SessionEntry]| -> String {
+        c.iter()
+            .map(|e| format!("{} ({})", e.file_name, e.cwd))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    // (1) exact name in the current project. Unique by construction: the
+    // name is part of the filename, and one directory holds one file per
+    // name.
+    if let Some(e) = entries
+        .iter()
+        .find(|e| e.name.as_deref() == Some(key) && e.cwd == cwd)
+    {
+        return Ok(e);
+    }
+    // (2) exact name anywhere, if globally unique.
+    let named: Vec<&SessionEntry> =
+        entries.iter().filter(|e| e.name.as_deref() == Some(key)).collect();
+    match named.len() {
+        1 => return Ok(named[0]),
+        0 => {}
+        _ => {
+            return Err(format!(
+                "session name {key:?} exists in several projects: {} — resume by file-name prefix instead",
+                describe(&named)
+            ))
+        }
+    }
+    // (3) file-name prefix.
+    let prefixed: Vec<&SessionEntry> = entries
+        .iter()
+        .filter(|e| e.file_name.starts_with(key))
+        .collect();
+    match prefixed.len() {
+        1 => Ok(prefixed[0]),
+        0 => Err(format!(
+            "no saved session matches {key:?} — /sessions lists what exists"
+        )),
+        _ => Err(format!(
+            "session key {key:?} is ambiguous: {} — give more of the file name",
+            describe(&prefixed)
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------- load
@@ -522,6 +739,128 @@ mod tests {
         assert_eq!(sanitize_basename(""), "root");
         assert_eq!(sanitize_basename("a/b"), "a-b");
         assert_eq!(sanitize_basename(&"x".repeat(80)).len(), 40);
+    }
+
+    #[test]
+    fn session_name_sanitizing() {
+        // Same character set as basenames, but disallowed chars are DROPPED.
+        assert_eq!(sanitize_session_name("alpha"), Some("alpha".into()));
+        assert_eq!(sanitize_session_name("Alpha_1.x-y"), Some("Alpha_1.x-y".into()));
+        assert_eq!(sanitize_session_name("my project!"), Some("myproject".into()));
+        // Nothing survives: an error, never a silent "---".
+        assert_eq!(sanitize_session_name("///"), None);
+        assert_eq!(sanitize_session_name(""), None);
+        assert_eq!(sanitize_session_name("~~~"), None);
+        // Cap at 32.
+        assert_eq!(sanitize_session_name(&"x".repeat(80)).unwrap().len(), 32);
+    }
+
+    fn entry(file_name: &str, cwd: &str, name: Option<&str>) -> SessionEntry {
+        SessionEntry {
+            file_name: file_name.into(),
+            cwd: cwd.into(),
+            name: name.map(String::from),
+            title: None,
+            messages: 0,
+            bytes: 0,
+            mtime: None,
+        }
+    }
+
+    #[test]
+    fn ordering_is_mtime_desc_with_epoch_fallback_and_lexicographic_tie() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let t = |secs: u64| Some(UNIX_EPOCH + Duration::from_secs(secs));
+        let mut v = vec![
+            entry("b.json", "/x", None),
+            entry("a.json", "/x", None),
+            entry("old.json", "/x", None),
+            entry("new.json", "/x", None),
+        ];
+        v[0].mtime = None; // clock-less: sorts as UNIX_EPOCH
+        v[1].mtime = None;
+        v[2].mtime = t(100);
+        v[3].mtime = t(200);
+        sort_entries(&mut v);
+        let names: Vec<&str> = v.iter().map(|e| e.file_name.as_str()).collect();
+        // Newest first; the two epoch-fallback entries tie and break by name.
+        assert_eq!(names, vec!["new.json", "old.json", "a.json", "b.json"]);
+    }
+
+    #[test]
+    fn resolution_table() {
+        let entries = vec![
+            entry("proj-aaaa.json", "/cur", None),
+            entry("proj-aaaa-alpha.json", "/cur", Some("alpha")),
+            entry("other-bbbb-alpha.json", "/other", Some("alpha")),
+            entry("other-bbbb-beta.json", "/other", Some("beta")),
+            entry("third-cccc-beta.json", "/third", Some("beta")),
+            entry("third-cccc-gamma.json", "/third", Some("gamma")),
+            // A project whose DIRECTORY is called "alpha": its default
+            // session's file name starts with the string "alpha".
+            entry("alpha-dddd.json", "/alphaproj", None),
+        ];
+        let r = |cwd: &str, key: &str| resolve_session_key(&entries, cwd, key);
+
+        // (1) exact name in the current project wins over the same name
+        // elsewhere AND over any file-name prefix match.
+        assert_eq!(r("/cur", "alpha").unwrap().file_name, "proj-aaaa-alpha.json");
+        // (2) globally-unique name resolves from anywhere.
+        assert_eq!(r("/cur", "gamma").unwrap().file_name, "third-cccc-gamma.json");
+        // Duplicate name, neither in the current project: ambiguous, and the
+        // error lists every candidate with its cwd.
+        let err = r("/cur", "beta").unwrap_err();
+        assert!(err.contains("several projects"), "{err}");
+        assert!(err.contains("/other") && err.contains("/third"), "{err}");
+        assert!(err.contains("other-bbbb-beta.json") && err.contains("third-cccc-beta.json"), "{err}");
+        // But from a project that HAS a beta, that one wins.
+        assert_eq!(r("/other", "beta").unwrap().file_name, "other-bbbb-beta.json");
+        // (3) unique file-name prefix addresses the default session.
+        assert_eq!(r("/cur", "proj-aaaa.").unwrap().file_name, "proj-aaaa.json");
+        assert_eq!(r("/cur", "alpha-dddd").unwrap().file_name, "alpha-dddd.json");
+        // Ambiguous prefix: error, candidates with cwds.
+        let err = r("/cur", "proj-").unwrap_err();
+        assert!(err.contains("ambiguous"), "{err}");
+        assert!(err.contains("proj-aaaa.json") && err.contains("proj-aaaa-alpha.json"), "{err}");
+        // No match at any tier.
+        let err = r("/cur", "zzz").unwrap_err();
+        assert!(err.contains("no saved session") && err.contains("zzz"), "{err}");
+    }
+
+    #[test]
+    fn titles_derive_from_the_first_user_prompt() {
+        // Plain case: first line of the first user message.
+        assert_eq!(
+            derived_title(&[user("fix the parser\nand more")]),
+            Some("fix the parser".into())
+        );
+        // Tool-result user messages carry no plain text: fall through to the
+        // next user message (the trimmed-history shape can't even start with
+        // one, but the derivation must not depend on that).
+        let results = RequestMessage {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "ok".into(),
+                is_error: false,
+            }],
+        };
+        assert_eq!(
+            derived_title(&[results, user("second prompt")]),
+            Some("second prompt".into())
+        );
+        // Assistant text never titles a session.
+        let assistant = RequestMessage {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text { text: "hello".into() }],
+        };
+        assert_eq!(derived_title(&[assistant]), None);
+        assert_eq!(derived_title(&[]), None);
+        // ~60-col truncation with an ellipsis.
+        let long = "y".repeat(90);
+        let t = derived_title(&[user(&long)]).unwrap();
+        assert_eq!(t.chars().count(), 61);
+        assert!(t.ends_with('…'));
     }
 
     #[test]

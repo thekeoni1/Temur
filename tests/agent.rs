@@ -573,6 +573,7 @@ fn saved(history: Vec<RequestMessage>, todos: Vec<temur::tools::TodoItem>) -> Se
         },
         todos,
         last_context_used: Some(1200),
+        name: None,
     }
 }
 
@@ -1841,6 +1842,7 @@ fn clear_persists_the_empty_session_immediately() {
         session_usage: snap.session_usage,
         todos: snap.todos,
         last_context_used: snap.last_context_used,
+        name: None,
     };
     temur::session_store::save(&path, &file, temur::config::DEFAULT_SESSION_MAX_BYTES, &mut |_| {})
         .unwrap();
@@ -2188,6 +2190,7 @@ fn raw_id_switch_keeps_profile_settings_and_the_save_records_it() {
         session_usage: snap.session_usage,
         todos: snap.todos,
         last_context_used: snap.last_context_used,
+        name: None,
     };
     temur::session_store::save(&path, &file, temur::config::DEFAULT_SESSION_MAX_BYTES, &mut |_| {})
         .unwrap();
