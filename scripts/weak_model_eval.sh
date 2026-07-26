@@ -1,10 +1,13 @@
 #!/bin/sh
 # T4 weak-model eval harness, operator-run (NOT part of check.sh): measures
 # — instead of claiming — how well a small local model drives temur's
-# tools. Six fixed tasks run against a llama.cpp server inside a podman pod
-# created with --network none (same zero-internet-by-construction setup as
-# scripts/offline_demo.sh); every task is scored by a HOST-VERIFIED
+# tools. Seven fixed tasks run against a llama.cpp server inside a podman
+# pod created with --network none (same zero-internet-by-construction setup
+# as scripts/offline_demo.sh); every task is scored by a HOST-VERIFIED
 # filesystem assertion only — model prose is never evidence.
+# Task 7 (indirect-delete) additionally requires bash tool activity in the
+# transcript: it probes tool SELECTION (no delete tool exists; bash is the
+# intended path), so the end state alone is not enough.
 #
 # Nothing is ever pulled or downloaded here: preflight prints the exact
 # pull command and exits if an image is missing.
@@ -123,7 +126,7 @@ record() { # record <n> <name> <PASS|FAIL> <secs>
     echo "task $1 ($2): $3 (${4}s)"
 }
 
-echo "==== running 6 tasks ===="
+echo "==== running 7 tasks ===="
 
 # 1: plain write.
 n=1; name=write-file
@@ -187,6 +190,22 @@ if [ "$(trimmed "$EVAL_ROOT/task$n/version.txt")" = "1.2.4" ] \
     && [ "$(trimmed "$EVAL_ROOT/task$n/version.bak")" = "1.2.4" ]; then
     record "$n" "$name" PASS "$SECS"; else record "$n" "$name" FAIL "$SECS"; fi
 
+# 7: indirect tool selection. The prompt names neither bash nor rm; the
+# registry has no delete tool, so the only correct move is choosing bash on
+# its own (the T11 dogfood gap: qwen3-1.7b claimed it had no delete tool).
+# PASS needs BOTH the file gone and a bash rm call in the transcript.
+n=7; name=indirect-delete
+mkdir -p "$EVAL_ROOT/task$n"
+printf 'scratch\n' > "$EVAL_ROOT/task$n/obsolete.tmp"
+run_task "$n" "$name" \
+    'Delete the file obsolete.tmp in the current directory.'
+t="$EVAL_TRANSCRIPT_DIR/task$n.txt"
+if [ ! -e "$EVAL_ROOT/task$n/obsolete.tmp" ] \
+    && grep -q 'bash' "$t" 2>/dev/null \
+    && grep -Eq '(^| |")rm .*obsolete' "$t" 2>/dev/null; then
+    record "$n" "$name" PASS "$SECS"; else record "$n" "$name" FAIL "$SECS"; fi
+rm -f "$EVAL_ROOT/task$n/obsolete.tmp"
+
 echo "==== results ===="
 
 printf '%-4s %-14s %-6s %s\n' "task" "name" "result" "seconds"
@@ -200,7 +219,7 @@ echo "  model     : $MODEL_GGUF"
 echo "  server    : $LLAMA_IMAGE, ctx $CTX, --jinja"
 echo "  profile   : $PROMPT_PROFILE"
 echo "  transcripts: $EVAL_TRANSCRIPT_DIR/task<n>.txt"
-echo "SCORE: $SCORE/6"
+echo "SCORE: $SCORE/7"
 
 if [ "$EVAL_MIN" -gt 0 ] && [ "$SCORE" -lt "$EVAL_MIN" ]; then
     echo "BELOW THRESHOLD (EVAL_MIN=$EVAL_MIN)"
