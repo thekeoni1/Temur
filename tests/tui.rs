@@ -1552,3 +1552,197 @@ fn headless_tab_completion_submits_the_completed_command() {
     assert!(body.contains("no usage reported yet"), "status ran:\n{body}");
     assert!(body.contains("prompt: full"), "T9 status field:\n{body}");
 }
+
+// ------------------------------------------------------------- T10: sessions
+
+use temur::session_store::ReplayItem;
+
+#[test]
+fn sessions_listed_folds_to_a_cell_and_caches_completion_keys() {
+    let mut a = app();
+    a.fold(&AgentEvent::SessionsListed {
+        lines: vec![
+            "* (default) · /test · 4 msg(s) · test-1111.json · fix it".into(),
+            "  alpha · /other · 2 msg(s) · other-2222-alpha.json".into(),
+        ],
+        keys: vec!["test-1111.json".into(), "alpha".into()],
+    });
+    assert!(matches!(&a.cells[0], Cell::Sessions(l) if l.len() == 2));
+    assert_eq!(a.session_keys, vec!["test-1111.json".to_string(), "alpha".to_string()]);
+
+    // Tab after "/resume " cycles the cached keys (same machinery as
+    // /model ids; complete() is table-tested in commands.rs).
+    type_str(&mut a, "/resume ");
+    a.handle_key(key(KeyCode::Tab));
+    assert_eq!(a.input, "/resume test-1111.json");
+    a.handle_key(key(KeyCode::Tab));
+    assert_eq!(a.input, "/resume alpha");
+
+    // A fresh listing replaces the cache.
+    a.fold(&AgentEvent::SessionsListed {
+        lines: vec!["  beta · /x · 1 msg(s) · x-3333-beta.json".into()],
+        keys: vec!["beta".into()],
+    });
+    assert_eq!(a.session_keys, vec!["beta".to_string()]);
+}
+
+#[test]
+fn frame_sessions_listing_renders_notice_style() {
+    let mut a = app();
+    a.fold(&AgentEvent::SessionsListed {
+        lines: vec![
+            "* (default) · /test · 4 msg(s) · test-1111.json".into(),
+            "  alpha · /other · 2 msg(s) · other-2222-alpha.json".into(),
+        ],
+        keys: vec![],
+    });
+    let rows = render(&mut a, 80, 10);
+    let body = rows.join("\n");
+    assert!(body.contains("▌ 2 session(s):"), "count line:\n{body}");
+    assert!(body.contains("▌   * (default) · /test"), "active line:\n{body}");
+    assert!(body.contains("▌   alpha · /other"), "listing line:\n{body}");
+}
+
+#[test]
+fn session_loaded_rebuilds_transcript_title_and_usage() {
+    let mut a = app();
+    // A live conversation AND a half-typed line are on screen.
+    a.submit("live prompt");
+    a.fold(&AgentEvent::TextDelta("live answer".into()));
+    a.fold(&AgentEvent::TurnComplete {
+        turn_usage: usage(12, 34),
+        session_usage: usage(120, 340),
+    });
+    type_str(&mut a, "half-typed");
+
+    a.fold(&AgentEvent::SessionLoaded {
+        items: vec![
+            ReplayItem::User("older prompt".into()),
+            ReplayItem::Assistant("older answer".into()),
+            ReplayItem::Tool { name: "bash".into() },
+            ReplayItem::Tool { name: "read".into() },
+            ReplayItem::User("second prompt".into()),
+        ],
+        notice: "resumed session: 5 messages, ~70 tokens in / 30 out".into(),
+    });
+
+    // SessionCleared semantics: old cells and usage gone, then the replay.
+    assert_eq!(a.cells.len(), 6, "{:?}", a.cells);
+    assert!(matches!(&a.cells[0], Cell::User(t) if t == "older prompt"));
+    assert!(matches!(&a.cells[1], Cell::AssistantText(t) if t == "older answer"));
+    match (&a.cells[2], &a.cells[3]) {
+        (Cell::Tool(b), Cell::Tool(r)) => {
+            assert!(b.replay && r.replay);
+            assert_eq!(b.title.as_deref(), Some("bash"));
+            assert!(!b.is_block(), "replay bash is a one-liner, never a box");
+        }
+        other => panic!("tool cells: {other:?}"),
+    }
+    assert!(matches!(&a.cells[5], Cell::Notice(n) if n.contains("resumed session")));
+    // Title claimed by the FIRST replayed user prompt (fixes "new session").
+    assert_eq!(a.title.as_deref(), Some("older prompt"));
+    assert_eq!(a.session_usage, Usage::default(), "usage wiped like SessionCleared");
+    assert!(!a.busy);
+    assert_eq!(a.input, "half-typed", "input untouched by a resume");
+
+    // Empty history: notice-only transcript, no panic, no title.
+    a.fold(&AgentEvent::SessionLoaded {
+        items: vec![],
+        notice: "resumed session: 0 messages, ~— tokens in / — out".into(),
+    });
+    assert_eq!(a.cells.len(), 1);
+    assert!(matches!(&a.cells[0], Cell::Notice(_)));
+    assert_eq!(a.title, None);
+}
+
+#[test]
+fn frame_resume_backscroll_tool_heavy_with_interrupt_shape() {
+    let mut a = app();
+    a.fold(&AgentEvent::SessionLoaded {
+        items: vec![
+            ReplayItem::User("go build it".into()),
+            ReplayItem::Assistant("Starting with the *tests*.".into()),
+            ReplayItem::Tool { name: "bash".into() },
+            ReplayItem::Tool { name: "edit".into() },
+            ReplayItem::Tool { name: "grep".into() },
+            ReplayItem::User("and the interrupted one".into()),
+            ReplayItem::Tool { name: "bash".into() },
+        ],
+        notice: "resumed session: 7 messages, ~70 tokens in / 30 out".into(),
+    });
+    a.fold(&AgentEvent::Notice(
+        "session was recorded in /elsewhere; tools run in the current directory /test".into(),
+    ));
+    let rows = render(&mut a, 80, 20);
+    let body = rows.join("\n");
+    assert!(body.contains("▌ go build it"), "user block:\n{body}");
+    assert!(body.contains("Starting with the"), "assistant text:\n{body}");
+    assert!(body.contains("   ⚙ bash"), "replay tool one-liner:\n{body}");
+    assert!(!body.contains("# bash"), "block tools never box on replay:\n{body}");
+    assert!(!body.contains("bash: bash"), "no duplicated title:\n{body}");
+    assert!(body.contains("▌ [!] resumed session: 7 messages"), "summary:\n{body}");
+    assert!(body.contains("tools run in the current directory"), "advisory:\n{body}");
+    // Header title = first replayed prompt.
+    assert!(rows[0].contains("go build it"), "title: {}", rows[0]);
+    // Consecutive replay tools group like live inline tools (no blank rows
+    // between ⚙ lines).
+    let gear_rows: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.contains('⚙'))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(gear_rows.len(), 4, "{body}");
+    assert_eq!(gear_rows[1], gear_rows[0] + 1, "grouped: {body}");
+    assert_eq!(gear_rows[2], gear_rows[1] + 1, "grouped: {body}");
+}
+
+/// The resume flow through the REAL runtime: SessionLoaded + advisory
+/// arrive through the seam (as main emits them at startup, or commands.rs
+/// on /resume), and the final frame carries the full backscroll — the T10
+/// acceptance shape for the TUI.
+#[test]
+fn headless_resume_backscroll_renders_in_final_frame() {
+    let mut script: Vec<Event> = Vec::new();
+    script.extend("exit".chars().map(|c| Event::Key(key(KeyCode::Char(c)))));
+    script.push(Event::Key(key(KeyCode::Enter)));
+
+    let (mut ui, snapshot) = TuiUi::headless(
+        SessionInfo {
+            model: "claude-sonnet-5".into(),
+            thinking: false,
+            cwd: "/test".into(),
+            version: "test".into(),
+            profiles: vec![],
+        },
+        90,
+        24,
+        script,
+        temur::provider::CancelToken::new(),
+    );
+
+    ui.event(&AgentEvent::SessionLoaded {
+        items: vec![
+            ReplayItem::User("resume me".into()),
+            ReplayItem::Assistant("previous answer".into()),
+            ReplayItem::Tool { name: "write".into() },
+        ],
+        notice: "resumed session: 3 messages, ~70 tokens in / 30 out".into(),
+    });
+    ui.event(&AgentEvent::Notice(
+        "resumed session ended with a prompt the model never answered; it was dropped".into(),
+    ));
+    while let Some(line) = ui.read_input() {
+        panic!("script only exits: {line}");
+    }
+    drop(ui);
+
+    let rows = snapshot.lock().unwrap().clone();
+    let body = rows.join("\n");
+    assert!(rows[0].contains("resume me"), "header title: {}", rows[0]);
+    assert!(body.contains("▌ resume me"), "user block:\n{body}");
+    assert!(body.contains("   previous answer"), "assistant text:\n{body}");
+    assert!(body.contains("   ⚙ write"), "tool one-liner:\n{body}");
+    assert!(body.contains("▌ [!] resumed session: 3 messages"), "summary:\n{body}");
+    assert!(body.contains("never answered"), "advisory follows the rebuild:\n{body}");
+}

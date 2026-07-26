@@ -100,10 +100,14 @@ fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                         } else {
                             ("⚙", dim())
                         };
-                        out.push(Line::from(Span::styled(
-                            format!("   {mark} {}: {}", t.name, truncate_width(title, title_budget)),
-                            style,
-                        )));
+                        // Replay cells (T10) carry a name but no real title:
+                        // render `⚙ name` alone, the REPL backscroll shape.
+                        let text = if t.replay {
+                            format!("   {mark} {}", t.name)
+                        } else {
+                            format!("   {mark} {}: {}", t.name, truncate_width(title, title_budget))
+                        };
+                        out.push(Line::from(Span::styled(text, style)));
                     }
                     (Some(title), true) => {
                         let style = if t.is_error {
@@ -152,6 +156,25 @@ fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 }
                 for id in ids {
                     for l in wrap(id, width.saturating_sub(4)) {
+                        out.push(Line::from(vec![
+                            Span::styled(format!("{BAR} "), yellow),
+                            Span::styled(format!("  {l}"), yellow),
+                        ]));
+                    }
+                }
+            }
+            // T10 `/sessions` listing: same notice-style block as `Models`.
+            Cell::Sessions(lines) => {
+                let yellow = Style::default().fg(Color::Yellow);
+                let count = format!("{} session(s):", lines.len());
+                for l in wrap(&count, width.saturating_sub(2)) {
+                    out.push(Line::from(vec![
+                        Span::styled(format!("{BAR} "), yellow),
+                        Span::styled(l, yellow),
+                    ]));
+                }
+                for line in lines {
+                    for l in wrap(line, width.saturating_sub(4)) {
                         out.push(Line::from(vec![
                             Span::styled(format!("{BAR} "), yellow),
                             Span::styled(format!("  {l}"), yellow),

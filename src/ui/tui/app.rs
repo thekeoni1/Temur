@@ -5,6 +5,7 @@
 
 use crate::agent::events::AgentEvent;
 use crate::provider::Usage;
+use crate::session_store::ReplayItem;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 /// Render-tick period the runtime aims for (spinner cadence).
@@ -26,6 +27,9 @@ pub enum Cell {
     /// T9 `/models` listing: a count line plus one line per id,
     /// notice-styled.
     Models(Vec<String>),
+    /// T10 `/sessions` listing: a count line plus one preformatted line per
+    /// session (active marker included), notice-styled like `Models`.
+    Sessions(Vec<String>),
     /// A submitted `/command` line (T8): echoed dim, never a prompt.
     Command(String),
     /// Per-response tail, OpenCode's `▣ mode · model · duration` line.
@@ -39,13 +43,19 @@ pub struct ToolCell {
     /// see docs/TUI.md: load-bearing seam assumption).
     pub title: Option<String>,
     pub is_error: bool,
+    /// T10: rebuilt from saved history (`SessionLoaded`). Replay knows only
+    /// the tool NAME — no title, no output — so these render as `⚙ name`
+    /// one-liners even for tools that render block-form live. Always
+    /// completed (`title` set), so FIFO pairing never touches them.
+    pub replay: bool,
 }
 
 impl ToolCell {
     /// Block-form tools render as bordered boxes (OpenCode's BlockTool);
-    /// the rest are one-liners (InlineTool).
+    /// the rest are one-liners (InlineTool). Replay cells are always
+    /// one-liners — there is no body to box.
     pub fn is_block(&self) -> bool {
-        matches!(self.name.as_str(), "bash" | "write" | "edit" | "todowrite")
+        !self.replay && matches!(self.name.as_str(), "bash" | "write" | "edit" | "todowrite")
     }
 }
 
@@ -168,6 +178,7 @@ impl App {
                     name: name.clone(),
                     title: None,
                     is_error: false,
+                    replay: false,
                 }));
             }
             AgentEvent::ToolEnd {
@@ -194,6 +205,7 @@ impl App {
                             name: name.clone(),
                             title: Some(title.clone()),
                             is_error: *is_error,
+                            replay: false,
                         }));
                     }
                 }
@@ -205,11 +217,50 @@ impl App {
                 self.model_ids = ids.clone();
                 self.cells.push(Cell::Models(ids.clone()));
             }
-            // T10 (P3): cache the completion keys; the visible folds —
-            // Cell::Sessions and the SessionLoaded transcript rebuild —
-            // land with the TUI phase.
-            AgentEvent::SessionsListed { keys, .. } => self.session_keys = keys.clone(),
-            AgentEvent::SessionLoaded { .. } => {}
+            // T10 `/sessions`: render the listing AND cache the keys as Tab
+            // completion candidates for `/resume <key>` (the ModelsListed
+            // pattern).
+            AgentEvent::SessionsListed { lines, keys } => {
+                self.session_keys = keys.clone();
+                self.cells.push(Cell::Sessions(lines.clone()));
+            }
+            // T10 resume: rebuild the transcript from the replayed history.
+            // SessionCleared semantics first (transcript, title claim, usage
+            // totals), then one cell per item — markdown re-renders the
+            // assistant text at draw time — then the resume summary as a
+            // Notice. The title claim works exactly as live: the first user
+            // prompt names the session (this is what fixes the "new session"
+            // header after --continue). Input and completion state are
+            // deliberately untouched: resuming must not eat a half-typed
+            // line.
+            AgentEvent::SessionLoaded { items, notice } => {
+                self.cells.clear();
+                self.title = None;
+                self.session_usage = Usage::default();
+                for item in items {
+                    match item {
+                        ReplayItem::User(t) => {
+                            if self.title.is_none() {
+                                self.title = Some(t.clone());
+                            }
+                            self.cells.push(Cell::User(t.clone()));
+                        }
+                        ReplayItem::Assistant(t) => {
+                            self.cells.push(Cell::AssistantText(t.clone()))
+                        }
+                        ReplayItem::Tool { name } => {
+                            self.cells.push(Cell::Tool(ToolCell {
+                                name: name.clone(),
+                                title: Some(name.clone()),
+                                is_error: false,
+                                replay: true,
+                            }))
+                        }
+                    }
+                }
+                self.cells.push(Cell::Notice(notice.clone()));
+                self.busy = false;
+            }
             // T8 chrome/state signals; the confirmation Notice arrives
             // separately, so these fold silently into chrome.
             AgentEvent::ModelSwitched { model } => self.model = model.clone(),
