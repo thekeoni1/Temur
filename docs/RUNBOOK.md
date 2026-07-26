@@ -606,3 +606,24 @@ Live testing caught a real environment collision: WSL exports
 container `MSI`; the knob shipped as `CONTAINER_NAME`. Full `check.sh`
 (both paths) green at the P1 and P2 gates. No release: version stays
 0.1.1 until the v0.2.0 close-out.
+
+## v0.2.0 — T8 close-out (release procedure delta)
+
+v0.2.0 ships the T8 milestone (slash commands + profiles, TUI markdown,
+serve.sh; as-built notes in ROADMAP §T8). Bump + docs + gates + publish
+only — no product code changes, no new dependencies, no new gates.
+
+**DECIDED (operator, at launch): v0.2.0 is tagged and released while
+the repo stays PRIVATE**, repeating the v0.1.1 flow verbatim: the
+v0.1.1 procedure delta above applies unchanged, including the private
+closing gate (`gh release download` → `sha256sum -c` → `install.sh` via
+`TEMUR_BASE_URL` into a temp HOME → `--version` → installed-binary
+sha256 equals both the downloaded and locally staged `SHA256SUMS`
+entries). The PUBLIC one-liner gate remains **the** open release item,
+deferred to the visibility flip exactly as recorded for v0.1.1 — when
+the flip happens, run it for the newest released tag.
+
+Sequencing note (unchanged from v0.1.1, made explicit): the skew gate
+reads the working tree and the RUNBOOK requires `release.sh` green at
+the exact head being tagged — so the bump commit and this docs commit
+land BEFORE the gate run, and the tag points at that head.

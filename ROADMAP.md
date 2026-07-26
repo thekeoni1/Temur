@@ -178,7 +178,7 @@ payload.
 | T5 | Session persistence | JSON save/resume in the neutral vocabulary |
 | T6 | Editing + interruption | Fuzzy-match edit fallback; cancellable turns |
 | T7 | Multi-arch packaging | armv7/aarch64/x86_64 musl-static releases, install story |
-| T8 | Daily-driver UX (in progress) | Slash commands + named-profile switching (P1, done); markdown rendering + TUI styling pass (P2, done); serve.sh background server launcher (P3, done) — feature-complete, releases as v0.2.0 when complete |
+| T8 | Daily-driver UX (shipped as v0.2.0) | Slash commands + named-profile switching (P1); markdown rendering + TUI styling pass (P2); serve.sh background server launcher (P3) — released 2026-07-25 as v0.2.0 (private) |
 
 ### T0 — Identity + honest gate
 - Rename `opencode-rust` → `temur`: package name, `--version`, binary name,
@@ -337,13 +337,18 @@ spans/trims once; **F9** one private `Session::build` behind new/resume;
 carries regression tests; gates: full `check.sh` per phase, installer
 matrix (host + busybox), SIGINT black-box matrix, full `release.sh`.
 
-### T8 — Daily-driver UX (in progress)
+### T8 — Daily-driver UX (shipped as v0.2.0)
 
 Post-v0.1.1 direction (operator-decided): daily-dogfooding ergonomics,
-landed as independently gated pieces with no per-piece release — T8 ships
-as v0.2.0 when the milestone is complete. All planned feature pieces
-(P1–P3) are done; the only remaining T8 work is the v0.2.0 close-out
-itself (version bump, tag, release.sh).
+landed as independently gated pieces with no per-piece release — T8
+shipped as v0.2.0. All feature pieces (P1–P3) landed 2026-07-25; the
+close-out (version bump, docs, full release.sh + installer gates,
+annotated tag, private GitHub release with closing gate) ran the same
+day, repeating the v0.1.1 PRIVATE release flow. Close-out as-built: the
+bump touched exactly the six pinned sites (Cargo.toml/Cargo.lock,
+install.sh VERSION, three README pin groups); no product code and no
+dependency changes rode along. The PUBLIC one-liner gate remains the
+one open release item, deferred to the visibility flip (RUNBOOK).
 
 **T8-P1 (as-built, 2026-07-25): slash commands + named-profile model
 switching.** Config gains `profiles` (nickname → provider/model/base_url/
