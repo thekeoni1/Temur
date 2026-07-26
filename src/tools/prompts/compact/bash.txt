@@ -10,4 +10,6 @@ Parameters:
 A timeout or a nonzero exit code is noted at the end of the output. Very
 long output is truncated, with a note saying how much was kept. Run one
 command per call and check its result before the next; avoid commands that
-never exit (servers, watchers, interactive prompts).
+never exit (servers, watchers, interactive prompts). Also use this tool
+for file operations no dedicated tool covers, such as delete, move, copy,
+or chmod (rm, mv, cp, chmod).
