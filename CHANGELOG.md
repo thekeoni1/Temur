@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased
+## Unreleased - v0.4.0
 
 T11 multi-model ergonomics:
 
