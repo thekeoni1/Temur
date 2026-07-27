@@ -181,7 +181,7 @@ payload.
 | T8 | Daily-driver UX (shipped as v0.2.0) | Slash commands + named-profile switching (P1); markdown rendering + TUI styling pass (P2); serve.sh background server launcher (P3) - released 2026-07-25 as v0.2.0 (private) |
 | T9 | Command ergonomics (shipped as v0.3.0) | Per-profile prompt profiles (P1); /models listing + raw-model-id switching (P2); TUI command styling + Tab completion (P3); serve.sh MODEL_GGUF default (P4) - feature-complete 2026-07-25; shipped as v0.3.0 |
 | T10 | Session management (shipped as v0.3.0) | Named multi-session per project (store P1); resume seam + lossy replay (P2); /sessions + /resume + /new + --resume (P3); TUI listing cell + backscroll rebuild (P4) - feature-complete 2026-07-26; shipped with T9 as v0.3.0 |
-| T11 | Multi-model ergonomics | serve.sh model selection by name + candidate listing + RAM fit warn (P1); compact bash prompt file-ops hint (P2); weak-model eval indirect-tool-selection probe (P3); Ollama + LM Studio recipes + shortlist table (P4); live shortlist verification (P5) - feature-complete 2026-07-26, unreleased |
+| T11 | Multi-model ergonomics (shipped as v0.4.0) | serve.sh model selection by name + candidate listing + RAM fit warn (P1); compact bash prompt file-ops hint (P2); weak-model eval indirect-tool-selection probe (P3); Ollama + LM Studio recipes + shortlist table (P4); live shortlist verification (P5) - feature-complete 2026-07-26; shipped as v0.4.0 |
 
 ### T0 - Identity + honest gate
 - Rename `opencode-rust` → `temur`: package name, `--version`, binary name,
@@ -626,6 +626,18 @@ with a finding worth keeping: it chose the right tool every time
 never structured tool calls, on llama.cpp server-b10068 with --jinja,
 so it fails on wire format, not reasoning. Details and verbatim
 transcripts: RUNBOOK "T11 acceptance".
+
+### v0.4.0 - T11 close-out (as-built)
+
+T11 ships alone as v0.4.0 (operator decision: a feature milestone takes
+a minor bump), repeating the v0.3.0 two-stage procedure: stage 1 (bump,
+CHANGELOG claim, docs, full release.sh + installer gates to staged
+artifacts) runs first, and the tag + private GitHub release are held
+until operator dogfood sign-off. Close-out as-built: the bump touched
+exactly the six pinned sites (Cargo.toml/Cargo.lock, install.sh
+VERSION, three README pin groups); no product code and no dependency
+changes rode along. The PUBLIC one-liner gate remains the one open
+release item, deferred to the visibility flip (RUNBOOK).
 
 ## 4. Invariants (every milestone)
 

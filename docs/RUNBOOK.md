@@ -1061,3 +1061,23 @@ yes/yes (7/7), Qwen2.5-Coder-3B-Instruct no/n-a (0/7, prose-only tool
 calls). Qwen2.5-Coder-1.5B and Qwen3-0.6B stay "reported (pre-T11)".
 Full table with sizes and RAM estimates: OFFLINE.md, "Recommended
 small models".
+
+## v0.4.0 - T11 close-out (release procedure delta)
+
+What ships: T11 multi-model ergonomics (serve.sh model selection by
+name + candidate listing + RAM fit warn, compact bash prompt file-ops
+hint, weak-model eval indirect-tool-selection probe, Ollama + LM Studio
+recipes, verified shortlist).
+
+Procedure deltas vs v0.3.0:
+
+- **DECIDED (operator, 2026-07-26): PRIVATE release,** repeating the
+  v0.3.0 procedure; the PUBLIC one-liner gate stays deferred to the
+  visibility flip.
+- **Tag and publish held until operator dogfood sign-off:** stage 1
+  stops at gated artifacts (full release.sh + installer matrix over the
+  close-out commits, artifacts staged under
+  /home/dev/dist/release/v0.4.0), with NO tag, NO push, and NO GitHub
+  release. Stage 2 (tag at the dogfooded head, push, private release,
+  closing gate, acceptance record) runs as a separate prompt after
+  sign-off. Same as v0.3.0.
