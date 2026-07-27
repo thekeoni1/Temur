@@ -6,6 +6,10 @@ name: container-gate
 
 on:
   workflow_dispatch:
+  push:
+    # TEMPORARY for T12 iteration: dispatch only registers once the file is
+    # on main, so branch pushes stand in for it. Remove before merge.
+    branches: [t12-ci]
 
 env:
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
