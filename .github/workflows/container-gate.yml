@@ -39,9 +39,13 @@ jobs:
             ${{ github.workspace }}/target
           key: container-gate-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
 
+      # The i386/debian manifest carries only a 386 image, so podman on the
+      # amd64 runner needs the arch stated explicitly (at run time it prints
+      # the expected "image platform does not match" warning and works; the
+      # containers share the runner's 64-bit kernel).
       - name: Pull the pinned container images (check.sh never pulls)
         run: |
-          podman pull docker.io/i386/debian:stable
+          podman pull --arch 386 docker.io/i386/debian:stable
           podman pull docker.io/library/busybox:stable
 
       # script(1) supplies a pty (insurance for the host TUI smoke; -e makes
