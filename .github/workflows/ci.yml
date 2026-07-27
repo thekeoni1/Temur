@@ -78,10 +78,15 @@ jobs:
           # clone would silently make that scan vacuous.
           fetch-depth: 0
 
+      # gcc-13-multilib, not the gcc-multilib meta: the cross gccs declare
+      # Conflicts: gcc-multilib (it owns the /usr/include/asm symlink), and a
+      # single apt transaction cannot both install and remove a requested
+      # package. gcc-13-multilib + libc6-dev-i386 is what the i686 ring C
+      # build actually needs (the reference machine runs exactly this set).
       - name: Install cross toolchains and emulators
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential gcc-multilib libc6-i386 libc6-dev-i386 \
+          sudo apt-get install -y build-essential gcc-13-multilib libc6-i386 libc6-dev-i386 \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf qemu-user-static
 
       - name: Install Rust (stable, all four musl release targets)

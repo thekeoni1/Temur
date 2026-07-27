@@ -83,6 +83,13 @@ apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf qemu-user-stati
 Verified with: gcc-aarch64-linux-gnu / gcc-arm-linux-gnueabihf 4:13.2.0-7ubuntu1,
 qemu-user-static 1:8.2.2+ds-0ubuntu1.17.
 
+Note: the cross gccs declare `Conflicts: gcc-multilib` (the meta package
+owning the `/usr/include/asm` symlink), so this second transaction removes
+the `gcc-multilib` meta from stage 3 and keeps `gcc-13-multilib`, which is
+the part the i686 builds actually use. That is the verified machine state;
+a single combined transaction of both sets would fail instead (T12 CI hit
+exactly this).
+
 **Deliberately NOT installed:** any 32-bit OpenSSL/libssl packages
 (`libssl-dev:i386` etc.). The project uses a pure-Rust TLS stack (rustls);
 the only libssl on the system should be Ubuntu's stock 64-bit `libssl3t64`
