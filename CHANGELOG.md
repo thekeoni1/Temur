@@ -2,6 +2,24 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
+## Unreleased
+
+T12 CI:
+
+- Two-tier GitHub Actions CI (first-party actions only). Tier 1 on
+  every push to main: a hermetic test job (cargo build + full suite +
+  forbidden-dep scan) and a release-gate job running the real
+  release.sh (generic leak scan over files and full history, skew
+  gate, 4-target static build with per-target asserts, SHA256SUMS)
+  with staged artifacts uploaded for 7 days. Tier 2 on manual
+  dispatch, experimental: the full check.sh under rootless podman.
+- check.sh: target dir and TUI smoke log dir are now env-overridable
+  (`TEMUR_TARGET_DIR`, `TEMUR_CHECK_TMP`); defaults are
+  behavior-identical, no other script changes.
+- SETUP.md: recorded the T7-era cross-toolchain additions (ARM cross
+  compilers, qemu-user-static, the three extra rustup targets) that
+  the original stages predated.
+
 ## v0.4.0 - 2026-07-27
 
 T11 multi-model ergonomics:

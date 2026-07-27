@@ -72,6 +72,17 @@ apt-get install -y build-essential gcc-multilib libc6-i386 libc6-dev-i386 podman
 Verified with: gcc 13.3.0 (gcc-multilib 4:13.2.0-7ubuntu1), libc6-i386 /
 libc6-dev-i386 2.39-0ubuntu8.7, podman 4.9.3.
 
+T7 multi-arch releases additionally need the cross compilers (they build
+ring's C/asm for the ARM targets) and the user-mode emulators (release.sh
+asserts `--version` on every runnable artifact):
+
+```sh
+apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf qemu-user-static
+```
+
+Verified with: gcc-aarch64-linux-gnu / gcc-arm-linux-gnueabihf 4:13.2.0-7ubuntu1,
+qemu-user-static 1:8.2.2+ds-0ubuntu1.17.
+
 **Deliberately NOT installed:** any 32-bit OpenSSL/libssl packages
 (`libssl-dev:i386` etc.). The project uses a pure-Rust TLS stack (rustls);
 the only libssl on the system should be Ubuntu's stock 64-bit `libssl3t64`
@@ -116,6 +127,12 @@ wsl -d Ubuntu -- sh -c 'whoami; systemctl is-system-running || true'
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --profile minimal -y
 . "$HOME/.cargo/env"
 rustup target add i686-unknown-linux-gnu i686-unknown-linux-musl
+```
+
+T7 multi-arch releases additionally need the other three release targets:
+
+```sh
+rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf
 ```
 
 Verified with: rustup 1.29.0, rustc/cargo 1.96.1 stable, in `/home/dev/.cargo`

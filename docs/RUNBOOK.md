@@ -1135,3 +1135,62 @@ When the operator flips visibility, run the README one-liner verbatim
 into a temp HOME (live raw-URL download of install.sh at the newest
 released tag, live artifact + SHA256SUMS from the release, checksum
 verified, `--version` matches) and record the result here.
+
+## T12 - CI (as-built)
+
+Two-tier GitHub Actions, first-party actions only (checkout, cache,
+upload-artifact, all @v4). Both workflows set
+`CARGO_TARGET_DIR: ${{ github.workspace }}/target`, which overrides
+the machine-specific `target-dir` in `.cargo/config.toml` (env beats
+config in cargo's precedence); no config change was needed.
+
+Tier 1, `.github/workflows/ci.yml`, runs on every push to main plus
+manual dispatch:
+
+- Job `test`: cargo build + the full hermetic suite (cargo test; no
+  network, no tty, i686 binaries execute on the x86_64 runner via
+  gcc-multilib/libc6-i386) + the forbidden-dep scan mirrored from
+  check.sh (openssl-sys and aws-lc-sys must not resolve).
+- Job `release-gate`: the real `scripts/release.sh` with SKIP_CHECK=1
+  (gate 1 alone is skipped; its container half is tier 2), staging to
+  the runner temp dir and uploading the staged `v*` dir as a 7-day
+  artifact. This exercises the generic key-shape leak scan over
+  tracked files AND full commit history, the install.sh/README skew
+  gate, the 4-target musl-static build with per-target
+  readelf/VFP/--version asserts (i686 and x86_64 natively, ARM via
+  qemu-user-static), and the SHA256SUMS self-verify. The job MUST
+  check out with `fetch-depth: 0`: the history scan greps commit
+  messages across all history, and a shallow clone would silently make
+  it vacuous. release.sh reads binaries from the hardcoded
+  `/home/dev/rustcode-target`, so the job bridges that path with a
+  symlink to the workspace target dir (scripts stay CI-agnostic).
+
+Tier 2, `.github/workflows/container-gate.yml`, dispatch-only and
+experimental at first: the full `scripts/check.sh` (both paths) with
+rootless podman on the runner, after pulling the two pinned images
+(check.sh never pulls). check.sh is wrapped in
+`script -qec '...' /dev/null` for pty insurance; `-e` propagates the
+exit code so a red check fails the step. check.sh gained two CI-only
+env knobs for this (defaults are behavior-identical):
+`TEMUR_TARGET_DIR` (the hardcoded target dir) and `TEMUR_CHECK_TMP`
+(the TUI smoke log dir).
+
+Operator-only, deliberately NOT in CI: the real leak-patterns file
+(machine configuration, never committed, never stored as a repo or
+Actions secret) and the live release procedure (tag, publish, closing
+gate). CI's release-gate runs with a placeholder patterns file written
+at job time containing one active pattern that matches nothing in the
+repo, so the operator-pattern half of the gate stays exercised end to
+end; the embedded generic key-shape scan is the real CI leak coverage.
+The placeholder pattern is spelled in the workflow with a bracketed
+character class so the tracked workflow file cannot match its own
+pattern text.
+
+Rerun policy for timing-sensitive tests: `tests/tools.rs:212` and
+`tests/tools.rs:325-337` assert real timing behavior and may flake on
+loaded shared CI runners. If one fails in CI: rerun the job; if it
+passes on rerun, it was scheduling noise, not a defect. The tests are
+never to be loosened for CI (they gate real product behavior and pass
+deterministically on dedicated hardware); a persistent CI-only failure
+after reruns means the runner class is unsuitable for that assertion
+and should be raised with the operator, not papered over.
