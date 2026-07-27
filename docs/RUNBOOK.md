@@ -1081,3 +1081,57 @@ Procedure deltas vs v0.3.0:
   release. Stage 2 (tag at the dogfooded head, push, private release,
   closing gate, acceptance record) runs as a separate prompt after
   sign-off. Same as v0.3.0.
+
+## v0.4.0 release acceptance - recorded result
+
+2026-07-27: **v0.4.0 published (repo PRIVATE by decision) and
+closing-gate verified.** Annotated tag `v0.4.0` ("temur v0.4.0 -
+multi-model ergonomics (T11)") at head `ccfa1bd`, main pushed in one
+range `f1670ff..ccfa1bd` (the three stage-1 close-out commits plus the
+CHANGELOG dating commit) and the tag pushed after dogfood sign-off;
+release "temur v0.4.0" created with the four gated binaries +
+`SHA256SUMS`:
+<https://github.com/thekeoni1/Temur/releases/tag/v0.4.0> (404s for
+non-collaborators while private, by design).
+
+Preflight: tree clean at `fe062ad` ahead of origin/main by exactly the
+three stage-1 commits; `ANTHROPIC_API_KEY` absent; `gh auth` OK (repo
+scope); visibility confirmed PRIVATE before and after publish; no
+v0.4* tag existed before this cycle's tag. The stage-1 bump touched
+exactly the six pinned sites; Cargo.lock regenerated via `cargo update
+-p temur --offline` (temur entry only).
+
+Gate results at the tagged head `ccfa1bd` (no env overrides, run under
+a pty; the full gate was re-run at this exact head after the CHANGELOG
+dating commit, per the release rule): full `check.sh` ALL CHECKS
+PASSED both paths; leak gate "OK: leak grep clean (operator patterns +
+generic shapes, files + history)"; skew gate "OK: install.sh + README
+match version 0.4.0 and all targets"; `== RELEASE v0.4.0: 4/4
+ARTIFACTS GATED ==` with all four `--version` asserts printing
+`temur 0.4.0` (i686 + x86_64 native, aarch64 + armv7 via qemu);
+SHA256SUMS self-verify 4/4 OK. Installer matrix 6/6 (host + busybox,
+pass/corrupt/unlisted).
+
+Dogfood sign-off: the operator dogfooded serve.sh model selection and
+the Qwen3-4B-Instruct-2507 shortlist pick and signed off; stage 2 ran
+2026-07-27. No findings carried out of the dogfood.
+
+Procedure deltas this cycle (recorded above in "v0.4.0 - T11
+close-out"): the tag and release were HELD after the stage-1 gate run
+until dogfood sign-off, repeating the v0.3.0 procedure. No in-cycle
+deviations: no scrubs (the leak gate passed first try in both stages),
+no source or test changes, and only the two permitted stage-2 commits
+(CHANGELOG dating, this record).
+
+Closing gate (private variant, fresh temp dir + temp HOME):
+authenticated `gh release download v0.4.0` (x86_64 artifact +
+SHA256SUMS) → `sha256sum -c --ignore-missing SHA256SUMS` OK → the
+downloaded binary run with the temp HOME printed `temur 0.4.0` → the
+downloaded binary's sha256 equals the locally-staged artifact's
+byte-for-byte (`5d141e3c5e28ccc6…`, x86_64 artifact).
+
+**OPEN ITEM (unchanged, the only one): the PUBLIC one-liner gate.**
+When the operator flips visibility, run the README one-liner verbatim
+into a temp HOME (live raw-URL download of install.sh at the newest
+released tag, live artifact + SHA256SUMS from the release, checksum
+verified, `--version` matches) and record the result here.
