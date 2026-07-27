@@ -9,7 +9,8 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-TDIR=/home/dev/rustcode-target
+TDIR="${TEMUR_TARGET_DIR:-/home/dev/rustcode-target}"
+CHECK_TMP="${TEMUR_CHECK_TMP:-/tmp}"
 GNU_BIN=$TDIR/i686-unknown-linux-gnu/debug/temur
 MUSL_BIN=$TDIR/i686-unknown-linux-musl/release/temur
 IMG=docker.io/i386/debian:stable
@@ -145,12 +146,12 @@ echo "== container: mock REPL via openai-compat provider (gnu-debug) =="
 mock_repl_openai "$(dirname "$GNU_BIN")" "$IMG" gnu
 
 echo "== host: TUI pty smoke =="
-tui_input | script -qec "stty rows 24 cols 100; env $HOST_ISOLATION $GNU_BIN $MOCKARGS" /tmp/tui-check-host.log >/dev/null
-check_tui_log /tmp/tui-check-host.log host
+tui_input | script -qec "stty rows 24 cols 100; env $HOST_ISOLATION $GNU_BIN $MOCKARGS" "$CHECK_TMP/tui-check-host.log" >/dev/null
+check_tui_log "$CHECK_TMP/tui-check-host.log" host
 echo "TUI pty smoke OK (host)"
 
 echo "== container: TUI pty smoke (gnu-debug) =="
-container_tui "$(dirname "$GNU_BIN")" gnu /tmp/tui-check-cont.log
+container_tui "$(dirname "$GNU_BIN")" gnu "$CHECK_TMP/tui-check-cont.log"
 
 # --- path 2: musl-release (acceptance gate for the shipped artifact) ---------
 
@@ -189,7 +190,7 @@ echo "== container: mock REPL via openai-compat provider (musl) =="
 mock_repl_openai "$(dirname "$MUSL_BIN")" "$IMG" musl
 
 echo "== container: TUI pty smoke (musl) =="
-container_tui "$(dirname "$MUSL_BIN")" musl /tmp/tui-check-musl.log
+container_tui "$(dirname "$MUSL_BIN")" musl "$CHECK_TMP/tui-check-musl.log"
 
 echo "== bare container (busybox): --version =="
 podman run --rm -v "$(dirname "$MUSL_BIN")":/app:ro "$BARE_IMG" /app/temur --version
