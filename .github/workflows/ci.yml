@@ -1,0 +1,130 @@
+# Tier 1 CI: hermetic host-side gates on every push to main.
+# Tier 2 (container-gate.yml, dispatch-only) runs the full check.sh with
+# podman. What stays operator-only: the real leak patterns file (machine
+# configuration, never committed and never uploaded anywhere) and the
+# live release procedure (RUNBOOK).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  # Overrides .cargo/config.toml's machine-specific target-dir (env var wins
+  # over config in cargo's precedence order).
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  # Build + full test suite + forbidden-dep scan, mirroring the host half of
+  # check.sh path 1. The suite is hermetic: no network, no tty, no state
+  # outside the target dir.
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install 32-bit build and run packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gcc-multilib libc6-i386 libc6-dev-i386
+
+      - name: Install Rust (stable, i686 gnu target)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add i686-unknown-linux-gnu
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ github.workspace }}/target
+          key: test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build (i686 gnu debug)
+        run: cargo build
+
+      - name: Test (252 hermetic tests, i686 binaries run via multilib)
+        run: cargo test
+
+      # Mirrors check.sh's forbidden-deps gate: pure-Rust TLS only, so
+      # openssl-sys must never resolve, and ring (not aws-lc-sys) is the
+      # expected rustls provider.
+      - name: Forbidden dependency scan
+        run: |
+          if cargo tree -i openssl-sys >/dev/null 2>&1; then
+            echo "FAIL: openssl-sys in dependency graph"; exit 1
+          fi
+          if cargo tree -i aws-lc-sys >/dev/null 2>&1; then
+            echo "FAIL: aws-lc-sys in dependency graph (ring provider expected)"; exit 1
+          fi
+          echo "OK: no openssl-sys, no aws-lc-sys"
+
+  # The real scripts/release.sh with SKIP_CHECK=1 (gate 1 alone is skipped;
+  # the container half of it is tier 2). Exercises the generic leak scan,
+  # the install.sh/README skew gate, the 4-target static build with
+  # per-target readelf/VFP/--version asserts, and SHA256SUMS self-verify.
+  release-gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The leak gate greps commit messages across all history; a shallow
+          # clone would silently make that scan vacuous.
+          fetch-depth: 0
+
+      - name: Install cross toolchains and emulators
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gcc-multilib libc6-i386 libc6-dev-i386 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf qemu-user-static
+
+      - name: Install Rust (stable, all four musl release targets)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add i686-unknown-linux-musl x86_64-unknown-linux-musl \
+            aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ github.workspace }}/target
+          key: release-gate-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      # release.sh reads built binaries from the hardcoded machine path
+      # /home/dev/rustcode-target (scripts stay unchanged for CI); point that
+      # path at this job's target dir.
+      - name: Bridge the hardcoded target dir
+        run: |
+          sudo mkdir -p /home/dev
+          sudo ln -sfn "$CARGO_TARGET_DIR" /home/dev/rustcode-target
+
+      # The operator leak-patterns file is machine configuration by design
+      # and never leaves the operator's machine. CI supplies a placeholder so
+      # the operator-pattern half of the gate stays exercised end to end; the
+      # embedded generic key-shape scan is the real CI coverage. The bracket
+      # keeps this file from matching its own pattern text.
+      - name: Write placeholder leak patterns
+        run: |
+          {
+            echo "# CI placeholder: real operator patterns are machine-local by design."
+            echo "TEMURC[I]PLACEHOLDER"
+          } > "$RUNNER_TEMP/leak-patterns-ci.txt"
+
+      - name: release.sh (SKIP_CHECK=1, staged to runner temp)
+        run: >
+          SKIP_CHECK=1
+          LEAK_PATTERNS="$RUNNER_TEMP/leak-patterns-ci.txt"
+          STAGE_ROOT="$RUNNER_TEMP/dist"
+          scripts/release.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-stage
+          path: ${{ runner.temp }}/dist/v*
+          retention-days: 7

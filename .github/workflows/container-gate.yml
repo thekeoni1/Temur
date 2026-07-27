@@ -1,0 +1,49 @@
+# Tier 2 CI (dispatch-only, experimental at first): the real scripts/check.sh
+# end to end with rootless podman, i.e. both paths including the container
+# suites, mock REPL smokes, TUI pty smokes, and the bare busybox check.
+# check.sh never pulls images, so this job pulls them first.
+name: container-gate
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  container-gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install 32-bit build packages and podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gcc-multilib libc6-i386 libc6-dev-i386 podman
+
+      - name: Install Rust (stable, both i686 targets)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add i686-unknown-linux-gnu i686-unknown-linux-musl
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ github.workspace }}/target
+          key: container-gate-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Pull the pinned container images (check.sh never pulls)
+        run: |
+          podman pull docker.io/i386/debian:stable
+          podman pull docker.io/library/busybox:stable
+
+      # script(1) supplies a pty (insurance for the host TUI smoke; -e makes
+      # the step fail with check.sh's own exit code).
+      - name: check.sh (full, both paths)
+        env:
+          TEMUR_TARGET_DIR: ${{ github.workspace }}/target
+          TEMUR_CHECK_TMP: ${{ runner.temp }}
+        run: script -qec 'scripts/check.sh' /dev/null
