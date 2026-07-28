@@ -1386,3 +1386,81 @@ into a temp HOME (live raw-URL download of install.sh at the newest
 released tag, live artifact + SHA256SUMS from the release, checksum
 verified, `--version` matches) and record the result here, together
 with the standing hostname-blob-history decision.
+
+## T15 acceptance - recorded result (no release)
+
+2026-07-28, five commits on main over the v0.5.0 baseline (2a6a5a3):
+P1 1ff31b3 (init picker over the keyless listing GET), P2 ab314f1
+(/model --save persistence), P3 eb17311 (doctor model check), P4
+ca5c6bd (baked shortlist), P5 (docs + this record). Every phase ran
+the full check.sh gate (pty, foreground) green; the P2 run also
+proved the forbidden-deps gate clean with indexmap in the tree.
+
+Security posture as amended for T15: the ONE new network capability
+is `list_models_keyless(base_url, 3s timeout)`, an unauthenticated
+GET of `{base}/models` that takes only a base URL, so it cannot
+attach an auth header or touch a key file by construction; init and
+doctor call only it, never `list_models_live`. The cli e2e picker
+test asserts the captured request head carries no `authorization`
+and no `x-api-key` header, end to end through the real binary.
+
+Live smoke (Qwen3-1.7B-Q4_K_M via serve.sh, keyless, isolated XDG
+dirs; all first-attempt green, transcripts verbatim):
+
+(a) init with the server UP: picker listed the served id and a
+number selected it:
+
+    Template [1]: Base URL [http://127.0.0.1:8080/v1]: Models on http://127.0.0.1:8080/v1:
+      1) /model.gguf
+    Model (number or id) [/model.gguf]:
+    Wrote /tmp/t15-demo/config/temur/config.json
+
+(b) init with the server DOWN: fallback note + baked shortlist, then
+the free-text question:
+
+    Base URL [http://127.0.0.1:8080/v1]: could not list models from http://127.0.0.1:8080/v1: model listing GET http://127.0.0.1:8080/v1/models: io: Connection refused
+    Known-good small models:
+      Qwen3-1.7B Q4_K_M (~2.1 GB RAM at 8k context; the primary recommendation)
+      Qwen3-4B-Instruct-2507 Q4_K_M (~3.4 GB RAM)
+    Larger is better when RAM allows; 7B+ is qualitatively different.
+    See docs/OFFLINE.md, section "Recommended small models".
+    Model id [qwen3-1.7b]:
+
+(c) doctor: all-PASS with the picked model ("PASS: model
+\"/model.gguf\" is in the server listing at
+http://127.0.0.1:8080/v1", "doctor: 6 pass, 0 warn, 0 fail", exit
+0); with a bogus configured model, WARN naming it and the server
+ids, exit unchanged:
+
+    WARN: model "qwen3-bogus" is not in the server listing at http://127.0.0.1:8080/v1 (server lists: /model.gguf; advisory only, servers may alias ids)
+    doctor: 5 pass, 1 warn, 0 fail
+
+(d) live switch + save, then restart:
+
+    >   [!] switched model to qwen3-1.7b (openai-compat · profile settings kept)
+      [!] saved model qwen3-1.7b to /tmp/t15-demo/config/temur/config.json
+    > bye
+
+    temur 0.5.0 (model=qwen3-1.7b, thinking=false)
+    >   [!] provider: openai-compat · model: qwen3-1.7b
+
+(e) a hand-ordered pretty config with unknown fields ("future_knob"
+top-level, "operator_note" inside openai_compat, model deliberately
+not first) survived a save byte-comparably: diff before/after showed
+exactly one changed line, the model value.
+
+Bonus: one live one-shot turn against the picked server
+(`temur -p "Reply with exactly: T15 SMOKE OK"`) printed
+`T15 SMOKE OK`, exit 0.
+
+Residuals, honest: the baked init shortlist is a hand-kept summary
+of OFFLINE.md "Recommended small models" (drift risk; the source
+comment names OFFLINE.md as canonical). The plan's base-anthropic
+save site read "anthropic.model"; as built it is the top-level
+"model" key, because that is the key resolve_base actually reads
+(the schema has no nested anthropic object; a nested write would
+have been dead weight the loader ignores). serde_json preserve_order
+changed Value serialization order globally; request bodies are
+pinned byte-identical through sorted-key serialization (goldens
+enforce), while session files and other non-gated JSON may order
+keys differently than before (cosmetic only).

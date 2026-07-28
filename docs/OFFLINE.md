@@ -277,6 +277,13 @@ task does not name one (the weak-model eval's task 7). "Verified" rows
 ran the full eval harness on the stated date; "reported" rows carry
 earlier observations not re-run through the current harness.
 
+Since T15, temur can also read a running server's own model listing:
+`temur init`'s local template offers the served models as a numbered
+pick (a two-row summary of this table prints only as the fallback when
+no server answers), and `temur doctor` warns when a configured model is
+not in the listing. Both use a single unauthenticated GET, against
+keyless endpoints only.
+
 | Model | Quant | File size | Est. RAM at 8k ctx | Tool calls | Indirect selection | Status |
 |---|---|---|---|---|---|---|
 | **Qwen3-1.7B** (primary) | Q4_K_M | ~1.1 GB | ~2.1 GB | yes | yes | verified 2026-07-26 (eval 7/7) |

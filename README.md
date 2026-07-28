@@ -103,17 +103,25 @@ temur           # TUI on a terminal; plain line REPL when piped
 
 `temur init` offers four templates: local llama.cpp / Ollama / LM Studio
 (keyless), Anthropic, OpenAI, and Gemini (the latter two through their
-OpenAI-compatible endpoints). For keyed templates it asks for a key file
+OpenAI-compatible endpoints). The local template asks where the server
+lives (default `http://127.0.0.1:8080/v1`) and, when one answers, lists
+the models it actually serves so you pick by number instead of typing an
+id blind; with no server reachable it falls back to the free-text
+question plus a short baked list of known-good small models
+([docs/OFFLINE.md](docs/OFFLINE.md), section "Recommended small models",
+stays the full table). For keyed templates it asks for a key file
 path (default `~/.secrets/temur-<provider>-key`), creates that file
 EMPTY with mode 600, and tells you to paste the key in with your editor:
 temur never accepts, reads back, echoes, or stores key material, in any
 direction. `temur doctor` then verifies the setup: config parse and
 validation, the key file by metadata only (present, non-empty by size,
-mode 600, WARN on group/other bits), sessions dir writability, and one
-TCP-connect/TLS-handshake reachability probe per endpoint, without
-sending any API request (`--no-network` skips the probes). Running
-`temur` with no config at all prints these pointers instead of a raw
-credential error.
+mode 600, WARN on group/other bits), sessions dir writability, one
+TCP-connect/TLS-handshake reachability probe per endpoint, and, for
+keyless local endpoints only, whether each configured model is in the
+server's own listing (an unauthenticated GET; a mismatch is a WARN
+naming what the server serves, since servers alias ids). `--no-network`
+skips the probes and the model checks. Running `temur` with no config
+at all prints these pointers instead of a raw credential error.
 
 One-shot mode runs exactly one full agentic turn (tool calls included)
 and exits: assistant prose on stdout, tool and status chrome on stderr,
@@ -211,7 +219,11 @@ message starting with `/` cannot be sent):
   mid-session · `/model <model-id>` - switch the model WITHIN the
   active provider (profile names win on collision; endpoint,
   credentials, limits, and prompt profile stay; a bad id surfaces as
-  the provider's error on the next turn)
+  the provider's error on the next turn) · `/model <model-id> --save` -
+  the same switch, persisted to config.json on success (a surgical
+  edit: your key order and unknown fields survive) · `/model --save` -
+  persist the currently active model; `--save` with a profile name is
+  an error (the startup profile stays the hand-edited `profile` key)
 - `/models` - list model ids from the active provider (live GET; ids
   feed `/model` Tab completion in the TUI)
 - `/clear` - wipe the session; the empty state is persisted immediately,

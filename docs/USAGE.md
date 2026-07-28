@@ -88,6 +88,61 @@ you want to keep:
   up, in this project or another (resuming another project's session
   warns that tools still run in the current directory).
 
+## Picking and keeping a model
+
+Two T15 conveniences remove the "type a model id blind, keep it by
+editing JSON" round trip. Both are real transcripts against a local
+llama.cpp server (keyless; the listing GET init and doctor make there
+is unauthenticated and never touches key files).
+
+`temur init`'s local template asks where the server lives, then offers
+what it actually serves, numbered:
+
+```
+Template [1]: Base URL [http://127.0.0.1:8080/v1]: Models on http://127.0.0.1:8080/v1:
+  1) /model.gguf
+Model (number or id) [/model.gguf]: 
+Wrote /tmp/t15-demo/config/temur/config.json
+```
+
+A number picks from the listing; free text still works for anything
+else. With no server reachable the question falls back to free text
+after a one-line note, plus a short baked shortlist of known-good small
+models (the full table stays in [OFFLINE.md](OFFLINE.md), section
+"Recommended small models").
+
+`temur doctor` now also compares each configured model against the
+server's listing, the most likely new-user misconfig. A mismatch is a
+WARN, not a FAIL, because servers alias ids (Ollama tags, llama.cpp
+path names):
+
+```
+WARN: model "qwen3-bogus" is not in the server listing at http://127.0.0.1:8080/v1 (server lists: /model.gguf; advisory only, servers may alias ids)
+doctor: 5 pass, 1 warn, 0 fail
+```
+
+And a raw-id `/model` switch can persist itself: `--save` writes the
+model into config.json after the switch succeeded (a surgical edit;
+your key order and any unknown fields survive), so the next start picks
+it up:
+
+```
+temur 0.5.0 (model=/model.gguf, thinking=false)
+>   [!] switched model to qwen3-1.7b (openai-compat · profile settings kept)
+  [!] saved model qwen3-1.7b to /tmp/t15-demo/config/temur/config.json
+> bye
+```
+
+```
+temur 0.5.0 (model=qwen3-1.7b, thinking=false)
+>   [!] profile: (none — base config)
+  [!] provider: openai-compat · model: qwen3-1.7b
+```
+
+`/model --save` (no id) persists whatever is currently active. `--save`
+with a profile name is a clean error: the startup profile is the
+`profile` key in config.json, which stays a hand edit.
+
 ## One-shot scripting with -p
 
 `temur -p "<prompt>"` runs exactly one full agentic turn (tool calls

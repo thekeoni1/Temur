@@ -2,6 +2,50 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
+## Unreleased
+
+T15 model-selection onboarding polish:
+
+- `temur init`, local template: a Base URL question (default
+  `http://127.0.0.1:8080/v1`) now precedes the model question, and when
+  the server answers, its own model listing prints as a numbered picker
+  (capped at 20 shown; a number or a free-text id both work; default is
+  the template default when listed, else the first listed id). With no
+  server reachable: a one-line note, the old free-text question, and a
+  short baked shortlist of known-good small models pointing at
+  docs/OFFLINE.md "Recommended small models" (which stays canonical).
+  Keyed templates are unchanged. A non-default base URL is written into
+  the config; the default render stays byte-identical.
+- `/model <model-id> --save` persists a raw-id switch to config.json
+  after the switch succeeded; `/model --save` persists the currently
+  active model. The write is a surgical serde_json::Value edit (never a
+  round trip through the config struct): unknown fields and the user's
+  key order survive, the file is written atomically (temp + rename),
+  and the site is the active profile's `model`, `openai_compat.model`,
+  or the top-level `model` key as appropriate. `--save` with a profile
+  name is a clean error (the startup profile stays the hand-edited
+  `profile` key). Persistence failure after a successful switch keeps
+  the switch and says why the save failed. Replay-guarded like the
+  other mutators.
+- `temur doctor` now checks each keyless openai-compat selection's
+  configured model against the server's listing: PASS when listed, WARN
+  naming the model and up to 10 served ids when not (advisory, never a
+  FAIL, since servers alias ids), a plain NOTE when the listing itself
+  fails, and a SKIP line for keyed selections (that check would need an
+  authenticated request). `--no-network` skips model checks like the
+  probes.
+- The single network capability all of this rides on is one new
+  provider fn, `list_models_keyless(base_url, timeout)`: an
+  unauthenticated GET of `{base}/models` with a 3s timeout that cannot
+  attach auth headers or touch key files by construction. init and
+  doctor call only this, never the authenticated listing path.
+- First-run quickstart gains a pointer line to docs/OFFLINE.md
+  "Recommended small models".
+- Internal: serde_json's preserve_order feature is enabled so saves
+  keep config key order; request bodies now serialize through a
+  sorted-key step pinning the wire byte-identical to every release
+  since T1 (the request_golden suite enforces it).
+
 ## v0.5.0 - 2026-07-28
 
 T14 onboarding + one-shot mode (built before T13, which awaits keys):
