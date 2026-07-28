@@ -1332,3 +1332,57 @@ Procedure deltas vs v0.4.0:
 - **The visibility decision (PRIVATE vs the public flip) is deferred
   to stage 2.** The PUBLIC one-liner gate and the
   hostname-blob-history decision stay queued behind it.
+
+## v0.5.0 release acceptance - recorded result
+
+2026-07-28: **v0.5.0 published (repo PRIVATE by decision, per the
+standing stage-2 rule) and closing-gate verified.** Annotated tag
+`v0.5.0` ("temur v0.5.0 - onboarding, one-shot mode, CI (T12+T14)") at
+head `6a0471f`, main pushed in one range `fb22bfa..6a0471f` (the four
+stage-1 close-out commits plus the CHANGELOG dating commit) and the tag
+pushed after operator review of stage 1; release "temur v0.5.0" created
+with the four gated binaries + `SHA256SUMS`:
+<https://github.com/thekeoni1/Temur/releases/tag/v0.5.0> (404s for
+non-collaborators while private, by design).
+
+Preflight: tree clean at `9f3a086` ahead of origin/main by exactly the
+four stage-1 commits; `ANTHROPIC_API_KEY` absent; `gh auth` OK (repo
+scope); visibility confirmed PRIVATE before publish; no v0.5* tag
+existed before this cycle's tag. Stage 1 had bumped exactly the six
+pinned sites; Cargo.lock regenerated via `cargo update -p temur
+--offline` (temur entry only).
+
+Gate results at the tagged head `6a0471f` (no env overrides, run under
+a pty; the full gate was re-run at this exact head after the CHANGELOG
+dating commit, per the release rule): full `check.sh` ALL CHECKS PASSED
+both paths; leak gate "OK: leak grep clean (operator patterns + generic
+shapes, files + history)"; skew gate "OK: install.sh + README match
+version 0.5.0 and all targets"; `== RELEASE v0.5.0: 4/4 ARTIFACTS GATED
+==` with all four `--version` asserts printing `temur 0.5.0` (i686 +
+x86_64 native, aarch64 + armv7 via qemu); SHA256SUMS self-verify 4/4
+OK. Installer matrix 6/6 (host + busybox, pass/corrupt/unlisted). The
+push of the dating commit fired exactly one ci run (30377806797), green
+(test + release-gate, which re-validated the 0.5.0 skew and the
+4-target build on the runner).
+
+Procedure notes this cycle: stage 1 found the baseline tree NOT clean
+(the T15 planned ROADMAP row from the 2026-07-28 planning session was
+written but never committed); it rode the cycle in a git stash and was
+committed immediately after publish, in the same push as this record.
+No scrubs (the leak gate passed first try in both stages), no source or
+test changes; the stage-2 commits are the CHANGELOG dating, the T15
+row, and this record.
+
+Closing gate (private variant, fresh temp dir + temp HOME):
+authenticated `gh release download v0.5.0` (x86_64 artifact +
+SHA256SUMS) → `sha256sum -c --ignore-missing SHA256SUMS` OK → the
+downloaded binary run with the temp HOME printed `temur 0.5.0` → the
+downloaded binary's sha256 equals the locally-staged artifact's
+byte-for-byte (`7da4973999d512cd…`, x86_64 artifact).
+
+**OPEN ITEM (unchanged, the only one): the PUBLIC one-liner gate.**
+When the operator flips visibility, run the README one-liner verbatim
+into a temp HOME (live raw-URL download of install.sh at the newest
+released tag, live artifact + SHA256SUMS from the release, checksum
+verified, `--version` matches) and record the result here, together
+with the standing hostname-blob-history decision.
