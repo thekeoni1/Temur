@@ -72,12 +72,9 @@ fn run(mut cmd: Command, stdin: &str) -> (i32, String, String) {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("spawn temur");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(stdin.as_bytes())
-        .unwrap();
+    // Best-effort: a child that exits before reading stdin (usage errors,
+    // overwrite refusal) closes the pipe, and that EPIPE is not a failure.
+    let _ = child.stdin.take().unwrap().write_all(stdin.as_bytes());
     let out = child.wait_with_output().unwrap();
     (
         out.status.code().expect("no exit code (signal?)"),
@@ -268,6 +265,177 @@ fn oneshot_without_config_gets_the_quickstart() {
     assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
     assert!(stderr.contains("temur init"), "{stderr}");
     assert!(stdout.is_empty(), "{stdout}");
+}
+
+// -------------------------------------------------------- P3: temur init
+
+use std::os::unix::fs::PermissionsExt;
+
+fn mode_of(p: &std::path::Path) -> u32 {
+    std::fs::metadata(p).unwrap().permissions().mode() & 0o7777
+}
+
+#[test]
+fn init_local_template_writes_exact_config_and_no_key_file() {
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.arg("init");
+    // Answers: template 1 (default via empty), model default via empty.
+    let (code, stdout, stderr) = run(c, "\n\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    let written = std::fs::read_to_string(sb.config_path()).unwrap();
+    assert_eq!(
+        written,
+        "{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 1024,\n  \"openai_compat\": { \"model\": \"qwen3-1.7b\", \"context_window\": 8192 }\n}\n"
+    );
+    assert!(stdout.contains("Wrote "), "{stdout}");
+    assert!(!sb.home.join(".secrets").exists(), "keyless template made a key dir");
+}
+
+#[test]
+fn init_anthropic_template_exact_config_and_empty_600_key_file() {
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.arg("init");
+    // Template 2, default model, default key path.
+    let (code, stdout, stderr) = run(c, "2\n\n\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    let key = sb.home.join(".secrets").join("temur-anthropic-key");
+    let written = std::fs::read_to_string(sb.config_path()).unwrap();
+    assert_eq!(
+        written,
+        format!(
+            "{{\n  \"profiles\": {{\n    \"anthropic\": {{ \"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\",\n                   \"api_key_file\": \"{}\" }}\n  }},\n  \"profile\": \"anthropic\"\n}}\n",
+            key.display()
+        )
+    );
+    // Key file: EMPTY (metadata only, contents never read), mode 600, in a
+    // 700 dir the wizard created.
+    assert_eq!(std::fs::metadata(&key).unwrap().len(), 0);
+    assert_eq!(mode_of(&key), 0o600);
+    assert_eq!(mode_of(&sb.home.join(".secrets")), 0o700);
+    assert!(stdout.contains("Paste your key into"), "{stdout}");
+    assert!(stdout.contains("with your editor"), "{stdout}");
+}
+
+#[test]
+fn init_openai_and_gemini_templates_exact_configs() {
+    for (answer, name, base, model) in [
+        ("3", "openai", "https://api.openai.com/v1", "gpt-4o-mini"),
+        (
+            "4",
+            "gemini",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "gemini-2.5-flash",
+        ),
+    ] {
+        let sb = sandbox();
+        let mut c = sb.cmd();
+        c.arg("init");
+        let (code, stdout, stderr) = run(c, &format!("{answer}\n\n\n"));
+        assert_eq!(code, 0, "{name}: stdout: {stdout}\nstderr: {stderr}");
+        let key = sb.home.join(".secrets").join(format!("temur-{name}-key"));
+        let written = std::fs::read_to_string(sb.config_path()).unwrap();
+        assert_eq!(
+            written,
+            format!(
+                "{{\n  \"provider\": \"openai-compat\",\n  \"openai_compat\": {{ \"base_url\": \"{base}\",\n                     \"model\": \"{model}\",\n                     \"api_key_file\": \"{}\" }}\n}}\n",
+                key.display()
+            ),
+            "template {name}"
+        );
+        assert_eq!(std::fs::metadata(&key).unwrap().len(), 0, "{name}");
+        assert_eq!(mode_of(&key), 0o600, "{name}");
+    }
+}
+
+#[test]
+fn init_custom_model_and_key_path_survive() {
+    let sb = sandbox();
+    let keydir = sb.home.join("alt-keys");
+    let keypath = keydir.join("k");
+    let mut c = sb.cmd();
+    c.arg("init");
+    let (code, stdout, stderr) = run(c, &format!("openai\nmy-model\n{}\n", keypath.display()));
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    let written = std::fs::read_to_string(sb.config_path()).unwrap();
+    assert!(written.contains("\"my-model\""), "{written}");
+    assert!(written.contains(&keypath.display().to_string()), "{written}");
+    assert_eq!(std::fs::metadata(&keypath).unwrap().len(), 0);
+    assert_eq!(mode_of(&keypath), 0o600);
+    assert_eq!(mode_of(&keydir), 0o700, "created parent gets 700");
+}
+
+#[test]
+fn init_refuses_to_overwrite_without_force() {
+    let sb = sandbox();
+    sb.write_config(r#"{"model":"keep-me"}"#);
+    let mut c = sb.cmd();
+    c.arg("init");
+    let (code, _stdout, stderr) = run(c, "\n\n");
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains(&sb.config_path().display().to_string())
+            && stderr.contains("already exists")
+            && stderr.contains("--force"),
+        "{stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sb.config_path()).unwrap(),
+        r#"{"model":"keep-me"}"#,
+        "refusal must not touch the file"
+    );
+}
+
+#[test]
+fn init_force_overwrites_and_force_is_init_only() {
+    let sb = sandbox();
+    sb.write_config(r#"{"model":"old"}"#);
+    let mut c = sb.cmd();
+    c.args(["init", "--force"]);
+    let (code, stdout, stderr) = run(c, "\n\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        std::fs::read_to_string(sb.config_path()).unwrap().contains("openai-compat")
+    );
+
+    // --force anywhere else is a usage error, not a silent no-op.
+    let mut c = sb.cmd();
+    c.arg("--force");
+    let (code, _stdout, stderr) = run(c, "");
+    assert_eq!(code, 1);
+    assert!(stderr.contains("--force is only valid"), "{stderr}");
+}
+
+#[test]
+fn init_leaves_an_existing_key_file_untouched() {
+    let sb = sandbox();
+    let keypath = sb.home.join("existing-key");
+    std::fs::write(&keypath, "REAL-KEY-MATERIAL\n").unwrap();
+    let mut c = sb.cmd();
+    c.arg("init");
+    let (code, stdout, stderr) = run(c, &format!("2\n\n{}\n", keypath.display()));
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(
+        std::fs::read_to_string(&keypath).unwrap(),
+        "REAL-KEY-MATERIAL\n",
+        "an existing key file must never be truncated or rewritten"
+    );
+    assert!(stdout.contains("left untouched"), "{stdout}");
+    // And the key material must never appear in any output stream.
+    assert!(!stdout.contains("REAL-KEY-MATERIAL"), "{stdout}");
+    assert!(!stderr.contains("REAL-KEY-MATERIAL"), "{stderr}");
+}
+
+#[test]
+fn init_rejects_unknown_template() {
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.arg("init");
+    let (code, _stdout, stderr) = run(c, "7\n");
+    assert_eq!(code, 1);
+    assert!(stderr.contains("unknown template"), "{stderr}");
+    assert!(!sb.config_path().exists(), "no config on a failed wizard");
 }
 
 #[test]

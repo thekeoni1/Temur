@@ -3,6 +3,7 @@ pub mod cancel;
 pub mod commands;
 pub mod config;
 pub mod error;
+pub mod init;
 pub mod provider;
 pub mod secret;
 pub mod session_store;

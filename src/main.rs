@@ -61,6 +61,9 @@ fn run() -> Result<ExitCode, error::Error> {
     // -p/--prompt (T14): one-shot mode. Run exactly one full agentic turn
     // over this prompt on the plain path, then exit by outcome.
     let mut oneshot: Option<String> = None;
+    // --force (T14): only meaningful for `init` (overwrite an existing
+    // config); rejected anywhere else so a typo cannot look accepted.
+    let mut force = false;
     while let Some(arg) = parser.next()? {
         match arg {
             Long("version") | Short('V') => {
@@ -74,9 +77,15 @@ fn run() -> Result<ExitCode, error::Error> {
             Long("tui") => force_tui = true,
             Long("plain") => force_plain = true,
             Short('p') | Long("prompt") => oneshot = Some(parser.value()?.string()?),
+            Long("force") => force = true,
             Value(v) if cmd.is_none() => cmd = Some(v.string()?),
             arg => return Err(arg.unexpected().into()),
         }
+    }
+    if force && cmd.as_deref() != Some("init") {
+        return Err(error::Error::Usage(
+            "--force is only valid with the init subcommand".into(),
+        ));
     }
     if force_tui && force_plain {
         return Err(error::Error::Usage("--tui and --plain are mutually exclusive".into()));
@@ -115,6 +124,17 @@ fn run() -> Result<ExitCode, error::Error> {
     };
 
     match cmd.as_deref() {
+        Some("init") => {
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            temur::init::run(
+                &config::config_path(),
+                home.as_deref(),
+                force,
+                &mut std::io::stdin().lock(),
+                &mut std::io::stdout(),
+            )?;
+            Ok(ExitCode::SUCCESS)
+        }
         Some("tls-probe") => {
             tls_probe()?;
             Ok(ExitCode::SUCCESS)
