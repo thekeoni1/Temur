@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased - v0.5.0
+## v0.5.0 - 2026-07-28
 
 T14 onboarding + one-shot mode (built before T13, which awaits keys):
 
