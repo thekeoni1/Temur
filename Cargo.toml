@@ -17,6 +17,10 @@ thiserror = "2"
 # webpki-roots (the i386/debian runtime image ships no ca-certificates).
 ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# Root store for doctor's raw TLS-handshake probe (T14). Already in the
+# tree transitively via ureq's rustls-webpki-roots feature; this direct
+# line adds no new code, it only makes the roots nameable.
+webpki-roots = "1"
 # Tool implementations (ripgrep's pure-Rust building blocks + process timeout)
 regex = "1"
 globset = "0.4"

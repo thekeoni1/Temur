@@ -438,6 +438,170 @@ fn init_rejects_unknown_template() {
     assert!(!sb.config_path().exists(), "no config on a failed wizard");
 }
 
+// ------------------------------------------------------ P4: temur doctor
+
+fn doctor(sb: &Sandbox) -> (i32, String, String) {
+    let mut c = sb.cmd();
+    c.args(["doctor", "--no-network"]);
+    run(c, "")
+}
+
+fn write_key(sb: &Sandbox, name: &str, contents: &str, mode: u32) -> std::path::PathBuf {
+    let p = sb.home.join(name);
+    std::fs::write(&p, contents).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+    p
+}
+
+fn keyed_config(sb: &Sandbox, key_path: &std::path::Path) {
+    sb.write_config(&format!(
+        r#"{{"provider":"openai-compat","openai_compat":{{"model":"m","api_key_file":"{}"}}}}"#,
+        key_path.display()
+    ));
+}
+
+#[test]
+fn doctor_without_config_fails_with_the_quickstart_pointer() {
+    let sb = sandbox();
+    let (code, stdout, stderr) = doctor(&sb);
+    assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains("FAIL: no config file at"), "{stdout}");
+    assert!(stdout.contains("temur init"), "{stdout}");
+    assert!(stdout.contains("doctor: "), "summary line present: {stdout}");
+}
+
+#[test]
+fn doctor_healthy_keyless_config_passes() {
+    let sb = sandbox();
+    sb.write_config(
+        r#"{"provider":"openai-compat","openai_compat":{"model":"qwen3-1.7b"}}"#,
+    );
+    let (code, stdout, stderr) = doctor(&sb);
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains("PASS: config parsed"), "{stdout}");
+    assert!(stdout.contains("PASS: active selection"), "{stdout}");
+    assert!(stdout.contains("keyless"), "{stdout}");
+    assert!(stdout.contains("sessions dir"), "{stdout}");
+    assert!(stdout.contains("SKIP: reachability probes (--no-network)"), "{stdout}");
+    assert!(stdout.contains("0 fail"), "{stdout}");
+    assert!(!stdout.contains("FAIL"), "{stdout}");
+}
+
+#[test]
+fn doctor_healthy_keyed_config_never_reads_the_key() {
+    let sb = sandbox();
+    let key = write_key(&sb, "k", "SUPER-SECRET-VALUE\n", 0o600);
+    keyed_config(&sb, &key);
+    let (code, stdout, stderr) = doctor(&sb);
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains("non-empty (by size), mode 600"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("SUPER-SECRET-VALUE") && !stderr.contains("SUPER-SECRET-VALUE"),
+        "key material must never surface"
+    );
+}
+
+#[test]
+fn doctor_bad_prompt_profile_fails_naming_it() {
+    let sb = sandbox();
+    sb.write_config(r#"{"prompt_profile":"tiny"}"#);
+    let (code, stdout, _stderr) = doctor(&sb);
+    assert_eq!(code, 1, "{stdout}");
+    assert!(stdout.contains("FAIL") && stdout.contains("tiny"), "{stdout}");
+}
+
+#[test]
+fn doctor_missing_key_file_fails() {
+    let sb = sandbox();
+    keyed_config(&sb, &sb.home.join("nope-key"));
+    let (code, stdout, _stderr) = doctor(&sb);
+    assert_eq!(code, 1, "{stdout}");
+    assert!(
+        stdout.contains("FAIL") && stdout.contains("missing"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn doctor_world_readable_key_warns_but_passes() {
+    let sb = sandbox();
+    let key = write_key(&sb, "k", "value\n", 0o644);
+    keyed_config(&sb, &key);
+    let (code, stdout, _stderr) = doctor(&sb);
+    assert_eq!(code, 0, "a loose mode is advisory: {stdout}");
+    assert!(
+        stdout.contains("WARN") && stdout.contains("mode 644") && stdout.contains("chmod 600"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn doctor_empty_key_file_fails() {
+    let sb = sandbox();
+    let key = write_key(&sb, "k", "", 0o600);
+    keyed_config(&sb, &key);
+    let (code, stdout, _stderr) = doctor(&sb);
+    assert_eq!(code, 1, "{stdout}");
+    assert!(
+        stdout.contains("FAIL") && stdout.contains("empty (by size)"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn doctor_anthropic_without_any_key_path_fails() {
+    let sb = sandbox();
+    sb.write_config(r#"{"provider":"anthropic"}"#);
+    let (code, stdout, _stderr) = doctor(&sb);
+    assert_eq!(code, 1, "{stdout}");
+    assert!(stdout.contains("APP_SECRET_FILE is not set"), "{stdout}");
+}
+
+#[test]
+fn doctor_inactive_profile_key_problem_is_warn_only() {
+    let sb = sandbox();
+    sb.write_config(&format!(
+        r#"{{"provider":"openai-compat",
+            "openai_compat":{{"model":"m"}},
+            "profiles":{{"hosted":{{"provider":"anthropic","model":"x",
+                          "api_key_file":"{}"}}}}}}"#,
+        sb.home.join("absent-key").display()
+    ));
+    let (code, stdout, _stderr) = doctor(&sb);
+    assert_eq!(code, 0, "inactive profile problems must not FAIL: {stdout}");
+    assert!(
+        stdout.contains("WARN") && stdout.contains("profile \"hosted\""),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn doctor_sessions_dir_that_is_a_file_fails() {
+    let sb = sandbox();
+    let bogus = sb.home.join("sessions-blocker");
+    std::fs::write(&bogus, "x").unwrap();
+    sb.write_config(&format!(
+        r#"{{"provider":"openai-compat","openai_compat":{{"model":"m"}},"sessions_dir":"{}"}}"#,
+        bogus.display()
+    ));
+    let (code, stdout, _stderr) = doctor(&sb);
+    assert_eq!(code, 1, "{stdout}");
+    assert!(stdout.contains("not a directory"), "{stdout}");
+}
+
+#[test]
+fn no_network_outside_doctor_is_a_usage_error() {
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.arg("--no-network");
+    let (code, _stdout, stderr) = run(c, "");
+    assert_eq!(code, 1);
+    assert!(stderr.contains("--no-network is only valid"), "{stderr}");
+}
+
 #[test]
 fn existing_broken_config_error_is_unchanged() {
     let sb = sandbox();

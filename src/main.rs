@@ -64,6 +64,8 @@ fn run() -> Result<ExitCode, error::Error> {
     // --force (T14): only meaningful for `init` (overwrite an existing
     // config); rejected anywhere else so a typo cannot look accepted.
     let mut force = false;
+    // --no-network (T14): only meaningful for `doctor` (skip probes).
+    let mut no_network = false;
     while let Some(arg) = parser.next()? {
         match arg {
             Long("version") | Short('V') => {
@@ -78,6 +80,7 @@ fn run() -> Result<ExitCode, error::Error> {
             Long("plain") => force_plain = true,
             Short('p') | Long("prompt") => oneshot = Some(parser.value()?.string()?),
             Long("force") => force = true,
+            Long("no-network") => no_network = true,
             Value(v) if cmd.is_none() => cmd = Some(v.string()?),
             arg => return Err(arg.unexpected().into()),
         }
@@ -85,6 +88,11 @@ fn run() -> Result<ExitCode, error::Error> {
     if force && cmd.as_deref() != Some("init") {
         return Err(error::Error::Usage(
             "--force is only valid with the init subcommand".into(),
+        ));
+    }
+    if no_network && cmd.as_deref() != Some("doctor") {
+        return Err(error::Error::Usage(
+            "--no-network is only valid with the doctor subcommand".into(),
         ));
     }
     if force_tui && force_plain {
@@ -134,6 +142,18 @@ fn run() -> Result<ExitCode, error::Error> {
                 &mut std::io::stdout(),
             )?;
             Ok(ExitCode::SUCCESS)
+        }
+        Some("doctor") => {
+            let healthy = temur::doctor::run(
+                &config::config_path(),
+                no_network,
+                &mut std::io::stdout(),
+            )?;
+            Ok(if healthy {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
         }
         Some("tls-probe") => {
             tls_probe()?;

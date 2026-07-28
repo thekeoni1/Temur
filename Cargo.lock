@@ -983,6 +983,7 @@ dependencies = [
  "unicode-width 0.2.0",
  "ureq",
  "wait-timeout",
+ "webpki-roots",
 ]
 
 [[package]]
