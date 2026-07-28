@@ -12,7 +12,8 @@ T12 CI:
   release.sh (generic leak scan over files and full history, skew
   gate, 4-target static build with per-target asserts, SHA256SUMS)
   with staged artifacts uploaded for 7 days. Tier 2 on manual
-  dispatch, experimental: the full check.sh under rootless podman.
+  dispatch: the full check.sh under rootless podman, verified green
+  in a live run.
 - check.sh: target dir and TUI smoke log dir are now env-overridable
   (`TEMUR_TARGET_DIR`, `TEMUR_CHECK_TMP`); defaults are
   behavior-identical, no other script changes.

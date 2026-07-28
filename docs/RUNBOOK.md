@@ -1165,8 +1165,9 @@ manual dispatch:
   `/home/dev/rustcode-target`, so the job bridges that path with a
   symlink to the workspace target dir (scripts stay CI-agnostic).
 
-Tier 2, `.github/workflows/container-gate.yml`, dispatch-only and
-experimental at first: the full `scripts/check.sh` (both paths) with
+Tier 2, `.github/workflows/container-gate.yml`, dispatch-only
+(verified green in a live run during T12): the full
+`scripts/check.sh` (both paths) with
 rootless podman on the runner, after pulling the two pinned images
 (check.sh never pulls). check.sh is wrapped in
 `script -qec '...' /dev/null` for pty insurance; `-e` propagates the

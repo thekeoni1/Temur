@@ -7,10 +7,7 @@ name: ci
 
 on:
   push:
-    # TEMPORARY for T12 iteration: t12-ci is listed so runs can be triggered
-    # before the workflow exists on main (dispatch only registers there).
-    # Remove t12-ci before merge.
-    branches: [main, t12-ci]
+    branches: [main]
   workflow_dispatch:
 
 env:
