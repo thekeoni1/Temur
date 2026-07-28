@@ -72,6 +72,14 @@ you prefer. The checksum step defends against transport corruption and a
 mismatched artifact; it is not a substitute for trusting the release source,
 since the sums come from the same place as the binaries.
 
+### Update
+
+To update an existing install, re-run the install one-liner taken from
+the latest release page; it overwrites `~/.local/bin/temur` in place.
+The one-liner is tag-pinned, so a copy saved from an old release keeps
+installing that old version; always copy it fresh from the latest
+release page. `temur --version` shows what is currently installed.
+
 Manual install (example: x86_64; substitute your triple):
 
 ```sh
