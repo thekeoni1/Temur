@@ -100,6 +100,11 @@ fn no_config_live_run_prints_quickstart_and_fails() {
     assert!(stderr.contains("temur init"), "stderr: {stderr}");
     assert!(stderr.contains("temur doctor"), "stderr: {stderr}");
     assert!(stderr.contains("README.md"), "stderr: {stderr}");
+    // T15: the model-shortlist pointer rides the quickstart too.
+    assert!(
+        stderr.contains("docs/OFFLINE.md") && stderr.contains("Recommended small models"),
+        "stderr: {stderr}"
+    );
     // The raw credential error must be gone, and nothing may reach stdout.
     assert!(
         !stderr.contains("APP_SECRET_FILE"),

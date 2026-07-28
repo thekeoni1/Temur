@@ -59,6 +59,20 @@ const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/
 /// into an "... and N more" line (a number still selects any of them).
 const MODEL_LIST_CAP: usize = 20;
 
+/// Baked model shortlist (T15 P4), printed ONLY when the local template's
+/// picker could not run (no server to ask). A hand-kept SUMMARY of
+/// docs/OFFLINE.md, section "Recommended small models", which stays
+/// canonical: update that table first and mirror the top rows here.
+/// When the picker works, the server's real listing wins and this never
+/// prints.
+const MODEL_SHORTLIST: &[&str] = &[
+    "Known-good small models:",
+    "  Qwen3-1.7B Q4_K_M (~2.1 GB RAM at 8k context; the primary recommendation)",
+    "  Qwen3-4B-Instruct-2507 Q4_K_M (~3.4 GB RAM)",
+    "Larger is better when RAM allows; 7B+ is qualitatively different.",
+    "See docs/OFFLINE.md, section \"Recommended small models\".",
+];
+
 /// Render the config JSON for a template. Built by hand (not serde) so the
 /// field order matches the README recipes byte for byte; user-supplied
 /// strings go through serde_json escaping. `base_url` is the local
@@ -241,6 +255,9 @@ pub fn run(
                     Err(e) => e.to_string(),
                 };
                 writeln!(out, "could not list models from {base}: {why}")?;
+                for line in MODEL_SHORTLIST {
+                    writeln!(out, "{line}")?;
+                }
                 ask(input, out, "Model id", template.default_model)?
             }
         };
@@ -518,6 +535,27 @@ mod tests {
         let list = |_: &str| Ok(Vec::<String>::new());
         let (_cfg, out) = run_wizard("\n\ncustom\n", &list).unwrap();
         assert!(out.contains("empty listing"), "{out}");
+    }
+
+    #[test]
+    fn shortlist_prints_only_when_the_picker_could_not_run() {
+        // Fallback path: every baked line, including the canonical pointer.
+        let list = |_: &str| -> Result<Vec<String>, crate::error::Error> {
+            Err(crate::error::Error::Models("connection refused".into()))
+        };
+        let (_cfg, out) = run_wizard("\n\n\n", &list).unwrap();
+        for line in MODEL_SHORTLIST {
+            assert!(out.contains(line), "missing {line:?} in:\n{out}");
+        }
+        // Picker path: the server's listing wins, no shortlist.
+        let list = |_: &str| Ok(ids(&["served-model"]));
+        let (_cfg, out) = run_wizard("\n\n\n", &list).unwrap();
+        assert!(!out.contains("Known-good small models"), "{out}");
+        assert!(
+            !out.contains("Recommended small models"),
+            "no shortlist pointer when the picker ran (the closing Next \
+             line's OFFLINE.md mention is separate and fine): {out}"
+        );
     }
 
     #[test]

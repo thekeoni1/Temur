@@ -657,7 +657,8 @@ fn quickstart_text() -> String {
                            Anthropic, OpenAI, or Gemini)\n\
            temur doctor    check the config and environment\n\
          \n\
-         Config format and recipes: README.md, section \"Configure\".\n",
+         Config format and recipes: README.md, section \"Configure\".\n\
+         Local model picks: docs/OFFLINE.md, section \"Recommended small models\".\n",
         config::config_path().display()
     )
 }
