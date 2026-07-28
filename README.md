@@ -129,6 +129,9 @@ temur --continue -p "Now list the main risks"   # chained: same session
 Live one-shots save the session like interactive runs, which is what
 makes `--continue -p` chains work.
 
+A fuller tour of day-to-day use (a worked interactive session, one-shot
+scripting recipes, skills): [docs/USAGE.md](docs/USAGE.md).
+
 ## Configure
 
 Config lives at `~/.config/temur/config.json`; `temur init` writes any
@@ -228,7 +231,8 @@ Under `--mock`/`--capture-sse` the state-mutating commands, and
 `/models`, which is a live network GET, report themselves unavailable
 to keep replays deterministic.
 
-In the TUI (the default on a terminal), assistant replies render as
+In the TUI (the default on a terminal; design notes and key bindings in
+[docs/TUI.md](docs/TUI.md)), assistant replies render as
 markdown (headings, emphasis, lists, quotes, links, and code blocks
 behind a dim gutter) in the same monochrome, default-terminal-color
 style; the plain REPL prints raw text unchanged. TUI command
