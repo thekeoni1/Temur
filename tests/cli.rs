@@ -233,6 +233,48 @@ fn oneshot_provider_error_exits_failure() {
 }
 
 #[test]
+fn oneshot_interrupted_by_sigint_exits_130() {
+    // Event-driven, deliberately sleep-free: the fixture's turn runs a
+    // `bash sleep 987` tool call, so we block on stderr until the ToolStart
+    // line proves the turn is mid-flight (SIGINT handler long installed),
+    // send SIGINT, and let the product's own cooperative cancel land the
+    // turn. Nothing here depends on scheduling speed.
+    use std::io::{BufRead, BufReader, Read};
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.args(["--mock", &fixture("interrupt_sleep.sse"), "-p", "go"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = c.spawn().expect("spawn temur");
+    let mut err = BufReader::new(child.stderr.take().unwrap());
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if err.read_line(&mut line).unwrap() == 0 {
+            panic!("stderr closed before the bash tool started");
+        }
+        if line.contains("→ bash") {
+            break;
+        }
+    }
+    unsafe { libc::kill(child.id() as i32, libc::SIGINT) };
+    let mut rest = String::new();
+    err.read_to_string(&mut rest).unwrap();
+    let status = child.wait().unwrap();
+    let mut out = String::new();
+    child.stdout.take().unwrap().read_to_string(&mut out).unwrap();
+    assert_eq!(
+        status.code(),
+        Some(130),
+        "stdout: {out}\nstderr tail: {rest}"
+    );
+    assert!(rest.contains("turn interrupted"), "{rest}");
+    // The pre-interrupt prose still belongs to stdout.
+    assert!(out.contains("Sleeping now."), "{out}");
+}
+
+#[test]
 fn oneshot_flag_conflicts_are_usage_errors() {
     let sb = sandbox();
     let mut c = sb.cmd();

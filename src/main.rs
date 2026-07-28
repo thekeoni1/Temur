@@ -490,6 +490,10 @@ fn repl(
     if let Some(prompt) = &oneshot {
         plain_cancel.clear();
         let result = session.turn(prompt, &mut |ev| ui.event(&ev));
+        // Read the token right after the turn, before anything else can
+        // touch it: set means a Ctrl+C landed THIS turn (T6 semantics), and
+        // the exit code must say so (130) even if an error raced the cancel.
+        let interrupted = plain_cancel.is_set();
         if let Err(e) = &result {
             ui.event(&AgentEvent::Notice(format!("provider error: {e}")));
         }
@@ -505,11 +509,10 @@ fn repl(
             &mut save_failure_notified,
         );
         ui.finish();
-        return Ok(if result.is_ok() {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::FAILURE
-        });
+        return Ok(ExitCode::from(temur::ui::oneshot::exit_code(
+            result.is_ok(),
+            interrupted,
+        )));
     }
 
     let replay_mode = mock.is_some() || capture.is_some();

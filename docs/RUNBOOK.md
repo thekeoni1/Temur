@@ -1294,3 +1294,13 @@ tool path and the host-verified file state is the acceptance criterion.
 Server stopped with `serve.sh stop` after the smoke. (`<XDG>`/`<WORK>`
 abbreviate the throwaway smoke directory; every other byte is
 verbatim.)
+
+Addendum (P6, 2026-07-27): interrupted one-shot exit code. A `-p` turn
+interrupted by Ctrl+C exits 130 (128+SIGINT, the same convention as the
+T6 plain-REPL second-press force-quit); a completed turn stays 0 and
+provider/startup errors stay 1. Interruption wins over a raced provider
+error, matching the T6 rule that an error arriving with the cancel
+token set is an interruption, not a failure. The mapping is the pure
+`ui::oneshot::exit_code`, unit-tested on all arms; the SIGINT e2e in
+tests/cli.rs is event-driven (it blocks on stderr for the tool-start
+line, then signals; no sleeps, nothing scheduling-sensitive).

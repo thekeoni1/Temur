@@ -46,6 +46,22 @@ impl<O: Write, E: Write> OneShotUi<O, E> {
     }
 }
 
+/// Exit code for a finished one-shot turn (T14 P6). Interruption wins over
+/// both other outcomes: a Ctrl+C is the user's decision, reported as
+/// 128+SIGINT = 130 (the same convention as the T6 plain-REPL force-quit),
+/// and T6 already defines an error arriving with the cancel token set as an
+/// interruption, not a failure. Otherwise a completed turn is success and
+/// any provider/tool/startup error is failure.
+pub fn exit_code(turn_ok: bool, interrupted: bool) -> u8 {
+    if interrupted {
+        130
+    } else if turn_ok {
+        0
+    } else {
+        1
+    }
+}
+
 impl<O: Write, E: Write> Ui for OneShotUi<O, E> {
     fn event(&mut self, ev: &AgentEvent) {
         match ev {
@@ -180,6 +196,18 @@ mod tests {
         assert!(e.contains("→ bash") && e.contains("✓ bash: ls"), "{e}");
         assert!(e.contains("(turn:"), "{e}");
         assert!(!o.contains('→') && !o.contains("(turn:"), "{o}");
+    }
+
+    #[test]
+    fn exit_code_maps_all_three_outcomes_and_interrupt_wins() {
+        // Completed turn: success.
+        assert_eq!(exit_code(true, false), 0);
+        // Provider/tool/startup error: failure.
+        assert_eq!(exit_code(false, false), 1);
+        // Interrupted: 130, and it wins even over a raced error (the T6
+        // rule: an error arriving with the token set is an interruption).
+        assert_eq!(exit_code(true, true), 130);
+        assert_eq!(exit_code(false, true), 130);
     }
 
     #[test]

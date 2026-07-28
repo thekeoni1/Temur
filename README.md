@@ -117,7 +117,9 @@ credential error.
 
 One-shot mode runs exactly one full agentic turn (tool calls included)
 and exits: assistant prose on stdout, tool and status chrome on stderr,
-exit code by outcome, so it composes in shell pipelines:
+exit code by outcome (0 completed turn, 1 provider or startup error,
+130 interrupted with Ctrl+C, the shell convention for SIGINT), so it
+composes in shell pipelines:
 
 ```sh
 temur -p "Summarize what this repo does"
