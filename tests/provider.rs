@@ -753,3 +753,86 @@ fn parse_models_json_malformed_is_a_clean_error() {
         vec!["ok-1".to_string()]
     );
 }
+
+// ------------------------------------- T15: keyless listing GET (hermetic)
+
+/// One-shot canned HTTP server on 127.0.0.1: accepts a single connection,
+/// captures the request head, answers with `body`, closes. Returns the
+/// base URL to aim at and the join handle yielding the captured request.
+fn one_shot_server(status_line: &str, body: &'static str) -> (String, std::thread::JoinHandle<String>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let response = format!(
+        "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let handle = std::thread::spawn(move || {
+        use std::io::Write;
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut req = Vec::new();
+        let mut buf = [0u8; 1024];
+        // Read until the blank line ending the request head; a GET has no body.
+        loop {
+            let n = stream.read(&mut buf).unwrap();
+            req.extend_from_slice(&buf[..n]);
+            if n == 0 || req.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        stream.write_all(response.as_bytes()).unwrap();
+        String::from_utf8_lossy(&req).into_owned()
+    });
+    (format!("http://127.0.0.1:{port}/v1"), handle)
+}
+
+const KEYLESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+#[test]
+fn keyless_listing_gets_ids_and_sends_no_auth_header() {
+    let (base, server) = one_shot_server(
+        "HTTP/1.1 200 OK",
+        r#"{"object":"list","data":[{"id":"served-a"},{"id":"served-b"}]}"#,
+    );
+    let ids = list_models_keyless(&base, KEYLESS_TIMEOUT).unwrap();
+    assert_eq!(ids, vec!["served-a".to_string(), "served-b".to_string()]);
+    let request = server.join().unwrap();
+    let head = request.to_ascii_lowercase();
+    assert!(head.starts_with("get /v1/models "), "path: {request}");
+    // The T15 amendment in one assertion: NOTHING resembling credentials
+    // may be on this wire.
+    assert!(!head.contains("authorization"), "auth header sent: {request}");
+    assert!(!head.contains("x-api-key"), "api key header sent: {request}");
+}
+
+#[test]
+fn keyless_listing_http_error_is_a_clean_error_naming_the_status() {
+    let (base, server) = one_shot_server("HTTP/1.1 503 Service Unavailable", "overloaded");
+    let err = list_models_keyless(&base, KEYLESS_TIMEOUT).unwrap_err().to_string();
+    assert!(err.contains("HTTP 503"), "{err}");
+    server.join().unwrap();
+}
+
+#[test]
+fn keyless_listing_refused_connection_is_a_clean_error() {
+    // Bind, learn the port, drop: connecting there now fails fast.
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let err = list_models_keyless(
+        &format!("http://127.0.0.1:{port}/v1"),
+        KEYLESS_TIMEOUT,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("model listing GET"), "{err}");
+    assert!(err.contains(&format!("127.0.0.1:{port}")), "{err}");
+}
+
+#[test]
+fn keyless_listing_bad_json_is_a_clean_error() {
+    let (base, server) = one_shot_server("HTTP/1.1 200 OK", "<html>gateway</html>");
+    let err = list_models_keyless(&base, KEYLESS_TIMEOUT).unwrap_err().to_string();
+    assert!(err.contains("bad JSON"), "{err}");
+    server.join().unwrap();
+}

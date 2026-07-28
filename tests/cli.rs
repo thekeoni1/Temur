@@ -317,21 +317,82 @@ fn mode_of(p: &std::path::Path) -> u32 {
     std::fs::metadata(p).unwrap().permissions().mode() & 0o7777
 }
 
+/// A 127.0.0.1 base URL whose port was just bound and released, so a
+/// connect there fails fast — the hermetic "server down" answer for the
+/// local template's base URL question (T15). Never the default base URL:
+/// a real server may be listening on the operator's 8080.
+fn refused_base_url() -> String {
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    format!("http://127.0.0.1:{port}/v1")
+}
+
 #[test]
 fn init_local_template_writes_exact_config_and_no_key_file() {
     let sb = sandbox();
     let mut c = sb.cmd();
     c.arg("init");
-    // Answers: template 1 (default via empty), model default via empty.
-    let (code, stdout, stderr) = run(c, "\n\n");
+    // Answers: template 1 (default via empty), base URL (dead port, so the
+    // listing fails and the wizard falls back), model default via empty.
+    let base = refused_base_url();
+    let (code, stdout, stderr) = run(c, &format!("\n{base}\n\n"));
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
     let written = std::fs::read_to_string(sb.config_path()).unwrap();
     assert_eq!(
         written,
-        "{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 1024,\n  \"openai_compat\": { \"model\": \"qwen3-1.7b\", \"context_window\": 8192 }\n}\n"
+        format!(
+            "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 1024,\n  \"openai_compat\": {{ \"base_url\": \"{base}\",\n                     \"model\": \"qwen3-1.7b\", \"context_window\": 8192 }}\n}}\n"
+        )
     );
+    assert!(stdout.contains("could not list models from"), "{stdout}");
     assert!(stdout.contains("Wrote "), "{stdout}");
     assert!(!sb.home.join(".secrets").exists(), "keyless template made a key dir");
+}
+
+#[test]
+fn init_local_picker_lists_server_models_and_number_selects() {
+    // Hermetic one-shot HTTP server: one canned listing, then closed. The
+    // request head is captured so the no-auth rule is asserted end-to-end
+    // through the real binary.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://127.0.0.1:{}/v1", listener.local_addr().unwrap().port());
+    let body = r#"{"object":"list","data":[{"id":"served-a"},{"id":"served-b"}]}"#;
+    let server = std::thread::spawn(move || {
+        use std::io::Read;
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut req = Vec::new();
+        let mut buf = [0u8; 1024];
+        loop {
+            let n = stream.read(&mut buf).unwrap();
+            req.extend_from_slice(&buf[..n]);
+            if n == 0 || req.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+        String::from_utf8_lossy(&req).into_owned()
+    });
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.arg("init");
+    // Template default, the server's base URL, model number 2.
+    let (code, stdout, stderr) = run(c, &format!("\n{base}\n2\n"));
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains("1) served-a") && stdout.contains("2) served-b"), "{stdout}");
+    let written = std::fs::read_to_string(sb.config_path()).unwrap();
+    assert!(written.contains("\"model\": \"served-b\""), "{written}");
+    let request = server.join().unwrap().to_ascii_lowercase();
+    assert!(request.starts_with("get /v1/models "), "{request}");
+    assert!(
+        !request.contains("authorization") && !request.contains("x-api-key"),
+        "init sent a credential header: {request}"
+    );
 }
 
 #[test]
@@ -435,7 +496,7 @@ fn init_force_overwrites_and_force_is_init_only() {
     sb.write_config(r#"{"model":"old"}"#);
     let mut c = sb.cmd();
     c.args(["init", "--force"]);
-    let (code, stdout, stderr) = run(c, "\n\n");
+    let (code, stdout, stderr) = run(c, &format!("\n{}\n\n", refused_base_url()));
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
     assert!(
         std::fs::read_to_string(sb.config_path()).unwrap().contains("openai-compat")

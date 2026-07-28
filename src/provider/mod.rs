@@ -164,6 +164,49 @@ pub fn list_models_live(
     parse_models_json(&body)
 }
 
+/// Seconds of global timeout on a keyless listing GET: long enough for a
+/// LAN model server, short enough that a wedged one cannot stall the init
+/// wizard or a doctor report.
+pub const KEYLESS_LISTING_TIMEOUT_SECS: u64 = 3;
+
+/// The ONE listing request `init` and `doctor` are allowed to make (T15):
+/// an UNAUTHENTICATED GET of `{base}/models`, meant only for KEYLESS
+/// openai-compat endpoints. By construction it takes just a base URL, so it
+/// can never attach an auth header or touch a key file — the T15 security
+/// amendment in one signature. Unlike [`list_models_live`]'s agent, this
+/// one sets a global timeout: a wizard or report must not hang on a dead
+/// server. Body cap and error shapes match `list_models_live`.
+pub fn list_models_keyless(
+    base_url: &str,
+    timeout: std::time::Duration,
+) -> Result<Vec<String>, crate::error::Error> {
+    use std::io::Read;
+    rustls::crypto::ring::default_provider().install_default().ok();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_global(Some(timeout))
+        .build()
+        .new_agent();
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let res = agent
+        .get(&url)
+        .call()
+        .map_err(|e| crate::error::Error::Models(format!("model listing GET {url}: {e}")))?;
+    let status = res.status().as_u16();
+    let mut body = String::new();
+    let _ = res
+        .into_body()
+        .into_reader()
+        .take(64 * 1024)
+        .read_to_string(&mut body);
+    if !(200..300).contains(&status) {
+        return Err(crate::error::Error::Models(format!(
+            "model listing GET {url}: HTTP {status}"
+        )));
+    }
+    parse_models_json(&body)
+}
+
 /// Extract `data[].id` from a model-listing body — the envelope BOTH wires
 /// share (Anthropic `GET /v1/models` and OpenAI-compat `GET /models`).
 /// Pure, so the parsing is unit-testable offline against literal JSON.

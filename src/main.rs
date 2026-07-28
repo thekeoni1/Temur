@@ -134,12 +134,23 @@ fn run() -> Result<ExitCode, error::Error> {
     match cmd.as_deref() {
         Some("init") => {
             let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            // T15: the wizard's ONLY network capability — the keyless,
+            // unauthenticated listing GET, on a short timeout.
+            let list = |base: &str| {
+                temur::provider::list_models_keyless(
+                    base,
+                    std::time::Duration::from_secs(
+                        temur::provider::KEYLESS_LISTING_TIMEOUT_SECS,
+                    ),
+                )
+            };
             temur::init::run(
                 &config::config_path(),
                 home.as_deref(),
                 force,
                 &mut std::io::stdin().lock(),
                 &mut std::io::stdout(),
+                &list,
             )?;
             Ok(ExitCode::SUCCESS)
         }
