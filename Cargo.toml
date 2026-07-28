@@ -10,7 +10,10 @@ lexopt = "0.3"
 log = "0.4"
 env_logger = "0.11"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order (T15): `/model --save` re-serializes the user's config
+# file, and their key order must survive the round trip. Pulls in indexmap,
+# pure Rust; the forbidden-deps gate below stays authoritative.
+serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"
 # Pure-Rust TLS stack, deliberately: rustls with the *ring* crypto provider
 # (aws-lc-rs needs cmake/C and is riskier on i686) and ureq's bundled

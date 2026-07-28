@@ -164,6 +164,32 @@ pub fn list_models_live(
     parse_models_json(&body)
 }
 
+/// Serialize a request body with recursively SORTED object keys — the
+/// exact byte order this wire has had since T1, when bodies were built on
+/// serde_json's default BTreeMap and keys serialized alphabetically. T15
+/// enabled serde_json's preserve_order feature (so `/model --save` keeps
+/// the user's config key order), which would silently flip request bodies
+/// to insertion order; sorting at this boundary pins the historical bytes
+/// instead, and the request_golden suite keeps enforcing them.
+pub fn to_sorted_json_string(v: &Value) -> Result<String, serde_json::Error> {
+    fn sorted(v: &Value) -> Value {
+        match v {
+            Value::Object(m) => {
+                let mut keys: Vec<&String> = m.keys().collect();
+                keys.sort();
+                let mut out = serde_json::Map::new();
+                for k in keys {
+                    out.insert(k.clone(), sorted(&m[k.as_str()]));
+                }
+                Value::Object(out)
+            }
+            Value::Array(a) => Value::Array(a.iter().map(sorted).collect()),
+            other => other.clone(),
+        }
+    }
+    serde_json::to_string(&sorted(v))
+}
+
 /// Seconds of global timeout on a keyless listing GET: long enough for a
 /// LAN model server, short enough that a wedged one cannot stall the init
 /// wizard or a doctor report.

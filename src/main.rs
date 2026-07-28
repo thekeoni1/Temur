@@ -529,6 +529,8 @@ fn repl(
     let replay_mode = mock.is_some() || capture.is_some();
     let build = |p: &temur::config::ResolvedProfile| temur::provider::build_live(p);
     let list_models = |p: &temur::config::ResolvedProfile| temur::provider::list_models_live(p);
+    // T15: the file `/model --save` edits — the exact path startup loaded.
+    let cfg_path = config::config_path();
     while let Some(line) = ui.read_input() {
         if !use_tui {
             plain_cancel.clear();
@@ -551,6 +553,7 @@ fn repl(
                 replay_mode,
                 prompt_profile: &mut current_prompt_profile,
                 active_resolved: &mut active_resolved,
+                config_path: &cfg_path,
                 build_provider: &build,
                 list_models: &list_models,
                 rebuild_system: &rebuild_system,

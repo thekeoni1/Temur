@@ -541,6 +541,60 @@ fn init_rejects_unknown_template() {
     assert!(!sb.config_path().exists(), "no config on a failed wizard");
 }
 
+// ----------------------------------------------- T15: /model ... --save
+
+#[test]
+fn model_save_persists_across_restart() {
+    // Live keyless run: provider construction is lazy, no turn runs, so
+    // nothing touches the network. First run switches and saves; the
+    // second proves the file now selects the saved model at startup.
+    let sb = sandbox();
+    sb.write_config(
+        r#"{"provider":"openai-compat","openai_compat":{"model":"first-model"}}"#,
+    );
+    let (code, stdout, stderr) = run(sb.cmd(), "/model second-model --save\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains("switched model to second-model"), "{stdout}");
+    assert!(
+        stdout.contains(&format!(
+            "saved model second-model to {}",
+            sb.config_path().display()
+        )),
+        "{stdout}"
+    );
+
+    let (code, stdout, stderr) = run(sb.cmd(), "/status\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains("(model=second-model"),
+        "restart banner shows the saved model: {stdout}"
+    );
+    assert!(
+        stdout.contains("provider: openai-compat · model: second-model"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn model_save_without_config_file_reports_and_keeps_the_switch() {
+    // A config-less start only works with a credential path; openai-compat
+    // needs a config, so drive the anthropic default via APP_SECRET_FILE
+    // with a dummy value that is never sent anywhere (no turn runs).
+    let sb = sandbox();
+    let keyfile = sb.home.join("dummy-credential");
+    std::fs::write(&keyfile, "dummy-value-for-startup-only\n").unwrap();
+    let mut c = sb.cmd();
+    c.env("APP_SECRET_FILE", &keyfile);
+    let (code, stdout, stderr) = run(c, "/model other-model --save\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains("switched model to other-model"), "{stdout}");
+    assert!(
+        stdout.contains("NOT saved") && stdout.contains("no config file"),
+        "{stdout}"
+    );
+    assert!(!sb.config_path().exists(), "no file invented");
+}
+
 // ------------------------------------------------------ P4: temur doctor
 
 fn doctor(sb: &Sandbox) -> (i32, String, String) {

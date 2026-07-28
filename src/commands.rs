@@ -29,6 +29,10 @@ pub enum Command {
     /// `/model` with no argument: list profiles.
     ModelList,
     ModelSwitch(String),
+    /// `/model --save` (T15): persist the CURRENT model to the config file.
+    ModelSaveCurrent,
+    /// `/model <raw-id> --save` (T15): raw switch, then persist on success.
+    ModelSwitchSave(String),
     /// `/models`: list model ids from the active provider (T9).
     ModelsList,
     /// `/sessions`: list every saved session, all projects (T10).
@@ -50,6 +54,7 @@ pub fn parse(line: &str) -> Command {
     let head = words.next().unwrap_or("/");
     let arg = words.next();
     let extra = words.next();
+    let fourth = words.next();
     match (head, arg, extra) {
         ("/help", None, _) => Command::Help,
         ("/status", None, _) => Command::Status,
@@ -59,8 +64,14 @@ pub fn parse(line: &str) -> Command {
         ("/thinking", Some("off"), None) => Command::ThinkingSet(false),
         ("/thinking", ..) => Command::Invalid("usage: /thinking [on|off]".into()),
         ("/model", None, _) => Command::ModelList,
+        ("/model", Some("--save"), None) => Command::ModelSaveCurrent,
         ("/model", Some(name), None) => Command::ModelSwitch(name.to_string()),
-        ("/model", ..) => Command::Invalid("usage: /model [<profile>|<model-id>]".into()),
+        ("/model", Some(name), Some("--save")) if fourth.is_none() && name != "--save" => {
+            Command::ModelSwitchSave(name.to_string())
+        }
+        ("/model", ..) => {
+            Command::Invalid("usage: /model [<profile>|<model-id>] [--save]".into())
+        }
         ("/models", None, _) => Command::ModelsList,
         ("/sessions", None, _) => Command::SessionsList,
         ("/resume", Some(key), None) => Command::Resume(key.to_string()),
@@ -114,6 +125,10 @@ pub struct CommandCtx<'a> {
     /// `/models` lists against it; a raw-id `/model` switch derives its
     /// target from it (same provider, only the model replaced).
     pub active_resolved: &'a mut ResolvedProfile,
+    /// The config FILE `--save` edits (T15), threaded from main. The path
+    /// only — reading and writing it is [`crate::config::persist_model`]'s
+    /// job, and nothing else here touches the file.
+    pub config_path: &'a Path,
     #[allow(clippy::type_complexity)]
     pub build_provider:
         &'a dyn Fn(&ResolvedProfile) -> Result<Box<dyn Provider>, crate::error::Error>,
@@ -160,8 +175,8 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "/model",
-        "[<profile>|<model-id>]",
-        "list profiles · switch to a profile or a raw model id",
+        "[<profile>|<model-id>] [--save]",
+        "list profiles · switch to a profile or a raw model id (--save persists it)",
     ),
     ("/models", "", "list model ids from the active provider"),
     ("/clear", "", "wipe this session's history and start fresh"),
@@ -258,6 +273,8 @@ pub fn run(cmd: Command, ctx: &mut CommandCtx) -> Vec<AgentEvent> {
         Command::ThinkingSet(on) => thinking_set(ctx, on),
         Command::ModelList => model_list(ctx),
         Command::ModelSwitch(name) => model_switch(ctx, name),
+        Command::ModelSaveCurrent => model_save_current(ctx),
+        Command::ModelSwitchSave(id) => model_switch_save(ctx, id),
         Command::ModelsList => models_list(ctx),
         Command::SessionsList => sessions_list(ctx),
         Command::Resume(key) => resume_session(ctx, key),
@@ -462,6 +479,62 @@ fn raw_model_switch(ctx: &mut CommandCtx, id: String) -> Vec<AgentEvent> {
     ]
 }
 
+/// `/model --save` (T15): persist the CURRENTLY active model into the
+/// config file, no switch. Replay-guarded like the mutators — it writes
+/// real state.
+fn model_save_current(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
+    if ctx.replay_mode {
+        return vec![notice("/model is unavailable in replay/capture mode")];
+    }
+    vec![persist_notice(ctx)]
+}
+
+/// `/model <raw-id> --save` (T15): the raw switch, then persistence — only
+/// after the switch succeeded, so a bad endpoint or credential can never
+/// end up saved. A PROFILE name with `--save` is a clean error: what a
+/// profile save would mean is the startup "profile" key, which stays a
+/// hand edit (out of scope by design).
+fn model_switch_save(ctx: &mut CommandCtx, id: String) -> Vec<AgentEvent> {
+    if ctx.replay_mode {
+        return vec![notice("/model is unavailable in replay/capture mode")];
+    }
+    if ctx.profiles.contains_key(&id) {
+        return vec![notice(format!(
+            "--save persists a raw model id, and {id:?} is a profile — the startup profile is the \"profile\" key in config.json, edited by hand"
+        ))];
+    }
+    let mut out = raw_model_switch(ctx, id);
+    if out
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ModelSwitched { .. }))
+    {
+        out.push(persist_notice(ctx));
+    }
+    out
+}
+
+/// The persistence step both `--save` forms share. Failure is a notice,
+/// never fatal: an already-performed switch stands, and the notice says
+/// so explicitly.
+fn persist_notice(ctx: &CommandCtx) -> AgentEvent {
+    match crate::config::persist_model(
+        ctx.config_path,
+        ctx.active_profile.as_deref(),
+        ctx.provider_name,
+        ctx.model,
+    ) {
+        Ok(()) => notice(format!(
+            "saved model {} to {}",
+            ctx.model,
+            ctx.config_path.display()
+        )),
+        Err(e) => notice(format!(
+            "model {} is active for this session but was NOT saved: {e}",
+            ctx.model
+        )),
+    }
+}
+
 /// `/models`: list model ids from the active provider. Read-only toward the
 /// session but a LIVE network GET — so it is replay-guarded like the
 /// mutators (ReplayTransport ignores URLs and pops fixtures; a live GET
@@ -635,7 +708,14 @@ mod tests {
             ("/thinking on off", Command::Invalid("usage: /thinking [on|off]".into())),
             ("/model", Command::ModelList),
             ("/model local", Command::ModelSwitch("local".into())),
-            ("/model a b", Command::Invalid("usage: /model [<profile>|<model-id>]".into())),
+            ("/model a b", Command::Invalid("usage: /model [<profile>|<model-id>] [--save]".into())),
+            // T15: the --save forms.
+            ("/model --save", Command::ModelSaveCurrent),
+            ("/model qwen3-4b --save", Command::ModelSwitchSave("qwen3-4b".into())),
+            ("/model --save qwen3-4b", Command::Invalid("usage: /model [<profile>|<model-id>] [--save]".into())),
+            ("/model a --save b", Command::Invalid("usage: /model [<profile>|<model-id>] [--save]".into())),
+            ("/model --save --save", Command::Invalid("usage: /model [<profile>|<model-id>] [--save]".into())),
+            ("/model a b --save", Command::Invalid("usage: /model [<profile>|<model-id>] [--save]".into())),
             ("/models", Command::ModelsList),
             ("/models extra", Command::Invalid("/models takes no arguments".into())),
             ("/sessions", Command::SessionsList),

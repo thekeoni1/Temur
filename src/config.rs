@@ -362,6 +362,89 @@ impl Config {
     }
 }
 
+/// Persist a model id into the config FILE with a surgical
+/// `serde_json::Value` edit (T15, `/model --save`). NEVER round-trips
+/// through [`Config`]: that would silently drop unknown fields (the
+/// schema tolerates them on purpose). Site: an active profile writes
+/// `profiles.<name>.model`, fail-closed — the profile must still exist in
+/// the FILE as an object, because inventing one here would write a config
+/// that cannot start (profiles require a provider). Otherwise the base
+/// selection's own model key: `openai_compat.model` for openai-compat
+/// (the object is created if absent), the top-level `"model"` key for
+/// anthropic — that IS the anthropic model key ([`Config::resolve_base`]
+/// reads `self.model`; the schema has no nested anthropic object).
+/// Atomic: temp file in the same directory, pretty 2-space with a
+/// trailing newline, renamed over (serde_json's preserve_order keeps the
+/// user's key order).
+pub fn persist_model(
+    cfg_path: &std::path::Path,
+    active_profile: Option<&str>,
+    provider: &str,
+    model: &str,
+) -> Result<(), crate::error::Error> {
+    let raw = match std::fs::read_to_string(cfg_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(crate::error::Error::Config(
+                "no config file; run temur init first".into(),
+            ))
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let mut v: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| crate::error::Error::Config(format!("{}: {e}", cfg_path.display())))?;
+    let Some(root) = v.as_object_mut() else {
+        return Err(crate::error::Error::Config(format!(
+            "{}: not a JSON object",
+            cfg_path.display()
+        )));
+    };
+    let model_value = serde_json::Value::String(model.to_string());
+    match active_profile {
+        Some(name) => {
+            let Some(site) = root
+                .get_mut("profiles")
+                .and_then(|p| p.as_object_mut())
+                .and_then(|p| p.get_mut(name))
+                .and_then(|p| p.as_object_mut())
+            else {
+                return Err(crate::error::Error::Config(format!(
+                    "profile {name:?} not found in {}",
+                    cfg_path.display()
+                )));
+            };
+            site.insert("model".to_string(), model_value);
+        }
+        None if provider == "openai-compat" => {
+            let entry = root
+                .entry("openai_compat".to_string())
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            let Some(site) = entry.as_object_mut() else {
+                return Err(crate::error::Error::Config(format!(
+                    "{}: \"openai_compat\" is not a JSON object",
+                    cfg_path.display()
+                )));
+            };
+            site.insert("model".to_string(), model_value);
+        }
+        None => {
+            root.insert("model".to_string(), model_value);
+        }
+    }
+    let pretty = serde_json::to_string_pretty(&v).expect("a parsed Value re-serializes");
+    // Temp-then-rename in the config's own directory: a crash mid-write can
+    // never leave a truncated config behind.
+    let dir = cfg_path.parent().filter(|d| !d.as_os_str().is_empty());
+    let tmp = dir
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(format!(".temur-config.tmp.{}", std::process::id()));
+    std::fs::write(&tmp, format!("{pretty}\n"))?;
+    std::fs::rename(&tmp, cfg_path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })?;
+    Ok(())
+}
+
 /// `$XDG_CONFIG_HOME/temur/config.json`, falling back to
 /// `~/.config/temur/config.json`. Public since T14: the quickstart, `init`,
 /// and `doctor` all name this exact path to the user.
@@ -703,6 +786,83 @@ mod tests {
             c.resolve_base().unwrap_err().to_string(),
             "config: unknown provider \"bedrock\" (expected \"anthropic\" or \"openai-compat\")"
         );
+    }
+
+    // ------------------------------------------- T15: /model --save edits
+
+    fn persist_roundtrip(json: &str, profile: Option<&str>, provider: &str, model: &str) -> String {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.json");
+        std::fs::write(&path, json).unwrap();
+        persist_model(&path, profile, provider, model).unwrap();
+        std::fs::read_to_string(&path).unwrap()
+    }
+
+    #[test]
+    fn persist_model_profile_site_edits_only_that_profile() {
+        let saved = persist_roundtrip(PROFILES_JSON, Some("local"), "openai-compat", "new-id");
+        let c: Config = serde_json::from_str(&saved).unwrap();
+        let profiles = c.resolved_profiles().unwrap();
+        assert_eq!(profiles["local"].model, "new-id");
+        assert_eq!(profiles["sonnet"].model, "claude-sonnet-5", "other profile untouched");
+        assert_eq!(c.max_tokens, 2048, "top-level fields untouched");
+    }
+
+    #[test]
+    fn persist_model_base_openai_compat_site() {
+        let saved = persist_roundtrip(
+            r#"{"provider":"openai-compat","openai_compat":{"base_url":"http://h:1/v1","model":"old"}}"#,
+            None,
+            "openai-compat",
+            "new-id",
+        );
+        let c: Config = serde_json::from_str(&saved).unwrap();
+        let oc = c.openai_compat.unwrap();
+        assert_eq!(oc.model, "new-id");
+        assert_eq!(oc.base_url, "http://h:1/v1", "sibling keys survive");
+    }
+
+    #[test]
+    fn persist_model_base_anthropic_site_is_the_top_level_model_key() {
+        let saved = persist_roundtrip(r#"{"model":"old","max_tokens":64000}"#, None, "anthropic", "claude-opus-5");
+        let c: Config = serde_json::from_str(&saved).unwrap();
+        assert_eq!(c.model, "claude-opus-5");
+        assert_eq!(c.max_tokens, 64_000);
+    }
+
+    #[test]
+    fn persist_model_creates_an_absent_openai_compat_object() {
+        let saved = persist_roundtrip(r#"{"provider":"openai-compat"}"#, None, "openai-compat", "m");
+        let v: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(v["openai_compat"]["model"], "m");
+    }
+
+    #[test]
+    fn persist_model_preserves_unknown_fields_and_key_order() {
+        // Hand-ordered on purpose: model NOT first, unknown fields scattered.
+        // preserve_order + the Value edit must keep every byte except the
+        // model value (the fixture is already pretty 2-space).
+        let fixture = "{\n  \"future_field\": 123,\n  \"provider\": \"openai-compat\",\n  \"openai_compat\": {\n    \"base_url\": \"http://h:9/v1\",\n    \"custom_note\": \"keep me\",\n    \"model\": \"old\",\n    \"context_window\": 8192\n  },\n  \"zeta\": true\n}\n";
+        let saved = persist_roundtrip(fixture, None, "openai-compat", "new");
+        assert_eq!(saved, fixture.replace("\"old\"", "\"new\""));
+    }
+
+    #[test]
+    fn persist_model_missing_file_and_missing_profile_fail_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.json");
+        let err = persist_model(&path, None, "anthropic", "m").unwrap_err().to_string();
+        assert!(err.contains("no config file") && err.contains("temur init"), "{err}");
+
+        std::fs::write(&path, r#"{"profiles":{"real":{"provider":"anthropic","model":"m"}}}"#)
+            .unwrap();
+        let err = persist_model(&path, Some("ghost"), "anthropic", "m")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("\"ghost\"") && err.contains("not found"), "{err}");
+        // Fail-closed means the file is untouched.
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("\"real\"") && !after.contains("ghost"), "{after}");
     }
 
     #[test]

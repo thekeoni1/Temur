@@ -1670,6 +1670,8 @@ struct CmdHarness {
     rebuild: Box<dyn Fn(PromptProfile) -> String>,
     /// Mirrors main's active_resolved local: the full active selection.
     active_resolved: ResolvedProfile,
+    /// Mirrors main's cfg_path local (T15): the file `--save` edits.
+    config_path: std::path::PathBuf,
     /// Mirrors main's list_models injection; tests swap in fakes.
     #[allow(clippy::type_complexity)]
     list: Box<dyn Fn(&ResolvedProfile) -> Result<Vec<String>, temur::error::Error>>,
@@ -1714,6 +1716,7 @@ impl CmdHarness {
             prompt_profile: PromptProfile::Full,
             rebuild: Box::new(test_system_for),
             active_resolved: base_resolved(),
+            config_path: "/nonexistent/temur-test-config.json".into(),
             list: Box::new(|_| unreachable!("no list_models injected")),
         }
     }
@@ -1740,6 +1743,7 @@ impl CmdHarness {
             replay_mode: self.replay,
             prompt_profile: &mut self.prompt_profile,
             active_resolved: &mut self.active_resolved,
+            config_path: &self.config_path,
             build_provider: build,
             list_models: &*self.list,
             rebuild_system: &*self.rebuild,
@@ -2302,6 +2306,169 @@ fn raw_id_switch_with_unreadable_key_file_is_atomic() {
     assert_eq!(h.model, "claude-sonnet-5");
     assert_eq!(h.active_resolved.model, "claude-sonnet-5");
     assert_eq!(session.model(), "claude-sonnet-5");
+}
+
+// ------------------------------------------------- T15: /model --save
+
+/// A temp config file + the harness pointed at it.
+fn harness_with_config(h: &mut CmdHarness, dir: &std::path::Path, json: &str) {
+    let path = dir.join("config.json");
+    std::fs::write(&path, json).unwrap();
+    h.config_path = path;
+}
+
+#[test]
+fn model_switch_save_switches_then_persists_to_the_profile_site() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    h.active = Some("b".into());
+    h.provider_name = "openai-compat".into();
+    h.model = "model-b".into();
+    h.active_resolved = h.profiles["b"].clone();
+    harness_with_config(
+        &mut h,
+        dir.path(),
+        r#"{"profiles":{"b":{"provider":"openai-compat","model":"model-b","keep_me":1}},"future_field":true}"#,
+    );
+
+    let build = |p: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        assert_eq!(p.model, "raw-x");
+        Ok(Box::new(MockProvider {
+            responses: RefCell::new(vec![]),
+            requests: Rc::new(RefCell::new(vec![])),
+        }))
+    };
+    let events = commands::run(
+        commands::parse("/model raw-x --save"),
+        &mut h.ctx(&mut session, &build),
+    );
+    assert!(events.contains(&AgentEvent::ModelSwitched { model: "raw-x".into() }));
+    assert!(
+        notices(&events).iter().any(|n| n.starts_with("saved model raw-x to ")),
+        "{events:?}"
+    );
+    let saved = std::fs::read_to_string(&h.config_path).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(v["profiles"]["b"]["model"], "raw-x");
+    assert_eq!(v["profiles"]["b"]["keep_me"], 1, "unknown fields survive: {saved}");
+    assert_eq!(v["future_field"], true, "{saved}");
+}
+
+#[test]
+fn model_save_current_persists_without_switching() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    harness_with_config(&mut h, dir.path(), r#"{"model":"old-model"}"#);
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!("/model --save switches nothing")
+    };
+    let events = commands::run(
+        commands::parse("/model --save"),
+        &mut h.ctx(&mut session, &build),
+    );
+    assert!(!events.iter().any(|e| matches!(e, AgentEvent::ModelSwitched { .. })));
+    assert!(
+        notices(&events).iter().any(|n| n.starts_with("saved model claude-sonnet-5 to ")),
+        "{events:?}"
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&h.config_path).unwrap()).unwrap();
+    assert_eq!(v["model"], "claude-sonnet-5", "anthropic base site is the top-level key");
+}
+
+#[test]
+fn model_save_with_a_profile_name_is_a_clean_error_and_switches_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!("a profile name with --save must not build")
+    };
+    let events = commands::run(
+        commands::parse("/model b --save"),
+        &mut h.ctx(&mut session, &build),
+    );
+    assert!(!events.iter().any(|e| matches!(e, AgentEvent::ModelSwitched { .. })));
+    assert!(
+        notices(&events)
+            .iter()
+            .any(|n| n.contains("\"b\" is a profile") && n.contains("\"profile\" key")),
+        "{events:?}"
+    );
+    assert_eq!(h.model, "claude-sonnet-5", "no switch happened");
+}
+
+#[test]
+fn model_switch_save_persist_failure_keeps_the_switch() {
+    // config_path points nowhere: the switch succeeds, persistence fails,
+    // and the notice says both.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        Ok(Box::new(MockProvider {
+            responses: RefCell::new(vec![]),
+            requests: Rc::new(RefCell::new(vec![])),
+        }))
+    };
+    let events = commands::run(
+        commands::parse("/model raw-x --save"),
+        &mut h.ctx(&mut session, &build),
+    );
+    assert!(events.contains(&AgentEvent::ModelSwitched { model: "raw-x".into() }));
+    assert!(
+        notices(&events)
+            .iter()
+            .any(|n| n.contains("NOT saved") && n.contains("no config file")),
+        "{events:?}"
+    );
+    assert_eq!(h.model, "raw-x", "the switch stands");
+    assert_eq!(session.model(), "raw-x");
+}
+
+#[test]
+fn model_switch_save_failed_switch_never_touches_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    harness_with_config(&mut h, dir.path(), r#"{"model":"keep"}"#);
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        Err(temur::error::Error::Secret("cannot read key".into()))
+    };
+    let events = commands::run(
+        commands::parse("/model raw-x --save"),
+        &mut h.ctx(&mut session, &build),
+    );
+    assert!(!events.iter().any(|e| matches!(e, AgentEvent::ModelSwitched { .. })));
+    assert!(
+        notices(&events).iter().any(|n| n.contains("failed") && n.contains("session unchanged")),
+        "{events:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&h.config_path).unwrap(),
+        r#"{"model":"keep"}"#,
+        "a failed switch persists nothing"
+    );
+}
+
+#[test]
+fn model_save_forms_are_replay_guarded() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    h.replay = true;
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!("replay mode builds nothing")
+    };
+    for line in ["/model --save", "/model raw-x --save"] {
+        let events = commands::run(commands::parse(line), &mut h.ctx(&mut session, &build));
+        assert!(
+            notices(&events).iter().any(|n| n.contains("unavailable in replay/capture mode")),
+            "{line}: {events:?}"
+        );
+    }
 }
 
 // --------------------------------------------- T10: /sessions /resume /new

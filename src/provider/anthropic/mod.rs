@@ -82,7 +82,9 @@ impl AnthropicProvider {
         if let Some(p) = req.top_p {
             body["top_p"] = serde_json::json!(p);
         }
-        serde_json::to_string(&body)
+        // Sorted-key serialization: byte-identical to the pre-T15 wire (see
+        // to_sorted_json_string).
+        crate::provider::to_sorted_json_string(&body)
             .map_err(|e| ProviderError::Stream(format!("serialize request: {e}")))
     }
 
