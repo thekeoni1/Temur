@@ -136,6 +136,7 @@ pub fn run(
     // request of any kind is sent.
     if no_network {
         writeln!(r.out, "SKIP: reachability probes (--no-network)")?;
+        writeln!(r.out, "SKIP: model checks (--no-network)")?;
     } else {
         let mut urls: std::collections::BTreeSet<&str> =
             std::collections::BTreeSet::new();
@@ -147,9 +148,89 @@ pub fn run(
                 Err(e) => r.fail(&format!("unreachable: {url}: {e}"))?,
             }
         }
+        // Model checks (T15): is each configured model actually served?
+        // KEYLESS openai-compat selections only, through the ONE listing
+        // request doctor may make (list_models_keyless: unauthenticated by
+        // construction, short timeout). Keyed selections get a SKIP line;
+        // a failed listing is a plain note, never a FAIL, because the
+        // probe above already reported connectivity.
+        let mut listings: std::collections::BTreeMap<String, Result<Vec<String>, String>> =
+            std::collections::BTreeMap::new();
+        model_check(&mut r, "", &active, &mut listings)?;
+        for (name, p) in &profiles {
+            if *p == active {
+                continue; // the active profile: already checked above
+            }
+            let prefix = format!("profile \"{name}\" ");
+            model_check(&mut r, &prefix, p, &mut listings)?;
+        }
     }
 
     finish(r)
+}
+
+/// How many server ids a model-mismatch WARN prints before folding the
+/// rest into a count.
+const MODEL_WARN_LIST_CAP: usize = 10;
+
+/// One model check (T15). PASS when the configured model is in the
+/// server's listing; WARN (never FAIL) when it is not, naming the model
+/// and up to [`MODEL_WARN_LIST_CAP`] served ids, because servers alias
+/// ids (Ollama tags, llama.cpp path names) and an exact match is only
+/// advisory. Listings are cached per base_url so shared servers are asked
+/// once.
+fn model_check(
+    r: &mut Report<'_>,
+    prefix: &str,
+    p: &crate::config::ResolvedProfile,
+    listings: &mut std::collections::BTreeMap<String, Result<Vec<String>, String>>,
+) -> std::io::Result<()> {
+    if p.provider != "openai-compat" || p.api_key_file.is_some() {
+        return writeln!(
+            r.out,
+            "SKIP: {prefix}model check would need an authenticated request; skipped"
+        );
+    }
+    let outcome = listings.entry(p.base_url.clone()).or_insert_with(|| {
+        crate::provider::list_models_keyless(
+            &p.base_url,
+            std::time::Duration::from_secs(crate::provider::KEYLESS_LISTING_TIMEOUT_SECS),
+        )
+        .map_err(|e| e.to_string())
+    });
+    match outcome {
+        Ok(ids) if ids.iter().any(|i| i == &p.model) => r.pass(&format!(
+            "{prefix}model \"{}\" is in the server listing at {}",
+            p.model, p.base_url
+        )),
+        Ok(ids) if ids.is_empty() => r.warn(&format!(
+            "{prefix}model \"{}\": the server at {} lists no models",
+            p.model, p.base_url
+        )),
+        Ok(ids) => {
+            let shown: Vec<&str> = ids
+                .iter()
+                .take(MODEL_WARN_LIST_CAP)
+                .map(String::as_str)
+                .collect();
+            let more = if ids.len() > MODEL_WARN_LIST_CAP {
+                format!(" and {} more", ids.len() - MODEL_WARN_LIST_CAP)
+            } else {
+                String::new()
+            };
+            r.warn(&format!(
+                "{prefix}model \"{}\" is not in the server listing at {} (server lists: {}{more}; advisory only, servers may alias ids)",
+                p.model,
+                p.base_url,
+                shown.join(", ")
+            ))
+        }
+        Err(e) => writeln!(
+            r.out,
+            "NOTE: {prefix}model check at {} skipped: {e}",
+            p.base_url
+        ),
+    }
 }
 
 fn finish(r: Report<'_>) -> std::io::Result<bool> {
@@ -384,5 +465,167 @@ mod tests {
         );
         assert!(parse_base_url("ftp://x").is_err());
         assert!(parse_base_url("https://").is_err());
+    }
+
+    // --------------------------------------- T15: model checks (hermetic)
+
+    /// Canned HTTP server on 127.0.0.1 that answers every GET with `body`
+    /// and tolerates request-less connections (the reachability probe is a
+    /// bare TCP connect). The detached accept loop dies with the test
+    /// process.
+    fn canned_server(body: &'static str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                use std::io::{Read, Write};
+                let mut req = Vec::new();
+                let mut buf = [0u8; 1024];
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            req.extend_from_slice(&buf[..n]);
+                            if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
+                if req.starts_with(b"GET ") {
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                }
+            }
+        });
+        format!("http://127.0.0.1:{port}/v1")
+    }
+
+    /// Run doctor over a literal config in a tempdir, capturing output.
+    fn doctor_over(config: &str, no_network: bool) -> (bool, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.json");
+        std::fs::write(&cfg_path, config).unwrap();
+        let mut out: Vec<u8> = Vec::new();
+        let healthy = run(&cfg_path, no_network, &mut out).unwrap();
+        (healthy, String::from_utf8(out).unwrap())
+    }
+
+    /// A keyless openai-compat config aimed at `base`.
+    fn keyless_config(base: &str, model: &str) -> String {
+        format!(
+            r#"{{"provider":"openai-compat","openai_compat":{{"base_url":"{base}","model":"{model}"}}}}"#
+        )
+    }
+
+    #[test]
+    fn model_check_pass_when_served() {
+        let base = canned_server(r#"{"data":[{"id":"served-a"},{"id":"served-b"}]}"#);
+        let (healthy, out) = doctor_over(&keyless_config(&base, "served-b"), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!("PASS: model \"served-b\" is in the server listing at {base}")),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn model_check_warn_when_absent_names_model_and_ids_but_stays_healthy() {
+        let base = canned_server(r#"{"data":[{"id":"real-1"},{"id":"real-2"}]}"#);
+        let (healthy, out) = doctor_over(&keyless_config(&base, "bogus-model"), false);
+        assert!(healthy, "WARN must not affect the exit code: {out}");
+        assert!(out.contains("WARN: model \"bogus-model\" is not in the server listing"), "{out}");
+        assert!(out.contains("real-1, real-2"), "{out}");
+        assert!(out.contains("advisory"), "{out}");
+    }
+
+    #[test]
+    fn model_check_bad_json_is_a_note_not_a_fail() {
+        let base = canned_server("<html>gateway</html>");
+        let (healthy, out) = doctor_over(&keyless_config(&base, "m"), false);
+        assert!(healthy, "{out}");
+        assert!(out.contains("NOTE: model check at") && out.contains("bad JSON"), "{out}");
+    }
+
+    #[test]
+    fn model_check_refused_listing_is_a_note_while_the_probe_fails() {
+        // Dead port: the reachability probe FAILs (existing behavior), the
+        // model check adds only a note.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let base = format!("http://127.0.0.1:{port}/v1");
+        let (healthy, out) = doctor_over(&keyless_config(&base, "m"), false);
+        assert!(!healthy, "unreachable endpoint is a probe FAIL: {out}");
+        assert!(out.contains(&format!("FAIL: unreachable: {base}")), "{out}");
+        assert!(out.contains("NOTE: model check at"), "{out}");
+        assert!(!out.contains("WARN: model"), "no model WARN without a listing: {out}");
+    }
+
+    #[test]
+    fn keyed_selection_gets_a_skip_line_and_no_listing_request() {
+        // Keyed compat profile: the canned server would answer a GET, so a
+        // SKIP line + no PASS/WARN model line proves no request was made.
+        let base = canned_server(r#"{"data":[{"id":"x"}]}"#);
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("k");
+        std::fs::write(&key, "value\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let cfg = format!(
+            r#"{{"provider":"openai-compat","openai_compat":{{"base_url":"{base}","model":"m","api_key_file":"{}"}}}}"#,
+            key.display()
+        );
+        let (healthy, out) = doctor_over(&cfg, false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains("SKIP: model check would need an authenticated request; skipped"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("server listing") && !out.contains("WARN: model"),
+            "no model check line for keyed: {out}"
+        );
+    }
+
+    #[test]
+    fn named_keyless_profile_is_checked_with_its_prefix_and_active_dedup_holds() {
+        let base = canned_server(r#"{"data":[{"id":"good"}]}"#);
+        // Active selection IS profile "loc" (startup profile): exactly one
+        // check line for it, unprefixed; sibling profile "other" gets its
+        // own prefixed WARN.
+        let cfg = format!(
+            r#"{{"profiles":{{
+                "loc":{{"provider":"openai-compat","base_url":"{base}","model":"good"}},
+                "other":{{"provider":"openai-compat","base_url":"{base}","model":"gone"}}}},
+                "profile":"loc"}}"#
+        );
+        let (healthy, out) = doctor_over(&cfg, false);
+        assert!(healthy, "{out}");
+        assert_eq!(
+            out.matches("model \"good\" is in the server listing").count(),
+            1,
+            "active profile checked exactly once: {out}"
+        );
+        assert!(
+            out.contains("WARN: profile \"other\" model \"gone\" is not in the server listing"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn no_network_skips_model_checks_too() {
+        let (healthy, out) = doctor_over(
+            r#"{"provider":"openai-compat","openai_compat":{"model":"m"}}"#,
+            true,
+        );
+        assert!(healthy, "{out}");
+        assert!(out.contains("SKIP: model checks (--no-network)"), "{out}");
+        assert!(!out.contains("server listing"), "{out}");
     }
 }
