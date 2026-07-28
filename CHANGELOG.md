@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased
+## Unreleased - v0.5.0
 
 T14 onboarding + one-shot mode (built before T13, which awaits keys):
 
@@ -40,6 +40,17 @@ T14 onboarding + one-shot mode (built before T13, which awaits keys):
   isolated XDG dirs (exit codes, stdout/stderr split, wizard piping,
   key-file metadata); check.sh mounts the bin dir so the suite also
   runs in both containers.
+- One-shot exit codes completed: an interrupted one-shot (Ctrl+C)
+  now exits 130 (128+SIGINT, the shell convention), and interruption
+  wins over a raced error. The full contract: 0 completed turn, 1
+  provider or startup error, 130 interrupted; verified end-to-end by
+  an event-driven SIGINT test in tests/cli.rs.
+- Usage docs: new docs/USAGE.md (a worked interactive session,
+  one-shot scripting recipes with the exit-code contract, the skills
+  contract with a minimal working example; all transcripts from real
+  local-model runs), an audience note atop SETUP.md separating the
+  dev-machine recipe from installing/using temur, and README links to
+  USAGE.md and TUI.md.
 
 T12 CI:
 
