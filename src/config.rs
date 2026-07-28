@@ -346,10 +346,6 @@ impl Config {
         }
     }
 
-    fn load_from(path: &std::path::Path) -> Result<Self, crate::error::Error> {
-        Ok(Self::load_from_reporting(path)?.0)
-    }
-
     /// Load from an explicit path, reporting presence (see
     /// [`Config::load_reporting`]). Public so `doctor` reads through the
     /// exact same parse-or-default path as startup.
@@ -710,9 +706,12 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_yields_defaults() {
-        let c = Config::load_from(std::path::Path::new("/nonexistent/temur-test/config.json"))
-            .unwrap();
+    fn missing_file_yields_defaults_and_reports_absence() {
+        let (c, existed) = Config::load_from_reporting(std::path::Path::new(
+            "/nonexistent/temur-test/config.json",
+        ))
+        .unwrap();
         assert_eq!(c.model, DEFAULT_MODEL);
+        assert!(!existed, "a missing file must report existed=false");
     }
 }

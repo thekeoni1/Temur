@@ -1,5 +1,5 @@
 //! Black-box CLI tests (T14): spawn the REAL binary with isolated XDG dirs
-//! and assert on exit codes and the stdout/stderr split — the things the
+//! and assert on exit codes and the stdout/stderr split, the things the
 //! in-process suites cannot see. Every child gets its own tempdir config,
 //! state, and HOME, and APP_SECRET_FILE is scrubbed, so no test can read the
 //! operator's real config or leak state between cases.
@@ -128,7 +128,7 @@ fn no_config_mock_run_is_unchanged() {
 fn no_config_with_app_secret_file_is_unchanged() {
     // The appsvc launcher path: no config file, credential via
     // APP_SECRET_FILE. Startup must proceed exactly as before (banner, then
-    // EOF quits — no turn is run, so nothing touches the network).
+    // EOF quits; no turn is run, so nothing touches the network).
     let sb = sandbox();
     let keyfile = sb.home.join("dummy-credential");
     std::fs::write(&keyfile, "dummy-value-for-startup-only\n").unwrap();
@@ -155,6 +155,119 @@ fn existing_config_startup_is_unchanged() {
     );
     assert!(stdout.contains("bye"), "{stdout}");
     assert!(!stderr.contains("no config file found"), "{stderr}");
+}
+
+// ------------------------------------------------------ P2: one-shot (-p)
+
+#[test]
+fn oneshot_prose_turn_stdout_is_exactly_the_answer() {
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.args(["--mock", &fixture("text_simple.sse"), "-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    // No banner, no prompt, no "bye": stdout is the prose, newline-terminated.
+    assert_eq!(stdout, "Hello, world!\n", "stdout: {stdout:?}");
+    // Stats are chrome and land on stderr.
+    assert!(stderr.contains("(turn:"), "stderr: {stderr}");
+}
+
+#[test]
+fn oneshot_tool_turn_splits_streams_anthropic_wire() {
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    let fixtures = format!(
+        "{},{}",
+        fixture("tool_use_parallel.sse"),
+        fixture("text_simple.sse")
+    );
+    c.args(["--mock", &fixtures, "--prompt", "do the smoke task"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    // Both prose segments on stdout, in order; zero chrome there.
+    assert!(
+        stdout.contains("read the file and list the directory"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Hello, world!"), "{stdout}");
+    assert!(
+        !stdout.contains('→') && !stdout.contains("(turn:"),
+        "chrome leaked to stdout: {stdout}"
+    );
+    // Tool chrome on stderr: starts and ends for both parallel calls.
+    assert!(stderr.contains("→ read") && stderr.contains("→ bash"), "{stderr}");
+    assert!(stderr.contains("(turn:"), "{stderr}");
+}
+
+#[test]
+fn oneshot_tool_turn_splits_streams_openai_wire() {
+    let sb = sandbox();
+    sb.write_config(
+        r#"{"provider":"openai-compat","openai_compat":{"model":"mock-local"}}"#,
+    );
+    let mut c = sb.cmd();
+    let fixtures = format!(
+        "{},{}",
+        fixture("openai/tool_parallel.sse"),
+        fixture("openai/text_simple.sse")
+    );
+    c.args(["--mock", &fixtures, "-p", "do the smoke task"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    // OpenAI chunk streams only assemble through the compat provider, so
+    // prose on stdout proves the selection path worked in one-shot mode.
+    assert!(stdout.contains("Hello, world!"), "{stdout}");
+    assert!(!stdout.contains('→'), "chrome leaked to stdout: {stdout}");
+    assert!(stderr.contains("→ bash"), "{stderr}");
+}
+
+#[test]
+fn oneshot_provider_error_exits_failure() {
+    // One fixture, but the tool round needs a second response: the replay
+    // transport runs dry, which surfaces as a provider error. One-shot must
+    // exit FAILURE with the error on stderr, prose so far on stdout.
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.args(["--mock", &fixture("tool_use_parallel.sse"), "-p", "go"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains("provider error"), "{stderr}");
+    assert!(!stdout.contains("provider error"), "{stdout}");
+}
+
+#[test]
+fn oneshot_flag_conflicts_are_usage_errors() {
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.args(["--tui", "-p", "hi"]);
+    let (code, _stdout, stderr) = run(c, "");
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains("usage:") && stderr.contains("mutually exclusive"),
+        "{stderr}"
+    );
+
+    let mut c = sb.cmd();
+    c.args(["-p", "hi", "tls-probe"]);
+    let (code, _stdout, stderr) = run(c, "");
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains("usage:") && stderr.contains("subcommand"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn oneshot_without_config_gets_the_quickstart() {
+    // -p is a live path like the REPL: with no config and no credential it
+    // must fail with the quickstart, not a raw secret error.
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.args(["-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains("temur init"), "{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
 }
 
 #[test]

@@ -58,6 +58,9 @@ fn run() -> Result<ExitCode, error::Error> {
     // e2e, operator scripts — is unchanged without any flag).
     let mut force_tui = false;
     let mut force_plain = false;
+    // -p/--prompt (T14): one-shot mode. Run exactly one full agentic turn
+    // over this prompt on the plain path, then exit by outcome.
+    let mut oneshot: Option<String> = None;
     while let Some(arg) = parser.next()? {
         match arg {
             Long("version") | Short('V') => {
@@ -70,12 +73,24 @@ fn run() -> Result<ExitCode, error::Error> {
             Long("resume") => resume_key = Some(parser.value()?.string()?),
             Long("tui") => force_tui = true,
             Long("plain") => force_plain = true,
+            Short('p') | Long("prompt") => oneshot = Some(parser.value()?.string()?),
             Value(v) if cmd.is_none() => cmd = Some(v.string()?),
             arg => return Err(arg.unexpected().into()),
         }
     }
     if force_tui && force_plain {
         return Err(error::Error::Usage("--tui and --plain are mutually exclusive".into()));
+    }
+    // One-shot is plain by definition: there is nothing interactive to draw.
+    if oneshot.is_some() && force_tui {
+        return Err(error::Error::Usage(
+            "-p/--prompt and --tui are mutually exclusive".into(),
+        ));
+    }
+    if oneshot.is_some() && cmd.is_some() {
+        return Err(error::Error::Usage(
+            "-p/--prompt does not combine with a subcommand".into(),
+        ));
     }
     // One resume flag at a time: they disagree about WHICH file to load.
     if resume && resume_key.is_some() {
@@ -91,7 +106,7 @@ fn run() -> Result<ExitCode, error::Error> {
     if resume_key.is_some() && mock.is_some() {
         return Err(error::Error::Usage("--resume is unavailable with --mock".into()));
     }
-    let use_tui = if force_plain {
+    let use_tui = if oneshot.is_some() || force_plain {
         false
     } else if force_tui {
         true
@@ -109,7 +124,7 @@ fn run() -> Result<ExitCode, error::Error> {
             Ok(ExitCode::SUCCESS)
         }
         Some(other) => Err(error::Error::Usage(format!("unknown command: {other}"))),
-        None => repl(mock, capture, use_tui, resume, resume_key),
+        None => repl(mock, capture, use_tui, resume, resume_key, oneshot),
     }
 }
 
@@ -119,6 +134,7 @@ fn repl(
     use_tui: bool,
     resume: bool,
     resume_key: Option<String>,
+    oneshot: Option<String>,
 ) -> Result<ExitCode, error::Error> {
     let (cfg, cfg_existed) = config::Config::load_reporting()?;
     // Validated up front: an unknown GLOBAL prompt_profile is a startup
@@ -267,12 +283,14 @@ fn repl(
 
     // Plain-mode banners keep their exact v1 wording; in TUI mode the same
     // facts live in the header/footer (a pre-alt-screen println would be
-    // swallowed anyway).
+    // swallowed anyway). One-shot mode (T14) prints no banner at all:
+    // stdout is reserved for the assistant's prose.
+    let banner = !use_tui && oneshot.is_none();
     let provider: Box<dyn Provider> = match &mock {
         Some(paths) => {
             let files: Vec<std::path::PathBuf> =
                 paths.split(',').map(std::path::PathBuf::from).collect();
-            if !use_tui {
+            if banner {
                 println!("temur {VERSION} [MOCK replay: {} response(s)]", files.len());
             }
             let replay = Box::new(ReplayTransport::new(files));
@@ -287,7 +305,7 @@ fn repl(
             }
         }
         None => {
-            if !use_tui {
+            if banner {
                 println!("temur {VERSION} (model={model}, thinking={})", cfg.thinking);
             }
             match &capture {
@@ -295,7 +313,13 @@ fn repl(
                 // conformance fixtures (operator-run, one-time). Credentials
                 // here follow the same by-path rule as build_live.
                 Some(base) => {
-                    println!("[capture-sse: writing raw streams to {base}.<n>.sse]");
+                    // In one-shot mode this status line moves to stderr with
+                    // the rest of the chrome.
+                    if oneshot.is_some() {
+                        eprintln!("[capture-sse: writing raw streams to {base}.<n>.sse]");
+                    } else {
+                        println!("[capture-sse: writing raw streams to {base}.<n>.sse]");
+                    }
                     if is_compat {
                         let key = match &resolved.api_key_file {
                             Some(p) => Some(secret::load_api_key_from(std::path::Path::new(p))?),
@@ -381,6 +405,8 @@ fn repl(
             // Esc can interrupt a running turn.
             session.cancel_token(),
         )?)
+    } else if oneshot.is_some() {
+        Box::new(temur::ui::oneshot::OneShotUi::stdio())
     } else {
         Box::new(ReplUi::new())
     };
@@ -415,6 +441,37 @@ fn repl(
     // different config is then correct behavior).
     let mut provider_name = resolved.provider.clone();
     let mut current_model = model.clone();
+
+    // T14 one-shot: exactly ONE full agentic turn (all tool rounds run to
+    // completion inside session.turn), through the same session, event, and
+    // save seams as the loop below; then exit by outcome. Session saving
+    // stays on for live runs, so `temur -p` chains with
+    // `temur --continue -p`.
+    if let Some(prompt) = &oneshot {
+        plain_cancel.clear();
+        let result = session.turn(prompt, &mut |ev| ui.event(&ev));
+        if let Err(e) = &result {
+            ui.event(&AgentEvent::Notice(format!("provider error: {e}")));
+        }
+        save_after_turn(
+            persist_path.as_ref(),
+            &session,
+            &provider_name,
+            &current_model,
+            &cwd_display,
+            session_name.as_deref(),
+            session_max_bytes,
+            ui.as_mut(),
+            &mut save_failure_notified,
+        );
+        ui.finish();
+        return Ok(if result.is_ok() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        });
+    }
+
     let replay_mode = mock.is_some() || capture.is_some();
     let build = |p: &temur::config::ResolvedProfile| temur::provider::build_live(p);
     let list_models = |p: &temur::config::ResolvedProfile| temur::provider::list_models_live(p);
@@ -458,47 +515,72 @@ fn repl(
         // Save in BOTH arms — power-cut philosophy: a provider-error turn's
         // dangling user message is real history, and the resume seam is what
         // handles it (prepare_seed drops a trailing unanswered prompt).
-        if let Some(path) = &persist_path {
-            let snap = session.snapshot();
-            let file = temur::session_store::SessionFileRef {
-                version: temur::session_store::FORMAT_VERSION,
-                provider: &provider_name,
-                model: &current_model,
-                cwd: &cwd_display,
-                history: snap.history,
-                session_usage: snap.session_usage,
-                todos: snap.todos,
-                last_context_used: snap.last_context_used,
-                name: session_name.as_deref(),
-            };
-            let mut trim_notices: Vec<String> = Vec::new();
-            match temur::session_store::save(path, &file, session_max_bytes, &mut |n| {
-                trim_notices.push(n)
-            }) {
-                Ok(()) => {
-                    for n in trim_notices {
-                        ui.event(&AgentEvent::Notice(n));
-                    }
-                }
-                Err(e) => {
-                    // Never fatal: the in-memory conversation is intact and
-                    // every later turn retries. Noticed once per process so a
-                    // full disk doesn't shout on every turn.
-                    if !save_failure_notified {
-                        save_failure_notified = true;
-                        ui.event(&AgentEvent::Notice(format!(
-                            "session save failed: {e} — continuing; will retry next turn"
-                        )));
-                    }
-                }
-            }
-        }
+        save_after_turn(
+            persist_path.as_ref(),
+            &session,
+            &provider_name,
+            &current_model,
+            &cwd_display,
+            session_name.as_deref(),
+            session_max_bytes,
+            ui.as_mut(),
+            &mut save_failure_notified,
+        );
     }
     drop(ui); // TUI: joins the render thread and restores the terminal
     if !use_tui {
         println!("bye");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Post-turn session save, shared by the REPL loop and one-shot mode (T14).
+/// Never fatal: the in-memory conversation is intact and every later turn
+/// retries. The failure is noticed once per process so a full disk doesn't
+/// shout on every turn.
+#[allow(clippy::too_many_arguments)]
+fn save_after_turn(
+    persist_path: Option<&std::path::PathBuf>,
+    session: &Session,
+    provider_name: &str,
+    model: &str,
+    cwd_display: &str,
+    session_name: Option<&str>,
+    session_max_bytes: u64,
+    ui: &mut dyn Ui,
+    save_failure_notified: &mut bool,
+) {
+    let Some(path) = persist_path else { return };
+    let snap = session.snapshot();
+    let file = temur::session_store::SessionFileRef {
+        version: temur::session_store::FORMAT_VERSION,
+        provider: provider_name,
+        model,
+        cwd: cwd_display,
+        history: snap.history,
+        session_usage: snap.session_usage,
+        todos: snap.todos,
+        last_context_used: snap.last_context_used,
+        name: session_name,
+    };
+    let mut trim_notices: Vec<String> = Vec::new();
+    match temur::session_store::save(path, &file, session_max_bytes, &mut |n| {
+        trim_notices.push(n)
+    }) {
+        Ok(()) => {
+            for n in trim_notices {
+                ui.event(&AgentEvent::Notice(n));
+            }
+        }
+        Err(e) => {
+            if !*save_failure_notified {
+                *save_failure_notified = true;
+                ui.event(&AgentEvent::Notice(format!(
+                    "session save failed: {e} — continuing; will retry next turn"
+                )));
+            }
+        }
+    }
 }
 
 /// First-run guidance (T14), printed to stderr instead of the raw credential
