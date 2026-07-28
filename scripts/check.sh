@@ -31,11 +31,15 @@ HOST_ISOLATION="XDG_CONFIG_HOME=$HOST_XDG/config XDG_STATE_HOME=$HOST_XDG/state"
 # --- shared checks, parameterized by binary/deps dir -------------------------
 
 container_suites() { # $1 = deps dir, $2 = label
-    for suite in sse_parser provider openai_compat request_golden tools agent live_conformance live_conformance_openai weak_model session_store skills tui sigint; do
+    # The cli suite (T14) spawns the temur binary via its baked-in
+    # CARGO_BIN_EXE path, so the bin dir is mounted read-only at that same
+    # path inside the container.
+    BINDIR=$(dirname "$1")
+    for suite in sse_parser provider openai_compat request_golden tools agent live_conformance live_conformance_openai weak_model session_store skills tui sigint cli; do
         TBIN=$(ls -t "$1/${suite}"-* 2>/dev/null | grep -v '\.d$' | head -1 || true)
         [ -n "$TBIN" ] || continue
         echo "-- $suite ($(basename "$TBIN")) --"
-        OUT=$(podman run --rm -v "$1":/suites:ro -v "$PROJ":"$PROJ":ro "$IMG" \
+        OUT=$(podman run --rm -v "$1":/suites:ro -v "$BINDIR":"$BINDIR":ro -v "$PROJ":"$PROJ":ro "$IMG" \
             "/suites/$(basename "$TBIN")" --test-threads=2) || { echo "FAIL($2): $suite in container"; echo "$OUT"; exit 1; }
         echo "$OUT" | grep 'test result'
     done

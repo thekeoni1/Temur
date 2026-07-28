@@ -190,7 +190,16 @@ impl Default for Config {
 
 impl Config {
     pub fn load() -> Result<Self, crate::error::Error> {
-        Self::load_from(&config_path())
+        Ok(Self::load_reporting()?.0)
+    }
+
+    /// Like [`Config::load`], but also reports whether the config FILE was
+    /// actually there (`false` = defaults from a missing file). The first-run
+    /// quickstart (T14) keys off this: only a genuinely absent file may
+    /// trigger it, so any existing config, valid or broken, behaves exactly
+    /// as before.
+    pub fn load_reporting() -> Result<(Self, bool), crate::error::Error> {
+        Self::load_from_reporting(&config_path())
     }
 
     /// Resolve `prompt_profile` to the typed profile, rejecting anything
@@ -338,16 +347,29 @@ impl Config {
     }
 
     fn load_from(path: &std::path::Path) -> Result<Self, crate::error::Error> {
+        Ok(Self::load_from_reporting(path)?.0)
+    }
+
+    /// Load from an explicit path, reporting presence (see
+    /// [`Config::load_reporting`]). Public so `doctor` reads through the
+    /// exact same parse-or-default path as startup.
+    pub fn load_from_reporting(
+        path: &std::path::Path,
+    ) -> Result<(Self, bool), crate::error::Error> {
         match std::fs::read_to_string(path) {
             Ok(s) => serde_json::from_str(&s)
+                .map(|c| (c, true))
                 .map_err(|e| crate::error::Error::Config(format!("{}: {e}", path.display()))),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((Self::default(), false)),
             Err(e) => Err(e.into()),
         }
     }
 }
 
-fn config_path() -> PathBuf {
+/// `$XDG_CONFIG_HOME/temur/config.json`, falling back to
+/// `~/.config/temur/config.json`. Public since T14: the quickstart, `init`,
+/// and `doctor` all name this exact path to the user.
+pub fn config_path() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"));

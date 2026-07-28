@@ -120,7 +120,7 @@ fn repl(
     resume: bool,
     resume_key: Option<String>,
 ) -> Result<ExitCode, error::Error> {
-    let cfg = config::Config::load()?;
+    let (cfg, cfg_existed) = config::Config::load_reporting()?;
     // Validated up front: an unknown GLOBAL prompt_profile is a startup
     // error even when every named profile overrides it (per-profile values
     // are validated inside resolved_profiles below).
@@ -168,6 +168,22 @@ fn repl(
     // is exercised offline.
     let profiles = cfg.resolved_profiles()?;
     let (mut active_profile, resolved) = cfg.startup_selection(&profiles)?;
+    // T14 first-run quickstart: a genuinely missing config file on a live
+    // run (--mock replays never need credentials) whose selection would need
+    // a key that is not there means the very next step is the raw
+    // "secret: APP_SECRET_FILE is not set" error. Replace that with
+    // guidance. Any EXISTING config file, and any run with a usable
+    // credential path (the appsvc launcher sets APP_SECRET_FILE with no
+    // config file at all), behaves byte-identically to before.
+    if !cfg_existed
+        && mock.is_none()
+        && resolved.provider == "anthropic"
+        && resolved.api_key_file.is_none()
+        && std::env::var_os("APP_SECRET_FILE").is_none()
+    {
+        eprint!("{}", quickstart_text());
+        return Ok(ExitCode::FAILURE);
+    }
     let is_compat = resolved.provider == "openai-compat";
     let model = resolved.model.clone();
     let cwd_display = cwd.display().to_string();
@@ -483,6 +499,28 @@ fn repl(
         println!("bye");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// First-run guidance (T14), printed to stderr instead of the raw credential
+/// error when no config file exists. Short by design: the path that was
+/// looked for, the command that creates a starter config, and where the
+/// docs are.
+fn quickstart_text() -> String {
+    format!(
+        "temur: no config file found\n\
+         \n\
+         Looked for: {}\n\
+         \n\
+         The default provider (anthropic) needs an API key file, so a first\n\
+         run has nothing to talk to yet. To get started:\n\
+         \n\
+           temur init      create a starter config (local llama.cpp/Ollama,\n\
+                           Anthropic, OpenAI, or Gemini)\n\
+           temur doctor    check the config and environment\n\
+         \n\
+         Config format and recipes: README.md, section \"Configure\".\n",
+        config::config_path().display()
+    )
 }
 
 /// M0 prove-it gate: a real rustls(ring)+webpki-roots TLS handshake on the
