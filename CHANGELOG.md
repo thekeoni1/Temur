@@ -4,6 +4,43 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+T14 onboarding + one-shot mode (built before T13, which awaits keys):
+
+- First-run quickstart: running with no config file, no `--mock`, and no
+  usable credential now prints guidance (the config path looked for,
+  `temur init` / `temur doctor` pointers, a README pointer) and exits
+  FAILURE, instead of the raw "secret: APP_SECRET_FILE is not set"
+  error. Any existing config, `--mock` run, or launcher-style
+  `APP_SECRET_FILE` run behaves byte-identically to before.
+- One-shot mode: `-p <text>` / `--prompt <text>` runs exactly one full
+  agentic turn (all tool rounds) on the plain path with no banner;
+  assistant prose to stdout, tool/status chrome (and `--continue`/
+  `--resume` backscroll) to stderr; exit SUCCESS on a completed turn,
+  FAILURE on a provider or startup error. Composes with `--continue`,
+  `--resume`, and `--mock` (persistence stays off there); mutually
+  exclusive with `--tui`. Live one-shots save the session, so
+  `temur -p` chains with `temur --continue -p`.
+- `temur init`: line-based wizard (pipeable answers) with four
+  templates: local llama.cpp/Ollama/LM Studio (keyless), Anthropic,
+  OpenAI, Gemini (hosted pair via their OpenAI-compat endpoints);
+  per-template model defaults; keyed templates get a key file path
+  (default `~/.secrets/temur-<provider>-key`) created EMPTY, mode 600
+  (parent dir 700 if created), paste-with-your-editor instruction.
+  Refuses to overwrite an existing config unless `--force`; an existing
+  key file is never touched. No key material ever passes through temur.
+- `temur doctor`: read-only diagnosis, one PASS/WARN/FAIL line per
+  check, exit SUCCESS iff no FAIL: config parse + the same eager
+  validation as startup, active selection, key files by metadata only
+  (missing/empty FAIL for the active selection, WARN for inactive
+  profiles; group/other mode bits WARN), sessions dir writability, and
+  one TCP-connect(+TLS-handshake for https) probe per distinct
+  base_url, never an HTTP request. `--no-network` skips probes. With no
+  config, FAILs with the quickstart pointer.
+- tests/cli.rs: new black-box suite spawning the real binary with
+  isolated XDG dirs (exit codes, stdout/stderr split, wizard piping,
+  key-file metadata); check.sh mounts the bin dir so the suite also
+  runs in both containers.
+
 T12 CI:
 
 - Two-tier GitHub Actions CI (first-party actions only). Tier 1 on

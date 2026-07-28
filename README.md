@@ -91,9 +91,49 @@ rustup target add i686-unknown-linux-musl
 cargo build --release --target i686-unknown-linux-musl
 ```
 
+## Quickstart
+
+From installed to a first conversation:
+
+```sh
+temur init      # guided starter config (answers can be piped)
+temur doctor    # read-only check of the config and environment
+temur           # TUI on a terminal; plain line REPL when piped
+```
+
+`temur init` offers four templates: local llama.cpp / Ollama / LM Studio
+(keyless), Anthropic, OpenAI, and Gemini (the latter two through their
+OpenAI-compatible endpoints). For keyed templates it asks for a key file
+path (default `~/.secrets/temur-<provider>-key`), creates that file
+EMPTY with mode 600, and tells you to paste the key in with your editor:
+temur never accepts, reads back, echoes, or stores key material, in any
+direction. `temur doctor` then verifies the setup: config parse and
+validation, the key file by metadata only (present, non-empty by size,
+mode 600, WARN on group/other bits), sessions dir writability, and one
+TCP-connect/TLS-handshake reachability probe per endpoint, without
+sending any API request (`--no-network` skips the probes). Running
+`temur` with no config at all prints these pointers instead of a raw
+credential error.
+
+One-shot mode runs exactly one full agentic turn (tool calls included)
+and exits: assistant prose on stdout, tool and status chrome on stderr,
+exit code by outcome, so it composes in shell pipelines:
+
+```sh
+temur -p "Summarize what this repo does"
+temur --continue -p "Now list the main risks"   # chained: same session
+```
+
+Live one-shots save the session like interactive runs, which is what
+makes `--continue -p` chains work.
+
 ## Configure
 
-Config lives at `~/.config/temur/config.json`. The minimal keyless setup
+Config lives at `~/.config/temur/config.json`; `temur init` writes any
+of the recipes below for you. The hosted OpenAI and Gemini templates
+are written to their published compat specs but not yet live-verified
+against those endpoints (that verification is a parked milestone
+awaiting keys). The minimal keyless setup
 against a local llama.cpp server (`base_url` defaults to
 `http://127.0.0.1:8080/v1`):
 

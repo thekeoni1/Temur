@@ -1195,3 +1195,102 @@ never to be loosened for CI (they gate real product behavior and pass
 deterministically on dedicated hardware); a persistent CI-only failure
 after reruns means the runner class is unsuitable for that assertion
 and should be raised with the operator, not papered over.
+
+## T14 acceptance - recorded result (no release)
+
+2026-07-27: **live keyless onboarding + one-shot smoke PASSED, first
+attempt, all four steps.** Server: llama.cpp (serve.sh pinned image)
+serving Qwen3-4B-Instruct-2507 Q4_K_M, ctx 8192, loopback :8080. All
+product runs in a fully isolated XDG dir (fresh config/state/home), the
+gnu-debug binary, keyless openai-compat; no key material existed
+anywhere in the flow. File-state claims below are host-verified (cat
+from the shell), never taken from model prose. The `write — —` in the
+stats lines is the plain REPL's verbatim absent-usage rendering.
+
+Step 1, `temur init` with piped answers (`1\n\n`), exit 0:
+
+```
+temur init: guided starter config
+Config will be written to: <XDG>/config/temur/config.json
+
+Templates:
+  1) local      llama.cpp / Ollama / LM Studio (openai-compat, keyless)
+  2) anthropic  Anthropic API (key file)
+  3) openai     OpenAI API (openai-compat, key file)
+  4) gemini     Gemini API (openai-compat, key file)
+Template [1]: Model id [qwen3-1.7b]: 
+Wrote <XDG>/config/temur/config.json
+
+Next: start your local server (see docs/OFFLINE.md), run temur doctor
+to check the setup, then temur to start.
+```
+
+The written config matched the README local recipe byte for byte.
+
+Step 2, `temur doctor` with the server up (real probe, no --no-network),
+exit 0:
+
+```
+PASS: config parsed: <XDG>/config/temur/config.json
+PASS: active selection: provider "openai-compat", model "qwen3-1.7b", http://127.0.0.1:8080/v1
+PASS: credentials: keyless (no api_key_file configured)
+PASS: sessions dir <XDG>/state/temur/sessions: absent, will be created on first save
+PASS: reachable: http://127.0.0.1:8080/v1 (TCP connect)
+doctor: 5 pass, 0 warn, 0 fail
+```
+
+Step 3, live one-shot with a real tool call, exit 0. Prompt: `Create a
+file named oneshot.txt containing the single line "t14", then read it
+back and tell me what it contains.` stdout (pure prose):
+
+```
+The file `oneshot.txt` contains the single line: "t14".
+```
+
+stderr (all chrome):
+
+```
+  → write
+  ✓ write: <WORK>/oneshot.txt
+  → read
+  ✓ read: <WORK>/oneshot.txt
+  (turn: 20705 in / 176 out, cache read 13788 write — — session: 20705 in / 176 out, cache read 13788 write —)
+```
+
+Host-verified: `oneshot.txt` contained exactly `t14`.
+
+Step 4, chained `--continue -p` turn, exit 0. Prompt: `Append a second
+line saying "chained" to that same file using your tools, then confirm
+what it contains now.` stdout:
+
+```
+The file `oneshot.txt` now contains the two lines:
+
+1. "t14"
+2. "chained"
+```
+
+stderr (note the resumed backscroll and advisory notices land here,
+keeping stdout pure; the context prewarn is the expected 8192-ctx
+advisory, not a failure):
+
+```
+> Create a file named oneshot.txt containing the single line "t14", then read it back and tell me what it contains.
+  ⚙ write
+  ⚙ read
+The file `oneshot.txt` contains the single line: "t14".
+  [!] resumed session: 6 messages, ~20705 tokens in / 176 out
+  → edit
+  [!] context: ~7221 of 8192 tokens used; the next response may not fit (max_tokens 1024) — consider starting a new session
+  ✓ edit: <WORK>/oneshot.txt
+  → read
+  ✓ read: <WORK>/oneshot.txt
+  (turn: 21912 in / 199 out, cache read 21687 write — — session: 42617 in / 375 out, cache read 35475 write —)
+```
+
+Host-verified: `oneshot.txt` ended as the two lines `t14`, `chained`.
+The model used `edit` rather than `bash` to append; that is a valid
+tool path and the host-verified file state is the acceptance criterion.
+Server stopped with `serve.sh stop` after the smoke. (`<XDG>`/`<WORK>`
+abbreviate the throwaway smoke directory; every other byte is
+verbatim.)
