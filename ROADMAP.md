@@ -184,7 +184,7 @@ payload.
 | T11 | Multi-model ergonomics (shipped as v0.4.0) | serve.sh model selection by name + candidate listing + RAM fit warn (P1); compact bash prompt file-ops hint (P2); weak-model eval indirect-tool-selection probe (P3); Ollama + LM Studio recipes + shortlist table (P4); live shortlist verification (P5) - feature-complete 2026-07-26; shipped as v0.4.0 |
 | T12 | CI | Two-tier GitHub Actions: push gate (hermetic test job + release.sh artifact gate with a placeholder leak-patterns file) and dispatch-only container gate (full check.sh under podman); check.sh env-parameterized for CI, scripts otherwise unchanged - built on branch t12-ci, all three jobs verified green live (test, release-gate 4/4 artifacts gated, container-gate ALL CHECKS PASSED), merged to main 2026-07-28; on-main push trigger and container-gate dispatch verified green |
 | T13 | Hosted provider verification (PARKED) | Live verification of the openai-compat provider against hosted endpoints (OpenAI, Gemini compat) and the hosted Anthropic path; parked until API keys exist - T14 was deliberately built ahead of it (operator decision) |
-| T14 | Onboarding + one-shot mode | First-run quickstart replaces the raw secret error (P1); one-shot `-p` with a strict stdout-prose / stderr-chrome split, composing with --continue/--resume/--mock (P2); `temur init` guided starter config, four templates, empty-600 key files, by-path rule intact (P3); `temur doctor` read-only diagnosis with per-endpoint TCP/TLS probes (P4); docs + live keyless smoke vs local llama.cpp: init -> doctor -> live -p tool turn -> --continue -p chain, all first-attempt green (P5) - feature-complete 2026-07-27, unreleased (rides "Unreleased", ships as v0.5.0); built BEFORE T13, which awaits keys |
+| T14 | Onboarding + one-shot mode | First-run quickstart replaces the raw secret error (P1); one-shot `-p` with a strict stdout-prose / stderr-chrome split, composing with --continue/--resume/--mock (P2); `temur init` guided starter config, four templates, empty-600 key files, by-path rule intact (P3); `temur doctor` read-only diagnosis with per-endpoint TCP/TLS probes (P4); docs + live keyless smoke vs local llama.cpp: init -> doctor -> live -p tool turn -> --continue -p chain, all first-attempt green (P5); interrupted one-shot exits 130 (P6) - feature-complete 2026-07-27; ships as v0.5.0 together with T12 and the stage-1 usage docs; built BEFORE T13, which awaits keys |
 
 ### T0 - Identity + honest gate
 - Rename `opencode-rust` → `temur`: package name, `--version`, binary name,
@@ -641,6 +641,24 @@ exactly the six pinned sites (Cargo.toml/Cargo.lock, install.sh
 VERSION, three README pin groups); no product code and no dependency
 changes rode along. The PUBLIC one-liner gate remains the one open
 release item, deferred to the visibility flip (RUNBOOK).
+
+### v0.5.0 - T12 + T14 close-out (as-built)
+
+T12 (CI) and T14 (onboarding + one-shot) ship together as v0.5.0,
+plus a stage-1 usage-docs pass (docs/USAGE.md with transcripts from
+real local-model runs, the SETUP.md audience note, README links to
+USAGE.md and TUI.md). Same two-stage procedure as v0.3.0/v0.4.0:
+stage 1 (docs, bump, CHANGELOG staging, close-out records, full
+release.sh + installer gates) stops at gated LOCAL artifacts with no
+tag, no push, no release; stage 2 runs as a separate prompt after
+operator sign-off. T13 (hosted provider verification) is explicitly
+NOT in this release: it stays parked until API keys exist, and the
+hosted init templates remain spec-written, live-unverified (the README
+says so where they are offered). Close-out as-built: the bump touched
+exactly the six pinned sites via `cargo update -p temur --offline`
+(temur entry only); no source, test, or dependency changes rode along;
+the visibility decision is deferred to stage 2, and the PUBLIC
+one-liner gate stays deferred to the visibility flip (RUNBOOK).
 
 ## 4. Invariants (every milestone)
 

@@ -1304,3 +1304,31 @@ token set is an interruption, not a failure. The mapping is the pure
 `ui::oneshot::exit_code`, unit-tested on all arms; the SIGINT e2e in
 tests/cli.rs is event-driven (it blocks on stderr for the tool-start
 line, then signals; no sleeps, nothing scheduling-sensitive).
+
+## v0.5.0 - close-out (release procedure delta)
+
+What ships: T12 CI (two-tier GitHub Actions: hermetic test job +
+release-gate on every push to main, dispatch-only container gate) and
+T14 onboarding + one-shot mode (first-run quickstart, `-p` one-shot
+with the 0/1/130 exit contract, `temur init`, `temur doctor`,
+tests/cli.rs black-box suite), plus the stage-1 usage docs
+(docs/USAGE.md, SETUP.md audience note, README links).
+
+Procedure deltas vs v0.4.0:
+
+- **Two milestones ship together** (T12 + T14 in one minor bump);
+  v0.3.0/v0.4.0 each shipped one. No procedure change follows from
+  this: one CHANGELOG section covers both.
+- **T13 is explicitly NOT in this release:** hosted provider
+  verification stays PARKED until API keys exist. The hosted
+  Anthropic/OpenAI/Gemini `temur init` templates ship spec-written and
+  live-unverified, and the README says so where they are offered.
+- **Stage 1 stops at gated LOCAL artifacts** (full release.sh with no
+  SKIP_CHECK + installer matrix, staged under
+  /home/dev/dist/release/v0.5.0), with NO tag, NO push, and NO GitHub
+  release. Stage 2 (tag, push, release, closing gate, acceptance
+  record) runs as a separate prompt after operator sign-off. Same as
+  v0.4.0.
+- **The visibility decision (PRIVATE vs the public flip) is deferred
+  to stage 2.** The PUBLIC one-liner gate and the
+  hostname-blob-history decision stay queued behind it.
