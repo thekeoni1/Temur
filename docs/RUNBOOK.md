@@ -1849,3 +1849,51 @@ Procedure deltas vs v0.6.0:
 - Pin-site note for the bump: the lone remaining 0.6.0 in Cargo.lock
   is the upstream ureq-proto crate's own version (the v0.6.0 cycle's
   equivalent was heck 0.5.0); not a temur pin.
+
+## v0.7.0 release acceptance - recorded result
+
+2026-07-29 (PDT), staged and published same afternoon. Baseline: T18
+pushed earlier that day (95ef0cc..a32ea30, ci run 30492294811 green:
+test 1m38s, release-gate 4m26s). Stage 1 = two prep commits (23bab4f
+bump at all six pin sites, 1e2b1aa CHANGELOG dated 2026-07-29 +
+RUNBOOK close-out delta + ROADMAP ship-vehicle rows), full check.sh
+green, busybox --version printed 0.7.0.
+
+Stage 2, in order, all green:
+
+- Prep commits pushed a32ea30..1e2b1aa; on-push ci run 30494399614
+  green (test 2m39s, release-gate 7m37s) - this run exercised the
+  version-skew release gate against the bump.
+- Annotated tag v0.7.0 at 1e2b1aa ("temur v0.7.0 - provider
+  onboarding and key isolation (T17+T18)"), pushed. Unsigned as
+  always.
+- Full release.sh (no SKIP_CHECK): check.sh both paths, leak grep
+  clean (operator patterns + generic shapes, files + history) first
+  try, skew gate "OK: install.sh + README match version 0.7.0 and
+  all targets", 4/4 targets gated + version-asserted "temur 0.7.0"
+  (i686 + x86_64 native, aarch64 + armv7 via qemu), SHA256SUMS
+  self-verified, staged at /home/dev/dist/release/v0.7.0/. Installer
+  matrix 6/6 (pass+corrupt+unlisted, host + busybox).
+- Staged sha256s: 58ec825d0f00... aarch64, a2ee870fb1bc... armv7,
+  6951d57cdacd... i686, 08a99880a8ac... x86_64 (full sums in the
+  release's SHA256SUMS asset).
+- Private release github.com/thekeoni1/Temur/releases/tag/v0.7.0
+  created, title "temur v0.7.0 - provider onboarding and key
+  isolation (T17+T18)", notes = the CHANGELOG v0.7.0 section, 5
+  assets (4 binaries + SHA256SUMS), not draft; 404s while the repo
+  is private, by design. Repo visibility PRIVATE confirmed via gh
+  BEFORE creating the release.
+- Closing gate: authenticated download of the x86_64 binary +
+  SHA256SUMS into a scratch dir; sha256sum -c OK; the downloaded
+  binary's independent sha256 (08a99880a8ac1fd2d823878a8097c7bbc6
+  4fcd0bd1f94526ceea435672711732) equals the staged one byte for
+  byte.
+
+Procedure note: the gh release create run must start inside the repo
+worktree (it resolves the repo from git); the first attempt from the
+staging dir failed with "not a git repository" and was rerun from
+the repo with absolute asset paths. No other deltas vs v0.6.0.
+
+Open release items unchanged: the PUBLIC one-liner gate and the
+hostname-blob-history decision stay queued behind the visibility
+flip; ARM hardware smoke still pending hardware.
