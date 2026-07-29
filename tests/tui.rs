@@ -430,6 +430,7 @@ fn headless_end_to_end_through_the_ui_seam() {
         top_p: None,
         context_window: None,
         max_tokens_source: None,
+        prose_tool_calls: true,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
 
@@ -613,6 +614,7 @@ fn headless_submission_clears_a_stale_token() {
         top_p: None,
         context_window: None,
         max_tokens_source: None,
+        prose_tool_calls: true,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
     // The stale Esc: set after the (zeroth) turn ended, before submission.
@@ -673,6 +675,7 @@ fn headless_coalesced_enter_esc_interrupt_survives() {
         top_p: None,
         context_window: None,
         max_tokens_source: None,
+        prose_tool_calls: true,
     };
     let mut session = Session::new(Box::new(BlockUntilCancelled), Registry::standard(), cfg);
 
@@ -725,6 +728,7 @@ fn headless_esc_interrupts_a_blocked_turn_end_to_end() {
         top_p: None,
         context_window: None,
         max_tokens_source: None,
+        prose_tool_calls: true,
     };
     let mut session = Session::new(Box::new(BlockUntilCancelled), Registry::standard(), cfg);
 
@@ -875,6 +879,7 @@ fn headless_command_flow_status_leaves_title_alone() {
         top_p: None,
         context_window: None,
         max_tokens_source: None,
+        prose_tool_calls: true,
     };
     let mut session = Session::new(
         Box::new(BlockUntilCancelled), // never called: only commands run
@@ -1005,6 +1010,7 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
         top_p: None,
         context_window: None,
         max_tokens_source: None,
+        prose_tool_calls: true,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
 
@@ -1244,6 +1250,7 @@ fn headless_markdown_fixture_renders_in_final_frame() {
         top_p: None,
         context_window: None,
         max_tokens_source: None,
+        prose_tool_calls: true,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
 
@@ -1517,6 +1524,7 @@ fn headless_tab_completion_submits_the_completed_command() {
         top_p: None,
         context_window: None,
         max_tokens_source: None,
+        prose_tool_calls: true,
     };
     let mut session = Session::new(
         Box::new(BlockUntilCancelled), // never called: only commands run

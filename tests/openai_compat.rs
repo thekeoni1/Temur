@@ -653,6 +653,7 @@ fn agent_turn_round_trips_tool_calls_as_tool_messages() {
         top_p: None,
         context_window: None,
         max_tokens_source: None,
+        prose_tool_calls: true,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
     session.turn("do the smoke task", &mut |_| {}).unwrap();

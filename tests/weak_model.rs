@@ -70,6 +70,16 @@ fn session_with(
     dir: &std::path::Path,
     responses: Vec<ResponseMessage>,
 ) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
+    session_with_prose(dir, responses, true)
+}
+
+/// `prose_tool_calls` explicit: `true` is the product default (T19 P3
+/// prose-call execution), `false` restores T4 detect+nudge.
+fn session_with_prose(
+    dir: &std::path::Path,
+    responses: Vec<ResponseMessage>,
+    prose_tool_calls: bool,
+) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
     let requests = Rc::new(RefCell::new(vec![]));
     let provider = MockProvider {
         responses: RefCell::new(responses),
@@ -86,6 +96,7 @@ fn session_with(
         top_p: None,
         context_window: None,
         max_tokens_source: None,
+        prose_tool_calls,
     };
     (
         Session::new(Box::new(provider), Registry::standard(), cfg),
@@ -340,12 +351,13 @@ fn consecutive_failure_cap_trips_at_five_with_doom_loop_silent() {
 
 #[test]
 fn text_tool_call_nudged_then_recovers() {
+    // prose_tool_calls = false: the T4 detect+nudge behavior, exactly.
     // A tool call written as prose: nothing executes, the model gets a
     // corrective user message, and the scripted structural retry succeeds.
     let dir = tempfile::tempdir().unwrap();
     let prose = "<tool_call>{\"name\": \"write\", \"arguments\": \
                  {\"filePath\": \"nudged.txt\", \"content\": \"x\"}}</tool_call>";
-    let (mut session, requests) = session_with(
+    let (mut session, requests) = session_with_prose(
         dir.path(),
         vec![
             msg(vec![text(prose)], StopReason::EndTurn),
@@ -359,6 +371,7 @@ fn text_tool_call_nudged_then_recovers() {
             ),
             msg(vec![text("done")], StopReason::EndTurn),
         ],
+        false,
     );
     let events = collect_events(&mut session, "write the file");
 
@@ -379,6 +392,141 @@ fn text_tool_call_nudged_then_recovers() {
                 ContentBlock::Text { text } if text.contains("Nothing was executed")
             ))
     }));
+}
+
+// ------------------------------------------------- T19 P3: prose execution
+
+#[test]
+fn prose_call_executes_and_result_feeds_next_request() {
+    // The default (prose_tool_calls = true): an UNAMBIGUOUS tool call
+    // written as plain text executes, and its result goes back as a plain
+    // user text message in the next request.
+    let dir = tempfile::tempdir().unwrap();
+    let prose = "{\"name\": \"write\", \"arguments\": \
+                 {\"filePath\": \"prose.txt\", \"content\": \"via prose\"}}";
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(vec![text(prose)], StopReason::EndTurn),
+            msg(vec![text("done")], StopReason::EndTurn),
+        ],
+    );
+    let events = collect_events(&mut session, "write the file");
+
+    assert_eq!(requests.borrow().len(), 2, "the result must trigger a follow-up request");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("prose.txt")).unwrap(),
+        "via prose",
+        "the prose call must actually execute"
+    );
+    assert!(
+        notices(&events)
+            .iter()
+            .any(|n| n.contains("prose-call recovery: executed the write tool call")),
+        "{:?}",
+        notices(&events)
+    );
+    // The feedback is PLAIN USER TEXT (no tool_use id exists), in the
+    // documented shape.
+    let reqs = requests.borrow();
+    let last = reqs[1].messages.last().unwrap();
+    assert!(matches!(last.role, Role::User));
+    match &last.content[..] {
+        [ContentBlock::Text { text }] => {
+            assert!(
+                text.starts_with(
+                    "Result of the write tool call you wrote as text (executed by prose-call recovery):"
+                ),
+                "{text}"
+            );
+            assert!(text.contains("prose.txt"), "{text}");
+        }
+        other => panic!("expected plain user text, got {other:?}"),
+    }
+}
+
+#[test]
+fn prose_call_failures_count_toward_nudge_cap_and_terminate() {
+    // A prose call that EXECUTES but fails (write to an existing unread
+    // file, the P2 rule) feeds the error back and counts toward
+    // NUDGE_LIMIT, so a model stuck on a failing prose call terminates.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("locked.txt"), "original").unwrap();
+    let prose = || {
+        msg(
+            vec![text(
+                "{\"name\": \"write\", \"arguments\": \
+                 {\"filePath\": \"locked.txt\", \"content\": \"clobber\"}}",
+            )],
+            StopReason::EndTurn,
+        )
+    };
+    let (mut session, requests) =
+        session_with(dir.path(), vec![prose(), prose(), prose()]);
+    let events = collect_events(&mut session, "go");
+
+    // Fail (1), fail (2 = cap), then the third prose call is over the cap:
+    // the turn ends as a plain EndTurn.
+    assert_eq!(requests.borrow().len(), 3);
+    let failed = notices(&events)
+        .iter()
+        .filter(|n| n.contains("failed; fed the error back"))
+        .count();
+    assert_eq!(failed, 2, "exactly two failed prose executions per turn");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("locked.txt")).unwrap(),
+        "original",
+        "the read-first rule holds through prose recovery"
+    );
+    // The error feedback reached the model as plain user text.
+    let reqs = requests.borrow();
+    match &reqs[1].messages.last().unwrap().content[..] {
+        [ContentBlock::Text { text }] => {
+            assert!(
+                text.starts_with(
+                    "Error result of the write tool call you wrote as text (executed by prose-call recovery):"
+                ),
+                "{text}"
+            );
+            assert!(text.contains("has not been read in this session"), "{text}");
+        }
+        other => panic!("expected plain user text, got {other:?}"),
+    }
+}
+
+#[test]
+fn ambiguous_or_lossy_prose_still_nudges_never_executes() {
+    // Two candidates in one message: no execution (nudge as today), even
+    // with prose_tool_calls on.
+    let dir = tempfile::tempdir().unwrap();
+    let two = "<tool_call>{\"name\": \"write\", \"arguments\": {\"filePath\": \"a.txt\", \"content\": \"1\"}}</tool_call>\n\
+               <tool_call>{\"name\": \"write\", \"arguments\": {\"filePath\": \"b.txt\", \"content\": \"2\"}}</tool_call>";
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(vec![text(two)], StopReason::EndTurn),
+            msg(vec![text("ok")], StopReason::EndTurn),
+        ],
+    );
+    let events = collect_events(&mut session, "go");
+    assert_eq!(requests.borrow().len(), 2);
+    assert!(!dir.path().join("a.txt").exists(), "ambiguous prose must not execute");
+    assert!(!dir.path().join("b.txt").exists());
+    assert!(notices(&events).iter().any(|n| n.contains("plain text")));
+    drop(events);
+
+    // Lossy (truncated) inner JSON: never executes. (detect_text_tool_call
+    // cannot parse truncated JSON either — same as pre-T19 — so the turn
+    // ends as a plain EndTurn, no nudge.)
+    let lossy = "{\"name\": \"write\", \"arguments\": {\"filePath\": \"c.txt\", \"content\": \"cut";
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![msg(vec![text(lossy)], StopReason::EndTurn)],
+    );
+    let events = collect_events(&mut session, "go");
+    assert_eq!(requests.borrow().len(), 1);
+    assert!(!dir.path().join("c.txt").exists(), "lossy prose must not execute");
+    drop(events);
 }
 
 #[test]

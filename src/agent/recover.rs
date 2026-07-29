@@ -202,6 +202,69 @@ pub fn detect_text_tool_call(text: &str, tool_names: &[String]) -> bool {
     named && has_args
 }
 
+/// A prose tool call extracted for execution (T19 P3, the recorded
+/// amendment to T4's "prose is never parsed into an execution" policy): a
+/// REGISTERED tool name and its LOSSLESSLY parsed argument object.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProseCall {
+    pub name: String,
+    pub args: Value,
+}
+
+/// Extract the ONE executable tool call from an assistant message written
+/// as plain text, or `None` — in which case the caller falls back to the
+/// T4 detect+nudge path. Deliberately NARROWER than
+/// [`detect_text_tool_call`]; execution demands all of:
+/// - exactly one candidate, in a known shape: a single
+///   `<tool_call>...</tool_call>` block, or the WHOLE trimmed message as a
+///   fenced / leading-brace JSON object (prose before or after
+///   disqualifies; two or more candidates disqualify);
+/// - an inner object that [`repair_json`] yields as `Lossless` (fence and
+///   trailing-comma repair fine; truncation completion NEVER executes);
+/// - a registered tool under `"name"`/`"tool"` and an OBJECT under
+///   `"arguments"`/`"input"`/`"parameters"`.
+pub fn extract_prose_tool_call(text: &str, tool_names: &[String]) -> Option<ProseCall> {
+    const OPEN: &str = "<tool_call>";
+    const CLOSE: &str = "</tool_call>";
+    let t = text.trim();
+    let body: String = match t.matches(OPEN).count() {
+        0 => {
+            if !(t.starts_with("```") || t.starts_with('{')) {
+                return None;
+            }
+            t.to_string()
+        }
+        1 => {
+            let start = t.find(OPEN)? + OPEN.len();
+            let end = t[start..].find(CLOSE)? + start;
+            t[start..end].trim().to_string()
+        }
+        _ => return None,
+    };
+    let v = match repair_json(&body)? {
+        Repaired::Lossless(v) => v,
+        Repaired::Lossy(_) => return None,
+    };
+    let name = v
+        .get("name")
+        .or_else(|| v.get("tool"))
+        .and_then(|n| n.as_str())?;
+    if !tool_names.iter().any(|t| t.as_str() == name) {
+        return None;
+    }
+    let args = v
+        .get("arguments")
+        .or_else(|| v.get("input"))
+        .or_else(|| v.get("parameters"))?;
+    if !args.is_object() {
+        return None;
+    }
+    Some(ProseCall {
+        name: name.to_string(),
+        args: args.clone(),
+    })
+}
+
 /// The prefix of `s` forming the first balanced JSON object, string-aware.
 fn first_balanced_object(s: &str) -> Option<&str> {
     let mut depth: u32 = 0;
@@ -346,6 +409,77 @@ mod tests {
         for (text, expected) in cases {
             assert_eq!(
                 detect_text_tool_call(text, &tools),
+                expected,
+                "text: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn extract_prose_tool_call_table() {
+        let tools: Vec<String> = vec!["read".into(), "write".into(), "bash".into()];
+        let some = |name: &str, args: Value| Some(ProseCall {
+            name: name.into(),
+            args,
+        });
+        let cases: Vec<(&str, Option<ProseCall>)> = vec![
+            // One marker-wrapped call.
+            (
+                "<tool_call>{\"name\": \"read\", \"arguments\": {\"filePath\": \"a\"}}</tool_call>",
+                some("read", json!({"filePath": "a"})),
+            ),
+            // Marker-wrapped with surrounding prose: still one candidate.
+            (
+                "I will read it now.\n<tool_call>{\"name\": \"read\", \"arguments\": {}}</tool_call>\nDone.",
+                some("read", json!({})),
+            ),
+            // Whole-message fenced JSON.
+            (
+                "```json\n{\"name\": \"bash\", \"arguments\": {\"command\": \"ls\"}}\n```",
+                some("bash", json!({"command": "ls"})),
+            ),
+            // Whole-message leading-brace JSON, \"tool\"+\"input\" spelling,
+            // trailing comma repaired losslessly.
+            (
+                "{\"tool\": \"write\", \"input\": {\"filePath\": \"x\", \"content\": \"y\",}}",
+                some("write", json!({"filePath": "x", "content": "y"})),
+            ),
+            // \"parameters\" spelling.
+            (
+                "{\"name\": \"read\", \"parameters\": {\"filePath\": \"a\"}}",
+                some("read", json!({"filePath": "a"})),
+            ),
+            // Two candidates: never execute.
+            (
+                "<tool_call>{\"name\": \"read\", \"arguments\": {}}</tool_call>\n\
+                 <tool_call>{\"name\": \"bash\", \"arguments\": {}}</tool_call>",
+                None,
+            ),
+            // Lossy inner JSON (truncated): never execute.
+            (
+                "<tool_call>{\"name\": \"read\", \"arguments\": {\"filePath\": \"a</tool_call>",
+                None,
+            ),
+            ("{\"name\": \"bash\", \"arguments\": {\"command\": \"make", None),
+            // Unregistered tool name.
+            ("{\"name\": \"compile\", \"arguments\": {}}", None),
+            // No arguments-like key.
+            ("{\"name\": \"read\"}", None),
+            // Arguments present but not an object.
+            ("{\"name\": \"read\", \"arguments\": \"a.txt\"}", None),
+            // Prose mentioning a tool: not a call.
+            ("You should use the read tool on a.txt.", None),
+            // Leading-brace object with trailing prose: detect nudges this
+            // shape, but execution demands the WHOLE message.
+            ("{\"name\": \"read\", \"arguments\": {}} Let me know how it goes.", None),
+            // Marker opened but never closed.
+            ("<tool_call>{\"name\": \"read\", \"arguments\": {}}", None),
+            // Empty.
+            ("", None),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(
+                extract_prose_tool_call(text, &tools),
                 expected,
                 "text: {text:?}"
             );

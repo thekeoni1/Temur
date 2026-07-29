@@ -53,6 +53,10 @@ pub struct SessionConfig {
     /// `None` for the base config. Display only — the truncation notice
     /// names the limit's source so the fix is findable.
     pub max_tokens_source: Option<String>,
+    /// T19 P3 (recorded amendment to T4's "prose is never executed"
+    /// policy): execute an UNAMBIGUOUS tool call written as plain text.
+    /// `false` restores detect+nudge exactly.
+    pub prose_tool_calls: bool,
 }
 
 impl SessionConfig {
@@ -70,6 +74,7 @@ impl SessionConfig {
             // from the provider section that knows the server.
             context_window: None,
             max_tokens_source: None,
+            prose_tool_calls: cfg.prose_tool_calls,
         }
     }
 }
@@ -614,36 +619,92 @@ impl Session {
                     });
                 }
                 other => {
-                    // Text-tool-call nudge (T4): an EndTurn whose message
-                    // made no structured calls but *reads* like a tool call.
-                    // DETECT + FEEDBACK only — prose is never parsed into an
-                    // execution.
-                    let nudge = matches!(other, Some(StopReason::EndTurn))
+                    // Text-tool-call recovery (T4 + T19 P3): an EndTurn
+                    // whose message made no structured calls but *reads*
+                    // like a tool call. T19 P3 amends T4's "prose is never
+                    // parsed into an execution" NARROWLY (recorded in the
+                    // RUNBOOK next to the T4 policy history): when the text
+                    // is an UNAMBIGUOUS call — exactly one candidate,
+                    // lossless inner JSON, registered tool, object args —
+                    // and `prose_tool_calls` is on, it executes through
+                    // Registry::execute exactly like a structured call
+                    // (T18 guard, redaction, and the T19 truncation all
+                    // apply by construction). Anything short of that
+                    // contract nudges, exactly as before; the config off
+                    // switch restores detect+nudge byte-identically.
+                    let mut prose_call: Option<recover::ProseCall> = None;
+                    let mut nudge = false;
+                    if matches!(other, Some(StopReason::EndTurn))
                         && nudges < NUDGE_LIMIT
                         && !content
                             .iter()
                             .any(|b| matches!(b, ContentBlock::ToolUse { .. }))
-                        && {
-                            let text = content
-                                .iter()
-                                .filter_map(|b| match b {
-                                    ContentBlock::Text { text } => Some(text.as_str()),
-                                    _ => None,
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            let tool_names: Vec<String> = self
-                                .registry
-                                .definitions()
-                                .iter()
-                                .map(|d| d.name.clone())
-                                .collect();
-                            recover::detect_text_tool_call(&text, &tool_names)
-                        };
+                    {
+                        let text = content
+                            .iter()
+                            .filter_map(|b| match b {
+                                ContentBlock::Text { text } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let tool_names: Vec<String> = self
+                            .registry
+                            .definitions()
+                            .iter()
+                            .map(|d| d.name.clone())
+                            .collect();
+                        if self.cfg.prose_tool_calls {
+                            prose_call =
+                                recover::extract_prose_tool_call(&text, &tool_names);
+                        }
+                        if prose_call.is_none() {
+                            nudge = recover::detect_text_tool_call(&text, &tool_names);
+                        }
+                    }
                     self.history.push(RequestMessage {
                         role: Role::Assistant,
                         content,
                     });
+                    if let Some(call) = prose_call {
+                        // No tool_use id exists, so the result goes back as
+                        // PLAIN USER TEXT — wire-legal on both providers,
+                        // request-body goldens untouched. No ToolEnd event:
+                        // no stream ever opened a tool cell for this call
+                        // (the TUI's FIFO ToolStart/ToolEnd pairing holds).
+                        let name = call.name.clone();
+                        let feedback = match self
+                            .registry
+                            .execute(&call.name, call.args, &mut self.tool_ctx)
+                        {
+                            Ok(out) => {
+                                ui(AgentEvent::Notice(format!(
+                                    "prose-call recovery: executed the {name} tool call the model wrote as plain text"
+                                )));
+                                format!(
+                                    "Result of the {name} tool call you wrote as text (executed by prose-call recovery):\n{}",
+                                    out.output
+                                )
+                            }
+                            Err(e) => {
+                                // A failed prose execution counts toward
+                                // the nudge cap so a stuck model still
+                                // terminates; successes are uncapped.
+                                nudges += 1;
+                                ui(AgentEvent::Notice(format!(
+                                    "prose-call recovery: the {name} tool call the model wrote as plain text failed; fed the error back"
+                                )));
+                                format!(
+                                    "Error result of the {name} tool call you wrote as text (executed by prose-call recovery):\n{e}"
+                                )
+                            }
+                        };
+                        self.history.push(RequestMessage {
+                            role: Role::User,
+                            content: vec![ContentBlock::Text { text: feedback }],
+                        });
+                        continue;
+                    }
                     if nudge {
                         nudges += 1;
                         self.history.push(RequestMessage {

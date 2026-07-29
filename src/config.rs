@@ -92,6 +92,12 @@ pub struct Config {
     /// the sandbox on such hosts (the other tools stay guarded; a working
     /// sandbox is still used when available). Default false.
     pub allow_bash_without_key_sandbox: bool,
+    /// T19 P3 (a recorded amendment to T4's "prose is never executed"
+    /// policy): execute a tool call the model wrote as plain text when it
+    /// is UNAMBIGUOUS — exactly one candidate in a known shape, inner JSON
+    /// losslessly parsed, registered tool, object arguments. Default true;
+    /// false restores the pre-T19 detect+nudge behavior exactly.
+    pub prose_tool_calls: bool,
 }
 
 /// One named profile: a nickname bundling provider + model + endpoint +
@@ -200,6 +206,7 @@ impl Default for Config {
             profile: None,
             key_rotate_warn_days: DEFAULT_KEY_ROTATE_WARN_DAYS,
             allow_bash_without_key_sandbox: false,
+            prose_tool_calls: true,
         }
     }
 }
@@ -484,6 +491,14 @@ pub fn config_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prose_tool_calls_defaults_true_and_false_parses() {
+        let c: Config = serde_json::from_str("{}").unwrap();
+        assert!(c.prose_tool_calls);
+        let c: Config = serde_json::from_str(r#"{"prose_tool_calls":false}"#).unwrap();
+        assert!(!c.prose_tool_calls);
+    }
 
     #[test]
     fn key_rotate_warn_days_defaults_to_90_and_zero_parses() {

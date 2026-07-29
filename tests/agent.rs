@@ -74,6 +74,7 @@ fn session_with(
         top_p: None,
         context_window: None,
         max_tokens_source: None,
+        prose_tool_calls: true,
     };
     (
         Session::new(Box::new(provider), Registry::standard(), cfg),
@@ -334,6 +335,7 @@ fn iteration_limit_stops_runaway_turns() {
         top_p: None,
         context_window: None,
         max_tokens_source: None,
+        prose_tool_calls: true,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
     let mut events = vec![];
@@ -402,6 +404,7 @@ fn session_with_window(
         top_p: None,
         context_window,
         max_tokens_source: None,
+        prose_tool_calls: true,
     };
     Session::new(Box::new(provider), Registry::standard(), cfg)
 }
@@ -583,6 +586,7 @@ fn resumed_with(
         top_p: None,
         context_window: None,
         max_tokens_source: None,
+        prose_tool_calls: true,
     };
     let (seed, notices) = store::prepare_seed(file);
     (
@@ -830,6 +834,7 @@ fn interrupt_session(
         top_p: None,
         context_window: None,
         max_tokens_source: None,
+        prose_tool_calls: true,
     };
     Session::new(
         Box::new(InterruptingProvider {
