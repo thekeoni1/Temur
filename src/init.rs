@@ -70,6 +70,16 @@ const ANTHROPIC_DEFAULT_PROFILE: &str = "sonnet";
 const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 
+/// The hosted openai-compat templates' fixed endpoints, one lookup shared
+/// by the fresh render and `init --add` so a new template lands in both.
+fn compat_base_url(template_name: &str) -> &'static str {
+    match template_name {
+        "openai" => OPENAI_BASE_URL,
+        "gemini" => GEMINI_BASE_URL,
+        other => unreachable!("template {other} has no fixed base URL"),
+    }
+}
+
 /// How many listed model ids the picker prints before folding the rest
 /// into an "... and N more" line (a number still selects any of them).
 const MODEL_LIST_CAP: usize = 20;
@@ -130,11 +140,7 @@ fn render_config(
             s
         }
         "openai" | "gemini" => {
-            let base = if template.name == "openai" {
-                OPENAI_BASE_URL
-            } else {
-                GEMINI_BASE_URL
-            };
+            let base = compat_base_url(template.name);
             let k = serde_json::to_string(key_file.expect("keyed template"))
                 .expect("string serializes");
             format!(
@@ -213,6 +219,101 @@ fn pick_model(
     } else {
         Ok(answer)
     }
+}
+
+/// The local template's flow (T15): ask for the base URL, try the keyless
+/// listing there and run the picker, falling back to the free-text model
+/// question (after the baked shortlist) when the listing fails or is empty.
+/// Returns `(base_url, model)`. Shared by the fresh wizard and `init --add`.
+fn ask_local_base_and_model(
+    template: &Template,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    list_models: &dyn Fn(&str) -> Result<Vec<String>, crate::error::Error>,
+) -> Result<(String, String), crate::error::Error> {
+    let base = ask(
+        input,
+        out,
+        "Base URL",
+        crate::config::DEFAULT_OPENAI_COMPAT_BASE_URL,
+    )?;
+    let picked = match list_models(&base) {
+        Ok(ids) if !ids.is_empty() => pick_model(&ids, template.default_model, &base, input, out)?,
+        outcome => {
+            let why = match outcome {
+                Ok(_) => "the server returned an empty listing".to_string(),
+                Err(e) => e.to_string(),
+            };
+            writeln!(out, "could not list models from {base}: {why}")?;
+            for line in MODEL_SHORTLIST {
+                writeln!(out, "{line}")?;
+            }
+            ask(input, out, "Model id", template.default_model)?
+        }
+    };
+    Ok((base, picked))
+}
+
+/// The key FILE PATH question for keyed templates. The key itself never
+/// passes through temur, in any direction. Shared by the fresh wizard and
+/// `init --add`.
+fn ask_key_file(
+    slug: &str,
+    home: Option<&Path>,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+) -> Result<PathBuf, crate::error::Error> {
+    let default = match home {
+        Some(h) => h
+            .join(".secrets")
+            .join(format!("temur-{slug}-key"))
+            .display()
+            .to_string(),
+        None => String::new(),
+    };
+    let answer = ask(input, out, "API key file", &default)?;
+    if answer.is_empty() {
+        return Err(crate::error::Error::Config(
+            "init: no HOME to derive a default key file path; enter one explicitly".into(),
+        ));
+    }
+    Ok(expand_tilde(&answer, home))
+}
+
+/// Key file creation plus the paste instruction, shared by the fresh wizard
+/// and `init --add`: created EMPTY with tight modes, and never touched if it
+/// already exists (it may already hold a real key, which temur must not
+/// read, truncate, or rewrite).
+fn setup_key_file(key_path: &Path, out: &mut dyn Write) -> Result<(), crate::error::Error> {
+    if key_path.exists() {
+        writeln!(out, "Key file {} already exists; left untouched.", key_path.display())?;
+    } else {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+        if let Some(dir) = key_path.parent() {
+            if !dir.exists() {
+                std::fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(dir)?;
+                // Modes pass through umask at creation; pin them exact.
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+            }
+        }
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(key_path)?;
+        std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))?;
+        writeln!(out, "Created empty key file {} (mode 600).", key_path.display())?;
+    }
+    writeln!(out)?;
+    writeln!(
+        out,
+        "Paste your key into {} with your editor. temur reads it only by\npath at startup and never accepts, echoes, or stores key material.",
+        key_path.display()
+    )?;
+    Ok(())
 }
 
 /// Startup-profile question for the anthropic template (T16). Prints the
@@ -302,28 +403,7 @@ pub fn run(
     // offline. Keyed templates: free text, unchanged (see `list_models`).
     let mut base_url: Option<String> = None;
     let model = if template.key_slug.is_none() {
-        let base = ask(
-            input,
-            out,
-            "Base URL",
-            crate::config::DEFAULT_OPENAI_COMPAT_BASE_URL,
-        )?;
-        let picked = match list_models(&base) {
-            Ok(ids) if !ids.is_empty() => {
-                pick_model(&ids, template.default_model, &base, input, out)?
-            }
-            outcome => {
-                let why = match outcome {
-                    Ok(_) => "the server returned an empty listing".to_string(),
-                    Err(e) => e.to_string(),
-                };
-                writeln!(out, "could not list models from {base}: {why}")?;
-                for line in MODEL_SHORTLIST {
-                    writeln!(out, "{line}")?;
-                }
-                ask(input, out, "Model id", template.default_model)?
-            }
-        };
+        let (base, picked) = ask_local_base_and_model(template, input, out, list_models)?;
         base_url = Some(base);
         picked
     } else if template.name == "anthropic" {
@@ -339,24 +419,7 @@ pub fn run(
     // passes through temur, in any direction.
     let key_file: Option<PathBuf> = match template.key_slug {
         None => None,
-        Some(slug) => {
-            let default = match home {
-                Some(h) => h
-                    .join(".secrets")
-                    .join(format!("temur-{slug}-key"))
-                    .display()
-                    .to_string(),
-                None => String::new(),
-            };
-            let answer = ask(input, out, "API key file", &default)?;
-            if answer.is_empty() {
-                return Err(crate::error::Error::Config(
-                    "init: no HOME to derive a default key file path; enter one explicitly"
-                        .into(),
-                ));
-            }
-            Some(expand_tilde(&answer, home))
-        }
+        Some(slug) => Some(ask_key_file(slug, home, input, out)?),
     };
 
     // Write the config (parent dir as needed; the config holds no secret,
@@ -374,38 +437,8 @@ pub fn run(
     writeln!(out)?;
     writeln!(out, "Wrote {}", cfg_path.display())?;
 
-    // Key file: created EMPTY with tight modes, and never touched if it
-    // already exists (it may already hold a real key, which temur must not
-    // read, truncate, or rewrite).
     if let Some(key_path) = &key_file {
-        if key_path.exists() {
-            writeln!(out, "Key file {} already exists; left untouched.", key_path.display())?;
-        } else {
-            use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
-            if let Some(dir) = key_path.parent() {
-                if !dir.exists() {
-                    std::fs::DirBuilder::new()
-                        .recursive(true)
-                        .mode(0o700)
-                        .create(dir)?;
-                    // Modes pass through umask at creation; pin them exact.
-                    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-                }
-            }
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(key_path)?;
-            std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))?;
-            writeln!(out, "Created empty key file {} (mode 600).", key_path.display())?;
-        }
-        writeln!(out)?;
-        writeln!(
-            out,
-            "Paste your key into {} with your editor. temur reads it only by\npath at startup and never accepts, echoes, or stores key material.",
-            key_path.display()
-        )?;
+        setup_key_file(key_path, out)?;
     }
 
     writeln!(out)?;
@@ -423,6 +456,187 @@ pub fn run(
         out,
         "Conversations are saved automatically per working directory; temur --continue\nresumes the last one."
     )?;
+    Ok(())
+}
+
+/// `temur init --add <template>` (T17): merge one template into an EXISTING
+/// config instead of writing a fresh one. Always merges AS PROFILES,
+/// whatever shape the template's fresh render has: the base selection, the
+/// startup `"profile"` key, and every other field in the file are left
+/// alone (surgical `serde_json::Value` edit, same preserve_order +
+/// temp-then-rename mechanics as [`crate::config::persist_model`]).
+/// Fail-closed: if ANY profile name to be added already exists, the whole
+/// merge aborts with the file untouched — never a silent overwrite of a
+/// profile the user wrote by hand.
+pub fn run_add(
+    cfg_path: &Path,
+    home: Option<&Path>,
+    template_name: &str,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    list_models: &dyn Fn(&str) -> Result<Vec<String>, crate::error::Error>,
+) -> Result<(), crate::error::Error> {
+    let template = TEMPLATES
+        .iter()
+        .find(|t| t.name == template_name)
+        .ok_or_else(|| {
+            let names: Vec<&str> = TEMPLATES.iter().map(|t| t.name).collect();
+            crate::error::Error::Config(format!(
+                "init --add: unknown template {template_name:?} (expected {})",
+                names.join(", ")
+            ))
+        })?;
+    let raw = match std::fs::read_to_string(cfg_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(crate::error::Error::Config(format!(
+                "init --add: no config at {}; plain `temur init` creates one",
+                cfg_path.display()
+            )))
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let mut v: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| crate::error::Error::Config(format!("{}: {e}", cfg_path.display())))?;
+    if !v.is_object() {
+        return Err(crate::error::Error::Config(format!(
+            "{}: not a JSON object",
+            cfg_path.display()
+        )));
+    }
+    if v.get("profiles").is_some_and(|p| !p.is_object()) {
+        return Err(crate::error::Error::Config(format!(
+            "{}: \"profiles\" is not a JSON object",
+            cfg_path.display()
+        )));
+    }
+
+    // Collisions are checked BEFORE any question runs, so a doomed merge
+    // never wastes the user's answers.
+    let adding: Vec<&'static str> = if template.name == "anthropic" {
+        ANTHROPIC_PROFILES.iter().map(|(n, _)| *n).collect()
+    } else {
+        vec![template.name]
+    };
+    let collisions: Vec<&str> = adding
+        .iter()
+        .copied()
+        .filter(|n| {
+            v.get("profiles")
+                .and_then(|p| p.as_object())
+                .is_some_and(|p| p.contains_key(*n))
+        })
+        .collect();
+    if !collisions.is_empty() {
+        let plural = if collisions.len() == 1 { "" } else { "s" };
+        let quoted: Vec<String> = collisions.iter().map(|n| format!("{n:?}")).collect();
+        return Err(crate::error::Error::Config(format!(
+            "init --add {}: profile{plural} {} already in {}; nothing was changed \
+             (rename or remove the existing profile{plural} first)",
+            template.name,
+            quoted.join(", "),
+            cfg_path.display()
+        )));
+    }
+
+    writeln!(
+        out,
+        "temur init --add {}: merging into {}",
+        template.name,
+        cfg_path.display()
+    )?;
+    writeln!(out)?;
+
+    // The template's questions, mirroring the fresh wizard: base URL +
+    // picker for local, free-text model for hosted compat templates. The
+    // anthropic model ids are fixed (T16) and the startup "profile" key is
+    // never written here, so only the key question runs for it.
+    let mut new_profiles: Vec<(String, serde_json::Value)> = Vec::new();
+    let mut key_file: Option<PathBuf> = None;
+    match template.name {
+        "local" => {
+            let (base, model) = ask_local_base_and_model(template, input, out, list_models)?;
+            let mut p = serde_json::Map::new();
+            p.insert("provider".to_string(), "openai-compat".into());
+            p.insert("model".to_string(), model.into());
+            if base != crate::config::DEFAULT_OPENAI_COMPAT_BASE_URL {
+                p.insert("base_url".to_string(), base.into());
+            }
+            // The fresh local template's small-model limits, carried into
+            // the profile so switching to it behaves like a fresh local
+            // config (a profile's absent max_tokens would inherit the
+            // global value instead).
+            p.insert("max_tokens".to_string(), 4096.into());
+            p.insert("context_window".to_string(), 8192.into());
+            new_profiles.push((template.name.to_string(), p.into()));
+        }
+        "anthropic" => {
+            let key = ask_key_file("anthropic", home, input, out)?;
+            let k = key.display().to_string();
+            for (name, model_id) in &ANTHROPIC_PROFILES {
+                let mut p = serde_json::Map::new();
+                p.insert("provider".to_string(), "anthropic".into());
+                p.insert("model".to_string(), (*model_id).into());
+                p.insert("api_key_file".to_string(), k.clone().into());
+                new_profiles.push(((*name).to_string(), p.into()));
+            }
+            key_file = Some(key);
+        }
+        hosted => {
+            let model = ask(input, out, "Model id", template.default_model)?;
+            let key = ask_key_file(
+                template.key_slug.expect("hosted templates are keyed"),
+                home,
+                input,
+                out,
+            )?;
+            let mut p = serde_json::Map::new();
+            p.insert("provider".to_string(), "openai-compat".into());
+            p.insert("base_url".to_string(), compat_base_url(hosted).into());
+            p.insert("model".to_string(), model.into());
+            p.insert("api_key_file".to_string(), key.display().to_string().into());
+            new_profiles.push((hosted.to_string(), p.into()));
+            key_file = Some(key);
+        }
+    }
+
+    {
+        let root = v.as_object_mut().expect("checked above");
+        let entry = root
+            .entry("profiles".to_string())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        let profs = entry.as_object_mut().expect("checked above");
+        for (name, p) in &new_profiles {
+            profs.insert(name.clone(), p.clone());
+        }
+    }
+    crate::config::write_config_value(cfg_path, &v)?;
+
+    writeln!(out)?;
+    let quoted: Vec<String> = new_profiles.iter().map(|(n, _)| format!("\"{n}\"")).collect();
+    writeln!(
+        out,
+        "Added profile{} {} to {}.",
+        if quoted.len() == 1 { "" } else { "s" },
+        quoted.join(", "),
+        cfg_path.display()
+    )?;
+    if let Some(key_path) = &key_file {
+        setup_key_file(key_path, out)?;
+    }
+    writeln!(out)?;
+    if new_profiles.len() == 1 {
+        let name = &new_profiles[0].0;
+        writeln!(
+            out,
+            "/model {name} switches to it; set \"profile\": \"{name}\" in config.json to\nmake it the startup default."
+        )?;
+    } else {
+        writeln!(
+            out,
+            "/model <name> switches to one; set \"profile\": \"<name>\" in config.json to\nmake it the startup default."
+        )?;
+    }
     Ok(())
 }
 
@@ -738,5 +952,227 @@ mod tests {
             );
             assert!(cfg.contains("\"profile\": \"fable\""), "{bad}: {cfg}");
         }
+    }
+
+    // -------------------------------------------------- T17: temur init --add
+
+    /// A byte-fixed local config in exactly the pretty 2-space form
+    /// `write_config_value` emits, so a merge's output is predictable to
+    /// the byte.
+    const LOCAL_FIXED: &str = "{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {\n    \"model\": \"qwen3-1.7b\",\n    \"context_window\": 8192\n  }\n}\n";
+
+    fn no_listing(_: &str) -> Result<Vec<String>, crate::error::Error> {
+        panic!("this template must not attempt a listing")
+    }
+
+    /// Write `cfg` into a tempdir and drive `run_add` with piped answers.
+    /// Returns (result, config file content, printed output, tempdir).
+    fn drive_add(
+        cfg: &str,
+        template: &str,
+        answers: &str,
+        list: &dyn Fn(&str) -> Result<Vec<String>, crate::error::Error>,
+    ) -> (
+        Result<(), crate::error::Error>,
+        String,
+        String,
+        tempfile::TempDir,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.json");
+        std::fs::write(&cfg_path, cfg).unwrap();
+        let mut input = std::io::Cursor::new(answers.as_bytes().to_vec());
+        let mut out: Vec<u8> = Vec::new();
+        let result = run_add(&cfg_path, None, template, &mut input, &mut out, list);
+        (
+            result,
+            std::fs::read_to_string(&cfg_path).unwrap(),
+            String::from_utf8(out).unwrap(),
+            tmp,
+        )
+    }
+
+    #[test]
+    fn add_anthropic_golden_merge_touches_only_the_profiles_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("k");
+        let (result, cfg, out, _tmp) = drive_add(
+            LOCAL_FIXED,
+            "anthropic",
+            &format!("{}\n", key.display()),
+            &no_listing,
+        );
+        result.unwrap();
+        let k = key.display();
+        let expect = format!(
+            "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{\n    \"model\": \"qwen3-1.7b\",\n    \"context_window\": 8192\n  }},\n  \"profiles\": {{\n    \"fable\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-fable-5\",\n      \"api_key_file\": \"{k}\"\n    }},\n    \"haiku\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-haiku-4-5\",\n      \"api_key_file\": \"{k}\"\n    }},\n    \"opus\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-opus-5\",\n      \"api_key_file\": \"{k}\"\n    }},\n    \"sonnet\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-sonnet-5\",\n      \"api_key_file\": \"{k}\"\n    }}\n  }}\n}}\n"
+        );
+        assert_eq!(cfg, expect, "golden merge: only a profiles key appended");
+        // The startup "profile" key was NOT invented: the base selection
+        // still runs the config.
+        let parsed: crate::config::Config = serde_json::from_str(&cfg).unwrap();
+        assert!(parsed.profile.is_none(), "{cfg}");
+        let profiles = parsed.resolved_profiles().unwrap();
+        let (active, resolved) = parsed.startup_selection(&profiles).unwrap();
+        assert!(active.is_none());
+        assert_eq!(resolved.model, "qwen3-1.7b", "base selection untouched");
+        // Key file created empty, mode 600; closing notice names /model.
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&key).unwrap().len(), 0);
+        assert_eq!(
+            std::fs::metadata(&key).unwrap().permissions().mode() & 0o7777,
+            0o600
+        );
+        assert!(
+            out.contains("Added profiles \"fable\", \"haiku\", \"opus\", \"sonnet\""),
+            "{out}"
+        );
+        assert!(out.contains("/model <name> switches to one"), "{out}");
+        assert!(out.contains("Paste your key into"), "{out}");
+    }
+
+    #[test]
+    fn add_openai_and_gemini_add_one_profile_each() {
+        for (template, base, default_model) in [
+            ("openai", OPENAI_BASE_URL, "gpt-4o-mini"),
+            ("gemini", GEMINI_BASE_URL, "gemini-2.5-flash"),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let key = tmp.path().join("k");
+            // Answers: model default (empty), explicit key path (home None).
+            let (result, cfg, out, _tmp) = drive_add(
+                LOCAL_FIXED,
+                template,
+                &format!("\n{}\n", key.display()),
+                &no_listing,
+            );
+            result.unwrap();
+            let parsed: crate::config::Config = serde_json::from_str(&cfg).unwrap();
+            let profiles = parsed.resolved_profiles().unwrap();
+            let p = &profiles[template];
+            assert_eq!(p.provider, "openai-compat", "{template}");
+            assert_eq!(p.base_url, base, "{template}");
+            assert_eq!(p.model, default_model, "{template}");
+            assert_eq!(
+                p.api_key_file.as_deref(),
+                Some(key.display().to_string().as_str()),
+                "{template}"
+            );
+            assert!(
+                out.contains(&format!("Added profile \"{template}\"")),
+                "{template}: {out}"
+            );
+            assert!(
+                out.contains(&format!("/model {template} switches to it")),
+                "{template}: {out}"
+            );
+            assert!(
+                out.contains(&format!("\"profile\": \"{template}\"")),
+                "{template}: {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn add_local_reuses_the_picker_and_stays_keyless() {
+        let list = |base: &str| {
+            assert_eq!(base, "http://10.0.0.9:11434/v1", "picker lists the ANSWERED base");
+            Ok(ids(&["served-model"]))
+        };
+        let anthropic_base = "{\n  \"profiles\": {\n    \"sonnet\": {\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-sonnet-5\",\n      \"api_key_file\": \"/tmp/k\"\n    }\n  },\n  \"profile\": \"sonnet\"\n}\n";
+        // Custom base URL, model by number.
+        let (result, cfg, out, _tmp) =
+            drive_add(anthropic_base, "local", "http://10.0.0.9:11434/v1\n1\n", &list);
+        result.unwrap();
+        let parsed: crate::config::Config = serde_json::from_str(&cfg).unwrap();
+        let profiles = parsed.resolved_profiles().unwrap();
+        let p = &profiles["local"];
+        assert_eq!(p.provider, "openai-compat");
+        assert_eq!(p.base_url, "http://10.0.0.9:11434/v1");
+        assert_eq!(p.model, "served-model");
+        assert!(p.api_key_file.is_none(), "local stays keyless");
+        assert_eq!(p.max_tokens, 4096, "fresh local template's limit carried over");
+        assert_eq!(p.context_window, Some(8192));
+        // The startup profile key survives untouched.
+        assert_eq!(parsed.profile.as_deref(), Some("sonnet"), "{cfg}");
+        assert!(!out.contains("API key file"), "no key question: {out}");
+        assert!(!out.contains("Paste your key"), "{out}");
+
+        // Default base URL answered: the base_url key is omitted (profile
+        // None = the openai-compat default, same meaning as the fresh
+        // render's omission).
+        let list = |_: &str| Ok(ids(&["served-model"]));
+        let (result, cfg, _out, _tmp) = drive_add(anthropic_base, "local", "\n\n", &list);
+        result.unwrap();
+        assert!(!cfg.contains("base_url"), "{cfg}");
+    }
+
+    #[test]
+    fn add_collision_fails_closed_naming_every_collision() {
+        let cfg_before = "{\n  \"profiles\": {\n    \"opus\": {\n      \"provider\": \"anthropic\",\n      \"model\": \"my-opus\"\n    },\n    \"sonnet\": {\n      \"provider\": \"anthropic\",\n      \"model\": \"my-sonnet\"\n    }\n  }\n}\n";
+        let (result, cfg_after, out, _tmp) =
+            drive_add(cfg_before, "anthropic", "/never-asked\n", &no_listing);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("\"opus\", \"sonnet\""), "every collision named: {err}");
+        assert!(err.contains("nothing was changed"), "{err}");
+        assert_eq!(cfg_after, cfg_before, "file untouched on collision");
+        assert!(out.is_empty(), "collision detected before any question: {out}");
+    }
+
+    #[test]
+    fn add_requires_an_existing_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.json");
+        let mut input = std::io::Cursor::new(Vec::new());
+        let mut out: Vec<u8> = Vec::new();
+        let err = run_add(&cfg_path, None, "openai", &mut input, &mut out, &no_listing)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no config at"), "{err}");
+        assert!(err.contains("temur init"), "points at the plain wizard: {err}");
+        assert!(!cfg_path.exists(), "no config invented");
+    }
+
+    #[test]
+    fn add_unknown_template_and_broken_config_are_clean_errors() {
+        let (result, _cfg, _out, _tmp) =
+            drive_add(LOCAL_FIXED, "bogus", "", &no_listing);
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unknown template \"bogus\"")
+                && err.contains("local, anthropic, openai, gemini"),
+            "{err}"
+        );
+        // A "profiles" key that is not an object fails closed.
+        let bad = "{\n  \"profiles\": 7\n}\n";
+        let (result, cfg_after, _out, _tmp) = drive_add(bad, "openai", "\n/k\n", &no_listing);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("\"profiles\" is not a JSON object"), "{err}");
+        assert_eq!(cfg_after, bad);
+    }
+
+    #[test]
+    fn add_preserves_unknown_fields_and_existing_profiles() {
+        let cfg_before = "{\n  \"zeta_unknown\": true,\n  \"provider\": \"openai-compat\",\n  \"openai_compat\": {\n    \"model\": \"m\"\n  },\n  \"profiles\": {\n    \"mine\": {\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-opus-5\"\n    }\n  },\n  \"profile\": \"mine\"\n}\n";
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("k");
+        let (result, cfg, _out, _tmp) = drive_add(
+            cfg_before,
+            "openai",
+            &format!("\n{}\n", key.display()),
+            &no_listing,
+        );
+        result.unwrap();
+        // Key order preserved: the unknown field stays FIRST, the existing
+        // profile stays, the new one is appended inside "profiles".
+        assert!(cfg.starts_with("{\n  \"zeta_unknown\": true,"), "{cfg}");
+        let mine = cfg.find("\"mine\"").unwrap();
+        let openai = cfg.find("\"openai\"").unwrap();
+        assert!(mine < openai, "existing profile first: {cfg}");
+        let parsed: crate::config::Config = serde_json::from_str(&cfg).unwrap();
+        assert_eq!(parsed.profile.as_deref(), Some("mine"), "startup key untouched");
+        let profiles = parsed.resolved_profiles().unwrap();
+        assert_eq!(profiles["mine"].model, "claude-opus-5");
+        assert_eq!(profiles["openai"].model, "gpt-4o-mini");
     }
 }

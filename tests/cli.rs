@@ -561,6 +561,121 @@ fn init_rejects_unknown_template() {
     assert!(!sb.config_path().exists(), "no config on a failed wizard");
 }
 
+// ------------------------------------------------- T17: temur init --add
+
+/// The local starter config in the exact pretty form `init --add` re-emits,
+/// so the merge assertions below are byte-predictable.
+const LOCAL_PRETTY: &str = "{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {\n    \"model\": \"qwen3-1.7b\",\n    \"context_window\": 8192\n  }\n}\n";
+
+#[test]
+fn init_add_anthropic_merges_profiles_and_leaves_the_rest_alone() {
+    let sb = sandbox();
+    sb.write_config(LOCAL_PRETTY);
+    let mut c = sb.cmd();
+    c.args(["init", "--add", "anthropic"]);
+    // One answer: the key path (default under HOME).
+    let (code, stdout, stderr) = run(c, "\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    let key = sb.home.join(".secrets").join("temur-anthropic-key");
+    let written = std::fs::read_to_string(sb.config_path()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&written).unwrap();
+    let profiles = parsed["profiles"].as_object().unwrap();
+    assert_eq!(
+        profiles.keys().collect::<Vec<_>>(),
+        vec!["fable", "haiku", "opus", "sonnet"],
+        "{written}"
+    );
+    for (_, p) in profiles {
+        assert_eq!(p["api_key_file"], key.display().to_string(), "{written}");
+    }
+    // The base selection survives byte-relevant: same fields, and NO
+    // startup "profile" key was invented.
+    assert_eq!(parsed["openai_compat"]["model"], "qwen3-1.7b", "{written}");
+    assert_eq!(parsed["max_tokens"], 4096, "{written}");
+    assert!(parsed.get("profile").is_none(), "{written}");
+    // Key file exactly as the fresh wizard makes it: empty, 600.
+    assert_eq!(std::fs::metadata(&key).unwrap().len(), 0);
+    assert_eq!(mode_of(&key), 0o600);
+    assert!(stdout.contains("Added profiles \"fable\", \"haiku\", \"opus\", \"sonnet\""), "{stdout}");
+    assert!(stdout.contains("/model <name> switches to one"), "{stdout}");
+}
+
+#[test]
+fn init_add_each_single_profile_template_through_the_binary() {
+    // openai and gemini: model default + key default. local: dead-port base
+    // URL (listing fails, free-text fallback) + model default, keyless.
+    for template in ["openai", "gemini"] {
+        let sb = sandbox();
+        sb.write_config(LOCAL_PRETTY);
+        let mut c = sb.cmd();
+        c.args(["init", "--add", template]);
+        let (code, stdout, stderr) = run(c, "\n\n");
+        assert_eq!(code, 0, "{template}: stdout: {stdout}\nstderr: {stderr}");
+        let written = std::fs::read_to_string(sb.config_path()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert!(parsed["profiles"][template].is_object(), "{template}: {written}");
+        let key = sb.home.join(".secrets").join(format!("temur-{template}-key"));
+        assert_eq!(std::fs::metadata(&key).unwrap().len(), 0, "{template}");
+        assert_eq!(mode_of(&key), 0o600, "{template}");
+    }
+    let sb = sandbox();
+    sb.write_config(LOCAL_PRETTY);
+    let mut c = sb.cmd();
+    c.args(["init", "--add", "local"]);
+    let (code, stdout, stderr) = run(c, &format!("{}\n\n", refused_base_url()));
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    let written = std::fs::read_to_string(sb.config_path()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&written).unwrap();
+    assert_eq!(parsed["profiles"]["local"]["model"], "qwen3-1.7b", "{written}");
+    assert!(!sb.home.join(".secrets").exists(), "keyless template made a key dir");
+}
+
+#[test]
+fn init_add_collision_and_missing_config_fail_closed() {
+    // Collision: a profile named "openai" already exists.
+    let sb = sandbox();
+    let before = "{\n  \"profiles\": {\n    \"openai\": {\n      \"provider\": \"openai-compat\",\n      \"model\": \"mine\"\n    }\n  }\n}\n";
+    sb.write_config(before);
+    let mut c = sb.cmd();
+    c.args(["init", "--add", "openai"]);
+    let (code, _stdout, stderr) = run(c, "\n\n");
+    assert_eq!(code, 1);
+    assert!(stderr.contains("\"openai\" already in"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(sb.config_path()).unwrap(),
+        before,
+        "collision must not touch the file"
+    );
+
+    // No config: --add points at the plain wizard instead of inventing one.
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.args(["init", "--add", "anthropic"]);
+    let (code, _stdout, stderr) = run(c, "\n");
+    assert_eq!(code, 1);
+    assert!(stderr.contains("no config at"), "{stderr}");
+    assert!(stderr.contains("temur init"), "{stderr}");
+    assert!(!sb.config_path().exists());
+}
+
+#[test]
+fn init_add_flag_rules() {
+    // --add without init is a usage error.
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.args(["--add", "openai"]);
+    let (code, _stdout, stderr) = run(c, "");
+    assert_eq!(code, 1);
+    assert!(stderr.contains("--add is only valid with the init subcommand"), "{stderr}");
+
+    // --add plus --force is contradictory and rejected.
+    let mut c = sb.cmd();
+    c.args(["init", "--add", "openai", "--force"]);
+    let (code, _stdout, stderr) = run(c, "");
+    assert_eq!(code, 1);
+    assert!(stderr.contains("--force does not combine with --add"), "{stderr}");
+}
+
 // ----------------------------------------------- T15: /model ... --save
 
 #[test]

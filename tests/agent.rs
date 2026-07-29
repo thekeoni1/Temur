@@ -2731,7 +2731,7 @@ fn hop_rule2_no_anthropic_profile_switches_locally_with_a_hint() {
     assert_eq!(ns[0], "switched model to claude-opus-5 (openai-compat · profile settings kept)");
     assert_eq!(
         ns[1],
-        "note: \"claude-opus-5\" looks anthropic and was set on the ACTIVE provider (openai-compat); an anthropic profile in config.json enables the hop (temur init writes one)",
+        "note: \"claude-opus-5\" looks anthropic and was set on the ACTIVE provider (openai-compat); an anthropic profile in config.json enables the hop (temur init --add anthropic sets one up)",
     );
 }
 

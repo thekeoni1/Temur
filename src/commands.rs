@@ -508,7 +508,7 @@ fn raw_model_switch(ctx: &mut CommandCtx, id: String) -> Vec<AgentEvent> {
                 let mut out = plain_raw_switch(ctx, &id);
                 if *ctx.model == id {
                     out.push(notice(format!(
-                        "note: {id:?} looks anthropic and was set on the ACTIVE provider ({from}); an anthropic profile in config.json enables the hop (temur init writes one)"
+                        "note: {id:?} looks anthropic and was set on the ACTIVE provider ({from}); an anthropic profile in config.json enables the hop (temur init --add anthropic sets one up)"
                     )));
                 }
                 return out;

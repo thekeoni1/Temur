@@ -66,6 +66,9 @@ fn run() -> Result<ExitCode, error::Error> {
     let mut force = false;
     // --no-network (T14): only meaningful for `doctor` (skip probes).
     let mut no_network = false;
+    // --add <template> (T17): only meaningful for `init` (merge a template
+    // into an existing config as profiles, instead of writing a fresh one).
+    let mut add: Option<String> = None;
     while let Some(arg) = parser.next()? {
         match arg {
             Long("version") | Short('V') => {
@@ -81,6 +84,7 @@ fn run() -> Result<ExitCode, error::Error> {
             Short('p') | Long("prompt") => oneshot = Some(parser.value()?.string()?),
             Long("force") => force = true,
             Long("no-network") => no_network = true,
+            Long("add") => add = Some(parser.value()?.string()?),
             Value(v) if cmd.is_none() => cmd = Some(v.string()?),
             arg => return Err(arg.unexpected().into()),
         }
@@ -93,6 +97,19 @@ fn run() -> Result<ExitCode, error::Error> {
     if no_network && cmd.as_deref() != Some("doctor") {
         return Err(error::Error::Usage(
             "--no-network is only valid with the doctor subcommand".into(),
+        ));
+    }
+    if add.is_some() && cmd.as_deref() != Some("init") {
+        return Err(error::Error::Usage(
+            "--add is only valid with the init subcommand".into(),
+        ));
+    }
+    // Contradictory by construction: --force overwrites the whole config,
+    // --add merges into it.
+    if add.is_some() && force {
+        return Err(error::Error::Usage(
+            "--force does not combine with --add (init --add merges into the existing config)"
+                .into(),
         ));
     }
     if force_tui && force_plain {
@@ -144,14 +161,24 @@ fn run() -> Result<ExitCode, error::Error> {
                     ),
                 )
             };
-            temur::init::run(
-                &config::config_path(),
-                home.as_deref(),
-                force,
-                &mut std::io::stdin().lock(),
-                &mut std::io::stdout(),
-                &list,
-            )?;
+            match &add {
+                Some(template) => temur::init::run_add(
+                    &config::config_path(),
+                    home.as_deref(),
+                    template,
+                    &mut std::io::stdin().lock(),
+                    &mut std::io::stdout(),
+                    &list,
+                )?,
+                None => temur::init::run(
+                    &config::config_path(),
+                    home.as_deref(),
+                    force,
+                    &mut std::io::stdin().lock(),
+                    &mut std::io::stdout(),
+                    &list,
+                )?,
+            }
             Ok(ExitCode::SUCCESS)
         }
         Some("doctor") => {

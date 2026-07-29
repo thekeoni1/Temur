@@ -431,9 +431,19 @@ pub fn persist_model(
             root.insert("model".to_string(), model_value);
         }
     }
-    let pretty = serde_json::to_string_pretty(&v).expect("a parsed Value re-serializes");
-    // Temp-then-rename in the config's own directory: a crash mid-write can
-    // never leave a truncated config behind.
+    write_config_value(cfg_path, &v)
+}
+
+/// Serialize an edited config `Value` back to disk: pretty 2-space with a
+/// trailing newline (serde_json's preserve_order keeps the user's key
+/// order), temp-then-rename in the config's own directory so a crash
+/// mid-write can never leave a truncated config behind. Shared by
+/// [`persist_model`] and `init --add` (T17).
+pub fn write_config_value(
+    cfg_path: &std::path::Path,
+    v: &serde_json::Value,
+) -> Result<(), crate::error::Error> {
+    let pretty = serde_json::to_string_pretty(v).expect("a parsed Value re-serializes");
     let dir = cfg_path.parent().filter(|d| !d.as_os_str().is_empty());
     let tmp = dir
         .unwrap_or_else(|| std::path::Path::new("."))
