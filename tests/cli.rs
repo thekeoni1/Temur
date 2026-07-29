@@ -405,18 +405,21 @@ fn init_anthropic_template_exact_config_and_empty_600_key_file() {
     let sb = sandbox();
     let mut c = sb.cmd();
     c.arg("init");
-    // Template 2, default model, default key path.
+    // Template 2, default startup profile (sonnet), default key path.
     let (code, stdout, stderr) = run(c, "2\n\n\n");
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
     let key = sb.home.join(".secrets").join("temur-anthropic-key");
     let written = std::fs::read_to_string(sb.config_path()).unwrap();
+    // T16: the template writes the curated 4-profile set, every profile
+    // sharing the one key file; startup profile defaults to sonnet.
+    let k = key.display();
     assert_eq!(
         written,
         format!(
-            "{{\n  \"profiles\": {{\n    \"anthropic\": {{ \"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\",\n                   \"api_key_file\": \"{}\" }}\n  }},\n  \"profile\": \"anthropic\"\n}}\n",
-            key.display()
+            "{{\n  \"profiles\": {{\n    \"fable\":  {{ \"provider\": \"anthropic\", \"model\": \"claude-fable-5\",\n                \"api_key_file\": \"{k}\" }},\n    \"haiku\":  {{ \"provider\": \"anthropic\", \"model\": \"claude-haiku-4-5\",\n                \"api_key_file\": \"{k}\" }},\n    \"opus\":   {{ \"provider\": \"anthropic\", \"model\": \"claude-opus-5\",\n                \"api_key_file\": \"{k}\" }},\n    \"sonnet\": {{ \"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\",\n                \"api_key_file\": \"{k}\" }}\n  }},\n  \"profile\": \"sonnet\"\n}}\n"
         )
     );
+    assert!(stdout.contains("Startup profile (number or name) [sonnet]"), "{stdout}");
     // Key file: EMPTY (metadata only, contents never read), mode 600, in a
     // 700 dir the wizard created.
     assert_eq!(std::fs::metadata(&key).unwrap().len(), 0);

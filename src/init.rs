@@ -52,6 +52,21 @@ const TEMPLATES: [Template; 4] = [
     },
 ];
 
+/// The anthropic template's curated profile set (T16): one profile per
+/// current Anthropic model tier, all sharing the ONE key file the wizard
+/// asks for. NAME order on purpose: profiles is a BTreeMap downstream, so
+/// this is also the order every listing shows.
+const ANTHROPIC_PROFILES: [(&str, &str); 4] = [
+    ("fable", "claude-fable-5"),
+    ("haiku", "claude-haiku-4-5"),
+    ("opus", "claude-opus-5"),
+    ("sonnet", "claude-sonnet-5"),
+];
+
+/// The startup profile the anthropic template defaults to. Keeps the
+/// pre-T16 default model (claude-sonnet-5): no default flip.
+const ANTHROPIC_DEFAULT_PROFILE: &str = "sonnet";
+
 const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 
@@ -98,11 +113,21 @@ fn render_config(
             ),
         },
         "anthropic" => {
+            // T16: the curated profile set. `model` carries the answered
+            // STARTUP PROFILE NAME (from pick_startup_profile), not a model
+            // id; every profile reads the same key file.
             let k = serde_json::to_string(key_file.expect("anthropic is keyed"))
                 .expect("string serializes");
-            format!(
-                "{{\n  \"profiles\": {{\n    \"anthropic\": {{ \"provider\": \"anthropic\", \"model\": {m},\n                   \"api_key_file\": {k} }}\n  }},\n  \"profile\": \"anthropic\"\n}}\n"
-            )
+            let mut s = String::from("{\n  \"profiles\": {\n");
+            for (i, (name, model_id)) in ANTHROPIC_PROFILES.iter().enumerate() {
+                let comma = if i + 1 == ANTHROPIC_PROFILES.len() { "" } else { "," };
+                let label = format!("\"{name}\":");
+                s.push_str(&format!(
+                    "    {label:<9} {{ \"provider\": \"anthropic\", \"model\": \"{model_id}\",\n                \"api_key_file\": {k} }}{comma}\n"
+                ));
+            }
+            s.push_str(&format!("  }},\n  \"profile\": {m}\n}}\n"));
+            s
         }
         "openai" | "gemini" => {
             let base = if template.name == "openai" {
@@ -190,6 +215,44 @@ fn pick_model(
     }
 }
 
+/// Startup-profile question for the anthropic template (T16). Prints the
+/// curated profiles numbered and asks which one the config should start
+/// on; the answer is a NUMBER into the listing or a profile name. Default
+/// sonnet; anything else re-asks (EOF stays an error via `ask`).
+fn pick_startup_profile(
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+) -> Result<&'static str, crate::error::Error> {
+    writeln!(out, "Profiles this template writes:")?;
+    for (i, (name, model_id)) in ANTHROPIC_PROFILES.iter().enumerate() {
+        writeln!(out, "  {}) {name:<7} {model_id}", i + 1)?;
+    }
+    loop {
+        let answer = ask(
+            input,
+            out,
+            "Startup profile (number or name)",
+            ANTHROPIC_DEFAULT_PROFILE,
+        )?;
+        if answer.chars().all(|c| c.is_ascii_digit()) {
+            if let Ok(n) = answer.parse::<usize>() {
+                if (1..=ANTHROPIC_PROFILES.len()).contains(&n) {
+                    return Ok(ANTHROPIC_PROFILES[n - 1].0);
+                }
+            }
+        } else if let Some((name, _)) =
+            ANTHROPIC_PROFILES.iter().find(|(name, _)| *name == answer)
+        {
+            return Ok(name);
+        }
+        writeln!(
+            out,
+            "unknown profile {answer:?} (expected 1-{} or a profile name)",
+            ANTHROPIC_PROFILES.len()
+        )?;
+    }
+}
+
 /// The wizard. Writes `cfg_path`; refuses to overwrite an existing config
 /// unless `force`. Returns the lines it printed through `out`.
 ///
@@ -263,6 +326,11 @@ pub fn run(
         };
         base_url = Some(base);
         picked
+    } else if template.name == "anthropic" {
+        // T16: the anthropic template writes a fixed profile set, so the
+        // model question becomes a startup-profile question. `model` holds
+        // the chosen profile NAME from here on (see render_config).
+        pick_startup_profile(input, out)?.to_string()
     } else {
         ask(input, out, "Model id", template.default_model)?
     };
@@ -373,7 +441,15 @@ mod tests {
     fn every_template_renders_parseable_config_selecting_the_right_provider() {
         for t in &TEMPLATES {
             let key = t.key_slug.map(|_| "/tmp/k");
-            let rendered = render_config(t, t.default_model, key, None);
+            // The anthropic template's "model" answer is a startup profile
+            // name (T16); its default profile still resolves the template's
+            // default model, which is what the assertion below checks.
+            let model_arg = if t.name == "anthropic" {
+                ANTHROPIC_DEFAULT_PROFILE
+            } else {
+                t.default_model
+            };
+            let rendered = render_config(t, model_arg, key, None);
             let cfg: crate::config::Config =
                 serde_json::from_str(&rendered).unwrap_or_else(|e| {
                     panic!("template {} renders invalid config: {e}\n{rendered}", t.name)
@@ -576,5 +652,85 @@ mod tests {
         assert!(cfg.contains("\"model\": \"claude-sonnet-5\""), "{cfg}");
         let printed = String::from_utf8(out).unwrap();
         assert!(!printed.contains("Base URL"), "keyed asks no base URL: {printed}");
+    }
+
+    // ------------------------------------- T16: anthropic profile set wizard
+
+    /// Drive the wizard for the anthropic template with an explicit key
+    /// path (home is None in tests, so there is no default key path).
+    fn run_anthropic_wizard(profile_answers: &str) -> (String, String) {
+        let list = |_: &str| -> Result<Vec<String>, crate::error::Error> {
+            panic!("anthropic template must not attempt a listing")
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.json");
+        let key_path = tmp.path().join("throwaway-key");
+        let mut input = std::io::Cursor::new(
+            format!("2\n{profile_answers}{}\n", key_path.display()).into_bytes(),
+        );
+        let mut out: Vec<u8> = Vec::new();
+        run(&cfg_path, None, false, &mut input, &mut out, &list).unwrap();
+        (
+            std::fs::read_to_string(&cfg_path).unwrap(),
+            String::from_utf8(out).unwrap(),
+        )
+    }
+
+    #[test]
+    fn anthropic_render_is_byte_exact_for_the_default_profile() {
+        let t = &TEMPLATES[1]; // anthropic
+        let rendered = render_config(t, "sonnet", Some("/home/u/.secrets/temur-anthropic-key"), None);
+        let expect = "{\n  \"profiles\": {\n    \"fable\":  { \"provider\": \"anthropic\", \"model\": \"claude-fable-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\" },\n    \"haiku\":  { \"provider\": \"anthropic\", \"model\": \"claude-haiku-4-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\" },\n    \"opus\":   { \"provider\": \"anthropic\", \"model\": \"claude-opus-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\" },\n    \"sonnet\": { \"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\" }\n  },\n  \"profile\": \"sonnet\"\n}\n";
+        assert_eq!(rendered, expect);
+    }
+
+    #[test]
+    fn anthropic_render_parses_with_four_profiles_sharing_the_key() {
+        let t = &TEMPLATES[1];
+        let rendered = render_config(t, "opus", Some("/tmp/k"), None);
+        let cfg: crate::config::Config = serde_json::from_str(&rendered).unwrap();
+        let profiles = cfg.resolved_profiles().expect("profiles validate");
+        assert_eq!(
+            profiles.keys().cloned().collect::<Vec<_>>(),
+            vec!["fable", "haiku", "opus", "sonnet"],
+            "name order"
+        );
+        for ((name, model_id), (key, resolved)) in ANTHROPIC_PROFILES.iter().zip(&profiles) {
+            assert_eq!(key.as_str(), *name);
+            assert_eq!(resolved.model, *model_id);
+            assert_eq!(resolved.provider, "anthropic");
+            assert_eq!(resolved.api_key_file.as_deref(), Some("/tmp/k"), "shared key");
+        }
+        let (active, resolved) = cfg.startup_selection(&profiles).expect("selection resolves");
+        assert_eq!(active.as_deref(), Some("opus"));
+        assert_eq!(resolved.model, "claude-opus-5");
+    }
+
+    #[test]
+    fn anthropic_startup_profile_accepts_name_number_and_default() {
+        // Default (empty answer): sonnet, no default flip.
+        let (cfg, out) = run_anthropic_wizard("\n");
+        assert!(cfg.contains("\"profile\": \"sonnet\""), "{cfg}");
+        assert!(out.contains("  1) fable   claude-fable-5"), "{out}");
+        assert!(out.contains("  4) sonnet  claude-sonnet-5"), "{out}");
+        assert!(out.contains("[sonnet]"), "default shown: {out}");
+        // By name.
+        let (cfg, _) = run_anthropic_wizard("opus\n");
+        assert!(cfg.contains("\"profile\": \"opus\""), "{cfg}");
+        // By number (2 = haiku in name order).
+        let (cfg, _) = run_anthropic_wizard("2\n");
+        assert!(cfg.contains("\"profile\": \"haiku\""), "{cfg}");
+    }
+
+    #[test]
+    fn anthropic_startup_profile_reasks_on_anything_else() {
+        for bad in ["bogus", "9", "claude-opus-5"] {
+            let (cfg, out) = run_anthropic_wizard(&format!("{bad}\nfable\n"));
+            assert!(
+                out.contains(&format!("unknown profile \"{bad}\"")),
+                "{bad}: {out}"
+            );
+            assert!(cfg.contains("\"profile\": \"fable\""), "{bad}: {cfg}");
+        }
     }
 }
