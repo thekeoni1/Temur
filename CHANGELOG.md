@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.6.0 - 2026-07-28
+
 T16 model-access footgun fixes:
 
 - Cross-provider hop: `/model <claude-* id>` on a non-anthropic
