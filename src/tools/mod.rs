@@ -52,6 +52,14 @@ pub struct ToolCtx {
     /// keys guarded but no working sandbox, bash refuses unless this is
     /// set. Meaningless while the guard is empty.
     pub allow_unsandboxed_bash: bool,
+    /// T19 read-first enforcement: canonicalized paths whose content this
+    /// session has seen (read tool, edit reads its file, a successful write
+    /// knows what it wrote). `write` refuses to overwrite an EXISTING file
+    /// not in this set. Starts empty on `--continue`/`--resume`
+    /// DELIBERATELY: the file may have changed on disk since the saved
+    /// session read it, so a resumed session must re-read before
+    /// overwriting.
+    read_paths: std::collections::HashSet<PathBuf>,
 }
 
 impl ToolCtx {
@@ -62,7 +70,22 @@ impl ToolCtx {
             cancel: CancelToken::new(),
             guard: KeyGuard::empty(),
             allow_unsandboxed_bash: false,
+            read_paths: std::collections::HashSet::new(),
         }
+    }
+
+    /// Record that this session has seen `path`'s current content.
+    /// Canonicalized so `./a.txt`, `a.txt`, and a symlinked spelling agree;
+    /// the fallback (path as resolved) only matters in a delete race.
+    pub fn record_read(&mut self, path: &std::path::Path) {
+        self.read_paths
+            .insert(std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
+    }
+
+    /// Whether [`ToolCtx::record_read`] has seen this path.
+    pub fn was_read(&self, path: &std::path::Path) -> bool {
+        self.read_paths
+            .contains(&std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
     }
 }
 

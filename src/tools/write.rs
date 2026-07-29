@@ -36,11 +36,23 @@ impl Tool for WriteTool {
         // poisoning vector), and the check runs before create_dir_all so
         // nothing is ever created under a secrets dir.
         ctx.guard.check(&path)?;
+        let existed = path.exists();
+        // T19 read-first enforcement: the write prompt has always promised
+        // this failure; for weak models the promise must be real. New files
+        // are unaffected.
+        if existed && !ctx.was_read(&path) {
+            return Err(ToolError::failed(format!(
+                "{} exists but has not been read in this session. Read it first, or use edit for targeted changes.",
+                path.display()
+            )));
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| ToolError::failed(e.to_string()))?;
         }
-        let existed = path.exists();
         std::fs::write(&path, &p.content).map_err(|e| ToolError::failed(e.to_string()))?;
+        // A successful write knows the file's content: overwrites of its own
+        // output (e.g. iterating on a generated file) need no re-read.
+        ctx.record_read(&path);
         Ok(ToolOutput {
             title: p.file_path,
             output: format!(

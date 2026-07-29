@@ -229,6 +229,50 @@ fn oneshot_tool_turn_splits_streams_openai_wire() {
     assert!(stderr.contains("→ bash"), "{stderr}");
 }
 
+// ------------------------------------------------- T19 P2: read-first e2e
+
+#[test]
+fn write_unread_existing_file_denied_through_the_binary() {
+    let sb = sandbox();
+    // The fixture writes to the RELATIVE path existing.txt, which resolves
+    // against the binary's cwd (the sandbox home).
+    std::fs::write(sb.home.join("existing.txt"), "original").unwrap();
+    let mut c = sb.cmd();
+    let fixtures = format!(
+        "{},{}",
+        fixture("write_unread.sse"),
+        fixture("text_simple.sse")
+    );
+    c.args(["--mock", &fixtures, "-p", "overwrite the file"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(
+        std::fs::read_to_string(sb.home.join("existing.txt")).unwrap(),
+        "original",
+        "a blind overwrite must be refused"
+    );
+}
+
+#[test]
+fn write_after_read_succeeds_through_the_binary() {
+    let sb = sandbox();
+    std::fs::write(sb.home.join("existing.txt"), "original").unwrap();
+    let mut c = sb.cmd();
+    let fixtures = format!(
+        "{},{}",
+        fixture("read_then_write.sse"),
+        fixture("text_simple.sse")
+    );
+    c.args(["--mock", &fixtures, "-p", "update the file"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(
+        std::fs::read_to_string(sb.home.join("existing.txt")).unwrap(),
+        "updated",
+        "read-then-write in the same batch must pass"
+    );
+}
+
 #[test]
 fn oneshot_provider_error_exits_failure() {
     // One fixture, but the tool round needs a second response: the replay

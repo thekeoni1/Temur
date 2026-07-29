@@ -69,7 +69,7 @@ impl Tool for ReadTool {
         }
         if is_binary(&path)? {
             return Err(ToolError::failed(format!(
-                "Cannot read binary file: {}",
+                "Cannot read binary file: {}. Inspect it with bash instead (e.g. file, unzip -l, strings).",
                 path.display()
             )));
         }
@@ -138,6 +138,8 @@ impl Tool for ReadTool {
             output.push_str(&format!("\n(End of file - total {lines} lines)\n"));
         }
         output.push_str("</content>");
+        // T19: a successful file read arms write's read-first check.
+        ctx.record_read(&path);
         Ok(ToolOutput { title, output })
     }
 }

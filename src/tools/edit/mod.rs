@@ -64,6 +64,9 @@ impl Tool for EditTool {
         ctx.guard.check(&path)?;
         let content = std::fs::read_to_string(&path)
             .map_err(|_| ToolError::failed(format!("File not found: {}", path.display())))?;
+        // T19: an edit reads the file (just above), so it arms write's
+        // read-first check like the read tool does.
+        ctx.record_read(&path);
         let matches = content.matches(&p.old_string).count();
         if matches == 0 {
             return self.execute_fuzzy(&p, &path, &content);

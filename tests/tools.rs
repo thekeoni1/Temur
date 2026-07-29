@@ -170,6 +170,128 @@ fn write_creates_nested_paths() {
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello");
 }
 
+// --------------------------------------------------------- T19 (P2)
+// write's read-first rule: the prompt has always promised "this tool will
+// fail if you did not read the file first"; now it does.
+
+#[test]
+fn write_unread_existing_file_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let target = dir.path().join("existing.txt");
+    std::fs::write(&target, "original").unwrap();
+    let err = run(
+        &reg,
+        &mut ctx,
+        "write",
+        json!({"filePath": target.to_str().unwrap(), "content": "clobbered"}),
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("has not been read in this session"),
+        "{err}"
+    );
+    assert!(
+        err.to_string().contains("use edit for targeted changes"),
+        "{err}"
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
+}
+
+#[test]
+fn write_after_read_succeeds_and_new_files_are_unaffected() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let target = dir.path().join("existing.txt");
+    std::fs::write(&target, "original").unwrap();
+    // Read arms the check for this exact file.
+    run(&reg, &mut ctx, "read", json!({"filePath": target.to_str().unwrap()})).unwrap();
+    run(
+        &reg,
+        &mut ctx,
+        "write",
+        json!({"filePath": target.to_str().unwrap(), "content": "updated"}),
+    )
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "updated");
+    // A brand-new file needs no read.
+    let fresh = dir.path().join("fresh.txt");
+    run(
+        &reg,
+        &mut ctx,
+        "write",
+        json!({"filePath": fresh.to_str().unwrap(), "content": "new"}),
+    )
+    .unwrap();
+    // And a successful write knows what it wrote: overwriting its own
+    // output needs no re-read.
+    run(
+        &reg,
+        &mut ctx,
+        "write",
+        json!({"filePath": fresh.to_str().unwrap(), "content": "new2"}),
+    )
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "new2");
+}
+
+#[test]
+fn write_read_first_agrees_across_path_spellings() {
+    // Read via absolute path, write via relative: canonicalization makes
+    // the spellings agree.
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let target = dir.path().join("same.txt");
+    std::fs::write(&target, "v1").unwrap();
+    run(&reg, &mut ctx, "read", json!({"filePath": target.to_str().unwrap()})).unwrap();
+    run(&reg, &mut ctx, "write", json!({"filePath": "same.txt", "content": "v2"})).unwrap();
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "v2");
+}
+
+#[test]
+fn edit_arms_write_and_works_standalone_on_unread_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let target = dir.path().join("code.rs");
+    std::fs::write(&target, "fn main() {}").unwrap();
+    // edit needs no prior read (it reads the file itself)...
+    run(
+        &reg,
+        &mut ctx,
+        "edit",
+        json!({"filePath": target.to_str().unwrap(), "oldString": "main", "newString": "start"}),
+    )
+    .unwrap();
+    // ...and having read it, it arms write's check.
+    run(
+        &reg,
+        &mut ctx,
+        "write",
+        json!({"filePath": target.to_str().unwrap(), "content": "fn start() {}\n"}),
+    )
+    .unwrap();
+}
+
+#[test]
+fn read_binary_denial_names_bash_inspection() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let target = dir.path().join("blob.gz");
+    std::fs::write(&target, b"\x1f\x8b\x08\x00binary").unwrap();
+    let err = run(&reg, &mut ctx, "read", json!({"filePath": target.to_str().unwrap()}))
+        .unwrap_err();
+    assert!(err.to_string().contains("Cannot read binary file"), "{err}");
+    assert!(
+        err.to_string().contains("Inspect it with bash instead"),
+        "{err}"
+    );
+}
+
 #[test]
 fn edit_unique_replace_all_and_errors() {
     let dir = tempfile::tempdir().unwrap();
