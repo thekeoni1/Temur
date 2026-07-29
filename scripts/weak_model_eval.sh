@@ -1,13 +1,17 @@
 #!/bin/sh
 # T4 weak-model eval harness, operator-run (NOT part of check.sh): measures
 # — instead of claiming — how well a small local model drives temur's
-# tools. Seven fixed tasks run against a llama.cpp server inside a podman
+# tools. Nine fixed tasks run against a llama.cpp server inside a podman
 # pod created with --network none (same zero-internet-by-construction setup
 # as scripts/offline_demo.sh); every task is scored by a HOST-VERIFIED
 # filesystem assertion only — model prose is never evidence.
 # Task 7 (indirect-delete) additionally requires bash tool activity in the
 # transcript: it probes tool SELECTION (no delete tool exists; bash is the
 # intended path), so the end state alone is not enough.
+# Task 8 (binary-nudge, T19): gzip validity alone proves the model did not
+# raw-write the bytes with the write tool. Task 9 (large-tail, T19): the
+# needle sits on the LAST line of output far larger than the tool-output
+# cap, so only the T19 head+tail truncation can carry it.
 #
 # Nothing is ever pulled or downloaded here: preflight prints the exact
 # pull command and exits if an image is missing.
@@ -126,7 +130,7 @@ record() { # record <n> <name> <PASS|FAIL> <secs>
     echo "task $1 ($2): $3 (${4}s)"
 }
 
-echo "==== running 7 tasks ===="
+echo "==== running 9 tasks ===="
 
 # 1: plain write.
 n=1; name=write-file
@@ -206,6 +210,34 @@ if [ ! -e "$EVAL_ROOT/task$n/obsolete.tmp" ] \
     record "$n" "$name" PASS "$SECS"; else record "$n" "$name" FAIL "$SECS"; fi
 rm -f "$EVAL_ROOT/task$n/obsolete.tmp"
 
+# 8: binary nudge (T19). The only correct path is a bash gzip run; the
+# write tool writes text, so a raw-written "archive" is invalid gzip.
+# gunzip validity of the result is therefore proof of the path taken.
+n=8; name=binary-nudge
+mkdir -p "$EVAL_ROOT/task$n"
+run_task "$n" "$name" \
+    'Create a gzip-compressed file named notes.txt.gz in the current directory. Its DECOMPRESSED content must be exactly: eval-gz-99   (gzip is available via the bash tool).'
+if [ "$( { gunzip -c "$EVAL_ROOT/task$n/notes.txt.gz" 2>/dev/null || true; } | tr -d '[:space:]')" = "eval-gz-99" ]; then
+    record "$n" "$name" PASS "$SECS"; else record "$n" "$name" FAIL "$SECS"; fi
+
+# 9: large-output tail (T19). data.log is ~32,000 chars, far over the
+# context-scaled tool-output cap, and the needle is on the LAST line: a
+# head-only truncation cannot pass this, only the T19 tail-keep can.
+n=9; name=large-tail
+mkdir -p "$EVAL_ROOT/task$n"
+{
+    i=1
+    while [ "$i" -le 399 ]; do
+        printf 'line %04d: abcdefghijklmnopqrstuvwxyz-0123456789-abcdefghijklmnopqrstuvwxyz\n' "$i"
+        i=$((i + 1))
+    done
+    printf 'FINAL-LINE: OMEGA-3141\n'
+} > "$EVAL_ROOT/task$n/data.log"
+run_task "$n" "$name" \
+    'Two steps. Step 1: use the bash tool to run exactly: cat data.log   (the output is long and will be truncated in the middle). Step 2: the LAST line of that output looks like FINAL-LINE: SOMEVALUE. Use the write tool to create tail.txt containing just that SOMEVALUE part (the text after "FINAL-LINE: ").'
+if [ "$(trimmed "$EVAL_ROOT/task$n/tail.txt")" = "OMEGA-3141" ]; then
+    record "$n" "$name" PASS "$SECS"; else record "$n" "$name" FAIL "$SECS"; fi
+
 echo "==== results ===="
 
 printf '%-4s %-14s %-6s %s\n' "task" "name" "result" "seconds"
@@ -219,7 +251,7 @@ echo "  model     : $MODEL_GGUF"
 echo "  server    : $LLAMA_IMAGE, ctx $CTX, --jinja"
 echo "  profile   : $PROMPT_PROFILE"
 echo "  transcripts: $EVAL_TRANSCRIPT_DIR/task<n>.txt"
-echo "SCORE: $SCORE/7"
+echo "SCORE: $SCORE/9"
 
 if [ "$EVAL_MIN" -gt 0 ] && [ "$SCORE" -lt "$EVAL_MIN" ]; then
     echo "BELOW THRESHOLD (EVAL_MIN=$EVAL_MIN)"
