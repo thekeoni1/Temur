@@ -21,6 +21,9 @@ pub const DEFAULT_SESSION_MAX_BYTES: u64 = 4 * 1024 * 1024;
 /// tens of KiB), so every save would trim to nothing. A smaller value is a
 /// configuration mistake, reported at startup rather than at save time.
 pub const MIN_SESSION_MAX_BYTES: u64 = 64 * 1024;
+/// Default for [`Config::key_rotate_warn_days`] (T17): doctor WARNs about a
+/// key file whose mtime is at least this many days old.
+pub const DEFAULT_KEY_ROTATE_WARN_DAYS: u64 = 90;
 
 /// Loaded from ~/.config/temur/config.json (or $XDG_CONFIG_HOME).
 /// Unknown fields are tolerated so old binaries accept newer configs.
@@ -78,6 +81,11 @@ pub struct Config {
     /// the base provider/model fields at startup. Absent = the base fields
     /// select the provider, byte-identical to pre-T8 behavior.
     pub profile: Option<String>,
+    /// Age in days after which `temur doctor` WARNs that a key file has not
+    /// changed and suggests rotating the key (T17). Metadata only (mtime),
+    /// advisory only. 0 disables the reminder; absent =
+    /// [`DEFAULT_KEY_ROTATE_WARN_DAYS`].
+    pub key_rotate_warn_days: u64,
 }
 
 /// One named profile: a nickname bundling provider + model + endpoint +
@@ -184,6 +192,7 @@ impl Default for Config {
             openai_compat: None,
             profiles: None,
             profile: None,
+            key_rotate_warn_days: DEFAULT_KEY_ROTATE_WARN_DAYS,
         }
     }
 }
@@ -468,6 +477,14 @@ pub fn config_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_rotate_warn_days_defaults_to_90_and_zero_parses() {
+        let c: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(c.key_rotate_warn_days, DEFAULT_KEY_ROTATE_WARN_DAYS);
+        let c: Config = serde_json::from_str(r#"{"key_rotate_warn_days":0}"#).unwrap();
+        assert_eq!(c.key_rotate_warn_days, 0);
+    }
 
     #[test]
     fn provider_defaults_to_anthropic_and_section_parses() {

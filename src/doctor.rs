@@ -2,8 +2,8 @@
 //!
 //! One PASS/WARN/FAIL line per check; exit SUCCESS iff no FAIL. Strictly
 //! read-only: nothing is created, written, or fixed, key files are judged
-//! by metadata only (existence, mode, size) and their contents are never
-//! read, and the reachability probes send no HTTP request at all, just a
+//! by metadata only (existence, mode, size, mtime) and their contents are
+//! never read, and the reachability probes send no HTTP request at all, just a
 //! TCP connect plus, for https, a TLS handshake through the same
 //! rustls(ring)+webpki-roots stack as tls-probe.
 
@@ -105,13 +105,16 @@ pub fn run(
     // Credentials, active selection first (FAILs are startup blockers),
     // then every named profile's key file (WARN only: an unusable inactive
     // profile does not block startup, but the user should know).
+    let rotate_days = cfg.key_rotate_warn_days;
     match (&active.provider[..], &active.api_key_file) {
-        (_, Some(path)) => key_file_check(&mut r, "", Path::new(path), true)?,
+        (_, Some(path)) => key_file_check(&mut r, "", Path::new(path), true, rotate_days)?,
         ("openai-compat", None) => {
             r.pass("credentials: keyless (no api_key_file configured)")?
         }
         (_, None) => match std::env::var_os("APP_SECRET_FILE") {
-            Some(p) => key_file_check(&mut r, "APP_SECRET_FILE ", Path::new(&p), true)?,
+            Some(p) => {
+                key_file_check(&mut r, "APP_SECRET_FILE ", Path::new(&p), true, rotate_days)?
+            }
             None => r.fail(
                 "provider \"anthropic\" needs a key: no api_key_file in the config and APP_SECRET_FILE is not set",
             )?,
@@ -121,7 +124,7 @@ pub fn run(
         if let Some(path) = &p.api_key_file {
             if active.api_key_file.as_deref() != Some(path.as_str()) {
                 let prefix = format!("profile \"{name}\" ");
-                key_file_check(&mut r, &prefix, Path::new(path), false)?;
+                key_file_check(&mut r, &prefix, Path::new(path), false, rotate_days)?;
             }
         }
     }
@@ -284,6 +287,7 @@ fn key_file_check(
     prefix: &str,
     path: &Path,
     blocking: bool,
+    rotate_days: u64,
 ) -> std::io::Result<()> {
     let label = format!("{prefix}key file {}", path.display());
     let (problem, msg) = match inspect_key_file(path) {
@@ -297,14 +301,16 @@ fn key_file_check(
             format!("{label}: empty (by size); paste your key in with your editor"),
         ),
         KeyState::LooseMode(mode) => {
-            return r.warn(&format!(
+            r.warn(&format!(
                 "{label}: mode {mode:o} allows group/other access; chmod 600 recommended"
-            ))
+            ))?;
+            return key_rotation_check(r, prefix, path, rotate_days);
         }
         KeyState::Good(mode) => {
-            return r.pass(&format!(
+            r.pass(&format!(
                 "{label}: present, non-empty (by size), mode {mode:o}"
-            ))
+            ))?;
+            return key_rotation_check(r, prefix, path, rotate_days);
         }
     };
     debug_assert!(problem);
@@ -313,6 +319,39 @@ fn key_file_check(
     } else {
         r.warn(&msg)
     }
+}
+
+/// Rotation reminder (T17 P4): WARN when a present, non-empty key file's
+/// mtime is at least `rotate_days` old. mtime is metadata like mode and
+/// size; contents are still never read, and the WARN never affects the
+/// exit code. 0 disables; a future or unreadable mtime is a silent skip
+/// (clock skew is not the user's key hygiene problem).
+fn key_rotation_check(
+    r: &mut Report<'_>,
+    prefix: &str,
+    path: &Path,
+    rotate_days: u64,
+) -> std::io::Result<()> {
+    if rotate_days == 0 {
+        return Ok(());
+    }
+    let Ok(meta) = std::fs::metadata(path) else {
+        return Ok(());
+    };
+    let Ok(mtime) = meta.modified() else {
+        return Ok(());
+    };
+    let Ok(age) = std::time::SystemTime::now().duration_since(mtime) else {
+        return Ok(());
+    };
+    let days = age.as_secs() / 86_400;
+    if days >= rotate_days {
+        r.warn(&format!(
+            "{prefix}key file {} unchanged for {days} days; consider rotating the key at the provider and pasting the new one (temur init --add re-prompts)",
+            path.display()
+        ))?;
+    }
+    Ok(())
 }
 
 fn sessions_dir_check(r: &mut Report<'_>, dir: &Path) -> std::io::Result<()> {
@@ -616,6 +655,98 @@ mod tests {
             out.contains("WARN: profile \"other\" model \"gone\" is not in the server listing"),
             "{out}"
         );
+    }
+
+    // ------------------------------- T17 P4: key-rotation reminder (mtime)
+
+    /// Pin a file's mtime to an absolute epoch second via touch -d @N.
+    fn touch_at(path: &Path, t: std::time::SystemTime) {
+        let secs = t
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("post-epoch")
+            .as_secs();
+        let status = std::process::Command::new("touch")
+            .arg("-d")
+            .arg(format!("@{secs}"))
+            .arg(path)
+            .status()
+            .expect("touch runs");
+        assert!(status.success());
+    }
+
+    /// A keyed openai-compat config over a non-empty mode-600 key file
+    /// whose mtime is `days_off` days in the past (negative = future),
+    /// with an optional key_rotate_warn_days field. Runs doctor with
+    /// --no-network (rotation is offline).
+    fn doctor_over_aged_key(days_off: i64, warn_days_field: Option<u64>) -> (bool, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("k");
+        std::fs::write(&key, "value\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let offset = std::time::Duration::from_secs(days_off.unsigned_abs() * 86_400);
+        let mtime = if days_off >= 0 {
+            std::time::SystemTime::now() - offset
+        } else {
+            std::time::SystemTime::now() + offset
+        };
+        touch_at(&key, mtime);
+        let field = warn_days_field
+            .map(|d| format!(r#""key_rotate_warn_days":{d},"#))
+            .unwrap_or_default();
+        let cfg = format!(
+            r#"{{{field}"provider":"openai-compat","openai_compat":{{"base_url":"http://127.0.0.1:1/v1","model":"m","api_key_file":"{}"}}}}"#,
+            key.display()
+        );
+        let cfg_path = tmp.path().join("config.json");
+        std::fs::write(&cfg_path, cfg).unwrap();
+        let mut out: Vec<u8> = Vec::new();
+        let healthy = run(&cfg_path, true, &mut out).unwrap();
+        (healthy, String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn rotation_warn_on_an_aged_key_file_stays_healthy() {
+        let (healthy, out) = doctor_over_aged_key(91, None);
+        assert!(healthy, "rotation WARN must not affect the exit code: {out}");
+        assert!(
+            out.contains("WARN: key file") && out.contains("unchanged for 91 days"),
+            "{out}"
+        );
+        assert!(
+            out.contains("rotating the key at the provider")
+                && out.contains("temur init --add re-prompts"),
+            "{out}"
+        );
+        // The ordinary presence PASS line is unchanged and still there.
+        assert!(out.contains("present, non-empty (by size), mode 600"), "{out}");
+    }
+
+    #[test]
+    fn rotation_boundary_fresh_files_stay_quiet() {
+        // Below the default threshold: no reminder.
+        let (healthy, out) = doctor_over_aged_key(89, None);
+        assert!(healthy, "{out}");
+        assert!(!out.contains("unchanged for"), "{out}");
+        // At the threshold (a hair past 90 full days): reminder.
+        let (_healthy, out) = doctor_over_aged_key(90, None);
+        assert!(out.contains("unchanged for 90 days"), "{out}");
+    }
+
+    #[test]
+    fn rotation_custom_threshold_and_zero_disables() {
+        let (_healthy, out) = doctor_over_aged_key(6, Some(5));
+        assert!(out.contains("unchanged for 6 days"), "{out}");
+        let (healthy, out) = doctor_over_aged_key(400, Some(0));
+        assert!(healthy, "{out}");
+        assert!(!out.contains("unchanged for"), "0 disables: {out}");
+    }
+
+    #[test]
+    fn rotation_future_mtime_is_a_silent_skip() {
+        let (healthy, out) = doctor_over_aged_key(-2, None);
+        assert!(healthy, "{out}");
+        assert!(!out.contains("unchanged for"), "{out}");
     }
 
     #[test]
