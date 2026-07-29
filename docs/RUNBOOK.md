@@ -1716,3 +1716,108 @@ is ignored (not handled): Ctrl+C does nothing until Enter; accepted
 as the simplest way to guarantee the terminal is never left
 non-echoing. (5) The in-memory wipe is best-effort only, per the
 amendment record.
+
+## T18 acceptance - recorded result (no release)
+
+2026-07-29, five commits on main over the T17 head (95ef0cc):
+P1 5fc74a9 (KeyGuard identity guard wired into read/write/edit),
+P2 1129636 (grep/glob walks guarded, one snapshot per execution),
+P3 bd84579 (bash userns + /dev/null bind-mask sandbox, refusal +
+allow_bash_without_key_sandbox override), P4 51a0947 (active-key
+redaction at the Registry, doctor key-isolation and sandbox lines),
+P5 (docs + this record). Every phase ran the full check.sh gate
+(pty, foreground) green. Version stays 0.6.0; T18 rides CHANGELOG
+Unreleased. No step read, copied, printed, or tested with real key
+material: every test and smoke key is a placeholder string the run
+created itself.
+
+THE INVARIANT, verified at every layer: a keyless config behaves
+byte-identically to pre-T18 builds. ToolCtx::new yields an empty
+guard (every pre-existing construction unchanged); an empty guard
+checks nothing; bash's keyless arm neither probes nor unshares
+(asserted with a panicking probe in the decision-table test); no
+redaction key is registered. With any key file configured: layer 1
+denies tools the file, its directory siblings, and every alias of
+its identity; layer 2 masks it from bash or refuses bash; layer 3
+scrubs the active key from anything a tool returns.
+
+Layer-1 denial message (verbatim shape):
+  access to <path> is blocked: configured key files are not
+  readable by tools (key isolation)
+Bash refusal message (verbatim, one constant shared with tests):
+  bash is disabled: key files are configured, and this kernel does
+  not allow the unprivileged user namespace sandbox that isolates
+  them from shell commands. The other tools stay guarded. To accept
+  running bash WITHOUT the key sandbox, set
+  "allow_bash_without_key_sandbox": true in config.json.
+
+Sandbox sequence verified against local user_namespaces(7) and
+mount_namespaces(7) before coding: unshare(NEWUSER|NEWNS); "deny"
+to /proc/self/setgroups BEFORE gid_map (mandatory without
+CAP_SETGID in the parent ns); single-line "uid uid 1" self-maps
+(the one mapping an unprivileged process may write); MS_REC |
+MS_PRIVATE on / (modern systems default to shared propagation);
+then a /dev/null MS_BIND per existing key file. The pre_exec
+closure is raw syscalls over pre-computed bytes: no allocation
+between fork and exec. Availability is probed by actually running
+the sequence around /bin/true and cached per process; doctor uses
+the same helper.
+
+Environment fact recorded during P3: this host's rootless
+podman + crun PERMITS nested unshare(CLONE_NEWUSER), so the
+container suites exercised the SANDBOXED arm in-container (the plan
+had predicted the refusal arm there); the refusal decision is
+covered deterministically by the injected-probe unit tests, and the
+injected-probe doctor tests cover the WARN arms.
+
+Live smoke (Qwen3-4B-Instruct-2507-Q4_K_M via serve.sh, keyless
+local llama.cpp, isolated XDG dirs under the session scratchpad,
+musl release binary; the keyed config guards a placeholder key file
+the smoke created; active profile keyless "local", so no live call
+ever needed a key):
+
+(a) read of the key file: the model called read and quoted the
+layer-1 denial verbatim: "access to <scratch>/work/secrets/api.key
+is blocked: configured key files are not readable by tools (key
+isolation)". (First attempt note: the model initially refused on
+its own without calling the tool; the transcript kept is the
+forced-call retry, which is the one that exercises temur.)
+
+(b) sandboxed bash: "cat secrets/api.key; echo EXIT=$?" ran with
+exit 0 and cat produced NOTHING (the /dev/null mask); the
+placeholder string appears nowhere in the transcript; the host key
+file was untouched.
+
+(c) grep pattern "placeholder-not-a-real" over the tree: "No
+matches found"; pattern "ordinary": one hit in notes.txt. The key
+file is never read and never named.
+
+(d) doctor (keyed config): "PASS: key isolation: 1 key file(s)
+guarded (tools cannot read them)" and "PASS: bash key sandbox:
+available (unprivileged user namespaces)", exit healthy. Keyless
+config: "PASS: key isolation: keyless config, no key files to
+guard" + "NOTE: bash key sandbox: not needed (keyless config)".
+
+(e) keyless invariant: the same cat through the bash tool under the
+keyless config printed the placeholder content exactly as any
+pre-T18 build would (and read reads it freely). Byte-identical
+old behavior confirmed live.
+
+Residuals, honest: (1) The identity check knows a key only while
+the configured path exists: a hardlink made BEFORE temur ran
+escapes it if the key file itself is later removed or renamed away.
+(2) Redaction covers the ACTIVE key only; inactive profiles' keys
+are never read, so there is honestly nothing to redact them with.
+(3) A /dev/null-masked write inside the bash sandbox is discarded
+silently; the model is not told its write went nowhere. (4) The
+parent-directory rule blocks the WHOLE directory holding a key
+file: a key configured in a broad directory (home, project root)
+blocks tool access to all of it; documented in README with the
+"own directory" recommendation init already follows. (5) The
+sandbox masks only key files that EXIST at spawn time; a missing
+configured key has nothing to mask (layer 1 still guards its
+path). (6) bash inherits process_group(0) kill semantics
+unchanged; the sandbox adds no new kill path. (7) In one-shot
+smokes the local model sometimes self-refuses key-adjacent
+requests before any tool runs; irrelevant to the guards but noted
+because it cost smoke retries.

@@ -87,7 +87,7 @@ pub fn build_live(
 
 /// [`build_live`] plus the credential it read, for T18 redaction: the tool
 /// layer registers the ACTIVE key so tool output can never echo it. NO
-/// additional key read happens here — the returned string is the very one
+/// additional key read happens here: the returned string is the very one
 /// activation loaded (`None` for a keyless selection, which is also what
 /// CLEARS a previously registered key on a switch to keyless).
 #[allow(clippy::type_complexity)]

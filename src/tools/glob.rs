@@ -44,7 +44,7 @@ impl Tool for GlobTool {
             .compile_matcher();
 
         // T18: one guard snapshot per execution. Protected files (and
-        // anything under a secrets dir) are omitted from listings — names
+        // anything under a secrets dir) are omitted from listings: names
         // and mtimes are a leak surface too.
         let guard = ctx.guard.snapshot();
 

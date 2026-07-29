@@ -32,8 +32,8 @@ impl Tool for WriteTool {
     fn execute(&self, input: Value, ctx: &mut ToolCtx) -> Result<ToolOutput, ToolError> {
         let p: Params = parse_input(input)?;
         let path = resolve_path(ctx, &p.file_path);
-        // T18: writes deny too — overwriting a key is destruction and a
-        // poisoning vector — and the check runs before create_dir_all so
+        // T18: writes deny too (overwriting a key is destruction and a
+        // poisoning vector), and the check runs before create_dir_all so
         // nothing is ever created under a secrets dir.
         ctx.guard.check(&path)?;
         if let Some(parent) = path.parent() {

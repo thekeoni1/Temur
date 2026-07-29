@@ -4,6 +4,35 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+T18 key isolation (guaranteeing tools cannot reach configured keys):
+
+- File guard for read/write/edit/glob/grep: every configured
+  `api_key_file` (active selection and all named profiles) plus the
+  `APP_SECRET_FILE` path is denied to tools, by canonical path
+  (symlinks, unborn write targets), by parent-directory prefix
+  (sibling keys in a secrets dir), and by device+inode identity
+  (hardlinks, renames). grep never reads a protected file, glob never
+  lists one, writes and creates under a secrets dir are refused.
+  Denials are ordinary tool errors naming the policy, never key
+  material.
+- bash sandbox: with keys configured, bash runs in an unprivileged
+  user namespace + private mount namespace with every existing key
+  file bind-masked by /dev/null (reads empty, writes discarded, host
+  file untouched). Kernels without unprivileged user namespaces make
+  bash refuse instead, naming the new
+  `allow_bash_without_key_sandbox` config override (default false;
+  it never disables a working sandbox). Keyless configs spawn bash
+  byte-identically to before: no namespace, no probe.
+- Redaction: the active provider's key (the one credential actually
+  read) is scrubbed from every tool result, successes and errors,
+  before output truncation so a key cannot leak split across the
+  30k cut; re-registered on `/model` switches, cleared on a switch
+  to keyless. Keys shorter than 8 chars are never matched.
+- `temur doctor` adds two offline lines: the key-isolation guard
+  count (or a keyless note) and bash sandbox availability, WARNing
+  when keys exist but no sandbox is possible (naming the refusal or
+  the override), never affecting the exit code.
+
 T17 provider onboarding:
 
 - `temur init --add <template>` merges a template into an EXISTING

@@ -375,6 +375,54 @@ never trimmed. Two processes in one directory don't corrupt anything:
 last complete writer wins. To start over, `/new` a fresh name or delete
 the file from the sessions dir.
 
+## Key isolation
+
+Tools run in the same process, as the same user, as temur itself, so
+file modes alone cannot keep the model away from API keys: anything the
+key-owning user can read, a shell command could too. Three layers close
+that hole, on by default whenever any key file is configured:
+
+- **File guard** (read, write, edit, glob, grep). Every configured
+  `api_key_file` (the active selection and every named profile) plus the
+  `APP_SECRET_FILE` path is protected. A tool path is denied when it
+  resolves to a protected file (symlinks and not-yet-existing write
+  targets are canonicalized first), when it lies under a protected
+  file's parent directory (a secrets directory holds sibling keys), or
+  when it shares the file's device and inode identity (hardlinks,
+  renames). grep never reads a protected file, glob never lists one,
+  and writes are denied too: overwriting a key is destruction and a
+  poisoning vector.
+- **bash sandbox.** With keys configured, every bash command runs in an
+  unprivileged user namespace plus a private mount namespace where each
+  existing key file is bind-masked with `/dev/null`: inside the shell
+  the key path reads as empty and writes to it are discarded, while the
+  host file stays untouched. On kernels without unprivileged user
+  namespaces bash REFUSES to run instead. Setting
+  `allow_bash_without_key_sandbox` to `true` in `config.json` accepts
+  running bash unsandboxed on such hosts; that is a real risk (an
+  unsandboxed shell can read anything you can), the other layers still
+  apply, and a working sandbox is always used when available.
+- **Redaction.** The ACTIVE provider's key, the one credential temur
+  has actually read, is scrubbed from every tool result (successes and
+  errors, before output truncation), so even an unexpected leak path
+  cannot echo it back to the model.
+
+The invariant: a keyless config behaves byte-identically to earlier
+releases. No guard, no namespace, no probe, no redaction.
+
+Honest limits: the identity check knows a key's identity only while the
+file exists at its configured path, so a hardlink made beforehand
+escapes it if the key file itself is later removed; redaction covers
+the active key only (inactive profiles' keys are never read, so there
+is nothing to redact them with); a masked write inside the bash sandbox
+is discarded silently rather than reported; and the parent-directory
+rule means a key file placed in a broad directory (a home directory, a
+project root) blocks tool access to that entire directory. Keep key
+files in their own directory, as `temur init` sets up.
+
+`temur doctor` reports the guard count and the sandbox availability,
+and warns when bash would refuse.
+
 ## Scope
 
 temur deliberately does not do LSP, MCP, IDE plugins, web UI,

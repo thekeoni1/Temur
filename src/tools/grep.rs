@@ -51,7 +51,7 @@ impl Tool for GrepTool {
             None => None,
         };
 
-        // T18: one guard snapshot per execution — protected identities are
+        // T18: one guard snapshot per execution; protected identities are
         // stat'ed here once, then every walked file is checked against it.
         // A grep reads EVERY file it walks, so an unguarded walk would
         // exfiltrate a key wholesale.
