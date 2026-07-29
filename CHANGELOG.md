@@ -4,6 +4,40 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+T16 model-access footgun fixes:
+
+- Cross-provider hop: `/model <claude-* id>` on a non-anthropic
+  provider with an anthropic profile configured now switches to that
+  profile (the exact-model match, else the first anthropic profile by
+  name) instead of setting an anthropic id on the wrong provider; when
+  the id is not the profile's own model it is applied on top, and the
+  notice names the mechanism and the profile. Escape hatches: an id
+  the active provider itself listed in `/models` always switches
+  literally, and with no anthropic profile the raw switch happens as
+  before plus a hint that an anthropic profile enables the hop. The
+  hop makes no network request. `--save` composes: the save site is
+  the hop profile's `model`, and the persist notice now names the site
+  profile whenever one is active.
+- `temur init`, Anthropic template: writes a curated four-profile set
+  (fable, haiku, opus, sonnet over the current Anthropic model tiers),
+  every profile sharing the one key file the wizard asks for; the
+  model question becomes a startup-profile question (number or name,
+  default sonnet, anything else re-asks). The effective default model
+  stays claude-sonnet-5.
+- `/model` with no argument appends two hint lines after the profile
+  list (what a non-profile argument does, where `/models` fits, that
+  `--save` persists). A raw-id switch whose id is absent from the last
+  `/models` listing gets an advisory notice; the switch stands. Cached
+  listing ids are dropped when a switch changes the provider, so one
+  provider's listing never completes or judges another's ids.
+- init local template writes `max_tokens` 4096 (1024 truncated first
+  real tasks); README and OFFLINE recipes updated in lockstep. The
+  plain truncation notice now names the limit and its source
+  (`max_tokens (4096, from profile "local")`, or `from config`) and
+  says the fix. init's closing text and the first-run quickstart note
+  that conversations are saved automatically per working directory and
+  `temur --continue` resumes the last one.
+
 T15 model-selection onboarding polish:
 
 - `temur init`, local template: a Base URL question (default

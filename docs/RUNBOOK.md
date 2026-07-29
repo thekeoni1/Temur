@@ -1464,3 +1464,72 @@ changed Value serialization order globally; request bodies are
 pinned byte-identical through sorted-key serialization (goldens
 enforce), while session files and other non-gated JSON may order
 keys differently than before (cosmetic only).
+
+## T16 acceptance - recorded result (no release)
+
+2026-07-28, five commits on main over the T15 head (34b5f27):
+P1 bb8295c (init anthropic profile set), P2 0fd83bd (/model hints +
+cached-listing advisory + cache-clear-on-provider-change), P3 8268844
+(cross-provider hop + --save site naming), P4 aac3852 (riders: local
+4096, truncation source, sessions line), P5 (docs + this record).
+Every phase ran the full check.sh gate (pty, foreground) green. No
+new network calls anywhere in T16: the hop's only I/O is the key
+file read inside the existing provider build path, and every T16
+decision (rules 0-3) is computed from config and the cached /models
+listing already in hand.
+
+Live smoke (Qwen3-1.7B-Q4_K_M via serve.sh, keyless, isolated XDG
+dirs, placeholder key files created by the smoke, NO live Anthropic
+call - hop sessions ended before any turn; transcripts verbatim):
+
+(a) init anthropic template, piped answers "2\n\n\n": the startup
+profile question listed the four profiles and defaulted to sonnet;
+the written config parses and resolves (doctor: "PASS: config
+parsed", "active selection: profile \"sonnet\", provider
+\"anthropic\", model \"claude-sonnet-5\""); the only finding was the
+by-design empty-key-file FAIL ("paste your key in with your
+editor").
+
+(b) exact hop, then /status, no turn run:
+
+    temur 0.5.0 (model=/model.gguf, thinking=false)
+    >   [!] "claude-opus-5" is an anthropic model - switched to profile "opus" (anthropic, claude-opus-5)
+    >   [!] profile: opus
+      [!] provider: anthropic · model: claude-opus-5
+
+(c) advisory then inexact hop with --save, one session:
+
+    >   1 model id(s) from the provider:
+        /model.gguf
+    >   [!] switched model to bogus-id (openai-compat · profile settings kept)
+      [!] note: "bogus-id" is not in the last /models listing; the switch stands — a wrong id surfaces as the provider's error on the next turn
+    >   [!] "claude-opus-4-8" looks anthropic - hopped to profile "fable" (its key file and limits apply), model claude-opus-4-8
+      [!] saved model claude-opus-4-8 to profile "fable" in /tmp/t16-demo/config/temur/config.json
+
+    Config diff: semantically exactly one key changed
+    (profiles.fable.model: claude-fable-5 -> claude-opus-4-8;
+    asserted by JSON comparison). Restart proof: the next start's
+    /model listing shows "fable — anthropic · claude-opus-4-8" with
+    "local — openai-compat · /model.gguf (active)" and the two new
+    hint lines after the profiles.
+
+(d) init local picker regression: server UP listed "/model.gguf" and
+a number selected it (config written with max_tokens 4096); dead
+port fell back with the note + baked shortlist and the free-text
+default survived.
+
+Residuals, honest: (1) persist_model re-serializes the whole config
+pretty (T15 behavior, unchanged in T16) - a hand-formatted init
+render is reformatted on the first --save, so the plan's "one-line
+config diff" holds semantically (one key) but not byte-wise; the
+smoke asserts the semantic form. (2) The /model hint lines append
+only to a non-empty profile listing; the empty-profiles branch keeps
+its existing three guidance lines (the raw-id hint would duplicate
+them). (3) The hop's inexact case builds the provider twice
+(activation, then override) - both reads of the same key file, no
+network; a mid-hop override failure leaves the activated profile
+live and says so in two notices (unit-tested). (4) The README
+anthropic recipe shows a representative /home/you key path; the
+wizard writes the user's real expanded path, so that recipe is
+illustrative, not byte-identical to a render (the local recipe
+remains the byte-pinned one).

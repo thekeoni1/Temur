@@ -117,7 +117,10 @@ the models it actually serves so you pick by number instead of typing an
 id blind; with no server reachable it falls back to the free-text
 question plus a short baked list of known-good small models
 ([docs/OFFLINE.md](docs/OFFLINE.md), section "Recommended small models",
-stays the full table). For keyed templates it asks for a key file
+stays the full table). The Anthropic template writes a four-profile
+set (fable, haiku, opus, sonnet over the current model tiers) sharing
+one key file, and asks which profile to start on (number or name,
+default sonnet). For keyed templates it asks for a key file
 path (default `~/.secrets/temur-<provider>-key`), creates that file
 EMPTY with mode 600, and tells you to paste the key in with your editor:
 temur never accepts, reads back, echoes, or stores key material, in any
@@ -172,6 +175,27 @@ models, and the compact prompt profile: [docs/OFFLINE.md](docs/OFFLINE.md).
 From a checkout, `scripts/serve.sh start|stop|status` runs the containerized
 llama.cpp server detached in the same terminal (details in OFFLINE.md).
 
+The Anthropic template writes a curated profile set over the current
+model tiers, every profile reading the same key file, and asks which
+profile to start on (default `sonnet`, keeping `claude-sonnet-5` as the
+effective default model):
+
+```json
+{
+  "profiles": {
+    "fable":  { "provider": "anthropic", "model": "claude-fable-5",
+                "api_key_file": "/home/you/.secrets/temur-anthropic-key" },
+    "haiku":  { "provider": "anthropic", "model": "claude-haiku-4-5",
+                "api_key_file": "/home/you/.secrets/temur-anthropic-key" },
+    "opus":   { "provider": "anthropic", "model": "claude-opus-5",
+                "api_key_file": "/home/you/.secrets/temur-anthropic-key" },
+    "sonnet": { "provider": "anthropic", "model": "claude-sonnet-5",
+                "api_key_file": "/home/you/.secrets/temur-anthropic-key" }
+  },
+  "profile": "sonnet"
+}
+```
+
 The default provider is `anthropic` (model `claude-sonnet-5`); any API key
 is read from a file path at startup, never from env or argv.
 
@@ -223,15 +247,27 @@ message starting with `/` cannot be sent):
 - `/help` - list commands
 - `/status` - profile, provider, model, thinking, prompt profile,
   context use, session file
-- `/model` - list profiles · `/model <name>` - switch profiles
+- `/model` - list profiles, then two hint lines saying what a
+  non-profile argument does · `/model <name>` - switch profiles
   mid-session · `/model <model-id>` - switch the model WITHIN the
   active provider (profile names win on collision; endpoint,
   credentials, limits, and prompt profile stay; a bad id surfaces as
-  the provider's error on the next turn) · `/model <model-id> --save` -
-  the same switch, persisted to config.json on success (a surgical
-  edit: your key order and unknown fields survive) · `/model --save` -
-  persist the currently active model; `--save` with a profile name is
-  an error (the startup profile stays the hand-edited `profile` key)
+  the provider's error on the next turn; if the id is absent from the
+  last `/models` listing an advisory notice says so, without blocking).
+  Exception - the cross-provider hop: a `claude-*` id on a
+  non-anthropic provider with an anthropic profile configured switches
+  to that profile instead (the exact-model match, else the first
+  anthropic profile by name), then applies the id on top when it is
+  not the profile's own model; the notice names the profile. An id the
+  active provider actually listed in `/models` always switches
+  literally, and with no anthropic profile a hint notice explains the
+  hop. · `/model <model-id> --save` - the same switch, persisted to
+  config.json on success (a surgical edit: your key order and unknown
+  fields survive; when a profile is active - including one a hop just
+  activated - the save site is that profile's `model` and the notice
+  names it) · `/model --save` - persist the currently active model;
+  `--save` with a profile name is an error (the startup profile stays
+  the hand-edited `profile` key)
 - `/models` - list model ids from the active provider (live GET; ids
   feed `/model` Tab completion in the TUI)
 - `/clear` - wipe the session; the empty state is persisted immediately,

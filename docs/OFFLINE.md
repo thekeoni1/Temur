@@ -101,7 +101,7 @@ A keyless temur profile only needs the `base_url` and the model name as
 ```json
 {
   "provider": "openai-compat",
-  "max_tokens": 1024,
+  "max_tokens": 4096,
   "openai_compat": {
     "base_url": "http://127.0.0.1:11434/v1",
     "model": "qwen3:1.7b",
@@ -129,7 +129,7 @@ Developer tab); the server serves whatever is loaded. A keyless profile:
 ```json
 {
   "provider": "openai-compat",
-  "max_tokens": 1024,
+  "max_tokens": 4096,
   "openai_compat": {
     "base_url": "http://127.0.0.1:1234/v1",
     "model": "loaded-model-id",
@@ -170,7 +170,7 @@ header:
 ```json
 {
   "provider": "openai-compat",
-  "max_tokens": 1024,
+  "max_tokens": 4096,
   "openai_compat": { "model": "qwen3-1.7b", "context_window": 8192 }
 }
 ```
@@ -180,7 +180,7 @@ header:
 ```json
 {
   "provider": "openai-compat",
-  "max_tokens": 1024,
+  "max_tokens": 4096,
   "openai_compat": {
     "base_url": "http://192.168.1.10:8080/v1",
     "model": "qwen3-1.7b",

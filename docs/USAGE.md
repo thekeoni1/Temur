@@ -143,6 +143,62 @@ temur 0.5.0 (model=qwen3-1.7b, thinking=false)
 with a profile name is a clean error: the startup profile is the
 `profile` key in config.json, which stays a hand edit.
 
+## Switching providers by model id (the T16 hop)
+
+Typing a `claude-*` model id while a local (or any non-anthropic)
+provider is active used to set that id on the local server and fail on
+the next turn - routinely misread as "/model seems broken". Now, when
+an anthropic profile is configured (the Anthropic init template writes
+a set of four), that input hops to it: a full profile switch, so the
+profile's key file, endpoint, and limits apply. Real transcript against
+a keyless llama.cpp server, config with a `local` profile plus the
+anthropic set:
+
+```
+temur 0.5.0 (model=/model.gguf, thinking=false)
+>   [!] "claude-opus-5" is an anthropic model - switched to profile "opus" (anthropic, claude-opus-5)
+>   [!] profile: opus
+  [!] provider: anthropic · model: claude-opus-5
+```
+
+An id no anthropic profile carries exactly still hops - to the first
+anthropic profile by name - and applies the id on top; `--save` then
+persists it to that profile's `model` and the notice names the site.
+The same session shows the `/models`-listing advisory on a typo'd raw
+id (the switch stands; a wrong id surfaces as the provider's error):
+
+```
+temur 0.5.0 (model=/model.gguf, thinking=false)
+>   1 model id(s) from the provider:
+    /model.gguf
+>   [!] switched model to bogus-id (openai-compat · profile settings kept)
+  [!] note: "bogus-id" is not in the last /models listing; the switch stands — a wrong id surfaces as the provider's error on the next turn
+>   [!] "claude-opus-4-8" looks anthropic - hopped to profile "fable" (its key file and limits apply), model claude-opus-4-8
+  [!] saved model claude-opus-4-8 to profile "fable" in /tmp/t16-demo/config/temur/config.json
+> bye
+```
+
+The restart shows the persisted model in the profile listing, with the
+new hint lines after it:
+
+```
+temur 0.5.0 (model=/model.gguf, thinking=false)
+>   [!] fable — anthropic · claude-opus-4-8
+  [!] haiku — anthropic · claude-haiku-4-5
+  [!] local — openai-compat · /model.gguf (active)
+  [!] opus — anthropic · claude-opus-5
+  [!] sonnet — anthropic · claude-sonnet-5
+  [!] /model <name> switches profiles; any other argument is a raw model id on the ACTIVE provider
+  [!] /models lists what the active provider serves; /model <id> --save persists the switch
+```
+
+Two escape hatches keep the hop out of the way when it would be wrong:
+an id the active provider itself listed in `/models` always switches
+literally (proxies legitimately serve `claude-*` ids over
+openai-compat), and with no anthropic profile configured the raw
+switch happens as before plus a hint that an anthropic profile enables
+the hop.
+
 ## One-shot scripting with -p
 
 `temur -p "<prompt>"` runs exactly one full agentic turn (tool calls
