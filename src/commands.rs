@@ -419,34 +419,9 @@ fn model_switch(ctx: &mut CommandCtx, name: String) -> Vec<AgentEvent> {
     let Some(profile) = ctx.profiles.get(&name) else {
         return raw_model_switch(ctx, name);
     };
-    // Build FIRST — this is where a key file is read, by path, right now.
-    // The session mutates only on success: a failed switch changes nothing.
-    let provider = match (ctx.build_provider)(profile) {
-        Ok(p) => p,
-        Err(e) => {
-            return vec![notice(format!(
-                "switch to {name:?} failed: {e} — session unchanged"
-            ))]
-        }
-    };
-    ctx.session.switch_provider(
-        provider,
-        profile.model.clone(),
-        profile.max_tokens,
-        profile.context_window,
-    );
-    // Prompt-profile swap (T9), only when the target differs. After the
-    // build succeeded, so the switch stays atomic: rebuild_system and
-    // set_prompt are both infallible.
-    if profile.prompt_profile != *ctx.prompt_profile {
-        let system = (ctx.rebuild_system)(profile.prompt_profile);
-        ctx.session.set_prompt(system, profile.prompt_profile);
-        *ctx.prompt_profile = profile.prompt_profile;
+    if let Err(failure) = activate_profile(ctx, &name) {
+        return vec![failure];
     }
-    *ctx.active_profile = Some(name.clone());
-    *ctx.provider_name = profile.provider.clone();
-    *ctx.model = profile.model.clone();
-    *ctx.active_resolved = profile.clone();
     vec![
         AgentEvent::ModelSwitched {
             model: profile.model.clone(),
@@ -459,52 +434,183 @@ fn model_switch(ctx: &mut CommandCtx, name: String) -> Vec<AgentEvent> {
     ]
 }
 
-/// `/model <raw-id>` (T9): the active resolved selection with ONLY the model
-/// replaced — same provider, endpoint, credential path, and limits, so the
-/// active profile NAME stays (its max_tokens/context/prompt settings remain
-/// genuinely in effect; `/status` reports profile and model separately).
-/// Raw ids are not validated offline: a bad id surfaces as the provider's
-/// own clean error on the next turn. Does NOT touch the prompt profile.
-/// Same build-first atomicity as the profile path; the replay guard already
-/// fired in [`model_switch`].
-fn raw_model_switch(ctx: &mut CommandCtx, id: String) -> Vec<AgentEvent> {
-    let mut target = ctx.active_resolved.clone();
-    target.model = id.clone();
-    let provider = match (ctx.build_provider)(&target) {
-        Ok(p) => p,
-        Err(e) => {
-            return vec![notice(format!(
-                "switch to model {id:?} failed: {e} — session unchanged"
-            ))]
-        }
-    };
+/// The FULL profile activation shared by `/model <name>` and the T16 hop.
+/// Build FIRST — this is where a key file is read, by path, right now; the
+/// session mutates only on success (a failed switch changes nothing, and
+/// the failure notice is the returned `Err`). Then the prompt-profile swap
+/// when the target differs (after the build, so the switch stays atomic:
+/// rebuild_system and set_prompt are both infallible), then the
+/// bookkeeping. The caller emits the chrome event and confirmation.
+fn activate_profile(ctx: &mut CommandCtx, name: &str) -> Result<(), AgentEvent> {
+    let profile = ctx.profiles.get(name).expect("caller resolved the name");
+    let provider = (ctx.build_provider)(profile).map_err(|e| {
+        notice(format!("switch to {name:?} failed: {e} — session unchanged"))
+    })?;
     ctx.session.switch_provider(
         provider,
-        target.model.clone(),
-        target.max_tokens,
-        target.context_window,
+        profile.model.clone(),
+        profile.max_tokens,
+        profile.context_window,
     );
-    *ctx.model = id.clone();
-    *ctx.active_resolved = target;
-    let mut out = vec![
+    if profile.prompt_profile != *ctx.prompt_profile {
+        let system = (ctx.rebuild_system)(profile.prompt_profile);
+        ctx.session.set_prompt(system, profile.prompt_profile);
+        *ctx.prompt_profile = profile.prompt_profile;
+    }
+    *ctx.active_profile = Some(name.to_string());
+    *ctx.provider_name = profile.provider.clone();
+    *ctx.model = profile.model.clone();
+    *ctx.active_resolved = profile.clone();
+    Ok(())
+}
+
+/// `/model <raw-id>` (T9, T16). Decision order, first match wins:
+///
+/// 0. The ACTIVE provider's cached `/models` listing contains the id:
+///    plain raw switch, no warning. The literal escape hatch — proxies
+///    legitimately serve claude-* ids over openai-compat, and a user who
+///    runs `/models` first always gets literal behavior.
+/// 1. The id starts with "claude-", the active provider is not
+///    "anthropic", and an anthropic profile is configured: HOP — full
+///    profile activation of the anthropic profile whose model equals the
+///    id exactly, else the first anthropic profile in name order; then,
+///    when the id is not the profile's own model, the raw override on top.
+/// 2. Same claude- signal but NO anthropic profile exists: today's plain
+///    raw switch, plus a hint that an anthropic profile enables the hop.
+/// 3. Anything else: plain raw switch, plus the T16 advisory when a cached
+///    listing exists and the id is absent from it.
+///
+/// The plain raw switch is the active resolved selection with ONLY the
+/// model replaced — same provider, endpoint, credential path, and limits,
+/// so the active profile NAME stays. Raw ids are never validated online
+/// here: a bad id surfaces as the provider's own clean error on the next
+/// turn. Nothing in this function makes a network request; the only I/O is
+/// the key file read inside the build path. The replay guard already fired
+/// in [`model_switch`].
+fn raw_model_switch(ctx: &mut CommandCtx, id: String) -> Vec<AgentEvent> {
+    let listed = ctx.cached_model_ids.iter().any(|m| m == &id);
+    if !listed && id.starts_with("claude-") && ctx.active_resolved.provider != "anthropic" {
+        // Exact-model match first, else first anthropic profile; BTreeMap
+        // iteration is name order, which is the tiebreak by design.
+        let target = ctx
+            .profiles
+            .iter()
+            .find(|(_, p)| p.provider == "anthropic" && p.model == id)
+            .or_else(|| ctx.profiles.iter().find(|(_, p)| p.provider == "anthropic"))
+            .map(|(n, _)| n.clone());
+        match target {
+            Some(name) => return hop_switch(ctx, id, name),
+            None => {
+                // Rule 2: the raw switch on the active provider, then the
+                // hint (only when the switch actually happened).
+                let from = ctx.active_resolved.provider.clone();
+                let mut out = plain_raw_switch(ctx, &id);
+                if *ctx.model == id {
+                    out.push(notice(format!(
+                        "note: {id:?} looks anthropic and was set on the ACTIVE provider ({from}); an anthropic profile in config.json enables the hop (temur init writes one)"
+                    )));
+                }
+                return out;
+            }
+        }
+    }
+    // Rules 0 and 3.
+    let mut out = plain_raw_switch(ctx, &id);
+    // T16 advisory: the last `/models` listing is the only offline signal a
+    // raw id has. Absence never blocks — servers alias ids and the listing
+    // may be stale — the switch stands and the notice says exactly that.
+    if *ctx.model == id && !listed && !ctx.cached_model_ids.is_empty() {
+        out.push(notice(format!(
+            "note: {id:?} is not in the last /models listing; the switch stands — a wrong id surfaces as the provider's error on the next turn"
+        )));
+    }
+    out
+}
+
+/// The T16 cross-provider hop: full activation of `name` (an anthropic
+/// profile), then the raw override when the id is not the profile's own
+/// model. The notice names the mechanism and the profile so the switch is
+/// never misread as "the active provider knows this model".
+fn hop_switch(ctx: &mut CommandCtx, id: String, name: String) -> Vec<AgentEvent> {
+    let hop_model = ctx.profiles[&name].model.clone();
+    let hop_provider = ctx.profiles[&name].provider.clone();
+    if let Err(failure) = activate_profile(ctx, &name) {
+        return vec![failure];
+    }
+    if id == hop_model {
+        return vec![
+            AgentEvent::ModelSwitched {
+                model: id.clone(),
+                provider: hop_provider,
+            },
+            notice(format!(
+                "{id:?} is an anthropic model - switched to profile {name:?} (anthropic, {id})"
+            )),
+        ];
+    }
+    match raw_override(ctx, &id) {
+        Ok(()) => vec![
+            AgentEvent::ModelSwitched {
+                model: id.clone(),
+                provider: hop_provider,
+            },
+            notice(format!(
+                "{id:?} looks anthropic - hopped to profile {name:?} (its key file and limits apply), model {id}"
+            )),
+        ],
+        // The activation already happened and stands; the override failure
+        // is reported on top so the partial state is never silent.
+        Err(failure) => vec![
+            AgentEvent::ModelSwitched {
+                model: hop_model.clone(),
+                provider: hop_provider,
+            },
+            notice(format!(
+                "hopped to profile {name:?}, but the model override to {id:?} failed — the profile's own model {hop_model} is active"
+            )),
+            failure,
+        ],
+    }
+}
+
+/// Today's raw switch behavior: [`raw_override`] plus the chrome event and
+/// confirmation notice on success, or the failure notice alone.
+fn plain_raw_switch(ctx: &mut CommandCtx, id: &str) -> Vec<AgentEvent> {
+    if let Err(failure) = raw_override(ctx, id) {
+        return vec![failure];
+    }
+    vec![
         AgentEvent::ModelSwitched {
-            model: id.clone(),
+            model: id.to_string(),
             provider: ctx.active_resolved.provider.clone(),
         },
         notice(format!(
             "switched model to {id} ({} · profile settings kept)",
             ctx.active_resolved.provider
         )),
-    ];
-    // T16 advisory: the last `/models` listing is the only offline signal a
-    // raw id has. Absence never blocks — servers alias ids and the listing
-    // may be stale — the switch stands and the notice says exactly that.
-    if !ctx.cached_model_ids.is_empty() && !ctx.cached_model_ids.iter().any(|m| m == &id) {
-        out.push(notice(format!(
-            "note: {id:?} is not in the last /models listing; the switch stands — a wrong id surfaces as the provider's error on the next turn"
-        )));
-    }
-    out
+    ]
+}
+
+/// The raw-id core: the active resolved selection with only the model
+/// replaced, build-first atomic. Keeps the active profile name and never
+/// touches the prompt profile.
+fn raw_override(ctx: &mut CommandCtx, id: &str) -> Result<(), AgentEvent> {
+    let mut target = ctx.active_resolved.clone();
+    target.model = id.to_string();
+    let provider = (ctx.build_provider)(&target).map_err(|e| {
+        notice(format!(
+            "switch to model {id:?} failed: {e} — session unchanged"
+        ))
+    })?;
+    ctx.session.switch_provider(
+        provider,
+        target.model.clone(),
+        target.max_tokens,
+        target.context_window,
+    );
+    *ctx.model = id.to_string();
+    *ctx.active_resolved = target;
+    Ok(())
 }
 
 /// `/model --save` (T15): persist the CURRENTLY active model into the
@@ -531,10 +637,14 @@ fn model_switch_save(ctx: &mut CommandCtx, id: String) -> Vec<AgentEvent> {
             "--save persists a raw model id, and {id:?} is a profile — the startup profile is the \"profile\" key in config.json, edited by hand"
         ))];
     }
-    let mut out = raw_model_switch(ctx, id);
-    if out
-        .iter()
-        .any(|e| matches!(e, AgentEvent::ModelSwitched { .. }))
+    let mut out = raw_model_switch(ctx, id.clone());
+    // Persist only when the REQUESTED id is what ended up active: a failed
+    // switch, and the hop's partial state (activation ok, override failed),
+    // must never reach the config file.
+    if *ctx.model == id
+        && out
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ModelSwitched { .. }))
     {
         out.push(persist_notice(ctx));
     }
@@ -543,7 +653,9 @@ fn model_switch_save(ctx: &mut CommandCtx, id: String) -> Vec<AgentEvent> {
 
 /// The persistence step both `--save` forms share. Failure is a notice,
 /// never fatal: an already-performed switch stands, and the notice says
-/// so explicitly.
+/// so explicitly. When a profile is active — including the one a T16 hop
+/// just activated — the notice names it, because that is the site
+/// persist_model writes (profiles.<name>.model).
 fn persist_notice(ctx: &CommandCtx) -> AgentEvent {
     match crate::config::persist_model(
         ctx.config_path,
@@ -551,11 +663,18 @@ fn persist_notice(ctx: &CommandCtx) -> AgentEvent {
         ctx.provider_name,
         ctx.model,
     ) {
-        Ok(()) => notice(format!(
-            "saved model {} to {}",
-            ctx.model,
-            ctx.config_path.display()
-        )),
+        Ok(()) => notice(match ctx.active_profile.as_deref() {
+            Some(site) => format!(
+                "saved model {} to profile {site:?} in {}",
+                ctx.model,
+                ctx.config_path.display()
+            ),
+            None => format!(
+                "saved model {} to {}",
+                ctx.model,
+                ctx.config_path.display()
+            ),
+        }),
         Err(e) => notice(format!(
             "model {} is active for this session but was NOT saved: {e}",
             ctx.model

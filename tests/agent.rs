@@ -2563,6 +2563,223 @@ fn raw_switch_stays_silent_when_the_id_is_listed_or_no_listing_exists() {
     assert_eq!(h.model, "bogus-id", "the switch still happened");
 }
 
+// ------------------------------------------- T16: cross-provider hop
+
+/// A harness sitting on the openai-compat profile "b", with two anthropic
+/// profiles alongside ("a": model-a, "opus": claude-opus-5) — the crafted
+/// map every hop rule is exercised over. Name order: a < b < opus.
+fn hop_harness() -> CmdHarness {
+    let mut h = CmdHarness::new();
+    h.profiles.insert(
+        "opus".to_string(),
+        ResolvedProfile {
+            provider: "anthropic".into(),
+            model: "claude-opus-5".into(),
+            base_url: "https://a.test".into(),
+            api_key_file: None,
+            max_tokens: 333,
+            context_window: None,
+            prompt_profile: PromptProfile::Compact,
+        },
+    );
+    h.active = Some("b".into());
+    h.provider_name = "openai-compat".into();
+    h.model = "model-b".into();
+    h.active_resolved = h.profiles["b"].clone();
+    h
+}
+
+#[test]
+fn hop_rule0_cached_listing_wins_no_hop_no_warning() {
+    // A proxy legitimately serving claude-* ids over openai-compat: the id
+    // is in the cached listing, so the switch is literal and silent.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = hop_harness();
+    h.cached_model_ids = vec!["claude-opus-5".into()];
+    let events = commands::run(
+        commands::parse("/model claude-opus-5"),
+        &mut h.ctx(&mut session, &build_ok),
+    );
+    assert_eq!(h.active.as_deref(), Some("b"), "no hop: profile b kept");
+    assert_eq!(h.provider_name, "openai-compat");
+    assert_eq!(h.model, "claude-opus-5");
+    let ns = notices(&events);
+    assert_eq!(
+        ns,
+        vec!["switched model to claude-opus-5 (openai-compat · profile settings kept)"],
+        "no hop notice, no advisory: {ns:?}"
+    );
+}
+
+#[test]
+fn hop_rule1_exact_model_match_activates_that_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = hop_harness();
+    let events = commands::run(
+        commands::parse("/model claude-opus-5"),
+        &mut h.ctx(&mut session, &build_ok),
+    );
+    // FULL activation of "opus": profile name, provider, limits, prompt
+    // profile all switch — not just the model string.
+    assert_eq!(h.active.as_deref(), Some("opus"));
+    assert_eq!(h.provider_name, "anthropic");
+    assert_eq!(h.model, "claude-opus-5");
+    assert_eq!(h.active_resolved, h.profiles["opus"]);
+    assert_eq!(h.prompt_profile, PromptProfile::Compact, "prompt swap ran");
+    assert_eq!(session.max_tokens(), 333);
+    assert!(events.contains(&AgentEvent::ModelSwitched {
+        model: "claude-opus-5".into(),
+        provider: "anthropic".into(),
+    }));
+    assert_eq!(
+        notices(&events),
+        vec!["\"claude-opus-5\" is an anthropic model - switched to profile \"opus\" (anthropic, claude-opus-5)"],
+    );
+}
+
+#[test]
+fn hop_rule1_inexact_takes_first_anthropic_profile_then_overrides() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = hop_harness();
+    let events = commands::run(
+        commands::parse("/model claude-opus-4-8"),
+        &mut h.ctx(&mut session, &build_ok),
+    );
+    // No profile's model matches: first anthropic profile in NAME order is
+    // "a" (a < opus), activated in full, then the raw override on top.
+    assert_eq!(h.active.as_deref(), Some("a"));
+    assert_eq!(h.provider_name, "anthropic");
+    assert_eq!(h.model, "claude-opus-4-8");
+    assert_eq!(h.active_resolved.max_tokens, h.profiles["a"].max_tokens);
+    assert_eq!(h.active_resolved.model, "claude-opus-4-8");
+    assert!(events.contains(&AgentEvent::ModelSwitched {
+        model: "claude-opus-4-8".into(),
+        provider: "anthropic".into(),
+    }));
+    assert_eq!(
+        notices(&events),
+        vec!["\"claude-opus-4-8\" looks anthropic - hopped to profile \"a\" (its key file and limits apply), model claude-opus-4-8"],
+    );
+}
+
+#[test]
+fn hop_rule1_exact_beats_name_order() {
+    // "opus" matches exactly and must win although "a" precedes it.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = hop_harness();
+    commands::run(
+        commands::parse("/model claude-opus-5"),
+        &mut h.ctx(&mut session, &build_ok),
+    );
+    assert_eq!(h.active.as_deref(), Some("opus"), "exact match wins over name order");
+}
+
+#[test]
+fn hop_rule2_no_anthropic_profile_switches_locally_with_a_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = hop_harness();
+    h.profiles.retain(|_, p| p.provider != "anthropic");
+    let events = commands::run(
+        commands::parse("/model claude-opus-5"),
+        &mut h.ctx(&mut session, &build_ok),
+    );
+    // Today's behavior: the raw switch on the ACTIVE provider stands…
+    assert_eq!(h.active.as_deref(), Some("b"));
+    assert_eq!(h.provider_name, "openai-compat");
+    assert_eq!(h.model, "claude-opus-5");
+    // …plus the hint naming the enabling config.
+    let ns = notices(&events);
+    assert_eq!(ns[0], "switched model to claude-opus-5 (openai-compat · profile settings kept)");
+    assert_eq!(
+        ns[1],
+        "note: \"claude-opus-5\" looks anthropic and was set on the ACTIVE provider (openai-compat); an anthropic profile in config.json enables the hop (temur init writes one)",
+    );
+}
+
+#[test]
+fn hop_rule3_non_claude_id_and_anthropic_active_stay_plain() {
+    // A non-claude id on openai-compat: plain switch (advisory covered by
+    // its own tests).
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = hop_harness();
+    let events = commands::run(
+        commands::parse("/model qwen3-4b"),
+        &mut h.ctx(&mut session, &build_ok),
+    );
+    assert_eq!(h.active.as_deref(), Some("b"));
+    assert_eq!(h.model, "qwen3-4b");
+    assert!(!notices(&events).iter().any(|n| n.contains("anthropic")), "{events:?}");
+    // A claude id while the ACTIVE provider IS anthropic: no hop either.
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new(); // base config: anthropic
+    let events = commands::run(
+        commands::parse("/model claude-opus-4-8"),
+        &mut h.ctx(&mut session, &build_ok),
+    );
+    assert_eq!(h.active, None, "no profile activated");
+    assert_eq!(h.model, "claude-opus-4-8");
+    assert_eq!(
+        notices(&events),
+        vec!["switched model to claude-opus-4-8 (anthropic · profile settings kept)"],
+    );
+}
+
+#[test]
+fn hop_failed_activation_is_atomic() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = hop_harness();
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        Err(temur::error::Error::Secret("cannot read key".into()))
+    };
+    let events = commands::run(
+        commands::parse("/model claude-opus-5"),
+        &mut h.ctx(&mut session, &build),
+    );
+    assert!(!events.iter().any(|e| matches!(e, AgentEvent::ModelSwitched { .. })));
+    assert!(
+        notices(&events).iter().any(|n| n.contains("failed") && n.contains("session unchanged")),
+        "{events:?}"
+    );
+    assert_eq!(h.active.as_deref(), Some("b"), "hop failure changes nothing");
+    assert_eq!(h.provider_name, "openai-compat");
+    assert_eq!(h.model, "model-b");
+}
+
+#[test]
+fn hop_then_save_persists_to_the_hop_profiles_site() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = hop_harness();
+    harness_with_config(
+        &mut h,
+        dir.path(),
+        r#"{"profiles":{"a":{"provider":"anthropic","model":"model-a"},"b":{"provider":"openai-compat","model":"model-b"},"opus":{"provider":"anthropic","model":"claude-opus-5"}},"profile":"b"}"#,
+    );
+    let events = commands::run(
+        commands::parse("/model claude-opus-4-8 --save"),
+        &mut h.ctx(&mut session, &build_ok),
+    );
+    // Hop to "a" (first anthropic profile), override, THEN persist — the
+    // save site is the hop profile, and the notice names it.
+    assert_eq!(h.active.as_deref(), Some("a"));
+    assert!(
+        notices(&events).iter().any(|n| n.starts_with("saved model claude-opus-4-8 to profile \"a\" in ")),
+        "{events:?}"
+    );
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&h.config_path).unwrap()).unwrap();
+    assert_eq!(saved["profiles"]["a"]["model"], "claude-opus-4-8");
+    assert_eq!(saved["profiles"]["b"]["model"], "model-b", "other profiles untouched");
+    assert_eq!(saved["profile"], "b", "startup profile stays a hand edit");
+}
+
 // --------------------------------------------- T10: /sessions /resume /new
 
 use temur::session_store::ReplayItem;
