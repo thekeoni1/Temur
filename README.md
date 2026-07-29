@@ -221,6 +221,29 @@ Two more optional keys: `sessions_dir` overrides where saved sessions live
 (default: the state dir, see below), and `session_max_bytes` caps the saved
 session file's size (default 4 MiB, minimum 64 KiB).
 
+### Adding a provider
+
+`temur init --add <local|anthropic|openai|gemini|xai>` merges a
+template into your EXISTING config as named profiles, leaving every
+other setting, the startup `profile` key included, untouched:
+`anthropic` adds the four-profile set above sharing one key file;
+`openai`, `gemini`, and `xai` each add one profile named after the
+template; `local` adds a keyless `local` profile through the same
+base-URL question and model picker as the fresh wizard. A name
+collision with any existing profile aborts the whole merge with the
+file untouched. Afterwards `/model <name>` switches to the new
+profile; set `"profile": "<name>"` in config.json to make it the
+startup default.
+
+For keyed templates the wizard (fresh or `--add`) creates the key
+file empty (mode 600), then offers a hidden paste prompt: input is
+never echoed, Enter skips, and a pasted key is written only to the
+key file. A non-empty existing key file is never prompted for or
+touched. As a rotation reminder, `temur doctor` WARNs when a key
+file has not changed in `key_rotate_warn_days` days (optional config
+field; default 90, `0` disables); re-running `temur init --add`
+re-prompts after you rotate the key at the provider.
+
 ### Named profiles and in-session switching
 
 Define named profiles (nicknames bundling provider + model + endpoint +

@@ -4,6 +4,40 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+T17 provider onboarding:
+
+- `temur init --add <template>` merges a template into an EXISTING
+  config as named profiles instead of overwriting it: `anthropic` adds
+  the curated four-profile set (fable/haiku/opus/sonnet) sharing one
+  key file, `openai`/`gemini`/`xai` add one profile named after the
+  template, `local` adds a keyless `local` profile reusing the
+  base-URL question and model picker. Surgical config edit: key order
+  and unknown fields survive, the startup `profile` key is never
+  touched, and ANY profile-name collision aborts the whole merge with
+  the file untouched (every collision named). The cross-provider hop
+  hint now names the command (`temur init --add anthropic sets one
+  up`).
+- New `xai` starter template: xAI Grok API over its OpenAI-compatible
+  endpoint (`https://api.x.ai/v1`, default model `grok-4`), in both
+  the fresh wizard and `--add`. Spec-written; live verification stays
+  parked with T13 until keys exist.
+- The init wizard (fresh and `--add`) can now take the API key at a
+  hidden prompt right after creating, or finding, an EMPTY key file:
+  input is never echoed (termios echo off behind an RAII restore,
+  SIGINT held off for the read), Enter or EOF skips, and a pasted key
+  lands only in the key file (mode 600) with a best-effort wipe of the
+  in-memory buffer. This is a deliberate NARROW amendment of the T14
+  "init never accepts key material" rule, recorded in the RUNBOOK T17
+  amendment record; a non-empty key file is never touched, no other
+  surface accepts key material, and there is no --key flag, env, or
+  argv path.
+- `temur doctor` adds a key-rotation reminder: a present, non-empty
+  key file whose mtime is at least `key_rotate_warn_days` days old
+  (new optional config field; default 90, 0 disables) gets a WARN
+  suggesting a rotation and naming `temur init --add` as the
+  re-prompt path. Metadata only, advisory only, never affects the
+  exit code.
+
 ## v0.6.0 - 2026-07-28
 
 T16 model-access footgun fixes:

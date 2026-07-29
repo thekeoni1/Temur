@@ -652,7 +652,7 @@ pub fn run(
 /// alone (surgical `serde_json::Value` edit, same preserve_order +
 /// temp-then-rename mechanics as [`crate::config::persist_model`]).
 /// Fail-closed: if ANY profile name to be added already exists, the whole
-/// merge aborts with the file untouched — never a silent overwrite of a
+/// merge aborts with the file untouched, never a silent overwrite of a
 /// profile the user wrote by hand.
 pub fn run_add(
     cfg_path: &Path,

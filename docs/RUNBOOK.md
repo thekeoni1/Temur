@@ -1649,3 +1649,70 @@ path may copy; the volatile wipe zeroes the one buffer the wizard
 owns. The by-path rule for every OTHER surface is unchanged: outside
 this prompt, temur still never accepts, reads back, echoes, or
 stores key material.
+
+## T17 acceptance - recorded result (no release)
+
+2026-07-29, five commits on main over the v0.6.0 head (3ef7b49):
+P1 045bf6c (init --add merges as profiles, fail-closed collisions,
+hop hint renamed), P2 0160971 (xai template + README recipe), P3
+3e3e367 (hidden key entry, the T14 amendment; record above), P4
+6312089 (doctor rotation WARN, key_rotate_warn_days), P5 (docs +
+this record). Every phase ran the full check.sh gate (pty,
+foreground) green. Version stays 0.6.0; T17 rides CHANGELOG
+Unreleased. The amendment record ("T17 - init hidden key entry")
+was committed with P3 and is part of this acceptance.
+
+Live smoke (Qwen3-1.7B-Q4_K_M via serve.sh, keyless, isolated XDG
+dirs under the session scratchpad, placeholder keys created by the
+smoke only, NO live provider call - the hop session ended before any
+turn):
+
+(a) fresh init local (picker listed the served /model.gguf; number
+selected it), then init --add anthropic piped "\n\n": the config
+diff shows ONLY a "profiles" key appended with the four T16 profiles
+in name order sharing the one key file; the base openai_compat
+selection and max_tokens survive; NO startup "profile" key invented
+(asserted by JSON load); key file created empty, mode 600, in a 700
+.secrets dir. Known cosmetic residual: the fresh render's
+hand-formatted openai_compat one-liner is re-emitted as pretty JSON
+(the same whole-file pretty rewrite persist_model has done since
+T15; semantically identical, asserted by parse).
+
+(b) key entry under a REAL pty (script(1), answers fed with 1s gaps
+because TCSAFLUSH drains type-ahead): temur init --add openai, the
+placeholder "placeholder-not-a-real-key" pasted at the hidden
+prompt. Key file content equals the placeholder + newline, mode 600,
+and grep -c for the placeholder over the captured pty transcript is
+0: nothing echoed. Transcript shows the prompt line, then "key saved
+(hidden) to <path>", then the /model closing notice; no editor
+instruction on the saved path.
+
+(c) doctor: with the openai key file aged via touch -d "120 days
+ago", doctor --no-network prints the new line 'WARN: profile
+"openai" key file <path> unchanged for 120 days; consider rotating
+the key at the provider and pasting the new one (temur init --add
+re-prompts)' directly after that file's unchanged PASS line; all
+other PASS/WARN lines byte-identical in shape to v0.6.0; exit still
+healthy (0 fail). init --add xai merged one grok-4/api.x.ai profile
+(verified by JSON load) and doctor listed its empty key file WARN
+like any keyed profile.
+
+(d) regression: plain init for all four original templates renders
+exactly the v0.6.0 shapes (also pinned byte-exact in tests/cli.rs);
+T16 hop still green: with a placeholder anthropic key in place,
+/model claude-opus-5 on the local selection hopped to profile "opus"
+("switched to profile \"opus\" (anthropic, claude-opus-5)"), session
+ended before any turn; without an anthropic profile the raw switch
+stands and the hint now reads "(temur init --add anthropic sets one
+up)".
+
+Residuals, honest: (1) the pretty-rewrite cosmetic above. (2) The
+--add openai/gemini/xai model question is free text with no listing
+(their endpoints need keys; T13 owns hosted live verification, xai
+included). (3) EOF at the hidden prompt means skip, not an error,
+diverging from ask()'s EOF-is-a-bug rule on purpose so pre-T17
+piped answer scripts stay valid. (4) During the hidden read SIGINT
+is ignored (not handled): Ctrl+C does nothing until Enter; accepted
+as the simplest way to guarantee the terminal is never left
+non-echoing. (5) The in-memory wipe is best-effort only, per the
+amendment record.
