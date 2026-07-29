@@ -455,7 +455,7 @@ fn context_scaled_cap_keeps_true_head_and_true_tail() {
     let out = run(&reg, &mut ctx, "abc", json!({})).unwrap();
     let marker = "\n\n(output truncated: showing the first 4000 and last 4000 of 30000 chars; \
                   narrow the command, e.g. grep or head/tail, to see the elided middle)\n\n";
-    // Exact shape: true head, one marker line, true tail — nothing else.
+    // Exact shape: true head, one marker line, true tail, nothing else.
     assert_eq!(out.output, format!("{}{marker}{}", "a".repeat(4_000), "c".repeat(4_000)));
 }
 
@@ -482,7 +482,7 @@ fn context_window_clamp_floor_and_ceiling() {
     let mut ctx = ctx_in(dir.path());
     let out = run(&reg, &mut ctx, "abc", json!({})).unwrap();
     assert!(out.output.contains("showing the first 2000 and last 2000 of 30000 chars"));
-    // Ceiling: a huge window never raises the cap above 30,000 — under-cap
+    // Ceiling: a huge window never raises the cap above 30,000; under-cap
     // output passes through untouched.
     let mut reg = Registry::with_tools(vec![Box::new(AbcTool)]);
     reg.set_context_window(Some(1_000_000));

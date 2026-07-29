@@ -94,7 +94,7 @@ pub struct Config {
     pub allow_bash_without_key_sandbox: bool,
     /// T19 P3 (a recorded amendment to T4's "prose is never executed"
     /// policy): execute a tool call the model wrote as plain text when it
-    /// is UNAMBIGUOUS — exactly one candidate in a known shape, inner JSON
+    /// is UNAMBIGUOUS: exactly one candidate in a known shape, inner JSON
     /// losslessly parsed, registered tool, object arguments. Default true;
     /// false restores the pre-T19 detect+nudge behavior exactly.
     pub prose_tool_calls: bool,

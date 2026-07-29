@@ -145,8 +145,8 @@ impl Session {
         seed: Option<SessionSeed>,
     ) -> Self {
         // T19: the per-result output cap scales to the active window. Set
-        // here and in `switch_provider` — the same two moments the T18
-        // redaction key is registered — so no construction path can skip it.
+        // here and in `switch_provider`, the same two moments the T18
+        // redaction key is registered, so no construction path can skip it.
         registry.set_context_window(cfg.context_window);
         let cancel = CancelToken::new();
         let mut tool_ctx = ToolCtx::new(cfg.cwd.clone());
@@ -624,8 +624,8 @@ impl Session {
                     // like a tool call. T19 P3 amends T4's "prose is never
                     // parsed into an execution" NARROWLY (recorded in the
                     // RUNBOOK next to the T4 policy history): when the text
-                    // is an UNAMBIGUOUS call — exactly one candidate,
-                    // lossless inner JSON, registered tool, object args —
+                    // is an UNAMBIGUOUS call (exactly one candidate,
+                    // lossless inner JSON, registered tool, object args)
                     // and `prose_tool_calls` is on, it executes through
                     // Registry::execute exactly like a structured call
                     // (T18 guard, redaction, and the T19 truncation all
@@ -668,7 +668,7 @@ impl Session {
                     });
                     if let Some(call) = prose_call {
                         // No tool_use id exists, so the result goes back as
-                        // PLAIN USER TEXT — wire-legal on both providers,
+                        // PLAIN USER TEXT, wire-legal on both providers,
                         // request-body goldens untouched. No ToolEnd event:
                         // no stream ever opened a tool cell for this call
                         // (the TUI's FIFO ToolStart/ToolEnd pairing holds).

@@ -516,7 +516,7 @@ fn ambiguous_or_lossy_prose_still_nudges_never_executes() {
     drop(events);
 
     // Lossy (truncated) inner JSON: never executes. (detect_text_tool_call
-    // cannot parse truncated JSON either — same as pre-T19 — so the turn
+    // cannot parse truncated JSON either, same as pre-T19, so the turn
     // ends as a plain EndTurn, no nudge.)
     let lossy = "{\"name\": \"write\", \"arguments\": {\"filePath\": \"c.txt\", \"content\": \"cut";
     let (mut session, requests) = session_with(

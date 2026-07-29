@@ -212,7 +212,7 @@ pub struct ProseCall {
 }
 
 /// Extract the ONE executable tool call from an assistant message written
-/// as plain text, or `None` — in which case the caller falls back to the
+/// as plain text, or `None`, in which case the caller falls back to the
 /// T4 detect+nudge path. Deliberately NARROWER than
 /// [`detect_text_tool_call`]; execution demands all of:
 /// - exactly one candidate, in a known shape: a single
