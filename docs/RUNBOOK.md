@@ -1465,6 +1465,33 @@ pinned byte-identical through sorted-key serialization (goldens
 enforce), while session files and other non-gated JSON may order
 keys differently than before (cosmetic only).
 
+## v0.6.0 - close-out (release procedure delta)
+
+What ships: T15 model-selection onboarding polish (init model picker,
+`/model --save`, doctor model check, baked shortlist) and T16
+model-access footgun fixes (init anthropic profile set, /model hints +
+advisory, cross-provider hop, riders), one CHANGELOG section covering
+both - the two-milestones-together pattern from v0.5.0.
+
+Procedure deltas vs v0.5.0:
+
+- **T16 was pushed BEFORE stage 1** (34b5f27..718f43b, its on-push ci
+  run green), where prior cycles started stage 1 from an already-synced
+  main. No procedure change follows; the stage-1 baseline is simply the
+  post-push head.
+- **Stage 1 stops EARLIER than v0.5.0's: version bump + dated
+  CHANGELOG + full check.sh gate only.** The four-target release.sh
+  build, SHA256SUMS, and installer matrix move INTO stage 2 (tag,
+  build, private release, closing gate) by operator instruction; prior
+  stage 1s staged gated local artifacts. Rationale: stage 2 waits on
+  planning-session verification of the stage-1 report plus an operator
+  check of the haiku model alias baked into the init anthropic
+  template, so building artifacts before that check could waste a
+  cycle.
+- **Still no tag, no push of the release-prep commits, no release** at
+  stage 1; the visibility decision (repo stays PRIVATE) and the
+  public-flip gate remain queued behind stage 2, unchanged.
+
 ## T16 acceptance - recorded result (no release)
 
 2026-07-28, five commits on main over the T15 head (34b5f27):
