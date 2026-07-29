@@ -660,6 +660,28 @@ fn init_add_collision_and_missing_config_fail_closed() {
 }
 
 #[test]
+fn init_key_entry_piped_placeholder_lands_in_the_key_file_only() {
+    // T17 P3, piped path: the placeholder reaches the key file and nothing
+    // else; the pty-level "nothing echoed" check is the P5 live smoke.
+    let sb = sandbox();
+    sb.write_config(LOCAL_PRETTY);
+    let mut c = sb.cmd();
+    c.args(["init", "--add", "openai"]);
+    // Answers: model default, key path default, then the placeholder.
+    let (code, stdout, stderr) = run(c, "\n\nplaceholder-not-a-real-key\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    let key = sb.home.join(".secrets").join("temur-openai-key");
+    assert_eq!(
+        std::fs::read_to_string(&key).unwrap(),
+        "placeholder-not-a-real-key\n"
+    );
+    assert_eq!(mode_of(&key), 0o600);
+    assert!(stdout.contains("key saved (hidden)"), "{stdout}");
+    assert!(!stdout.contains("placeholder-not-a-real-key"), "{stdout}");
+    assert!(!stderr.contains("placeholder-not-a-real-key"), "{stderr}");
+}
+
+#[test]
 fn init_add_flag_rules() {
     // --add without init is a usage error.
     let sb = sandbox();

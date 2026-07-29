@@ -122,9 +122,12 @@ set (fable, haiku, opus, sonnet over the current model tiers) sharing
 one key file, and asks which profile to start on (number or name,
 default sonnet). For keyed templates it asks for a key file
 path (default `~/.secrets/temur-<provider>-key`), creates that file
-EMPTY with mode 600, and tells you to paste the key in with your editor:
-temur never accepts, reads back, echoes, or stores key material, in any
-direction. `temur doctor` then verifies the setup: config parse and
+EMPTY with mode 600, then offers to take the key at a hidden prompt
+(input never echoed; Enter skips) and otherwise tells you to paste it
+in with your editor. That one wizard prompt is a narrow, documented
+amendment (docs/RUNBOOK.md, T17 amendment record): outside it, temur
+never accepts key material, and it never reads back, echoes, or stores
+it, in any direction. `temur doctor` then verifies the setup: config parse and
 validation, the key file by metadata only (present, non-empty by size,
 mode 600, WARN on group/other bits), sessions dir writability, one
 TCP-connect/TLS-handshake reachability probe per endpoint, and, for

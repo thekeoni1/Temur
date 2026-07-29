@@ -2,10 +2,15 @@
 //!
 //! Line-based on purpose: answers can be piped in, so tests (and scripts)
 //! drive it exactly like a human would. Key handling follows the by-path
-//! rule absolutely: for keyed templates the wizard creates the key file
-//! EMPTY (mode 600, parent dir 700 if it has to create it) and tells the
-//! user to paste the key in with their editor. It never accepts, reads,
-//! echoes, or stores key material.
+//! rule: for keyed templates the wizard creates the key file EMPTY (mode
+//! 600, parent dir 700 if it has to create it) and tells the user to paste
+//! the key in with their editor. T17 amendment (operator-approved, narrow,
+//! the same pattern as T15's keyless-GET amendment): the init wizard, and
+//! no other surface, may additionally accept the key at a hidden prompt
+//! right after creating (or finding) an EMPTY key file, writing it straight
+//! to that file; see [`prompt_key_entry`] and the RUNBOOK amendment record.
+//! It never echoes, logs, or stores key material anywhere else, never takes
+//! it from argv or env, and never touches a non-empty key file.
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -292,13 +297,176 @@ fn ask_key_file(
     Ok(expand_tilde(&answer, home))
 }
 
-/// Key file creation plus the paste instruction, shared by the fresh wizard
-/// and `init --add`: created EMPTY with tight modes, and never touched if it
-/// already exists (it may already hold a real key, which temur must not
-/// read, truncate, or rewrite).
-fn setup_key_file(key_path: &Path, out: &mut dyn Write) -> Result<(), crate::error::Error> {
+/// Terminal seam for the hidden key prompt (T17 P3). The real
+/// implementation ([`StdinKeyTerminal`]) wraps stdin's termios; tests
+/// inject a fake to assert the guard discipline without a pty.
+pub trait KeyEntryTerminal {
+    /// True when stdin is a real TTY, i.e. echo suppression is possible
+    /// and needed.
+    fn is_tty(&self) -> bool;
+    /// Disable echo until [`KeyEntryTerminal::restore`]. Returns false when
+    /// the terminal refused; the caller then reads the line plain.
+    fn begin_hidden(&mut self) -> bool;
+    /// Undo [`KeyEntryTerminal::begin_hidden`].
+    fn restore(&mut self);
+}
+
+/// The real stdin terminal: termios ECHO off with the prior state saved,
+/// and SIGINT ignored for the same span so a Ctrl+C cannot kill the
+/// process while echo is off (init installs no signal handler, so the
+/// default action would leave the operator's terminal not echoing).
+/// Both are restored together by [`KeyEntryTerminal::restore`].
+pub struct StdinKeyTerminal {
+    saved: Option<(libc::termios, libc::sighandler_t)>,
+}
+
+impl StdinKeyTerminal {
+    pub fn new() -> Self {
+        StdinKeyTerminal { saved: None }
+    }
+}
+
+impl Default for StdinKeyTerminal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl KeyEntryTerminal for StdinKeyTerminal {
+    fn is_tty(&self) -> bool {
+        (unsafe { libc::isatty(libc::STDIN_FILENO) }) == 1
+    }
+
+    fn begin_hidden(&mut self) -> bool {
+        unsafe {
+            let mut t: libc::termios = std::mem::zeroed();
+            if libc::tcgetattr(libc::STDIN_FILENO, &mut t) != 0 {
+                return false;
+            }
+            let saved_termios = t;
+            t.c_lflag &= !libc::ECHO;
+            // TCSAFLUSH also drains type-ahead, the usual password-prompt
+            // hygiene.
+            if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, &t) != 0 {
+                return false;
+            }
+            let old_sigint = libc::signal(libc::SIGINT, libc::SIG_IGN);
+            self.saved = Some((saved_termios, old_sigint));
+            true
+        }
+    }
+
+    fn restore(&mut self) {
+        if let Some((t, old_sigint)) = self.saved.take() {
+            unsafe {
+                let _ = libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, &t);
+                libc::signal(libc::SIGINT, old_sigint);
+            }
+        }
+    }
+}
+
+/// RAII over [`KeyEntryTerminal::restore`]: the terminal comes back on
+/// EVERY exit from the hidden read, error paths included.
+struct HiddenEntryGuard<'a> {
+    term: &'a mut dyn KeyEntryTerminal,
+    active: bool,
+}
+
+impl Drop for HiddenEntryGuard<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            self.term.restore();
+        }
+    }
+}
+
+/// Best-effort zero of a secret-bearing buffer. Volatile so the zeroing is
+/// not optimized away as a dead store. Best-effort ONLY: read_line and the
+/// file-write path may hold copies safe Rust cannot reach (the RUNBOOK
+/// amendment record says so out loud).
+fn wipe(s: &mut String) {
+    for b in unsafe { s.as_mut_str().as_bytes_mut() } {
+        unsafe { std::ptr::write_volatile(b, 0) };
+    }
+    s.clear();
+}
+
+/// The hidden key prompt (T17 P3): the one place in the whole product that
+/// accepts key material, a deliberate NARROW amendment of the T14 rule
+/// "init never accepts key material" (contract in the RUNBOOK amendment
+/// record). Only ever called for a key file known to be empty. Returns
+/// whether a key was saved. Empty answer or EOF = skip; the answer is
+/// never echoed, logged, or included in any notice.
+fn prompt_key_entry(
+    key_path: &Path,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    term: &mut dyn KeyEntryTerminal,
+) -> Result<bool, crate::error::Error> {
+    write!(out, "Paste your API key (input hidden; Enter to skip and add it later): ")?;
+    out.flush()?;
+    let mut line = String::new();
+    let hidden = term.is_tty() && term.begin_hidden();
+    let read = {
+        let _guard = HiddenEntryGuard { term, active: hidden };
+        input.read_line(&mut line)
+        // _guard drops HERE: echo and SIGINT restored before anything
+        // else happens, the error path included.
+    };
+    if hidden {
+        // The newline the disabled echo swallowed.
+        writeln!(out)?;
+    }
+    let n = match read {
+        Ok(n) => n,
+        Err(e) => {
+            wipe(&mut line);
+            return Err(e.into());
+        }
+    };
+    let key = line.trim();
+    // EOF and an empty answer both mean skip: the prompt is optional by
+    // contract, so piped wizards whose answers end here are fine.
+    if n == 0 || key.is_empty() {
+        wipe(&mut line);
+        return Ok(false);
+    }
+    let written = (|| -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(key_path)?;
+        f.write_all(key.as_bytes())?;
+        // Trailing newline, exactly as an editor paste would leave it
+        // (secret::load_api_key_from trims).
+        f.write_all(b"\n")?;
+        f.flush()?;
+        std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))
+    })();
+    wipe(&mut line);
+    written?;
+    writeln!(out, "key saved (hidden) to {}", key_path.display())?;
+    Ok(true)
+}
+
+/// Key file creation plus key entry, shared by the fresh wizard and
+/// `init --add`: created EMPTY with tight modes, and never touched if it
+/// already exists non-empty (it may hold a real key, which temur must not
+/// read, truncate, or rewrite). An empty key file, fresh or found, gets
+/// the hidden prompt (T17); skipping it keeps the T14 editor instruction.
+fn setup_key_file(
+    key_path: &Path,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    term: &mut dyn KeyEntryTerminal,
+) -> Result<(), crate::error::Error> {
+    let offer_entry;
     if key_path.exists() {
         writeln!(out, "Key file {} already exists; left untouched.", key_path.display())?;
+        offer_entry = std::fs::metadata(key_path)?.len() == 0;
     } else {
         use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
         if let Some(dir) = key_path.parent() {
@@ -318,13 +486,17 @@ fn setup_key_file(key_path: &Path, out: &mut dyn Write) -> Result<(), crate::err
             .open(key_path)?;
         std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))?;
         writeln!(out, "Created empty key file {} (mode 600).", key_path.display())?;
+        offer_entry = true;
     }
-    writeln!(out)?;
-    writeln!(
-        out,
-        "Paste your key into {} with your editor. temur reads it only by\npath at startup and never accepts, echoes, or stores key material.",
-        key_path.display()
-    )?;
+    let saved = offer_entry && prompt_key_entry(key_path, input, out, term)?;
+    if !saved {
+        writeln!(out)?;
+        writeln!(
+            out,
+            "Paste your key into {} with your editor. temur reads it only by\npath at startup and never echoes, logs, or stores key material anywhere else.",
+            key_path.display()
+        )?;
+    }
     Ok(())
 }
 
@@ -383,6 +555,7 @@ pub fn run(
     input: &mut dyn BufRead,
     out: &mut dyn Write,
     list_models: &dyn Fn(&str) -> Result<Vec<String>, crate::error::Error>,
+    term: &mut dyn KeyEntryTerminal,
 ) -> Result<(), crate::error::Error> {
     if cfg_path.exists() && !force {
         return Err(crate::error::Error::Config(format!(
@@ -451,7 +624,7 @@ pub fn run(
     writeln!(out, "Wrote {}", cfg_path.display())?;
 
     if let Some(key_path) = &key_file {
-        setup_key_file(key_path, out)?;
+        setup_key_file(key_path, input, out, term)?;
     }
 
     writeln!(out)?;
@@ -488,6 +661,7 @@ pub fn run_add(
     input: &mut dyn BufRead,
     out: &mut dyn Write,
     list_models: &dyn Fn(&str) -> Result<Vec<String>, crate::error::Error>,
+    term: &mut dyn KeyEntryTerminal,
 ) -> Result<(), crate::error::Error> {
     let template = TEMPLATES
         .iter()
@@ -635,7 +809,7 @@ pub fn run_add(
         cfg_path.display()
     )?;
     if let Some(key_path) = &key_file {
-        setup_key_file(key_path, out)?;
+        setup_key_file(key_path, input, out, term)?;
     }
     writeln!(out)?;
     if new_profiles.len() == 1 {
@@ -656,6 +830,21 @@ pub fn run_add(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The piped-stdin terminal every wizard test drives: no TTY, so the
+    /// key prompt reads a plain line (or EOF = skip) exactly like a piped
+    /// `temur init`.
+    struct NoTty;
+
+    impl KeyEntryTerminal for NoTty {
+        fn is_tty(&self) -> bool {
+            false
+        }
+        fn begin_hidden(&mut self) -> bool {
+            panic!("begin_hidden must never be called off a TTY")
+        }
+        fn restore(&mut self) {}
+    }
 
     #[test]
     fn tilde_expansion_only_rewrites_a_leading_tilde_slash() {
@@ -758,7 +947,7 @@ mod tests {
         let cfg_path = tmp.path().join("config.json");
         let mut input = std::io::Cursor::new(answers.as_bytes().to_vec());
         let mut out: Vec<u8> = Vec::new();
-        run(&cfg_path, None, false, &mut input, &mut out, list)?;
+        run(&cfg_path, None, false, &mut input, &mut out, list, &mut NoTty)?;
         Ok((
             std::fs::read_to_string(&cfg_path).unwrap(),
             String::from_utf8(out).unwrap(),
@@ -875,7 +1064,7 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         // home None + explicit key path; the wizard completes without ever
         // touching `list`.
-        run(&cfg_path, None, false, &mut input, &mut out, &list).unwrap();
+        run(&cfg_path, None, false, &mut input, &mut out, &list, &mut NoTty).unwrap();
         let cfg = std::fs::read_to_string(&cfg_path).unwrap();
         assert!(cfg.contains("\"model\": \"claude-sonnet-5\""), "{cfg}");
         let printed = String::from_utf8(out).unwrap();
@@ -897,7 +1086,7 @@ mod tests {
             format!("2\n{profile_answers}{}\n", key_path.display()).into_bytes(),
         );
         let mut out: Vec<u8> = Vec::new();
-        run(&cfg_path, None, false, &mut input, &mut out, &list).unwrap();
+        run(&cfg_path, None, false, &mut input, &mut out, &list, &mut NoTty).unwrap();
         (
             std::fs::read_to_string(&cfg_path).unwrap(),
             String::from_utf8(out).unwrap(),
@@ -991,7 +1180,7 @@ mod tests {
         std::fs::write(&cfg_path, cfg).unwrap();
         let mut input = std::io::Cursor::new(answers.as_bytes().to_vec());
         let mut out: Vec<u8> = Vec::new();
-        let result = run_add(&cfg_path, None, template, &mut input, &mut out, list);
+        let result = run_add(&cfg_path, None, template, &mut input, &mut out, list, &mut NoTty);
         (
             result,
             std::fs::read_to_string(&cfg_path).unwrap(),
@@ -1134,7 +1323,7 @@ mod tests {
         let cfg_path = tmp.path().join("config.json");
         let mut input = std::io::Cursor::new(Vec::new());
         let mut out: Vec<u8> = Vec::new();
-        let err = run_add(&cfg_path, None, "openai", &mut input, &mut out, &no_listing)
+        let err = run_add(&cfg_path, None, "openai", &mut input, &mut out, &no_listing, &mut NoTty)
             .unwrap_err()
             .to_string();
         assert!(err.contains("no config at"), "{err}");
@@ -1183,5 +1372,208 @@ mod tests {
         let profiles = parsed.resolved_profiles().unwrap();
         assert_eq!(profiles["mine"].model, "claude-opus-5");
         assert_eq!(profiles["openai"].model, "gpt-4o-mini");
+    }
+
+    // ------------------------------------- T17 P3: hidden key entry (piped)
+
+    const PLACEHOLDER: &str = "placeholder-not-a-real-key";
+
+    #[test]
+    fn piped_key_entry_writes_the_placeholder_and_never_echoes_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("k");
+        // Answers: model default, key path, then the key itself.
+        let (result, _cfg, out, _tmp) = drive_add(
+            LOCAL_FIXED,
+            "openai",
+            &format!("\n{}\n{PLACEHOLDER}\n", key.display()),
+            &no_listing,
+        );
+        result.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&key).unwrap(),
+            format!("{PLACEHOLDER}\n"),
+            "trimmed key + trailing newline"
+        );
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&key).unwrap().permissions().mode() & 0o7777,
+            0o600
+        );
+        assert!(out.contains("Paste your API key (input hidden; Enter to skip"), "{out}");
+        assert!(
+            out.contains(&format!("key saved (hidden) to {}", key.display())),
+            "{out}"
+        );
+        assert!(!out.contains(PLACEHOLDER), "the key must never be echoed: {out}");
+        assert!(
+            !out.contains("with your editor"),
+            "a saved key needs no editor instruction: {out}"
+        );
+    }
+
+    #[test]
+    fn piped_skip_and_eof_both_leave_the_key_file_empty() {
+        // Explicit empty answer.
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("k");
+        let (result, _cfg, out, _tmp2) = drive_add(
+            LOCAL_FIXED,
+            "openai",
+            &format!("\n{}\n\n", key.display()),
+            &no_listing,
+        );
+        result.unwrap();
+        assert_eq!(std::fs::metadata(&key).unwrap().len(), 0, "skip leaves it empty");
+        assert!(out.contains("Paste your key into"), "editor instruction kept: {out}");
+        assert!(out.contains("with your editor"), "{out}");
+
+        // EOF right at the prompt (the pre-T17 answer scripts): same skip.
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("k");
+        let (result, _cfg, out, _tmp2) = drive_add(
+            LOCAL_FIXED,
+            "openai",
+            &format!("\n{}\n", key.display()),
+            &no_listing,
+        );
+        result.unwrap();
+        assert_eq!(std::fs::metadata(&key).unwrap().len(), 0);
+        assert!(out.contains("with your editor"), "{out}");
+    }
+
+    #[test]
+    fn nonempty_existing_key_file_gets_no_prompt_and_stays_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("k");
+        std::fs::write(&key, "EXISTING-MATERIAL\n").unwrap();
+        // A key answer IS piped; it must never be consumed or written.
+        let (result, _cfg, out, _tmp2) = drive_add(
+            LOCAL_FIXED,
+            "openai",
+            &format!("\n{}\n{PLACEHOLDER}\n", key.display()),
+            &no_listing,
+        );
+        result.unwrap();
+        assert_eq!(std::fs::read_to_string(&key).unwrap(), "EXISTING-MATERIAL\n");
+        assert!(!out.contains("Paste your API key"), "no prompt: {out}");
+        assert!(out.contains("left untouched"), "{out}");
+        assert!(!out.contains("EXISTING-MATERIAL"), "{out}");
+    }
+
+    #[test]
+    fn existing_empty_key_file_still_gets_the_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("k");
+        std::fs::write(&key, "").unwrap();
+        let (result, _cfg, out, _tmp2) = drive_add(
+            LOCAL_FIXED,
+            "openai",
+            &format!("\n{}\n{PLACEHOLDER}\n", key.display()),
+            &no_listing,
+        );
+        result.unwrap();
+        assert_eq!(std::fs::read_to_string(&key).unwrap(), format!("{PLACEHOLDER}\n"));
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&key).unwrap().permissions().mode() & 0o7777,
+            0o600,
+            "mode pinned even for a found file"
+        );
+        assert!(out.contains("key saved (hidden)"), "{out}");
+    }
+
+    #[test]
+    fn fresh_wizard_offers_the_same_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.json");
+        let key = tmp.path().join("k");
+        let mut input = std::io::Cursor::new(
+            format!("3\n\n{}\n{PLACEHOLDER}\n", key.display()).into_bytes(),
+        );
+        let mut out: Vec<u8> = Vec::new();
+        run(&cfg_path, None, false, &mut input, &mut out, &no_listing, &mut NoTty).unwrap();
+        assert_eq!(std::fs::read_to_string(&key).unwrap(), format!("{PLACEHOLDER}\n"));
+        let printed = String::from_utf8(out).unwrap();
+        assert!(printed.contains("key saved (hidden)"), "{printed}");
+        assert!(!printed.contains(PLACEHOLDER), "{printed}");
+    }
+
+    // ------------------------------- T17 P3: the echo-guard seam (fake TTY)
+
+    /// A fake TTY observing the guard discipline: counts begin/restore and
+    /// remembers whether echo was ever left off.
+    struct FakeTty {
+        hidden: bool,
+        begins: u32,
+        restores: u32,
+    }
+
+    impl FakeTty {
+        fn new() -> Self {
+            FakeTty { hidden: false, begins: 0, restores: 0 }
+        }
+    }
+
+    impl KeyEntryTerminal for FakeTty {
+        fn is_tty(&self) -> bool {
+            true
+        }
+        fn begin_hidden(&mut self) -> bool {
+            self.begins += 1;
+            self.hidden = true;
+            true
+        }
+        fn restore(&mut self) {
+            self.restores += 1;
+            self.hidden = false;
+        }
+    }
+
+    /// A reader whose first read fails, for the guard's error path.
+    struct FailingReader;
+
+    impl std::io::Read for FailingReader {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("tty read failed"))
+        }
+    }
+
+    #[test]
+    fn echo_guard_disables_and_restores_around_the_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("k");
+        std::fs::write(&key, "").unwrap();
+        let mut term = FakeTty::new();
+        let mut input = std::io::Cursor::new(format!("{PLACEHOLDER}\n").into_bytes());
+        let mut out: Vec<u8> = Vec::new();
+        let saved = prompt_key_entry(&key, &mut input, &mut out, &mut term).unwrap();
+        assert!(saved);
+        assert_eq!((term.begins, term.restores), (1, 1));
+        assert!(!term.hidden, "echo restored");
+        let printed = String::from_utf8(out).unwrap();
+        // The prompt line ends with the hand-printed newline the disabled
+        // echo swallowed, BEFORE the confirmation line.
+        assert!(
+            printed.contains("add it later): \nkey saved (hidden)"),
+            "{printed}"
+        );
+        assert!(!printed.contains(PLACEHOLDER), "{printed}");
+        assert_eq!(std::fs::read_to_string(&key).unwrap(), format!("{PLACEHOLDER}\n"));
+    }
+
+    #[test]
+    fn echo_guard_restores_on_a_read_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("k");
+        std::fs::write(&key, "").unwrap();
+        let mut term = FakeTty::new();
+        let mut input = std::io::BufReader::new(FailingReader);
+        let mut out: Vec<u8> = Vec::new();
+        let err = prompt_key_entry(&key, &mut input, &mut out, &mut term).unwrap_err();
+        assert!(err.to_string().contains("tty read failed"), "{err}");
+        assert_eq!((term.begins, term.restores), (1, 1), "guard ran on the error path");
+        assert!(!term.hidden, "echo restored despite the error");
+        assert_eq!(std::fs::metadata(&key).unwrap().len(), 0, "nothing written");
     }
 }

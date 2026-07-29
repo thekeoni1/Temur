@@ -161,6 +161,9 @@ fn run() -> Result<ExitCode, error::Error> {
                     ),
                 )
             };
+            // T17 P3: the hidden key prompt's terminal seam, real termios
+            // over stdin here.
+            let mut term = temur::init::StdinKeyTerminal::new();
             match &add {
                 Some(template) => temur::init::run_add(
                     &config::config_path(),
@@ -169,6 +172,7 @@ fn run() -> Result<ExitCode, error::Error> {
                     &mut std::io::stdin().lock(),
                     &mut std::io::stdout(),
                     &list,
+                    &mut term,
                 )?,
                 None => temur::init::run(
                     &config::config_path(),
@@ -177,6 +181,7 @@ fn run() -> Result<ExitCode, error::Error> {
                     &mut std::io::stdin().lock(),
                     &mut std::io::stdout(),
                     &list,
+                    &mut term,
                 )?,
             }
             Ok(ExitCode::SUCCESS)

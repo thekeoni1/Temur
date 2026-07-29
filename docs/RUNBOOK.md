@@ -1606,3 +1606,46 @@ bakes), closing the stage-1 gate item.
 Open release items unchanged: the PUBLIC one-liner gate and the
 hostname-blob-history decision stay queued behind the visibility
 flip; ARM hardware smoke still pending hardware.
+
+## T17 - init hidden key entry (T14 rule amendment record)
+
+What changed versus T14. T14's rule was "init never accepts key
+material": the wizard created key files EMPTY and the only sanctioned
+way to fill one was a hand edit ("paste your key into <path> with
+your editor"). T17 P3 narrows that rule, deliberately and with
+operator approval, following the same pattern as T15's keyless-GET
+amendment of "no network calls in init": the init wizard, and only
+it, may now accept a key at a hidden prompt and write it straight to
+the key file.
+
+The exact contract (implemented in src/init.rs, prompt_key_entry):
+
+- Offered ONLY inside `temur init` / `temur init --add`, right after
+  a key file is created empty or found existing AND empty. NEVER in
+  the REPL, TUI, one-shot, or any other surface. A non-empty existing
+  key file is never touched and gets no prompt.
+- Prompt: "Paste your API key (input hidden; Enter to skip and add it
+  later): ". When stdin is a TTY, echo is disabled via termios (libc
+  tcgetattr/tcsetattr) under an RAII guard that restores the terminal
+  on ALL exits, error paths included. SIGINT is ignored for the span
+  of the read (init installs no signal handler, so a Ctrl+C would
+  otherwise kill the process and leave the operator's terminal not
+  echoing); termios and the SIGINT disposition are restored together.
+  The newline the disabled echo swallowed is printed by hand.
+- Non-empty answer: trimmed, written to the key file with a trailing
+  newline (secret::load_api_key_from trims), mode forced to 0600, the
+  in-memory buffer overwritten best-effort (volatile zeroing) after
+  the write; the confirmation is "key saved (hidden) to <path>". The
+  key appears in no output, notice, or log. Empty answer or EOF:
+  skip, and the T14 editor instruction prints exactly as before.
+- The key is never accepted via argv or env; no --key flag exists.
+- Non-TTY stdin (piped) reads a plain line so tests and scripts can
+  drive the wizard; the test suites use obvious placeholder strings
+  only ("placeholder-not-a-real-key"), never real key material.
+
+Honest limit: Rust cannot guarantee zero in-memory copies of the
+key. read_line buffers through BufRead internals and the file-write
+path may copy; the volatile wipe zeroes the one buffer the wizard
+owns. The by-path rule for every OTHER surface is unchanged: outside
+this prompt, temur still never accepts, reads back, echoes, or
+stores key material.
