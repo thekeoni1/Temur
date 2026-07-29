@@ -736,3 +736,152 @@ fn edit_fuzzy_is_not_idempotently_reapplied() {
     assert!(err.to_string().contains("not found"));
     assert_eq!(std::fs::read_to_string(&f).unwrap(), after_first);
 }
+
+// --- T18 P1: key-file guard (read/write/edit) --------------------------------
+//
+// HARD RULE: every test key is a placeholder string created by the test
+// itself; no real key material is ever touched.
+
+/// A tempdir with a secrets dir holding one placeholder key, a normal file
+/// beside it, and a ToolCtx whose guard protects the key.
+fn guarded_ctx() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf, ToolCtx) {
+    let dir = tempfile::tempdir().unwrap();
+    let secrets = dir.path().join("secrets");
+    std::fs::create_dir_all(&secrets).unwrap();
+    let key = secrets.join("api.key");
+    std::fs::write(&key, "placeholder-not-a-real-key\n").unwrap();
+    let normal = dir.path().join("normal.txt");
+    std::fs::write(&normal, "ordinary content\n").unwrap();
+    let mut ctx = ctx_in(dir.path());
+    ctx.guard = temur::tools::KeyGuard::from_paths(vec![key.clone()]);
+    (dir, key, normal, ctx)
+}
+
+fn assert_denied(err: ToolError, what: &str) {
+    let msg = err.to_string();
+    assert!(msg.contains("key isolation"), "{what}: {msg}");
+    assert!(
+        !msg.contains("placeholder-not-a-real-key"),
+        "{what}: denial must carry no key material: {msg}"
+    );
+}
+
+#[test]
+fn guard_read_denies_key_by_direct_path_symlink_and_hardlink() {
+    let (dir, key, normal, mut ctx) = guarded_ctx();
+    let reg = Registry::standard();
+
+    let err = run(&reg, &mut ctx, "read", json!({"filePath": key.to_str().unwrap()})).unwrap_err();
+    assert_denied(err, "direct read");
+
+    let link = dir.path().join("innocent.txt");
+    std::os::unix::fs::symlink(&key, &link).unwrap();
+    let err = run(&reg, &mut ctx, "read", json!({"filePath": link.to_str().unwrap()})).unwrap_err();
+    assert_denied(err, "symlink read");
+
+    let hard = dir.path().join("hard.txt");
+    std::fs::hard_link(&key, &hard).unwrap();
+    let err = run(&reg, &mut ctx, "read", json!({"filePath": hard.to_str().unwrap()})).unwrap_err();
+    assert_denied(err, "hardlink read");
+
+    // The rest of the world still reads fine through the same ctx.
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": normal.to_str().unwrap()})).unwrap();
+    assert!(out.output.contains("ordinary content"));
+}
+
+#[test]
+fn guard_denies_everything_under_the_secrets_dir() {
+    let (_dir, key, _normal, mut ctx) = guarded_ctx();
+    let reg = Registry::standard();
+    let sibling = key.parent().unwrap().join("sibling.key");
+    std::fs::write(&sibling, "placeholder-not-a-real-key-2\n").unwrap();
+
+    let err =
+        run(&reg, &mut ctx, "read", json!({"filePath": sibling.to_str().unwrap()})).unwrap_err();
+    assert_denied(err, "sibling read");
+    // Reading the DIRECTORY (listing mode) is denied too.
+    let err = run(
+        &reg,
+        &mut ctx,
+        "read",
+        json!({"filePath": key.parent().unwrap().to_str().unwrap()}),
+    )
+    .unwrap_err();
+    assert_denied(err, "secrets dir listing");
+}
+
+#[test]
+fn guard_write_denies_overwrite_and_create_under_secrets_dir() {
+    let (_dir, key, _normal, mut ctx) = guarded_ctx();
+    let reg = Registry::standard();
+
+    let err = run(
+        &reg,
+        &mut ctx,
+        "write",
+        json!({"filePath": key.to_str().unwrap(), "content": "clobbered"}),
+    )
+    .unwrap_err();
+    assert_denied(err, "key overwrite");
+    assert_eq!(
+        std::fs::read_to_string(&key).unwrap(),
+        "placeholder-not-a-real-key\n",
+        "the key file must be untouched"
+    );
+
+    // A CREATE under the secrets dir is denied before create_dir_all runs.
+    let target = key.parent().unwrap().join("planted/evil.txt");
+    let err = run(
+        &reg,
+        &mut ctx,
+        "write",
+        json!({"filePath": target.to_str().unwrap(), "content": "x"}),
+    )
+    .unwrap_err();
+    assert_denied(err, "create under secrets dir");
+    assert!(!target.parent().unwrap().exists(), "nothing may be created");
+}
+
+#[test]
+fn guard_edit_denies_key_file() {
+    let (_dir, key, _normal, mut ctx) = guarded_ctx();
+    let reg = Registry::standard();
+    let err = run(
+        &reg,
+        &mut ctx,
+        "edit",
+        json!({
+            "filePath": key.to_str().unwrap(),
+            "oldString": "placeholder",
+            "newString": "poisoned"
+        }),
+    )
+    .unwrap_err();
+    assert_denied(err, "edit");
+    assert_eq!(
+        std::fs::read_to_string(&key).unwrap(),
+        "placeholder-not-a-real-key\n"
+    );
+}
+
+#[test]
+fn guard_keyless_ctx_reads_the_same_files_freely() {
+    // The SAME layout with the default (empty) guard: everything works,
+    // proving keyless behavior is untouched by T18.
+    let dir = tempfile::tempdir().unwrap();
+    let secrets = dir.path().join("secrets");
+    std::fs::create_dir_all(&secrets).unwrap();
+    let key = secrets.join("api.key");
+    std::fs::write(&key, "placeholder-not-a-real-key\n").unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": key.to_str().unwrap()})).unwrap();
+    assert!(out.output.contains("placeholder-not-a-real-key"));
+    run(
+        &reg,
+        &mut ctx,
+        "write",
+        json!({"filePath": secrets.join("new.txt").to_str().unwrap(), "content": "ok"}),
+    )
+    .unwrap();
+}

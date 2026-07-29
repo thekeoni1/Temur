@@ -171,6 +171,15 @@ impl Session {
         self.cancel.clone()
     }
 
+    /// Install the key-file guard (T18), called once at startup right after
+    /// construction. Config-derived and covering EVERY configured key file,
+    /// so a `/model` switch never needs to change it. A setter (not a
+    /// constructor parameter) so `ToolCtx::new` keeps yielding the empty
+    /// guard and every guard-free construction stays byte-identical.
+    pub fn set_key_guard(&mut self, guard: crate::tools::KeyGuard) {
+        self.tool_ctx.guard = guard;
+    }
+
     /// The persistable view of this session. Borrowed throughout: saving a
     /// multi-megabyte history must not clone it.
     pub fn snapshot(&self) -> SessionSnapshot<'_> {

@@ -5,6 +5,7 @@ mod bash;
 mod edit;
 mod glob;
 mod grep;
+pub mod guard;
 mod read;
 mod skill;
 mod todo;
@@ -16,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 
+pub use guard::KeyGuard;
 pub use skill::SkillTool;
 pub use todo::TodoItem;
 
@@ -31,6 +33,11 @@ pub struct ToolCtx {
     /// default is an inert token that is never set, so tools outside a
     /// session behave exactly as before. The session wires its own token in.
     pub cancel: CancelToken,
+    /// T18 key isolation: file-identity guard over the configured key
+    /// files. `ToolCtx::new` yields an EMPTY guard (checks nothing), so
+    /// keyless configs and tools outside a keyed session behave exactly as
+    /// before. Startup installs the real one via `Session::set_key_guard`.
+    pub guard: KeyGuard,
 }
 
 impl ToolCtx {
@@ -39,6 +46,7 @@ impl ToolCtx {
             cwd,
             todos: vec![],
             cancel: CancelToken::new(),
+            guard: KeyGuard::empty(),
         }
     }
 }

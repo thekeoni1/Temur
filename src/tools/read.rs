@@ -57,6 +57,10 @@ impl Tool for ReadTool {
         let path = resolve_path(ctx, &p.file_path);
         let title = p.file_path.clone();
 
+        // T18: before ANY open (is_binary opens the file too, and even
+        // metadata leaks existence under a secrets dir).
+        ctx.guard.check(&path)?;
+
         let meta = std::fs::metadata(&path)
             .map_err(|_| ToolError::failed(format!("File not found: {}", path.display())))?;
 

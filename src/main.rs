@@ -475,6 +475,12 @@ fn repl(
         Some(seed) => Session::resume(provider, registry, session_cfg, seed),
         None => Session::new(provider, registry, session_cfg),
     };
+    // T18 layer 1: the key-file guard, from the ONE construction rule
+    // (active selection + every profile + APP_SECRET_FILE). Empty when the
+    // config is keyless, and an empty guard checks nothing.
+    session.set_key_guard(temur::tools::KeyGuard::from_selection(
+        &resolved, &profiles,
+    ));
 
     let mut ui: Box<dyn Ui> = if use_tui {
         Box::new(TuiUi::new(

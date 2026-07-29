@@ -60,6 +60,8 @@ impl Tool for EditTool {
             ));
         }
         let path = resolve_path(ctx, &p.file_path);
+        // T18: before the read (an edit both reads and rewrites the file).
+        ctx.guard.check(&path)?;
         let content = std::fs::read_to_string(&path)
             .map_err(|_| ToolError::failed(format!("File not found: {}", path.display())))?;
         let matches = content.matches(&p.old_string).count();
