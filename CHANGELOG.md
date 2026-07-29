@@ -4,6 +4,38 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+T19 model floor (raising the harness floor for weak local models):
+
+- Tool-output truncation now scales to the model's context window
+  and keeps both ends: the per-result cap is `context_window`
+  clamped to 4,000..30,000 chars (no configured window keeps the
+  30,000 cap exactly as before), and truncation keeps the true head
+  and true tail around a one-line marker that says how to narrow
+  the command, so build errors at the end of long output survive.
+  Key redaction still runs before truncation.
+- `write` now enforces its prompt's read-first promise: overwriting
+  an existing file this session has not seen (via read, edit, or a
+  previous successful write) fails with a pointer to read or edit.
+  New files are unaffected. `--continue`/`--resume` start with an
+  empty read set deliberately: the file may have changed on disk.
+- Binary-format nudge: the write prompt steers models to produce
+  binary formats (xlsx, zip, png, gz, ...) with a small script run
+  via bash instead of raw-writing corrupt bytes, and read's binary
+  denial now names bash inspection tools (file, unzip -l, strings).
+- Prose tool-call execution, a recorded narrow amendment of T4's
+  "prose is never executed" policy: an end-of-turn message with no
+  structured tool calls that IS one unambiguous tool call (exactly
+  one candidate in a known shape, losslessly parsed JSON, registered
+  tool, object arguments) executes through the same guarded registry
+  path as a structured call; the result returns as plain user text
+  and a notice announces it. Failed prose executions count toward
+  the per-turn nudge cap. New config `prose_tool_calls` (default
+  true); false restores detect+nudge exactly.
+- `scripts/weak_model_eval.sh` grows task 8 (gzip binary nudge:
+  gunzip validity proves the file was scripted, not raw-written)
+  and task 9 (a needle on the LAST line of over-cap output, the
+  live proof of the head+tail keep). The score line is now /9.
+
 ## v0.7.0 - 2026-07-29
 
 T18 key isolation (guaranteeing tools cannot reach configured keys):

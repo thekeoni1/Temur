@@ -183,6 +183,55 @@ Eval harness note: all task seeding (data.txt, config.ini, the needle
 files, version.txt) happens inside the script itself, per task, before
 each temur launch, nothing is left to the operator.
 
+## T19 - prose tool-call execution (T4 rule amendment record)
+
+What changed versus T4. T4's rule was "prose is never parsed into an
+execution": a tool call written as plain text was DETECTED and
+answered with a corrective nudge, nothing more. T19 P3 narrows that
+rule, deliberately and with operator approval, following the same
+pattern as T17's amendment of T14's "init never accepts key
+material": the agent loop, and only it, may now execute a prose tool
+call, and only when it is unambiguous.
+
+The exact contract (implemented in src/agent/recover.rs,
+extract_prose_tool_call, and the EndTurn arm of Session::turn):
+
+- The assistant message ended the turn (EndTurn) with ZERO structured
+  tool calls: the existing nudge gate.
+- The text contains exactly ONE candidate call, in a shape the T4
+  detector already knows: a single <tool_call>...</tool_call> block,
+  or the WHOLE trimmed message as a fenced / leading-brace JSON
+  object. Two or more candidates, prose around a bare JSON object, or
+  any other marker shape ([TOOL_CALL], <function_call>, ...) never
+  execute; they nudge exactly as before.
+- The inner JSON parses via repair_json as LOSSLESS (fence and
+  trailing-comma repair fine; truncation completion NEVER executes),
+  is an object naming a REGISTERED tool under "name"/"tool", with an
+  OBJECT under "arguments"/"input"/"parameters".
+- Execution goes through Registry::execute exactly like a structured
+  call, so the T18 key guard, redaction, and the T19 context-scaled
+  truncation all apply by construction.
+- No tool_use id exists on the wire, so the result returns as a
+  PLAIN USER TEXT message ("Result of the <name> tool call you wrote
+  as text (executed by prose-call recovery): ...", errors likewise
+  with an Error prefix). Request-body goldens are untouched; plain
+  user text is wire-legal on both providers. No ToolEnd event is
+  emitted (no stream opened a tool cell; the TUI's FIFO
+  ToolStart/ToolEnd pairing holds); a Notice announces the execution
+  and its outcome instead.
+- FAILED prose executions count toward the existing per-turn
+  NUDGE_LIMIT, so a model stuck on a failing prose call still
+  terminates; successes reset nothing and are uncapped (the
+  max_iterations ceiling still bounds the turn).
+- Config: prose_tool_calls (container-level serde default true).
+  false restores T4's detect+nudge behavior byte-identically.
+
+Honest limits: prose executions bypass the doom-loop fingerprint
+guards (those key on structured calls); the bound on a repeating
+FAILING prose call is the nudge cap, and on a repeating SUCCEEDING
+one the max_iterations ceiling. A candidate that extraction rejects
+falls back to detection, so weaker shapes keep today's nudge.
+
 ## T5 acceptance - recorded result
 
 2026-07-21: **live resume smoke PASSED, first attempt**: the full cycle
@@ -1897,3 +1946,92 @@ the repo with absolute asset paths. No other deltas vs v0.6.0.
 Open release items unchanged: the PUBLIC one-liner gate and the
 hostname-blob-history decision stay queued behind the visibility
 flip; ARM hardware smoke still pending hardware.
+
+## T19 acceptance - recorded result (no release)
+
+2026-07-29, five commits on main over the v0.7.0 head (8988433):
+P1 a36d8d1 (context-scaled head+tail truncation), P2 4ac0fe7
+(write read-first enforcement + binary nudge), P3 4a49311
+(prose tool-call execution; the T4 amendment record "T19 - prose
+tool-call execution" sits next to the T4 acceptance section above
+and is part of this acceptance), P4 11c9995 (eval tasks 8 and 9),
+P5 (docs + this record). Every phase ran the full check.sh gate
+(pty, foreground) green before its commit. Version stays 0.7.0;
+T19 rides CHANGELOG Unreleased.
+
+Live keyless smoke, all against llama.cpp server-b10068 serving
+Qwen3-4B-Instruct-2507 Q4_K_M, ctx 8192, --jinja, compact profile,
+max_tokens 2048, musl-static binary (readelf-verified in the eval
+preflight), --network none pods, isolated XDG dirs. NO hosted or
+keyed call anywhere; placeholderless (no key material exists in the
+smoke at all).
+
+(a) Extended eval, FIRST ATTEMPT, no wording iterations:
+
+| task | name | result | seconds |
+|---|---|---|---|
+| 1 | write-file | PASS | 49 |
+| 2 | read-extract | PASS | 15 |
+| 3 | edit-config | PASS | 17 |
+| 4 | bash-mkdir | PASS | 11 |
+| 5 | find-needle | PASS | 22 |
+| 6 | bump-and-copy | PASS | 18 |
+| 7 | indirect-delete | PASS | 7 |
+| 8 | binary-nudge | PASS | 25 |
+| 9 | large-tail | PASS | 89 |
+
+SCORE: 9/9. Task 8's transcript shows the intended path exactly
+(write notes.txt as text, then bash "gzip /work/notes.txt"); the
+host gunzip assertion is what scored it. Task 9's transcript shows
+bash "cat data.log" then a write of tail.txt; the needle sits on
+the LAST line of ~30k chars of output against an 8192-char cap, so
+the pass is live proof of the tail keep.
+
+(b) Truncation marker in situ (interactive REPL, bash cat of a
+~30k-char big.log; host-verified from the saved session file since
+the plain REPL prints tool chrome, not tool results):
+
+  (output truncated: showing the first 4096 and last 4096 of 29971
+  chars; narrow the command, e.g. grep or head/tail, to see the
+  elided middle)
+
+and the last-line needle KAPPA-2718 present in the kept tail; the
+model's reply quoted it live.
+
+(c) Read-first denial live: prompted to call ONLY write on an
+existing locked.txt. Transcript: write ✗, then the model read the
+file and rewrote it ✓ (the denial steered a live model into the
+correct read-then-write shape on its own). Saved session carries
+the denial verbatim: "locked.txt exists but has not been read in
+this session. Read it first, or use edit for targeted changes."
+First attempt of this prompt shape; an earlier softer prompt
+("without reading it first...") did NOT trigger the denial because
+the model chose to read first anyway - recorded as model good
+behavior, not a harness gap.
+
+(d) Prose-call recovery through the real binary (mock SSE, an
+EndTurn whose only text is a leading-brace JSON write call):
+transcript shows the notice "prose-call recovery: executed the
+write tool call the model wrote as plain text", the file lands on
+disk with the exact content, and the follow-up request completed
+the turn. The mock e2e suites cover the same path plus the
+failure/ambiguity/off-switch arms.
+
+Deviations from the plan, all recorded: (1) the plan named
+compact/write.txt, which does not exist; write serves the one
+write.txt to BOTH profiles (asserted by the profile test), so the
+single prompt edit covers both. (2) The truncation cap is wired
+inside Session::build and Session::switch_provider rather than at
+the main.rs call sites: the same two lifecycle moments as the T18
+redaction key, but enforced in the session so no construction path
+can forget it. (3) A planned "lossy prose still nudges" test
+asserted the true behavior instead: detect_text_tool_call never
+parsed truncated JSON pre-T19 either, so lossy prose ends the turn
+with no nudge, unchanged.
+
+Honest limits: prose executions bypass the doom-loop fingerprint
+guards (failing calls are bounded by the nudge cap, succeeding ones
+by max_iterations); the read-paths set is in-memory only and starts
+empty on --continue/--resume by design; read of a file via bash
+(cat) does not arm the write check - only the read/edit/write tools
+do.

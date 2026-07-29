@@ -43,14 +43,24 @@ internet MUST fail inside the pod), then requires the model to drive a real
 is never accepted as evidence. Recorded pass: llama.cpp `server-b10068`
 serving Qwen3-1.7B Q4_K_M, first attempt.
 
-**Weak-model floor, measured.** `scripts/weak_model_eval.sh` runs six fixed
+**Weak-model floor, measured.** `scripts/weak_model_eval.sh` runs nine fixed
 agent tasks (write, read-and-extract, targeted edit, bash, multi-file
-search, edit-then-bash chain), each scored only by host-verified filesystem
-assertions. Recorded score: **5/6** with Qwen3-1.7B Q4_K_M (a 1.1 GB model)
-through the compact prompt profile, llama.cpp `server-b10068`, 8192-token
-context, in a `--network none` pod. The one failure is documented as a model
-capability floor (it batched a read and a dependent write in one parallel
-call), not excluded from the score.
+search, edit-then-bash chain, indirect delete, gzip binary nudge,
+large-output tail), each scored only by host-verified filesystem
+assertions. Recorded scores: **5/6** on the original six tasks with
+Qwen3-1.7B Q4_K_M (a 1.1 GB model), and the current nine-task score in
+docs/RUNBOOK.md "T19 acceptance"; both through the compact prompt profile,
+llama.cpp `server-b10068`, 8192-token context, in a `--network none` pod.
+
+The harness floor itself (T19, active on every provider): tool output
+over the per-result cap keeps its true head AND tail around a narrowing
+marker instead of losing the end (the cap scales to `context_window`,
+clamped 4,000..30,000 chars); `write` refuses to overwrite a file the
+session has not read (the prompt's long-standing promise, now enforced);
+prompts steer binary formats to scripted `bash` runs instead of corrupt
+raw writes; and a tool call written as plain text executes when it is
+one unambiguous, losslessly parsed call to a real tool (config
+`prose_tool_calls`, default true; `false` restores nudge-only).
 
 ## Install
 

@@ -343,6 +343,53 @@ CHANGELOG.md on its own, which is a fair reminder that instructions in
 a skill shape but do not fence a turn: state what you do NOT want in
 the prompt or the skill.
 
+## The weak-model floor (T19)
+
+Three behaviors keep small local models productive; all of them are
+also active on hosted models.
+
+**Tool output keeps both ends.** A tool result larger than the
+per-result cap is elided in the MIDDLE, not cut at the end, so build
+errors and log tails survive. The marker between the kept halves
+reads:
+
+```
+(output truncated: showing the first 4096 and last 4096 of 31532 chars; narrow the command, e.g. grep or head/tail, to see the elided middle)
+```
+
+The cap scales to the model: with a configured `context_window` it is
+that many chars, clamped to 4,000..30,000 (derivation: a quarter of
+the window in tokens, at roughly 4 chars per token). No configured
+window keeps the 30,000-char cap. The cap follows `/model` switches.
+
+**write is read-first.** Overwriting an existing file the session has
+not seen fails with:
+
+```
+<path> exists but has not been read in this session. Read it first, or use edit for targeted changes.
+```
+
+Reading the file, editing it, or having successfully written it
+earlier in the session all count as "seen". New files are unaffected.
+`--continue` and `--resume` deliberately start with an empty read
+set: the file may have changed on disk while temur was away, so a
+resumed session must re-read before overwriting.
+
+**Prose tool calls are recovered.** When a model writes its tool call
+as plain text instead of using the tool interface, and that text is
+one unambiguous call (a single `<tool_call>` block or the whole
+message as a JSON object, parsing losslessly, naming a real tool),
+temur executes it and feeds the result back as plain text, announcing
+it with a notice:
+
+```
+  [!] prose-call recovery: executed the write tool call the model wrote as plain text
+```
+
+Ambiguous or truncated shapes are never executed; they get the
+corrective nudge instead. Set `"prose_tool_calls": false` in
+config.json to turn recovery off and restore nudge-only behavior.
+
 ## Where the other guides are
 
 - TUI design, markdown rendering, key bindings, turn interruption:
