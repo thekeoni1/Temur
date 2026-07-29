@@ -128,7 +128,7 @@ fn read_byte_cap_pagination_hint_survives_registry_truncation() {
         "pagination hint present"
     );
     assert!(
-        !out.output.contains("(output truncated: showing first"),
+        !out.output.contains("(output truncated:"),
         "registry truncation must NOT fire"
     );
     assert!(
@@ -298,8 +298,94 @@ fn registry_truncates_oversized_output() {
     let reg = Registry::with_tools(vec![Box::new(BigTool)]);
     let mut ctx = ctx_in(dir.path());
     let out = run(&reg, &mut ctx, "big", json!({})).unwrap();
-    assert!(out.output.contains("(output truncated: showing first 30000 of 40000 chars)"));
+    // No context_window configured: the cap is 30,000 exactly as pre-T19,
+    // now kept as a true head + true tail around the T19 marker.
+    assert!(out.output.contains(
+        "(output truncated: showing the first 15000 and last 15000 of 40000 chars; \
+         narrow the command, e.g. grep or head/tail, to see the elided middle)"
+    ), "{}", out.output);
     assert!(out.output.len() < 40_000);
+}
+
+// --------------------------------------------------------------- T19 (P1)
+
+/// A tool whose output makes head and tail distinguishable: 'a' x 10_000,
+/// then 'b' x 10_000, then 'c' x 10_000.
+struct AbcTool;
+impl Tool for AbcTool {
+    fn name(&self) -> &'static str { "abc" }
+    fn description(&self) -> &'static str { "emits abc bands" }
+    fn input_schema(&self) -> serde_json::Value { json!({"type":"object","properties":{}}) }
+    fn execute(&self, _i: serde_json::Value, _c: &mut ToolCtx) -> Result<ToolOutput, ToolError> {
+        let mut s = "a".repeat(10_000);
+        s.push_str(&"b".repeat(10_000));
+        s.push_str(&"c".repeat(10_000));
+        Ok(ToolOutput { title: "abc".into(), output: s })
+    }
+}
+
+#[test]
+fn context_scaled_cap_keeps_true_head_and_true_tail() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut reg = Registry::with_tools(vec![Box::new(AbcTool)]);
+    reg.set_context_window(Some(8_000)); // cap 8000: head 4000, tail 4000
+    let mut ctx = ctx_in(dir.path());
+    let out = run(&reg, &mut ctx, "abc", json!({})).unwrap();
+    let marker = "\n\n(output truncated: showing the first 4000 and last 4000 of 30000 chars; \
+                  narrow the command, e.g. grep or head/tail, to see the elided middle)\n\n";
+    // Exact shape: true head, one marker line, true tail — nothing else.
+    assert_eq!(out.output, format!("{}{marker}{}", "a".repeat(4_000), "c".repeat(4_000)));
+}
+
+#[test]
+fn context_scaled_cap_odd_split_arithmetic_is_exact() {
+    // Odd cap: head = cap/2, tail = cap - head, and the marker states both.
+    let dir = tempfile::tempdir().unwrap();
+    let mut reg = Registry::with_tools(vec![Box::new(AbcTool)]);
+    reg.set_context_window(Some(4_001)); // head 2000, tail 2001
+    let mut ctx = ctx_in(dir.path());
+    let out = run(&reg, &mut ctx, "abc", json!({})).unwrap();
+    assert!(out.output.contains("showing the first 2000 and last 2001 of 30000 chars"));
+    assert!(out.output.starts_with(&"a".repeat(2_000)));
+    assert!(out.output.ends_with(&"c".repeat(2_001)));
+    assert!(!out.output.starts_with(&"a".repeat(2_001)), "head must be exactly 2000");
+}
+
+#[test]
+fn context_window_clamp_floor_and_ceiling() {
+    let dir = tempfile::tempdir().unwrap();
+    // Floor: a 1000-token window still gets a 4000-char cap.
+    let mut reg = Registry::with_tools(vec![Box::new(AbcTool)]);
+    reg.set_context_window(Some(1_000));
+    let mut ctx = ctx_in(dir.path());
+    let out = run(&reg, &mut ctx, "abc", json!({})).unwrap();
+    assert!(out.output.contains("showing the first 2000 and last 2000 of 30000 chars"));
+    // Ceiling: a huge window never raises the cap above 30,000 — under-cap
+    // output passes through untouched.
+    let mut reg = Registry::with_tools(vec![Box::new(AbcTool)]);
+    reg.set_context_window(Some(1_000_000));
+    let out = run(&reg, &mut ctx, "abc", json!({})).unwrap();
+    assert!(!out.output.contains("(output truncated:"), "30000 chars fit a 30000 cap");
+    assert_eq!(out.output.chars().count(), 30_000);
+}
+
+#[test]
+fn no_window_output_at_cap_passes_untouched() {
+    // Exactly-at-cap output is not truncated (strictly-greater rule).
+    struct AtCap;
+    impl Tool for AtCap {
+        fn name(&self) -> &'static str { "atcap" }
+        fn description(&self) -> &'static str { "emits exactly 30000" }
+        fn input_schema(&self) -> serde_json::Value { json!({"type":"object","properties":{}}) }
+        fn execute(&self, _i: serde_json::Value, _c: &mut ToolCtx) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput { title: "atcap".into(), output: "z".repeat(30_000) })
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::with_tools(vec![Box::new(AtCap)]);
+    let mut ctx = ctx_in(dir.path());
+    let out = run(&reg, &mut ctx, "atcap", json!({})).unwrap();
+    assert_eq!(out.output, "z".repeat(30_000));
 }
 
 #[test]

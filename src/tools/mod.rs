@@ -23,8 +23,12 @@ pub use skill::SkillTool;
 pub use todo::TodoItem;
 
 /// Central output cap applied by the registry (chars), mirroring OpenCode's
-/// centralized truncation.
+/// centralized truncation. This is the ceiling; with a configured
+/// context_window the cap scales down (T19), see [`Registry::set_context_window`].
 const MAX_OUTPUT_CHARS: usize = 30_000;
+/// Floor for the context-scaled cap (T19): below this a tool result cannot
+/// carry enough of a build log or grep sweep to act on.
+const MIN_OUTPUT_CHARS: usize = 4_000;
 
 /// Below this a registered redaction key is never matched (T18): replacing
 /// tiny strings would mangle ordinary output, and no real API key is this
@@ -125,6 +129,10 @@ pub struct Registry {
     /// mock). Only the active key can be registered honestly: inactive
     /// profiles' keys are never read, so they are never redactable.
     redact_key: Option<String>,
+    /// T19 context-scaled per-result output cap (chars). Defaults to
+    /// [`MAX_OUTPUT_CHARS`]; [`Registry::set_context_window`] scales it to
+    /// the active model's window.
+    cap_chars: usize,
 }
 
 impl Registry {
@@ -142,6 +150,7 @@ impl Registry {
             ],
             profile: PromptProfile::Full,
             redact_key: None,
+            cap_chars: MAX_OUTPUT_CHARS,
         }
     }
 
@@ -150,6 +159,7 @@ impl Registry {
             tools,
             profile: PromptProfile::Full,
             redact_key: None,
+            cap_chars: MAX_OUTPUT_CHARS,
         }
     }
 
@@ -160,6 +170,20 @@ impl Registry {
     /// is not a real API key.
     pub fn set_redaction_key(&mut self, key: Option<String>) {
         self.redact_key = key;
+    }
+
+    /// Scale the per-result output cap to the active model's context window
+    /// (T19). Derivation: budget a quarter of the window in tokens for one
+    /// tool result, at ~4 chars/token that is `context_window` chars, clamped
+    /// to [`MIN_OUTPUT_CHARS`]..=[`MAX_OUTPUT_CHARS`]. `None` (no window
+    /// configured) keeps the [`MAX_OUTPUT_CHARS`] ceiling, exactly the
+    /// pre-T19 cap. Same lifecycle as the T18 redaction key: set at startup
+    /// and on every successful provider switch.
+    pub fn set_context_window(&mut self, window: Option<u64>) {
+        self.cap_chars = match window {
+            Some(w) => w.clamp(MIN_OUTPUT_CHARS as u64, MAX_OUTPUT_CHARS as u64) as usize,
+            None => MAX_OUTPUT_CHARS,
+        };
     }
 
     /// Builder: select which description set `definitions()` serves. Tool
@@ -223,11 +247,17 @@ impl Registry {
         })?;
         out.output = self.redact(out.output);
         out.title = self.redact(out.title);
-        if out.output.chars().count() > MAX_OUTPUT_CHARS {
-            let total = out.output.chars().count();
-            let truncated: String = out.output.chars().take(MAX_OUTPUT_CHARS).collect();
+        // T19 head+tail keep: build output puts errors at the END, so a
+        // head-only cut discards exactly the informative part. Keep the true
+        // head and true tail, elide the middle, and say how to narrow.
+        let total = out.output.chars().count();
+        if total > self.cap_chars {
+            let head_n = self.cap_chars / 2;
+            let tail_n = self.cap_chars - head_n;
+            let head: String = out.output.chars().take(head_n).collect();
+            let tail: String = out.output.chars().skip(total - tail_n).collect();
             out.output = format!(
-                "{truncated}\n\n(output truncated: showing first {MAX_OUTPUT_CHARS} of {total} chars)"
+                "{head}\n\n(output truncated: showing the first {head_n} and last {tail_n} of {total} chars; narrow the command, e.g. grep or head/tail, to see the elided middle)\n\n{tail}"
             );
         }
         Ok(out)

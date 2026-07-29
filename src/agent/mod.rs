@@ -135,10 +135,14 @@ impl Session {
     /// wiring exists exactly once, here.
     fn build(
         provider: Box<dyn Provider>,
-        registry: Registry,
+        mut registry: Registry,
         cfg: SessionConfig,
         seed: Option<SessionSeed>,
     ) -> Self {
+        // T19: the per-result output cap scales to the active window. Set
+        // here and in `switch_provider` — the same two moments the T18
+        // redaction key is registered — so no construction path can skip it.
+        registry.set_context_window(cfg.context_window);
         let cancel = CancelToken::new();
         let mut tool_ctx = ToolCtx::new(cfg.cwd.clone());
         // One token per session: an Esc must reach a running bash too.
@@ -230,6 +234,8 @@ impl Session {
         self.cfg.context_window = context_window;
         self.cfg.max_tokens_source = max_tokens_source;
         self.context_warned = false;
+        // T19: the output cap follows the new window (see `build`).
+        self.registry.set_context_window(context_window);
     }
 
     /// Swap the system prompt and tool-prompt profile in place (T9: a
