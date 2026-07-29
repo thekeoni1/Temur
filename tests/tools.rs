@@ -1067,3 +1067,94 @@ fn guard_bash_keyless_spawns_exactly_as_before() {
     .unwrap();
     assert!(out.output.contains("placeholder-not-a-real-key"), "{}", out.output);
 }
+
+// --- T18 P4: active-key redaction at the registry chokepoint -----------------
+
+#[test]
+fn redaction_scrubs_registered_key_from_output_and_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("leaky.txt");
+    std::fs::write(&f, "prefix placeholder-not-a-real-key-1234 suffix\n").unwrap();
+    let mut reg = Registry::standard();
+    reg.set_redaction_key(Some("placeholder-not-a-real-key-1234".into()));
+    let mut ctx = ctx_in(dir.path());
+
+    // Ok path: a read whose content contains the key comes back scrubbed.
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": f.to_str().unwrap()})).unwrap();
+    assert!(!out.output.contains("placeholder-not-a-real-key-1234"), "{}", out.output);
+    assert!(out.output.contains("prefix [redacted] suffix"), "{}", out.output);
+
+    // Err path: a missing-file error naming a key-bearing path is scrubbed.
+    let ghost = dir.path().join("placeholder-not-a-real-key-1234.txt");
+    let err = run(&reg, &mut ctx, "read", json!({"filePath": ghost.to_str().unwrap()}))
+        .unwrap_err()
+        .to_string();
+    assert!(!err.contains("placeholder-not-a-real-key-1234"), "{err}");
+    assert!(err.contains("[redacted]"), "{err}");
+
+    // bash output is scrubbed through the same chokepoint (sandbox or not,
+    // the key STRING here is test data echoed by the command, not a file).
+    let out = run(
+        &reg,
+        &mut ctx,
+        "bash",
+        json!({"command": "echo placeholder-not-a-real-key-1234"}),
+    )
+    .unwrap();
+    assert!(!out.output.contains("placeholder-not-a-real-key-1234"), "{}", out.output);
+    assert!(out.output.contains("[redacted]"), "{}", out.output);
+}
+
+#[test]
+fn redaction_covers_the_truncation_boundary() {
+    // Key placed to STRADDLE the 30,000-char central cut: if truncation ran
+    // first, the key's head would survive in the kept slice. Redaction runs
+    // first, so no key byte can ride the cut.
+    let dir = tempfile::tempdir().unwrap();
+    let key = "placeholder-not-a-real-key-1234"; // 31 chars
+    let f = dir.path().join("big.txt");
+    let body = format!("{}{}{}", "x".repeat(29_990), key, "y".repeat(2_000));
+    std::fs::write(&f, &body).unwrap();
+    let mut reg = Registry::standard();
+    reg.set_redaction_key(Some(key.into()));
+    let mut ctx = ctx_in(dir.path());
+
+    let out = run(
+        &reg,
+        &mut ctx,
+        "bash",
+        json!({"command": format!("cat {}", f.display())}),
+    )
+    .unwrap();
+    assert!(out.output.contains("(output truncated"), "the cap must fire: {}", out.output);
+    assert!(!out.output.contains(key), "{}", &out.output[29_900..30_100.min(out.output.len())]);
+    assert!(
+        !out.output.contains("placeholder-not-a-real"),
+        "not even a key prefix may survive the cut"
+    );
+}
+
+#[test]
+fn redaction_ignores_short_keys_and_cleared_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+
+    // Shorter than 8 chars: stored but never matched.
+    reg.set_redaction_key(Some("short".into()));
+    let out = run(&reg, &mut ctx, "bash", json!({"command": "echo a short word"})).unwrap();
+    assert!(out.output.contains("a short word"), "{}", out.output);
+    assert!(!out.output.contains("[redacted]"), "{}", out.output);
+
+    // Clearing (switch to keyless) stops redaction entirely.
+    reg.set_redaction_key(Some("placeholder-not-a-real-key-1234".into()));
+    reg.set_redaction_key(None);
+    let out = run(
+        &reg,
+        &mut ctx,
+        "bash",
+        json!({"command": "echo placeholder-not-a-real-key-1234"}),
+    )
+    .unwrap();
+    assert!(out.output.contains("placeholder-not-a-real-key-1234"), "{}", out.output);
+}

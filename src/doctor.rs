@@ -45,6 +45,19 @@ pub fn run(
     no_network: bool,
     out: &mut dyn Write,
 ) -> std::io::Result<bool> {
+    // The real sandbox probe (T18): local process spawns only, no network,
+    // no writes; still read-only in every sense that matters here.
+    run_with_sandbox_probe(cfg_path, no_network, out, &crate::tools::sandbox_available)
+}
+
+/// [`run`] with the bash-sandbox availability probe injected, so tests can
+/// exercise the unavailable arm on hosts where the real probe passes.
+fn run_with_sandbox_probe(
+    cfg_path: &Path,
+    no_network: bool,
+    out: &mut dyn Write,
+    sandbox_probe: &dyn Fn() -> bool,
+) -> std::io::Result<bool> {
     let mut r = Report {
         out,
         warns: 0,
@@ -126,6 +139,31 @@ pub fn run(
                 let prefix = format!("profile \"{name}\" ");
                 key_file_check(&mut r, &prefix, Path::new(path), false, rotate_days)?;
             }
+        }
+    }
+
+    // T18: key isolation + bash sandbox status. The guard here is built by
+    // the SAME construction rule as startup (KeyGuard::from_selection), so
+    // this report cannot disagree with what the session enforces.
+    let guard = crate::tools::KeyGuard::from_selection(&active, &profiles);
+    if guard.is_empty() {
+        r.pass("key isolation: keyless config, no key files to guard")?;
+        writeln!(r.out, "NOTE: bash key sandbox: not needed (keyless config)")?;
+    } else {
+        r.pass(&format!(
+            "key isolation: {} key file(s) guarded (tools cannot read them)",
+            guard.protected_files().len()
+        ))?;
+        if sandbox_probe() {
+            r.pass("bash key sandbox: available (unprivileged user namespaces)")?;
+        } else if cfg.allow_bash_without_key_sandbox {
+            r.warn(
+                "bash key sandbox: unavailable on this kernel, and allow_bash_without_key_sandbox is true: bash will run WITHOUT the key sandbox (the other tools stay guarded)",
+            )?;
+        } else {
+            r.warn(
+                "bash key sandbox: unavailable on this kernel (no unprivileged user namespaces): bash will refuse to run; setting allow_bash_without_key_sandbox to true in config.json accepts running it unsandboxed (the other tools stay guarded)",
+            )?;
         }
     }
 
@@ -758,5 +796,116 @@ mod tests {
         assert!(healthy, "{out}");
         assert!(out.contains("SKIP: model checks (--no-network)"), "{out}");
         assert!(!out.contains("server listing"), "{out}");
+    }
+
+    // ------------------------- T18 P4: key isolation + sandbox status lines
+
+    /// Doctor over a literal config with an injected sandbox probe,
+    /// --no-network (these checks are offline).
+    fn doctor_probed(config: &str, probe_ok: bool) -> (bool, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.json");
+        std::fs::write(&cfg_path, config).unwrap();
+        let mut out: Vec<u8> = Vec::new();
+        let healthy =
+            run_with_sandbox_probe(&cfg_path, true, &mut out, &move || probe_ok).unwrap();
+        (healthy, String::from_utf8(out).unwrap())
+    }
+
+    /// A keyed config over a real placeholder key file (mode 600), plus
+    /// optional extra top-level fields.
+    fn keyed_config(dir: &Path, extra: &str) -> String {
+        let key = dir.join("k");
+        std::fs::write(&key, "placeholder-not-a-real-key\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        format!(
+            r#"{{{extra}"provider":"openai-compat","openai_compat":{{"base_url":"http://127.0.0.1:1/v1","model":"m","api_key_file":"{}"}}}}"#,
+            key.display()
+        )
+    }
+
+    #[test]
+    fn keyless_config_reports_no_guard_and_a_sandbox_note() {
+        let (healthy, out) = doctor_probed(
+            r#"{"provider":"openai-compat","openai_compat":{"model":"m"}}"#,
+            false, // probe result must not matter when keyless
+        );
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains("PASS: key isolation: keyless config, no key files to guard"),
+            "{out}"
+        );
+        assert!(out.contains("NOTE: bash key sandbox: not needed (keyless config)"), "{out}");
+        assert!(!out.contains("WARN: bash key sandbox"), "{out}");
+    }
+
+    #[test]
+    fn keyed_config_counts_guarded_files_and_passes_with_sandbox() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (healthy, out) = doctor_probed(&keyed_config(tmp.path(), ""), true);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains("PASS: key isolation: 1 key file(s) guarded (tools cannot read them)"),
+            "{out}"
+        );
+        assert!(
+            out.contains("PASS: bash key sandbox: available (unprivileged user namespaces)"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn keyed_config_without_sandbox_warns_naming_refusal_and_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (healthy, out) = doctor_probed(&keyed_config(tmp.path(), ""), false);
+        assert!(healthy, "WARN must not affect the exit code: {out}");
+        assert!(out.contains("WARN: bash key sandbox: unavailable"), "{out}");
+        assert!(out.contains("bash will refuse to run"), "{out}");
+        assert!(out.contains("allow_bash_without_key_sandbox"), "{out}");
+    }
+
+    #[test]
+    fn keyed_config_with_override_warns_that_bash_runs_unsandboxed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = keyed_config(tmp.path(), r#""allow_bash_without_key_sandbox":true,"#);
+        let (healthy, out) = doctor_probed(&cfg, false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains("WARN: bash key sandbox: unavailable")
+                && out.contains("bash will run WITHOUT the key sandbox"),
+            "{out}"
+        );
+        // With a WORKING sandbox the override changes nothing: plain PASS.
+        let (_healthy, out) = doctor_probed(&cfg, true);
+        assert!(
+            out.contains("PASS: bash key sandbox: available (unprivileged user namespaces)"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn profile_key_files_count_into_the_guard() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mk = |name: &str| {
+            let p = tmp.path().join(name);
+            std::fs::write(&p, "placeholder-not-a-real-key\n").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+            p.display().to_string()
+        };
+        let (a, b) = (mk("ka"), mk("kb"));
+        let cfg = format!(
+            r#"{{"profiles":{{
+                "one":{{"provider":"openai-compat","model":"m","api_key_file":"{a}"}},
+                "two":{{"provider":"openai-compat","model":"m","api_key_file":"{b}"}}}},
+                "profile":"one"}}"#
+        );
+        let (healthy, out) = doctor_probed(&cfg, true);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains("key isolation: 2 key file(s) guarded"),
+            "{out}"
+        );
     }
 }

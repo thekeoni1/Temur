@@ -82,6 +82,18 @@ pub enum ProviderError {
 pub fn build_live(
     p: &crate::config::ResolvedProfile,
 ) -> Result<Box<dyn Provider>, crate::error::Error> {
+    Ok(build_live_with_key(p)?.0)
+}
+
+/// [`build_live`] plus the credential it read, for T18 redaction: the tool
+/// layer registers the ACTIVE key so tool output can never echo it. NO
+/// additional key read happens here — the returned string is the very one
+/// activation loaded (`None` for a keyless selection, which is also what
+/// CLEARS a previously registered key on a switch to keyless).
+#[allow(clippy::type_complexity)]
+pub fn build_live_with_key(
+    p: &crate::config::ResolvedProfile,
+) -> Result<(Box<dyn Provider>, Option<String>), crate::error::Error> {
     if p.provider == "openai-compat" {
         // Keyless is first-class for local endpoints; a keyed endpoint reads
         // its credential BY PATH — the same isolation rule as
@@ -90,10 +102,13 @@ pub fn build_live(
             Some(path) => Some(crate::secret::load_api_key_from(std::path::Path::new(path))?),
             None => None,
         };
-        Ok(Box::new(openai_compat::OpenAiCompatProvider::with_http(
-            p.base_url.clone(),
+        Ok((
+            Box::new(openai_compat::OpenAiCompatProvider::with_http(
+                p.base_url.clone(),
+                key.clone(),
+            )),
             key,
-        )))
+        ))
     } else {
         // Credential BY PATH: the profile's api_key_file when set, else
         // APP_SECRET_FILE (appsvc launcher). Deliberately never
@@ -102,10 +117,13 @@ pub fn build_live(
             Some(path) => crate::secret::load_api_key_from(std::path::Path::new(path))?,
             None => crate::secret::load_api_key()?,
         };
-        Ok(Box::new(anthropic::AnthropicProvider::with_http(
-            p.base_url.clone(),
-            key,
-        )))
+        Ok((
+            Box::new(anthropic::AnthropicProvider::with_http(
+                p.base_url.clone(),
+                key.clone(),
+            )),
+            Some(key),
+        ))
     }
 }
 

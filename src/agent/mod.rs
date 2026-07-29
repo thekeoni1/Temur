@@ -184,6 +184,14 @@ impl Session {
         self.tool_ctx.allow_unsandboxed_bash = allow_unsandboxed_bash;
     }
 
+    /// Register the ACTIVE provider's credential for tool-output redaction
+    /// (T18 layer 3), or clear it with `None`. Called at startup and after
+    /// every successful provider switch, with the very string the build
+    /// already read: no extra key read ever happens for redaction.
+    pub fn set_redaction_key(&mut self, key: Option<String>) {
+        self.registry.set_redaction_key(key);
+    }
+
     /// The persistable view of this session. Borrowed throughout: saving a
     /// multi-megabyte history must not clone it.
     pub fn snapshot(&self) -> SessionSnapshot<'_> {

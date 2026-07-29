@@ -26,6 +26,11 @@ pub use todo::TodoItem;
 /// centralized truncation.
 const MAX_OUTPUT_CHARS: usize = 30_000;
 
+/// Below this a registered redaction key is never matched (T18): replacing
+/// tiny strings would mangle ordinary output, and no real API key is this
+/// short.
+pub const MIN_REDACTABLE_KEY_CHARS: usize = 8;
+
 /// Mutable per-session state tools may use.
 pub struct ToolCtx {
     pub cwd: PathBuf,
@@ -115,6 +120,11 @@ fn parse_input<T: serde::de::DeserializeOwned>(input: Value) -> Result<T, ToolEr
 pub struct Registry {
     tools: Vec<Box<dyn Tool>>,
     profile: PromptProfile,
+    /// T18 layer 3: the ACTIVE provider's credential, registered so every
+    /// tool result is scrubbed of it. `None` = nothing to redact (keyless,
+    /// mock). Only the active key can be registered honestly: inactive
+    /// profiles' keys are never read, so they are never redactable.
+    redact_key: Option<String>,
 }
 
 impl Registry {
@@ -131,6 +141,7 @@ impl Registry {
                 Box::new(todo::TodoReadTool),
             ],
             profile: PromptProfile::Full,
+            redact_key: None,
         }
     }
 
@@ -138,7 +149,17 @@ impl Registry {
         Registry {
             tools,
             profile: PromptProfile::Full,
+            redact_key: None,
         }
+    }
+
+    /// Register (or clear, with `None`) the active provider's key for
+    /// output redaction (T18). Keys shorter than
+    /// [`MIN_REDACTABLE_KEY_CHARS`] are stored but never matched: replacing
+    /// tiny strings would mangle ordinary output, and a 7-char credential
+    /// is not a real API key.
+    pub fn set_redaction_key(&mut self, key: Option<String>) {
+        self.redact_key = key;
     }
 
     /// Builder: select which description set `definitions()` serves. Tool
@@ -182,7 +203,9 @@ impl Registry {
             .collect()
     }
 
-    /// Execute by name with central output truncation.
+    /// Execute by name with central key redaction and output truncation.
+    /// Redaction runs FIRST, on success and failure alike, so a key can
+    /// never leak split across the truncation cut or ride an error message.
     pub fn execute(
         &self,
         name: &str,
@@ -194,7 +217,12 @@ impl Registry {
             .iter()
             .find(|t| t.name() == name)
             .ok_or_else(|| ToolError::InvalidInput(format!("unknown tool: {name}")))?;
-        let mut out = tool.execute(input, ctx)?;
+        let mut out = tool.execute(input, ctx).map_err(|e| match e {
+            ToolError::InvalidInput(s) => ToolError::InvalidInput(self.redact(s)),
+            ToolError::Failed(s) => ToolError::Failed(self.redact(s)),
+        })?;
+        out.output = self.redact(out.output);
+        out.title = self.redact(out.title);
         if out.output.chars().count() > MAX_OUTPUT_CHARS {
             let total = out.output.chars().count();
             let truncated: String = out.output.chars().take(MAX_OUTPUT_CHARS).collect();
@@ -203,6 +231,20 @@ impl Registry {
             );
         }
         Ok(out)
+    }
+
+    /// Scrub every occurrence of the registered key from one string (T18).
+    /// No-op without a registered key of redactable length.
+    fn redact(&self, s: String) -> String {
+        match &self.redact_key {
+            Some(key)
+                if key.chars().count() >= MIN_REDACTABLE_KEY_CHARS
+                    && s.contains(key.as_str()) =>
+            {
+                s.replace(key.as_str(), "[redacted]")
+            }
+            _ => s,
+        }
     }
 }
 

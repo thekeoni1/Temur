@@ -369,6 +369,10 @@ fn repl(
     // swallowed anyway). One-shot mode (T14) prints no banner at all:
     // stdout is reserved for the assistant's prose.
     let banner = !use_tui && oneshot.is_none();
+    // T18: the credential the startup construction read (None = keyless or
+    // mock), registered below for tool-output redaction. Never an extra
+    // read: each arm hands over the very string it loaded anyway.
+    let mut startup_key: Option<String> = None;
     let provider: Box<dyn Provider> = match &mock {
         Some(paths) => {
             let files: Vec<std::path::PathBuf> =
@@ -408,6 +412,7 @@ fn repl(
                             Some(p) => Some(secret::load_api_key_from(std::path::Path::new(p))?),
                             None => None,
                         };
+                        startup_key = key.clone();
                         Box::new(OpenAiCompatProvider::new(
                             resolved.base_url.clone(),
                             key,
@@ -421,6 +426,7 @@ fn repl(
                             Some(p) => secret::load_api_key_from(std::path::Path::new(p))?,
                             None => secret::load_api_key()?,
                         };
+                        startup_key = Some(key.clone());
                         Box::new(AnthropicProvider::new(
                             resolved.base_url.clone(),
                             key,
@@ -432,7 +438,11 @@ fn repl(
                     }
                 }
                 // The one live construction path, shared with `/model` (T8).
-                None => temur::provider::build_live(&resolved)?,
+                None => {
+                    let (provider, key) = temur::provider::build_live_with_key(&resolved)?;
+                    startup_key = key;
+                    provider
+                }
             }
         }
     };
@@ -483,6 +493,9 @@ fn repl(
         temur::tools::KeyGuard::from_selection(&resolved, &profiles),
         cfg.allow_bash_without_key_sandbox,
     );
+    // T18 layer 3: the startup credential (already read above, or None)
+    // registers for tool-output redaction.
+    session.set_redaction_key(startup_key);
 
     let mut ui: Box<dyn Ui> = if use_tui {
         Box::new(TuiUi::new(
@@ -571,7 +584,18 @@ fn repl(
     }
 
     let replay_mode = mock.is_some() || capture.is_some();
-    let build = |p: &temur::config::ResolvedProfile| temur::provider::build_live(p);
+    // T18: each successful in-loop provider build deposits the key it read
+    // here; the loop re-registers it for redaction after the command runs.
+    // Written ONLY on success, so a failed switch (which leaves the session
+    // unchanged) also leaves the registered key unchanged. `Some(None)`
+    // means "switched to a keyless selection: clear".
+    let switched_key: std::cell::RefCell<Option<Option<String>>> =
+        std::cell::RefCell::new(None);
+    let build = |p: &temur::config::ResolvedProfile| {
+        let (provider, key) = temur::provider::build_live_with_key(p)?;
+        *switched_key.borrow_mut() = Some(key);
+        Ok(provider)
+    };
     let list_models = |p: &temur::config::ResolvedProfile| temur::provider::list_models_live(p);
     // T15: the file `/model --save` edits — the exact path startup loaded.
     let cfg_path = config::config_path();
@@ -611,6 +635,13 @@ fn repl(
                 };
                 temur::commands::run(temur::commands::parse(&line), &mut cctx)
             };
+            // T18: a switch that built a provider re-registers that build's
+            // key (the LAST build wins, which is the one now active; the
+            // T16 hop builds twice and the second, when it succeeds, is the
+            // active override).
+            if let Some(key) = switched_key.borrow_mut().take() {
+                session.set_redaction_key(key);
+            }
             for ev in &events {
                 match ev {
                     AgentEvent::ModelsListed(ids) => cached_model_ids = ids.clone(),
