@@ -104,8 +104,14 @@ pub struct App {
     pub version: String,
     /// Model ids from the most recent `/models` listing (T9): Tab
     /// completion candidates for `/model <id>`. Session-lifetime cache,
-    /// refreshed on every listing.
+    /// refreshed on every listing; DROPPED when a switch changes the
+    /// provider (T16) — one provider's listing must never complete or
+    /// judge another provider's ids.
     pub model_ids: Vec<String>,
+    /// The provider the cached `model_ids` were listed from — seeded with
+    /// the startup provider by the constructor callers, then tracked via
+    /// [`AgentEvent::ModelSwitched`].
+    pub provider: String,
     /// Profile names for `/model` Tab completion (T9), from SessionInfo.
     pub profiles: Vec<String>,
     /// Session keys from the most recent `/sessions` listing (T10): Tab
@@ -146,6 +152,7 @@ impl App {
             cwd,
             version,
             model_ids: Vec::new(),
+            provider: String::new(),
             profiles: Vec::new(),
             session_keys: Vec::new(),
             completion: None,
@@ -262,8 +269,16 @@ impl App {
                 self.busy = false;
             }
             // T8 chrome/state signals; the confirmation Notice arrives
-            // separately, so these fold silently into chrome.
-            AgentEvent::ModelSwitched { model } => self.model = model.clone(),
+            // separately, so these fold silently into chrome. A provider
+            // change drops the cached `/models` ids (T16): they described
+            // the OLD provider's catalog.
+            AgentEvent::ModelSwitched { model, provider } => {
+                if *provider != self.provider {
+                    self.model_ids.clear();
+                    self.provider = provider.clone();
+                }
+                self.model = model.clone();
+            }
             AgentEvent::ThinkingChanged(on) => self.thinking = *on,
             AgentEvent::SessionCleared => {
                 // The wipe mirrors Session::clear_history: transcript,

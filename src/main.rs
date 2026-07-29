@@ -451,6 +451,8 @@ fn repl(
                 version: VERSION.to_string(),
                 // T9: profile names feed `/model` Tab completion.
                 profiles: profiles.keys().cloned().collect(),
+                // T16: the clear-on-provider-change baseline for cached ids.
+                provider: resolved.provider.clone(),
             },
             // T6: the render thread holds the session's cancel token so
             // Esc can interrupt a running turn.
@@ -531,6 +533,11 @@ fn repl(
     let list_models = |p: &temur::config::ResolvedProfile| temur::provider::list_models_live(p);
     // T15: the file `/model --save` edits — the exact path startup loaded.
     let cfg_path = config::config_path();
+    // T16: the driver-loop mirror of the UI's `/models` id cache — the
+    // command layer reads it for the raw-id advisory. Same lifecycle as the
+    // TUI cache: refreshed on every listing, dropped on a provider change.
+    let mut cached_model_ids: Vec<String> = Vec::new();
+    let mut cached_ids_provider = resolved.provider.clone();
     while let Some(line) = ui.read_input() {
         if !use_tui {
             plain_cancel.clear();
@@ -538,28 +545,42 @@ fn repl(
         // T8: any `/`-line is command-space — it never reaches the model or
         // the history. Commands run here, between turns, by construction.
         if line.starts_with('/') {
-            let mut cctx = temur::commands::CommandCtx {
-                session: &mut session,
-                profiles: &profiles,
-                active_profile: &mut active_profile,
-                provider_name: &mut provider_name,
-                model: &mut current_model,
-                persist_path: &mut persist_path,
-                session_max_bytes,
-                sessions_dir: &sessions_dir,
-                cwd: &cwd,
-                cwd_display: &cwd_display,
-                session_name: &mut session_name,
-                replay_mode,
-                prompt_profile: &mut current_prompt_profile,
-                active_resolved: &mut active_resolved,
-                config_path: &cfg_path,
-                build_provider: &build,
-                list_models: &list_models,
-                rebuild_system: &rebuild_system,
+            let events = {
+                let mut cctx = temur::commands::CommandCtx {
+                    session: &mut session,
+                    profiles: &profiles,
+                    active_profile: &mut active_profile,
+                    provider_name: &mut provider_name,
+                    model: &mut current_model,
+                    persist_path: &mut persist_path,
+                    session_max_bytes,
+                    sessions_dir: &sessions_dir,
+                    cwd: &cwd,
+                    cwd_display: &cwd_display,
+                    session_name: &mut session_name,
+                    replay_mode,
+                    prompt_profile: &mut current_prompt_profile,
+                    active_resolved: &mut active_resolved,
+                    config_path: &cfg_path,
+                    cached_model_ids: &cached_model_ids,
+                    build_provider: &build,
+                    list_models: &list_models,
+                    rebuild_system: &rebuild_system,
+                };
+                temur::commands::run(temur::commands::parse(&line), &mut cctx)
             };
-            for ev in temur::commands::run(temur::commands::parse(&line), &mut cctx) {
-                ui.event(&ev);
+            for ev in &events {
+                match ev {
+                    AgentEvent::ModelsListed(ids) => cached_model_ids = ids.clone(),
+                    AgentEvent::ModelSwitched { provider, .. }
+                        if *provider != cached_ids_provider =>
+                    {
+                        cached_model_ids.clear();
+                        cached_ids_provider = provider.clone();
+                    }
+                    _ => {}
+                }
+                ui.event(ev);
             }
             continue;
         }

@@ -1675,6 +1675,9 @@ struct CmdHarness {
     /// Mirrors main's list_models injection; tests swap in fakes.
     #[allow(clippy::type_complexity)]
     list: Box<dyn Fn(&ResolvedProfile) -> Result<Vec<String>, temur::error::Error>>,
+    /// Mirrors main's cached_model_ids local (T16): the last `/models`
+    /// listing, empty until a test fills it.
+    cached_model_ids: Vec<String>,
 }
 
 /// The base (non-profile) selection the harness starts on, mirroring what
@@ -1718,6 +1721,7 @@ impl CmdHarness {
             active_resolved: base_resolved(),
             config_path: "/nonexistent/temur-test-config.json".into(),
             list: Box::new(|_| unreachable!("no list_models injected")),
+            cached_model_ids: Vec::new(),
         }
     }
 
@@ -1744,6 +1748,7 @@ impl CmdHarness {
             prompt_profile: &mut self.prompt_profile,
             active_resolved: &mut self.active_resolved,
             config_path: &self.config_path,
+            cached_model_ids: &self.cached_model_ids,
             build_provider: build,
             list_models: &*self.list,
             rebuild_system: &*self.rebuild,
@@ -1772,7 +1777,7 @@ fn model_switch_updates_everything_and_next_turn_uses_it() {
         &mut h.ctx(&mut session, &build),
     );
     assert!(
-        events.contains(&AgentEvent::ModelSwitched { model: "model-b".into() }),
+        events.contains(&AgentEvent::ModelSwitched { model: "model-b".into(), provider: "openai-compat".into() }),
         "chrome signal present: {events:?}"
     );
     assert!(
@@ -2234,7 +2239,7 @@ fn raw_id_switch_keeps_profile_settings_and_the_save_records_it() {
         commands::parse("/model raw-model-x"),
         &mut h.ctx(&mut session, &build),
     );
-    assert!(events.contains(&AgentEvent::ModelSwitched { model: "raw-model-x".into() }));
+    assert!(events.contains(&AgentEvent::ModelSwitched { model: "raw-model-x".into(), provider: "openai-compat".into() }));
     assert!(
         notices(&events)
             .iter()
@@ -2343,7 +2348,7 @@ fn model_switch_save_switches_then_persists_to_the_profile_site() {
         commands::parse("/model raw-x --save"),
         &mut h.ctx(&mut session, &build),
     );
-    assert!(events.contains(&AgentEvent::ModelSwitched { model: "raw-x".into() }));
+    assert!(events.contains(&AgentEvent::ModelSwitched { model: "raw-x".into(), provider: "openai-compat".into() }));
     assert!(
         notices(&events).iter().any(|n| n.starts_with("saved model raw-x to ")),
         "{events:?}"
@@ -2417,7 +2422,7 @@ fn model_switch_save_persist_failure_keeps_the_switch() {
         commands::parse("/model raw-x --save"),
         &mut h.ctx(&mut session, &build),
     );
-    assert!(events.contains(&AgentEvent::ModelSwitched { model: "raw-x".into() }));
+    assert!(events.contains(&AgentEvent::ModelSwitched { model: "raw-x".into(), provider: "anthropic".into() }));
     assert!(
         notices(&events)
             .iter()
@@ -2469,6 +2474,93 @@ fn model_save_forms_are_replay_guarded() {
             "{line}: {events:?}"
         );
     }
+}
+
+// ---------------------------------- T16: /model hints + cached-id advisory
+
+/// A provider builder for switches that must succeed; nothing is asserted
+/// about the requests it records.
+fn build_ok(_: &ResolvedProfile) -> Result<Box<dyn Provider>, temur::error::Error> {
+    Ok(Box::new(MockProvider {
+        responses: RefCell::new(vec![]),
+        requests: Rc::new(RefCell::new(vec![])),
+    }))
+}
+
+#[test]
+fn model_list_appends_the_raw_id_hints_after_the_profiles() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!("/model with no argument builds nothing")
+    };
+    let events = commands::run(commands::parse("/model"), &mut h.ctx(&mut session, &build));
+    let ns = notices(&events);
+    // Profiles first, hints last, in order.
+    assert!(ns[0].starts_with("a — "), "{ns:?}");
+    assert!(ns[1].starts_with("b — "), "{ns:?}");
+    assert_eq!(
+        &ns[2..],
+        [
+            "/model <name> switches profiles; any other argument is a raw model id on the ACTIVE provider",
+            "/models lists what the active provider serves; /model <id> --save persists the switch",
+        ],
+        "{ns:?}"
+    );
+}
+
+#[test]
+fn raw_switch_advises_when_the_id_is_absent_from_the_cached_listing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    h.cached_model_ids = vec!["served-a".into(), "served-b".into()];
+    let events = commands::run(
+        commands::parse("/model bogus-id"),
+        &mut h.ctx(&mut session, &build_ok),
+    );
+    // The switch STANDS — the advisory follows the confirmation notice.
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ModelSwitched { .. })));
+    assert_eq!(h.model, "bogus-id");
+    let ns = notices(&events);
+    assert!(ns[0].starts_with("switched model to bogus-id"), "{ns:?}");
+    assert_eq!(
+        ns[1],
+        "note: \"bogus-id\" is not in the last /models listing; the switch stands — a wrong id surfaces as the provider's error on the next turn",
+        "{ns:?}"
+    );
+}
+
+#[test]
+fn raw_switch_stays_silent_when_the_id_is_listed_or_no_listing_exists() {
+    // Cached listing contains the id: no advisory.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    h.cached_model_ids = vec!["served-a".into()];
+    let events = commands::run(
+        commands::parse("/model served-a"),
+        &mut h.ctx(&mut session, &build_ok),
+    );
+    assert!(
+        !notices(&events).iter().any(|n| n.contains("/models listing")),
+        "{events:?}"
+    );
+    // Empty cache (no listing yet): also silent — nothing to judge against.
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    let events = commands::run(
+        commands::parse("/model bogus-id"),
+        &mut h.ctx(&mut session, &build_ok),
+    );
+    assert!(
+        !notices(&events).iter().any(|n| n.contains("/models listing")),
+        "{events:?}"
+    );
+    assert_eq!(h.model, "bogus-id", "the switch still happened");
 }
 
 // --------------------------------------------- T10: /sessions /resume /new

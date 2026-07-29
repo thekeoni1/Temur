@@ -25,7 +25,10 @@ pub enum AgentEvent {
     Notice(String),
     /// T8 `/model`: the active model changed. A chrome/state signal — the
     /// human-readable confirmation travels as a separate [`Notice`](Self::Notice).
-    ModelSwitched { model: String },
+    /// Carries the provider (T16) so UIs can drop `/models`-cached ids when
+    /// a switch changes the provider: a llama.cpp listing must never judge
+    /// anthropic ids, and vice versa.
+    ModelSwitched { model: String, provider: String },
     /// T8 `/thinking`: session thinking flipped (chrome/state signal, like
     /// [`ModelSwitched`](Self::ModelSwitched)).
     ThinkingChanged(bool),

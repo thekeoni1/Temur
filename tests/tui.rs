@@ -443,6 +443,7 @@ fn headless_end_to_end_through_the_ui_seam() {
             cwd: dir.path().display().to_string(),
             version: "test".into(),
             profiles: vec![],
+            provider: "anthropic".into(),
         },
         100,
         30,
@@ -626,6 +627,7 @@ fn headless_submission_clears_a_stale_token() {
             cwd: dir.path().display().to_string(),
             version: "test".into(),
             profiles: vec![],
+            provider: "anthropic".into(),
         },
         100,
         30,
@@ -683,6 +685,7 @@ fn headless_coalesced_enter_esc_interrupt_survives() {
             cwd: dir.path().display().to_string(),
             version: "test".into(),
             profiles: vec![],
+            provider: "anthropic".into(),
         },
         100,
         30,
@@ -733,6 +736,7 @@ fn headless_esc_interrupts_a_blocked_turn_end_to_end() {
             cwd: dir.path().display().to_string(),
             version: "test".into(),
             profiles: vec![],
+            provider: "anthropic".into(),
         },
         100,
         30,
@@ -767,10 +771,40 @@ fn submit_command_no_title_no_user_cell_no_busy_and_recallable() {
     assert_eq!(a.input, "/status");
 }
 
+/// T16: a switch that changes the provider drops the `/models`-cached ids
+/// (a llama.cpp listing must never complete anthropic ids); a same-provider
+/// switch keeps them.
+#[test]
+fn fold_provider_change_clears_cached_model_ids_same_provider_keeps() {
+    let mut a = app();
+    a.provider = "openai-compat".into();
+    a.fold(&AgentEvent::ModelsListed(vec!["qwen3-1.7b".into(), "qwen3-4b".into()]));
+    assert_eq!(a.model_ids.len(), 2);
+    // Raw switch on the SAME provider: cache survives.
+    a.fold(&AgentEvent::ModelSwitched {
+        model: "qwen3-4b".into(),
+        provider: "openai-compat".into(),
+    });
+    assert_eq!(a.model_ids.len(), 2, "same-provider switch keeps the cache");
+    // Profile switch to another provider: cache dropped, baseline updated.
+    a.fold(&AgentEvent::ModelSwitched {
+        model: "claude-sonnet-5".into(),
+        provider: "anthropic".into(),
+    });
+    assert!(a.model_ids.is_empty(), "provider change drops the cache");
+    assert_eq!(a.provider, "anthropic");
+    // And switching back does NOT resurrect anything.
+    a.fold(&AgentEvent::ModelSwitched {
+        model: "qwen3-4b".into(),
+        provider: "openai-compat".into(),
+    });
+    assert!(a.model_ids.is_empty());
+}
+
 #[test]
 fn fold_model_switched_and_thinking_changed_update_chrome() {
     let mut a = app();
-    a.fold(&AgentEvent::ModelSwitched { model: "model-b".into() });
+    a.fold(&AgentEvent::ModelSwitched { model: "model-b".into(), provider: String::new() });
     assert_eq!(a.model, "model-b");
     a.fold(&AgentEvent::ThinkingChanged(true));
     assert!(a.thinking);
@@ -856,6 +890,7 @@ fn headless_command_flow_status_leaves_title_alone() {
             cwd: dir.path().display().to_string(),
             version: "test".into(),
             profiles: vec![],
+            provider: "anthropic".into(),
         },
         100,
         30,
@@ -918,6 +953,7 @@ fn headless_command_flow_status_leaves_title_alone() {
             prompt_profile: &mut prompt_profile,
             active_resolved: &mut active_resolved,
             config_path: std::path::Path::new("/nonexistent/temur-test-config.json"),
+            cached_model_ids: &[],
             build_provider: &build,
             list_models: &list,
             rebuild_system: &rebuild,
@@ -977,6 +1013,7 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
             cwd: dir.path().display().to_string(),
             version: "test".into(),
             profiles: vec![],
+            provider: "anthropic".into(),
         },
         100,
         30,
@@ -1044,6 +1081,7 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
                 prompt_profile: &mut prompt_profile,
                 active_resolved: &mut active_resolved,
                 config_path: std::path::Path::new("/nonexistent/temur-test-config.json"),
+            cached_model_ids: &[],
                 build_provider: &build,
                 list_models: &list,
                 rebuild_system: &rebuild,
@@ -1213,6 +1251,7 @@ fn headless_markdown_fixture_renders_in_final_frame() {
             cwd: dir.path().display().to_string(),
             version: "test".into(),
             profiles: vec![],
+            provider: "anthropic".into(),
         },
         60,
         30,
@@ -1489,6 +1528,7 @@ fn headless_tab_completion_submits_the_completed_command() {
             cwd: dir.path().display().to_string(),
             version: "test".into(),
             profiles: vec![],
+            provider: "anthropic".into(),
         },
         100,
         30,
@@ -1539,6 +1579,7 @@ fn headless_tab_completion_submits_the_completed_command() {
             prompt_profile: &mut prompt_profile,
             active_resolved: &mut active_resolved,
             config_path: std::path::Path::new("/nonexistent/temur-test-config.json"),
+            cached_model_ids: &[],
             build_provider: &build,
             list_models: &list,
             rebuild_system: &rebuild,
@@ -1717,6 +1758,7 @@ fn headless_resume_backscroll_renders_in_final_frame() {
             cwd: "/test".into(),
             version: "test".into(),
             profiles: vec![],
+            provider: "anthropic".into(),
         },
         90,
         24,

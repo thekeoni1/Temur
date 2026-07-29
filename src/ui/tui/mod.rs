@@ -33,6 +33,9 @@ pub struct SessionInfo {
     /// Profile names for `/model` Tab completion (T9); startup-validated in
     /// main, so this is display/completion data only.
     pub profiles: Vec<String>,
+    /// The provider active at startup (T16): the baseline the cached-ids
+    /// clear-on-provider-change comparison starts from.
+    pub provider: String,
 }
 
 enum ToUi {
@@ -123,6 +126,7 @@ impl TuiUi {
                 };
                 let mut app = App::new(info.model, info.thinking, info.cwd, info.version);
                 app.profiles = info.profiles;
+                app.provider = info.provider;
                 let (_, end) =
                     render_loop(terminal, app, rx, tx_input, &mut CrosstermEvents, cancel);
                 ratatui::restore();
@@ -159,6 +163,7 @@ impl TuiUi {
                 let terminal = Terminal::new(backend).expect("test backend");
                 let mut app = App::new(info.model, info.thinking, info.cwd, info.version);
                 app.profiles = info.profiles;
+                app.provider = info.provider;
                 let mut source = ScriptedEvents::new(script);
                 let (terminal, _) =
                     render_loop(terminal, app, rx, tx_input, &mut source, cancel);

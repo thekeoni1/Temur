@@ -129,6 +129,11 @@ pub struct CommandCtx<'a> {
     /// only — reading and writing it is [`crate::config::persist_model`]'s
     /// job, and nothing else here touches the file.
     pub config_path: &'a Path,
+    /// Model ids cached from the last `/models` listing (T16), threaded
+    /// read-only from the driver loop, which keeps them in sync with the UI
+    /// cache (refreshed on every listing, cleared when a switch changes the
+    /// provider). Empty = no usable listing: every advisory stays silent.
+    pub cached_model_ids: &'a [String],
     #[allow(clippy::type_complexity)]
     pub build_provider:
         &'a dyn Fn(&ResolvedProfile) -> Result<Box<dyn Provider>, crate::error::Error>,
@@ -378,7 +383,8 @@ fn model_list(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
             notice("then /model local switches to it (\"profile\": \"local\" selects it at startup)"),
         ];
     }
-    ctx.profiles
+    let mut out: Vec<AgentEvent> = ctx
+        .profiles
         .iter()
         .map(|(name, p)| {
             let mark = if Some(name.as_str()) == ctx.active_profile.as_deref() {
@@ -388,7 +394,16 @@ fn model_list(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
             };
             notice(format!("{name} — {} · {}{mark}", p.provider, p.model))
         })
-        .collect()
+        .collect();
+    // T16 discoverability: the raw-id form was routinely misread as a
+    // provider switch, so the listing says what a non-profile argument does.
+    out.push(notice(
+        "/model <name> switches profiles; any other argument is a raw model id on the ACTIVE provider",
+    ));
+    out.push(notice(
+        "/models lists what the active provider serves; /model <id> --save persists the switch",
+    ));
+    out
 }
 
 fn model_switch(ctx: &mut CommandCtx, name: String) -> Vec<AgentEvent> {
@@ -435,6 +450,7 @@ fn model_switch(ctx: &mut CommandCtx, name: String) -> Vec<AgentEvent> {
     vec![
         AgentEvent::ModelSwitched {
             model: profile.model.clone(),
+            provider: profile.provider.clone(),
         },
         notice(format!(
             "switched to {name} ({} · {})",
@@ -470,13 +486,25 @@ fn raw_model_switch(ctx: &mut CommandCtx, id: String) -> Vec<AgentEvent> {
     );
     *ctx.model = id.clone();
     *ctx.active_resolved = target;
-    vec![
-        AgentEvent::ModelSwitched { model: id.clone() },
+    let mut out = vec![
+        AgentEvent::ModelSwitched {
+            model: id.clone(),
+            provider: ctx.active_resolved.provider.clone(),
+        },
         notice(format!(
             "switched model to {id} ({} · profile settings kept)",
             ctx.active_resolved.provider
         )),
-    ]
+    ];
+    // T16 advisory: the last `/models` listing is the only offline signal a
+    // raw id has. Absence never blocks — servers alias ids and the listing
+    // may be stale — the switch stands and the notice says exactly that.
+    if !ctx.cached_model_ids.is_empty() && !ctx.cached_model_ids.iter().any(|m| m == &id) {
+        out.push(notice(format!(
+            "note: {id:?} is not in the last /models listing; the switch stands — a wrong id surfaces as the provider's error on the next turn"
+        )));
+    }
+    out
 }
 
 /// `/model --save` (T15): persist the CURRENTLY active model into the
