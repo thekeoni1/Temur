@@ -345,7 +345,9 @@ fn frame_notice_and_turn_tail_and_footer_totals() {
     a.now_ms = 0;
     a.submit("hi");
     a.fold(&AgentEvent::TextDelta("Hello!".into()));
-    a.fold(&AgentEvent::Notice("response truncated: max_tokens reached".into()));
+    a.fold(&AgentEvent::Notice(
+        "response truncated: max_tokens (800, from config) reached; raise max_tokens in config.json".into(),
+    ));
     a.now_ms = 2000;
     a.fold(&AgentEvent::TurnComplete {
         turn_usage: usage(12, 34),
@@ -427,6 +429,7 @@ fn headless_end_to_end_through_the_ui_seam() {
         temperature: None,
         top_p: None,
         context_window: None,
+        max_tokens_source: None,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
 
@@ -609,6 +612,7 @@ fn headless_submission_clears_a_stale_token() {
         temperature: None,
         top_p: None,
         context_window: None,
+        max_tokens_source: None,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
     // The stale Esc: set after the (zeroth) turn ended, before submission.
@@ -668,6 +672,7 @@ fn headless_coalesced_enter_esc_interrupt_survives() {
         temperature: None,
         top_p: None,
         context_window: None,
+        max_tokens_source: None,
     };
     let mut session = Session::new(Box::new(BlockUntilCancelled), Registry::standard(), cfg);
 
@@ -719,6 +724,7 @@ fn headless_esc_interrupts_a_blocked_turn_end_to_end() {
         temperature: None,
         top_p: None,
         context_window: None,
+        max_tokens_source: None,
     };
     let mut session = Session::new(Box::new(BlockUntilCancelled), Registry::standard(), cfg);
 
@@ -868,6 +874,7 @@ fn headless_command_flow_status_leaves_title_alone() {
         temperature: None,
         top_p: None,
         context_window: None,
+        max_tokens_source: None,
     };
     let mut session = Session::new(
         Box::new(BlockUntilCancelled), // never called: only commands run
@@ -997,6 +1004,7 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
         temperature: None,
         top_p: None,
         context_window: None,
+        max_tokens_source: None,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
 
@@ -1235,6 +1243,7 @@ fn headless_markdown_fixture_renders_in_final_frame() {
         temperature: None,
         top_p: None,
         context_window: None,
+        max_tokens_source: None,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
 
@@ -1507,6 +1516,7 @@ fn headless_tab_completion_submits_the_completed_command() {
         temperature: None,
         top_p: None,
         context_window: None,
+        max_tokens_source: None,
     };
     let mut session = Session::new(
         Box::new(BlockUntilCancelled), // never called: only commands run

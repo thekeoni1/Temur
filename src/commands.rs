@@ -451,6 +451,7 @@ fn activate_profile(ctx: &mut CommandCtx, name: &str) -> Result<(), AgentEvent> 
         profile.model.clone(),
         profile.max_tokens,
         profile.context_window,
+        Some(name.to_string()),
     );
     if profile.prompt_profile != *ctx.prompt_profile {
         let system = (ctx.rebuild_system)(profile.prompt_profile);
@@ -607,6 +608,9 @@ fn raw_override(ctx: &mut CommandCtx, id: &str) -> Result<(), AgentEvent> {
         target.model.clone(),
         target.max_tokens,
         target.context_window,
+        // The raw switch keeps the profile's settings, so the limit's
+        // source stays whatever is active.
+        ctx.active_profile.clone(),
     );
     *ctx.model = id.to_string();
     *ctx.active_resolved = target;

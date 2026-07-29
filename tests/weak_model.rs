@@ -85,6 +85,7 @@ fn session_with(
         temperature: None,
         top_p: None,
         context_window: None,
+        max_tokens_source: None,
     };
     (
         Session::new(Box::new(provider), Registry::standard(), cfg),

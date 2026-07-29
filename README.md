@@ -161,7 +161,7 @@ against a local llama.cpp server (`base_url` defaults to
 ```json
 {
   "provider": "openai-compat",
-  "max_tokens": 1024,
+  "max_tokens": 4096,
   "openai_compat": { "model": "qwen3-1.7b", "context_window": 8192 }
 }
 ```
@@ -189,7 +189,7 @@ key file + limits) and switch between them from inside a session with
 {
   "profiles": {
     "local":  { "provider": "openai-compat", "model": "qwen3-1.7b",
-                "max_tokens": 1024, "context_window": 8192 },
+                "max_tokens": 4096, "context_window": 8192 },
     "sonnet": { "provider": "anthropic", "model": "claude-sonnet-5",
                 "max_tokens": 32000 }
   },

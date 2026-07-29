@@ -49,6 +49,10 @@ pub struct SessionConfig {
     /// awareness off. Warnings only — never compaction, trimming, or
     /// request-side enforcement.
     pub context_window: Option<u64>,
+    /// Where `max_tokens` came from (T16): the active profile's name, or
+    /// `None` for the base config. Display only — the truncation notice
+    /// names the limit's source so the fix is findable.
+    pub max_tokens_source: Option<String>,
 }
 
 impl SessionConfig {
@@ -65,6 +69,7 @@ impl SessionConfig {
             // A property of the served model, not of temur: main.rs sets it
             // from the provider section that knows the server.
             context_window: None,
+            max_tokens_source: None,
         }
     }
 }
@@ -196,11 +201,13 @@ impl Session {
         model: String,
         max_tokens: u32,
         context_window: Option<u64>,
+        max_tokens_source: Option<String>,
     ) {
         self.provider = provider;
         self.cfg.model = model;
         self.cfg.max_tokens = max_tokens;
         self.cfg.context_window = context_window;
+        self.cfg.max_tokens_source = max_tokens_source;
         self.context_warned = false;
     }
 
@@ -649,9 +656,17 @@ impl Session {
                                     "response truncated: max_tokens reached near the context window (~{used} of {window} tokens) — likely context overflow; consider starting a new session"
                                 )));
                             } else {
-                                ui(AgentEvent::Notice(
-                                    "response truncated: max_tokens reached".into(),
-                                ));
+                                // T16: name the limit and where it came
+                                // from, so the fix is findable without
+                                // guessing which config knob applied.
+                                let source = match &self.cfg.max_tokens_source {
+                                    Some(p) => format!("from profile {p:?}"),
+                                    None => "from config".into(),
+                                };
+                                ui(AgentEvent::Notice(format!(
+                                    "response truncated: max_tokens ({}, {source}) reached; raise max_tokens in config.json",
+                                    self.cfg.max_tokens
+                                )));
                             }
                         }
                         Some(StopReason::ModelContextWindowExceeded) => ui(AgentEvent::Notice(

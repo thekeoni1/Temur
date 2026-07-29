@@ -105,6 +105,12 @@ fn no_config_live_run_prints_quickstart_and_fails() {
         stderr.contains("docs/OFFLINE.md") && stderr.contains("Recommended small models"),
         "stderr: {stderr}"
     );
+    // T16: sessions discoverability rides it too.
+    assert!(
+        stderr.contains("saved automatically per working directory")
+            && stderr.contains("temur --continue resumes the last one"),
+        "stderr: {stderr}"
+    );
     // The raw credential error must be gone, and nothing may reach stdout.
     assert!(
         !stderr.contains("APP_SECRET_FILE"),
@@ -348,7 +354,7 @@ fn init_local_template_writes_exact_config_and_no_key_file() {
     assert_eq!(
         written,
         format!(
-            "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 1024,\n  \"openai_compat\": {{ \"base_url\": \"{base}\",\n                     \"model\": \"qwen3-1.7b\", \"context_window\": 8192 }}\n}}\n"
+            "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{ \"base_url\": \"{base}\",\n                     \"model\": \"qwen3-1.7b\", \"context_window\": 8192 }}\n}}\n"
         )
     );
     assert!(stdout.contains("could not list models from"), "{stdout}");
@@ -427,6 +433,12 @@ fn init_anthropic_template_exact_config_and_empty_600_key_file() {
     assert_eq!(mode_of(&sb.home.join(".secrets")), 0o700);
     assert!(stdout.contains("Paste your key into"), "{stdout}");
     assert!(stdout.contains("with your editor"), "{stdout}");
+    // T16: the closing sessions-discoverability line.
+    assert!(
+        stdout.contains("saved automatically per working directory")
+            && stdout.contains("temur --continue"),
+        "{stdout}"
+    );
 }
 
 #[test]

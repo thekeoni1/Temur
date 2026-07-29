@@ -431,6 +431,8 @@ fn repl(
     // Profile overrides (T8): identical to the global values when no profile
     // is active — resolve_base copies them through.
     session_cfg.max_tokens = resolved.max_tokens;
+    // T16: the truncation notice names where the limit came from.
+    session_cfg.max_tokens_source = active_profile.clone();
     // Advisory context awareness: the window is a property of the served
     // model, so it comes from the selection that knows the server.
     session_cfg.context_window = resolved.context_window;
@@ -679,7 +681,9 @@ fn quickstart_text() -> String {
            temur doctor    check the config and environment\n\
          \n\
          Config format and recipes: README.md, section \"Configure\".\n\
-         Local model picks: docs/OFFLINE.md, section \"Recommended small models\".\n",
+         Local model picks: docs/OFFLINE.md, section \"Recommended small models\".\n\
+         Conversations are saved automatically per working directory;\n\
+         temur --continue resumes the last one.\n",
         config::config_path().display()
     )
 }

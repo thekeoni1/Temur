@@ -105,11 +105,11 @@ fn render_config(
             Some(b) if b != crate::config::DEFAULT_OPENAI_COMPAT_BASE_URL => {
                 let b = serde_json::to_string(b).expect("string serializes");
                 format!(
-                    "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 1024,\n  \"openai_compat\": {{ \"base_url\": {b},\n                     \"model\": {m}, \"context_window\": 8192 }}\n}}\n"
+                    "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{ \"base_url\": {b},\n                     \"model\": {m}, \"context_window\": 8192 }}\n}}\n"
                 )
             }
             _ => format!(
-                "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 1024,\n  \"openai_compat\": {{ \"model\": {m}, \"context_window\": 8192 }}\n}}\n"
+                "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{ \"model\": {m}, \"context_window\": 8192 }}\n}}\n"
             ),
         },
         "anthropic" => {
@@ -417,6 +417,12 @@ pub fn run(
     } else {
         writeln!(out, "Next: temur doctor to check the setup, then temur to start.")?;
     }
+    // T16: sessions discoverability — autosave was routinely discovered by
+    // accident, so the wizard says it once at the end.
+    writeln!(
+        out,
+        "Conversations are saved automatically per working directory; temur --continue\nresumes the last one."
+    )?;
     Ok(())
 }
 
@@ -496,7 +502,7 @@ mod tests {
     #[test]
     fn local_render_default_base_url_is_byte_identical_to_the_readme_recipe() {
         let t = &TEMPLATES[0]; // local
-        let expect = "{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 1024,\n  \"openai_compat\": { \"model\": \"qwen3-1.7b\", \"context_window\": 8192 }\n}\n";
+        let expect = "{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": { \"model\": \"qwen3-1.7b\", \"context_window\": 8192 }\n}\n";
         // Both the no-answer path and an answered default render the recipe.
         assert_eq!(render_config(t, "qwen3-1.7b", None, None), expect);
         assert_eq!(

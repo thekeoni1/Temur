@@ -73,6 +73,7 @@ fn session_with(
         temperature: None,
         top_p: None,
         context_window: None,
+        max_tokens_source: None,
     };
     (
         Session::new(Box::new(provider), Registry::standard(), cfg),
@@ -332,6 +333,7 @@ fn iteration_limit_stops_runaway_turns() {
         temperature: None,
         top_p: None,
         context_window: None,
+        max_tokens_source: None,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
     let mut events = vec![];
@@ -399,6 +401,7 @@ fn session_with_window(
         temperature: None,
         top_p: None,
         context_window,
+        max_tokens_source: None,
     };
     Session::new(Box::new(provider), Registry::standard(), cfg)
 }
@@ -470,9 +473,10 @@ fn max_tokens_near_window_gets_context_overflow_wording() {
 }
 
 #[test]
-fn max_tokens_without_window_keeps_exact_old_wording() {
+fn max_tokens_without_window_names_the_limit_and_its_source() {
     let dir = tempfile::tempdir().unwrap();
-    // Regression pin: no configured window → byte-identical v1 notice.
+    // T16: the plain (not near-window) notice names the limit and where it
+    // came from; no active profile → "from config".
     let mut session = session_with_window(
         dir.path(),
         vec![msg_with_usage(
@@ -486,7 +490,35 @@ fn max_tokens_without_window_keeps_exact_old_wording() {
     let events = collect_events(&mut session, "hi");
     assert!(notices(&events)
         .iter()
-        .any(|n| n == "response truncated: max_tokens reached"));
+        .any(|n| n == "response truncated: max_tokens (800, from config) reached; raise max_tokens in config.json"),
+        "{events:?}");
+}
+
+#[test]
+fn max_tokens_notice_names_the_profile_after_a_switch() {
+    let dir = tempfile::tempdir().unwrap();
+    // A profile-supplied limit: the notice names the profile.
+    let mut session = session_with_window(dir.path(), vec![], None, 800);
+    let truncated = MockProvider {
+        responses: RefCell::new(vec![msg_with_usage(
+            vec![text("t")],
+            StopReason::MaxTokens,
+            serde_json::json!({"input_tokens": 150, "output_tokens": 100}),
+        )]),
+        requests: Rc::new(RefCell::new(vec![])),
+    };
+    session.switch_provider(
+        Box::new(truncated),
+        "qwen3-1.7b".into(),
+        1024,
+        None,
+        Some("local".into()),
+    );
+    let events = collect_events(&mut session, "hi");
+    assert!(notices(&events)
+        .iter()
+        .any(|n| n == "response truncated: max_tokens (1024, from profile \"local\") reached; raise max_tokens in config.json"),
+        "{events:?}");
 }
 
 #[test]
@@ -550,6 +582,7 @@ fn resumed_with(
         temperature: None,
         top_p: None,
         context_window: None,
+        max_tokens_source: None,
     };
     let (seed, notices) = store::prepare_seed(file);
     (
@@ -796,6 +829,7 @@ fn interrupt_session(
         temperature: None,
         top_p: None,
         context_window: None,
+        max_tokens_source: None,
     };
     Session::new(
         Box::new(InterruptingProvider {
@@ -1403,7 +1437,7 @@ fn switch_provider_next_turn_hits_new_provider_with_full_history() {
         responses: RefCell::new(vec![msg(vec![text("second answer")], StopReason::EndTurn)]),
         requests: requests_b.clone(),
     };
-    session.switch_provider(Box::new(provider_b), "model-b".into(), 512, Some(9_999));
+    session.switch_provider(Box::new(provider_b), "model-b".into(), 512, Some(9_999), None);
     assert_eq!(session.model(), "model-b");
     assert_eq!(session.max_tokens(), 512);
     assert_eq!(session.context_window(), Some(9_999));
@@ -1456,7 +1490,7 @@ fn switch_to_compat_hits_new_base_url_and_drops_thinking_blocks() {
             bodies: bodies.clone(),
         }),
     );
-    session.switch_provider(Box::new(compat), "qwen-sw".into(), 1024, None);
+    session.switch_provider(Box::new(compat), "qwen-sw".into(), 1024, None, None);
     collect_events(&mut session, "second question");
 
     assert_eq!(urls.borrow().len(), 1);
