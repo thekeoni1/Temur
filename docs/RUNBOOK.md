@@ -1560,3 +1560,49 @@ anthropic recipe shows a representative /home/you key path; the
 wizard writes the user's real expanded path, so that recipe is
 illustrative, not byte-identical to a render (the local recipe
 remains the byte-pinned one).
+
+## v0.6.0 release acceptance - recorded result
+
+2026-07-28 (PDT), staged and published same evening. Baseline: T16
+pushed earlier that evening (34b5f27..718f43b, ci run 30419442358
+green: test 1m05s, release-gate 4m24s). Stage 1 = three prep commits
+(4d7445d bump at all six pin sites, 6842c04 CHANGELOG dated
+2026-07-28, ff22b3a RUNBOOK delta + ROADMAP ship vehicle), full
+check.sh green, busybox --version printed 0.6.0.
+
+Stage 2, in order, all green:
+
+- Prep commits pushed 718f43b..ff22b3a; on-push ci run 30420865108
+  green (test 2m14s, release-gate 8m06s) - this run exercised the
+  version-skew release gate against the bump.
+- Annotated tag v0.6.0 at ff22b3a ("temur v0.6.0 - model selection
+  and access (T15+T16)"), pushed. Unsigned as always; `git tag -v`
+  shows the annotation plus "no signature found".
+- Full release.sh (no SKIP_CHECK): check.sh both paths, leak grep
+  clean (operator patterns + generic shapes, files + history) first
+  try, skew gate "OK: install.sh + README match version 0.6.0 and all
+  targets", 4/4 targets gated + version-asserted "temur 0.6.0" (i686
+  + x86_64 native, aarch64 + armv7 via qemu), SHA256SUMS
+  self-verified, staged at /home/dev/dist/release/v0.6.0/. Installer
+  matrix 6/6 (pass+corrupt+unlisted, host + busybox).
+- Staged sha256s: 6d740675f6d0... aarch64, e400fafb904f... armv7,
+  d81cb6142642... i686, 8e3b8ac7025b... x86_64 (full sums in the
+  release's SHA256SUMS asset).
+- Private release github.com/thekeoni1/Temur/releases/tag/v0.6.0
+  created, title "temur v0.6.0", notes = one context line + the
+  CHANGELOG v0.6.0 section, 5 assets (4 binaries + SHA256SUMS), not
+  draft; 404s while the repo is private, by design.
+- Closing gate: authenticated download of SHA256SUMS diffed IDENTICAL
+  against the staged file; downloaded x86_64 binary's independent
+  sha256 (8e3b8ac7025b8a0c12c945946cf7b7d9b5a02ad581b83f544c1dfbb
+  95cdefe72) matches both the staged sum and sha256sum -c; release
+  shows 5 assets, isDraft false; git tag -v shows the annotated tag
+  at ff22b3a; repo visibility PRIVATE confirmed.
+
+Precondition satisfied before stage 2: the operator confirmed the
+claude-haiku-4-5 alias live (the id the init anthropic template
+bakes), closing the stage-1 gate item.
+
+Open release items unchanged: the PUBLIC one-liner gate and the
+hostname-blob-history decision stay queued behind the visibility
+flip; ARM hardware smoke still pending hardware.
