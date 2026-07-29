@@ -885,3 +885,75 @@ fn guard_keyless_ctx_reads_the_same_files_freely() {
     )
     .unwrap();
 }
+
+// --- T18 P2: key-file guard (grep/glob walks) --------------------------------
+
+#[test]
+fn guard_grep_never_reads_or_names_the_key_file() {
+    let (dir, key, _normal, mut ctx) = guarded_ctx();
+    let reg = Registry::standard();
+    // The key content exists ONLY in the key file: a match would be a leak.
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "placeholder-not-a-real"})).unwrap();
+    assert_eq!(out.output, "No matches found", "{}", out.output);
+
+    // Ordinary content is still found, and the key file's PATH never
+    // appears even when its lines would match a broad pattern.
+    std::fs::write(dir.path().join("code.txt"), "ordinary needle here\n").unwrap();
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "needle"})).unwrap();
+    assert!(out.output.contains("code.txt"), "{}", out.output);
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "."})).unwrap();
+    assert!(
+        !out.output.contains(key.to_str().unwrap()),
+        "key path must never appear: {}",
+        out.output
+    );
+    assert!(!out.output.contains("placeholder-not-a-real"), "{}", out.output);
+}
+
+#[test]
+fn guard_glob_never_lists_key_or_secrets_dir_contents() {
+    let (dir, key, _normal, mut ctx) = guarded_ctx();
+    let reg = Registry::standard();
+    let sibling = key.parent().unwrap().join("sibling.pem");
+    std::fs::write(&sibling, "placeholder-not-a-real-key-2\n").unwrap();
+
+    let out = run(&reg, &mut ctx, "glob", json!({"pattern": "**/*"})).unwrap();
+    assert!(out.output.contains("normal.txt"), "{}", out.output);
+    assert!(!out.output.contains("api.key"), "{}", out.output);
+    assert!(!out.output.contains("sibling.pem"), "{}", out.output);
+
+    // Aiming the walk INTO the secrets dir still lists nothing.
+    let out = run(
+        &reg,
+        &mut ctx,
+        "glob",
+        json!({"pattern": "*", "path": key.parent().unwrap().to_str().unwrap()}),
+    )
+    .unwrap();
+    assert_eq!(out.output, "No files found", "{}", out.output);
+
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "hello", "path": dir.path().to_str().unwrap()})).unwrap();
+    assert_eq!(out.output, "No matches found");
+}
+
+#[test]
+fn guard_grep_glob_walk_scale_sanity_and_keyless_unchanged() {
+    // Walk-scale: a couple hundred files under a guarded ctx complete fine
+    // (identities are stat'ed once per execute; see the guard unit test
+    // snapshot_freezes_identities_once for the freeze proof).
+    let (dir, key, _normal, mut ctx) = guarded_ctx();
+    let reg = Registry::standard();
+    for i in 0..200 {
+        std::fs::write(dir.path().join(format!("f{i}.txt")), "bulk needle\n").unwrap();
+    }
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "bulk needle"})).unwrap();
+    assert!(out.output.contains("(Showing first 100 matches)"), "{}", out.output);
+    assert!(!out.output.contains("api.key"), "{}", out.output);
+
+    // Keyless ctx over the same tree: the key file IS found, as before T18.
+    let mut plain = ctx_in(dir.path());
+    let out = run(&reg, &mut plain, "grep", json!({"pattern": "placeholder-not-a-real"})).unwrap();
+    assert!(out.output.contains("api.key"), "{}", out.output);
+    let out = run(&reg, &mut plain, "glob", json!({"pattern": "**/*.key"})).unwrap();
+    assert!(out.output.contains(key.to_str().unwrap()), "{}", out.output);
+}

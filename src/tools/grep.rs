@@ -51,11 +51,20 @@ impl Tool for GrepTool {
             None => None,
         };
 
+        // T18: one guard snapshot per execution — protected identities are
+        // stat'ed here once, then every walked file is checked against it.
+        // A grep reads EVERY file it walks, so an unguarded walk would
+        // exfiltrate a key wholesale.
+        let guard = ctx.guard.snapshot();
+
         let mut matches: Vec<String> = Vec::new();
         let mut total = 0usize;
         'walk: for entry in ignore::WalkBuilder::new(&root).build().flatten() {
             if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 continue;
+            }
+            if guard.denies(entry.path()) {
+                continue; // key isolation: never read, never matched
             }
             if let Some(inc) = &include {
                 let name_hit = entry

@@ -43,10 +43,18 @@ impl Tool for GlobTool {
             .map_err(|e| ToolError::InvalidInput(format!("invalid glob pattern: {e}")))?
             .compile_matcher();
 
+        // T18: one guard snapshot per execution. Protected files (and
+        // anything under a secrets dir) are omitted from listings — names
+        // and mtimes are a leak surface too.
+        let guard = ctx.guard.snapshot();
+
         let mut hits: Vec<(std::path::PathBuf, SystemTime)> = Vec::new();
         for entry in ignore::WalkBuilder::new(&root).build().flatten() {
             if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 continue;
+            }
+            if guard.denies(entry.path()) {
+                continue; // key isolation: never listed
             }
             let rel = entry.path().strip_prefix(&root).unwrap_or(entry.path());
             if glob.is_match(rel) || glob.is_match(entry.path()) {

@@ -267,6 +267,35 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_freezes_identities_once() {
+        // The walk-scale contract: protected identities are stat'ed at
+        // SNAPSHOT time, never per candidate. Proof: snapshot while the key
+        // file does not exist yet (no identity to record), then create it
+        // and hardlink it outside every protected dir. The old snapshot
+        // cannot deny the hardlink (frozen, empty identity set); a fresh
+        // one does. (Deliberately NOT remove-and-recreate: filesystems
+        // reuse inode numbers, which would make that variant flaky.)
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = tmp.path().join("secrets");
+        std::fs::create_dir_all(&secrets).unwrap();
+        let key = secrets.join("api.key");
+        let g = KeyGuard::from_paths(vec![key.clone()]);
+        let old_snap = g.snapshot();
+
+        std::fs::write(&key, "placeholder-not-a-real-key\n").unwrap();
+        let outside = tmp.path().join("outside-hard.txt");
+        std::fs::hard_link(&key, &outside).unwrap();
+
+        assert!(
+            !old_snap.denies(&outside),
+            "old snapshot must not re-stat protected files per candidate"
+        );
+        assert!(g.snapshot().denies(&outside), "a fresh snapshot catches it");
+        // Path rules still hold on the stale snapshot regardless.
+        assert!(old_snap.denies(&key));
+    }
+
+    #[test]
     fn canonicalize_lenient_resolves_existing_prefix_of_missing_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let real = tmp.path().canonicalize().unwrap();
