@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.7.0 - 2026-07-29
+
 T18 key isolation (guaranteeing tools cannot reach configured keys):
 
 - File guard for read/write/edit/glob/grep: every configured

@@ -1821,3 +1821,31 @@ unchanged; the sandbox adds no new kill path. (7) In one-shot
 smokes the local model sometimes self-refuses key-adjacent
 requests before any tool runs; irrelevant to the guards but noted
 because it cost smoke retries.
+
+## v0.7.0 - close-out (release procedure delta)
+
+What ships: T17 provider onboarding (init --add, xai template, hidden
+key entry, rotation reminder) and T18 key isolation guards (file
+guard, bash sandbox, redaction, doctor lines), one CHANGELOG section
+covering both - the two-milestones-together pattern from v0.5.0 and
+v0.6.0.
+
+Procedure deltas vs v0.6.0:
+
+- **Both milestones were pushed BEFORE stage 1** (T17 at 95ef0cc, T18
+  at a32ea30, each with its on-push ci run green), extending the
+  v0.6.0 delta where only one of the pair was. The stage-1 baseline is
+  the post-push head a32ea30; step A of the stage-1 prompt (push T18)
+  had already been executed under a separate push authorization in the
+  same implementing session, so stage 1 verified its end state (main
+  == origin == a32ea30, ci 30492294811 green) instead of re-pushing.
+- **Stage 1 keeps the v0.6.0 EARLY stop**: version bump + dated
+  CHANGELOG + records + full check.sh gate only; the four-target
+  release.sh build, SHA256SUMS, and installer matrix stay in stage 2
+  (tag, build, private release, closing gate).
+- **Still no tag, no push of the release-prep commits, no release** at
+  stage 1; the visibility decision (repo stays PRIVATE) and the
+  public-flip gate remain queued behind stage 2, unchanged.
+- Pin-site note for the bump: the lone remaining 0.6.0 in Cargo.lock
+  is the upstream ureq-proto crate's own version (the v0.6.0 cycle's
+  equivalent was heck 0.5.0); not a temur pin.
