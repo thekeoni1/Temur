@@ -442,7 +442,7 @@ fn init_anthropic_template_exact_config_and_empty_600_key_file() {
 }
 
 #[test]
-fn init_openai_and_gemini_templates_exact_configs() {
+fn init_hosted_compat_templates_exact_configs() {
     for (answer, name, base, model) in [
         ("3", "openai", "https://api.openai.com/v1", "gpt-4o-mini"),
         (
@@ -451,6 +451,7 @@ fn init_openai_and_gemini_templates_exact_configs() {
             "https://generativelanguage.googleapis.com/v1beta/openai",
             "gemini-2.5-flash",
         ),
+        ("5", "xai", "https://api.x.ai/v1", "grok-4"),
     ] {
         let sb = sandbox();
         let mut c = sb.cmd();
@@ -602,9 +603,9 @@ fn init_add_anthropic_merges_profiles_and_leaves_the_rest_alone() {
 
 #[test]
 fn init_add_each_single_profile_template_through_the_binary() {
-    // openai and gemini: model default + key default. local: dead-port base
+    // Hosted templates: model default + key default. local: dead-port base
     // URL (listing fails, free-text fallback) + model default, keyless.
-    for template in ["openai", "gemini"] {
+    for template in ["openai", "gemini", "xai"] {
         let sb = sandbox();
         sb.write_config(LOCAL_PRETTY);
         let mut c = sb.cmd();

@@ -109,9 +109,9 @@ temur doctor    # read-only check of the config and environment
 temur           # TUI on a terminal; plain line REPL when piped
 ```
 
-`temur init` offers four templates: local llama.cpp / Ollama / LM Studio
-(keyless), Anthropic, OpenAI, and Gemini (the latter two through their
-OpenAI-compatible endpoints). The local template asks where the server
+`temur init` offers five templates: local llama.cpp / Ollama / LM Studio
+(keyless), Anthropic, OpenAI, Gemini, and xAI Grok (the hosted three
+through their OpenAI-compatible endpoints). The local template asks where the server
 lives (default `http://127.0.0.1:8080/v1`) and, when one answers, lists
 the models it actually serves so you pick by number instead of typing an
 id blind; with no server reachable it falls back to the free-text
@@ -154,10 +154,10 @@ scripting recipes, skills): [docs/USAGE.md](docs/USAGE.md).
 ## Configure
 
 Config lives at `~/.config/temur/config.json`; `temur init` writes any
-of the recipes below for you. The hosted OpenAI and Gemini templates
-are written to their published compat specs but not yet live-verified
-against those endpoints (that verification is a parked milestone
-awaiting keys). The minimal keyless setup
+of the recipes below for you. The hosted OpenAI, Gemini, and xAI
+templates are written to their published compat specs but not yet
+live-verified against those endpoints (that verification is a parked
+milestone awaiting keys). The minimal keyless setup
 against a local llama.cpp server (`base_url` defaults to
 `http://127.0.0.1:8080/v1`):
 
@@ -193,6 +193,21 @@ effective default model):
                 "api_key_file": "/home/you/.secrets/temur-anthropic-key" }
   },
   "profile": "sonnet"
+}
+```
+
+The hosted OpenAI-compatible templates share one shape and differ only
+in endpoint and default model; the xAI one, for instance (OpenAI:
+`https://api.openai.com/v1` / `gpt-4o-mini`; Gemini:
+`https://generativelanguage.googleapis.com/v1beta/openai` /
+`gemini-2.5-flash`):
+
+```json
+{
+  "provider": "openai-compat",
+  "openai_compat": { "base_url": "https://api.x.ai/v1",
+                     "model": "grok-4",
+                     "api_key_file": "/home/you/.secrets/temur-xai-key" }
 }
 ```
 

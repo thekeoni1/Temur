@@ -21,7 +21,7 @@ struct Template {
     key_slug: Option<&'static str>,
 }
 
-const TEMPLATES: [Template; 4] = [
+const TEMPLATES: [Template; 5] = [
     Template {
         number: "1",
         name: "local",
@@ -50,6 +50,16 @@ const TEMPLATES: [Template; 4] = [
         default_model: "gemini-2.5-flash",
         key_slug: Some("gemini"),
     },
+    // T17: flagship coverage. The default model id is free text like every
+    // hosted template's, and T13 (parked until keys exist) live-verifies
+    // the hosted providers, this one included.
+    Template {
+        number: "5",
+        name: "xai",
+        describe: "xAI Grok API (openai-compat, key file)",
+        default_model: "grok-4",
+        key_slug: Some("xai"),
+    },
 ];
 
 /// The anthropic template's curated profile set (T16): one profile per
@@ -69,6 +79,7 @@ const ANTHROPIC_DEFAULT_PROFILE: &str = "sonnet";
 
 const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+const XAI_BASE_URL: &str = "https://api.x.ai/v1";
 
 /// The hosted openai-compat templates' fixed endpoints, one lookup shared
 /// by the fresh render and `init --add` so a new template lands in both.
@@ -76,6 +87,7 @@ fn compat_base_url(template_name: &str) -> &'static str {
     match template_name {
         "openai" => OPENAI_BASE_URL,
         "gemini" => GEMINI_BASE_URL,
+        "xai" => XAI_BASE_URL,
         other => unreachable!("template {other} has no fixed base URL"),
     }
 }
@@ -139,7 +151,7 @@ fn render_config(
             s.push_str(&format!("  }},\n  \"profile\": {m}\n}}\n"));
             s
         }
-        "openai" | "gemini" => {
+        "openai" | "gemini" | "xai" => {
             let base = compat_base_url(template.name);
             let k = serde_json::to_string(key_file.expect("keyed template"))
                 .expect("string serializes");
@@ -392,7 +404,8 @@ pub fn run(
         .find(|t| t.number == choice || t.name == choice)
         .ok_or_else(|| {
             crate::error::Error::Config(format!(
-                "init: unknown template {choice:?} (expected 1-4 or a template name)"
+                "init: unknown template {choice:?} (expected 1-{} or a template name)",
+                TEMPLATES.len()
             ))
         })?;
 
@@ -686,15 +699,10 @@ mod tests {
                     assert_eq!(resolved.provider, "anthropic");
                     assert_eq!(resolved.api_key_file.as_deref(), Some("/tmp/k"));
                 }
-                "openai" | "gemini" => {
+                "openai" | "gemini" | "xai" => {
                     assert_eq!(resolved.provider, "openai-compat");
                     assert_eq!(resolved.api_key_file.as_deref(), Some("/tmp/k"));
-                    let expect = if t.name == "openai" {
-                        OPENAI_BASE_URL
-                    } else {
-                        GEMINI_BASE_URL
-                    };
-                    assert_eq!(resolved.base_url, expect);
+                    assert_eq!(resolved.base_url, compat_base_url(t.name));
                 }
                 other => panic!("unknown template {other}"),
             }
@@ -1032,10 +1040,11 @@ mod tests {
     }
 
     #[test]
-    fn add_openai_and_gemini_add_one_profile_each() {
+    fn add_hosted_templates_add_one_profile_each() {
         for (template, base, default_model) in [
             ("openai", OPENAI_BASE_URL, "gpt-4o-mini"),
             ("gemini", GEMINI_BASE_URL, "gemini-2.5-flash"),
+            ("xai", XAI_BASE_URL, "grok-4"),
         ] {
             let tmp = tempfile::tempdir().unwrap();
             let key = tmp.path().join("k");
@@ -1140,7 +1149,7 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("unknown template \"bogus\"")
-                && err.contains("local, anthropic, openai, gemini"),
+                && err.contains("local, anthropic, openai, gemini, xai"),
             "{err}"
         );
         // A "profiles" key that is not an object fails closed.

@@ -704,7 +704,7 @@ fn quickstart_text() -> String {
          run has nothing to talk to yet. To get started:\n\
          \n\
            temur init      create a starter config (local llama.cpp/Ollama,\n\
-                           Anthropic, OpenAI, or Gemini)\n\
+                           Anthropic, OpenAI, Gemini, or xAI)\n\
            temur doctor    check the config and environment\n\
          \n\
          Config format and recipes: README.md, section \"Configure\".\n\
