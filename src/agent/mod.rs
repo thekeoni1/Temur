@@ -176,8 +176,12 @@ impl Session {
     /// so a `/model` switch never needs to change it. A setter (not a
     /// constructor parameter) so `ToolCtx::new` keeps yielding the empty
     /// guard and every guard-free construction stays byte-identical.
-    pub fn set_key_guard(&mut self, guard: crate::tools::KeyGuard) {
+    /// `allow_unsandboxed_bash` is the config's escape hatch for hosts
+    /// without unprivileged user namespaces; it travels with the guard
+    /// because it means nothing without one.
+    pub fn set_key_guard(&mut self, guard: crate::tools::KeyGuard, allow_unsandboxed_bash: bool) {
         self.tool_ctx.guard = guard;
+        self.tool_ctx.allow_unsandboxed_bash = allow_unsandboxed_bash;
     }
 
     /// The persistable view of this session. Borrowed throughout: saving a

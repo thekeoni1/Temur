@@ -1,6 +1,7 @@
 use super::{parse_input, Tool, ToolCtx, ToolError, ToolOutput};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::ffi::CString;
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -8,6 +9,161 @@ use wait_timeout::ChildExt;
 
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_TIMEOUT_MS: u64 = 600_000;
+
+// --------------------------------------------------------- T18 layer 2
+// The bash key sandbox: an unprivileged user namespace + mount namespace
+// in which every existing protected key file is bind-masked with
+// /dev/null, so inside the child the key path reads as empty and writes
+// are discarded. Sequence verified against user_namespaces(7) and
+// mount_namespaces(7)/mount(2):
+//   1. unshare(CLONE_NEWUSER | CLONE_NEWNS);
+//   2. write "deny" to /proc/self/setgroups (required before gid_map for
+//      a process without CAP_SETGID in the parent namespace), then the
+//      single-line self-maps "uid uid 1" / "gid gid 1" (the one mapping
+//      an unprivileged process may write);
+//   3. mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL): most systems
+//      default to shared propagation, and the masks must never propagate
+//      back to the host;
+//   4. mount("/dev/null", <key>, NULL, MS_BIND, NULL) per existing file.
+// Everything the pre_exec closure touches is pre-computed BYTES: it runs
+// between fork and exec in a threaded process, so it must not allocate.
+
+/// The refusal wording when keys are configured and no sandbox is
+/// possible. One constant so the tool error and the tests cannot drift.
+pub const SANDBOX_REFUSAL: &str = "bash is disabled: key files are configured, and this kernel does not allow the unprivileged user namespace sandbox that isolates them from shell commands. The other tools stay guarded. To accept running bash WITHOUT the key sandbox, set \"allow_bash_without_key_sandbox\": true in config.json.";
+
+/// What a spawn should do, given the guard and host facts. Pure, so the
+/// whole decision table is unit-testable with an injected probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SandboxDecision {
+    /// No keys configured (or override accepted): spawn byte-identically
+    /// to pre-T18 behavior, no unshare at all.
+    Plain,
+    Sandboxed,
+    Refuse,
+}
+
+/// Keyless configs never even probe: the invariant is that they spawn
+/// exactly as before T18. With keys, a working sandbox always wins (the
+/// override does NOT disable it); the override only rescues hosts where
+/// the probe fails.
+fn decide_sandbox(
+    keys_guarded: bool,
+    allow_unsandboxed: bool,
+    probe: impl FnOnce() -> bool,
+) -> SandboxDecision {
+    if !keys_guarded {
+        return SandboxDecision::Plain;
+    }
+    if probe() {
+        return SandboxDecision::Sandboxed;
+    }
+    if allow_unsandboxed {
+        SandboxDecision::Plain
+    } else {
+        SandboxDecision::Refuse
+    }
+}
+
+/// Async-signal-safe file write for the pre_exec closure: open/write/
+/// close only, errors via errno with no allocation.
+///
+/// # Safety
+/// `path` must be a valid NUL-terminated C string.
+unsafe fn write_bytes_raw(path: *const libc::c_char, data: &[u8]) -> std::io::Result<()> {
+    let fd = libc::open(path, libc::O_WRONLY);
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let n = libc::write(fd, data.as_ptr() as *const libc::c_void, data.len());
+    let write_err = if n < 0 {
+        Some(std::io::Error::last_os_error())
+    } else if n as usize != data.len() {
+        Some(std::io::Error::from_raw_os_error(libc::EIO))
+    } else {
+        None
+    };
+    libc::close(fd);
+    match write_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Install the sandbox pre_exec on `cmd`. `masks` are the (already
+/// canonicalized, existing) key files to bind-mask; the probe passes an
+/// empty list. All bytes are pre-computed here, before the fork.
+fn install_sandbox(cmd: &mut Command, masks: &[std::path::PathBuf]) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::process::CommandExt;
+    let c_masks: Vec<CString> = masks
+        .iter()
+        .map(|p| CString::new(p.as_os_str().as_bytes()))
+        .collect::<Result<_, _>>()
+        .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    let devnull = CString::new("/dev/null").unwrap();
+    let root = CString::new("/").unwrap();
+    let setgroups = CString::new("/proc/self/setgroups").unwrap();
+    let uid_map_path = CString::new("/proc/self/uid_map").unwrap();
+    let gid_map_path = CString::new("/proc/self/gid_map").unwrap();
+    // getuid/getgid in the parent: fork inherits them, and the map line
+    // must name the parent-namespace ids anyway.
+    let uid = unsafe { libc::getuid() };
+    let gid = unsafe { libc::getgid() };
+    let uid_map: Vec<u8> = format!("{uid} {uid} 1\n").into_bytes();
+    let gid_map: Vec<u8> = format!("{gid} {gid} 1\n").into_bytes();
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            write_bytes_raw(setgroups.as_ptr(), b"deny")?;
+            write_bytes_raw(uid_map_path.as_ptr(), &uid_map)?;
+            write_bytes_raw(gid_map_path.as_ptr(), &gid_map)?;
+            if libc::mount(
+                std::ptr::null(),
+                root.as_ptr(),
+                std::ptr::null(),
+                libc::MS_REC | libc::MS_PRIVATE,
+                std::ptr::null(),
+            ) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            for mask in &c_masks {
+                if libc::mount(
+                    devnull.as_ptr(),
+                    mask.as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_BIND,
+                    std::ptr::null(),
+                ) != 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
+/// Can this host run the sandbox at all? Answered EMPIRICALLY: spawn
+/// `true` through the exact pre_exec sequence (no masks needed) and see
+/// whether it exits cleanly. Cached per process; also used by doctor.
+pub fn sandbox_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        let mut cmd = Command::new("true");
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if install_sandbox(&mut cmd, &[]).is_err() {
+            return false;
+        }
+        matches!(cmd.status(), Ok(s) if s.success())
+    })
+}
 
 /// Kill the child's whole process group (see `process_group(0)` at spawn),
 /// then reap the sh itself. The group kill goes through sh's BUILTIN kill —
@@ -77,6 +233,31 @@ impl Tool for BashTool {
         {
             use std::os::unix::process::CommandExt;
             cmd.process_group(0);
+        }
+        // T18 layer 2: with key files guarded, bash MUST run sandboxed (or
+        // refuse; or run plain when the config explicitly accepts the
+        // risk). A keyless guard takes the Plain arm without probing:
+        // byte-identical spawn to pre-T18.
+        match decide_sandbox(
+            !ctx.guard.is_empty(),
+            ctx.allow_unsandboxed_bash,
+            sandbox_available,
+        ) {
+            SandboxDecision::Plain => {}
+            SandboxDecision::Refuse => return Err(ToolError::failed(SANDBOX_REFUSAL)),
+            SandboxDecision::Sandboxed => {
+                // Mask what exists; a configured-but-missing key file has
+                // nothing to mask (and layer 1 still guards its path).
+                let masks: Vec<std::path::PathBuf> = ctx
+                    .guard
+                    .protected_files()
+                    .iter()
+                    .filter(|p| p.exists())
+                    .cloned()
+                    .collect();
+                install_sandbox(&mut cmd, &masks)
+                    .map_err(|e| ToolError::failed(format!("key sandbox setup failed: {e}")))?;
+            }
         }
         let mut child = cmd
             .spawn()
@@ -168,5 +349,33 @@ impl Tool for BashTool {
             title: p.command,
             output,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The full T18 decision table with an injected probe. The probe must
+    /// not even RUN for keyless configs (the invariant is "no unshare at
+    /// all"), asserted via a panicking probe.
+    #[test]
+    fn sandbox_decision_table() {
+        let no_probe = || -> bool { panic!("keyless configs must never probe") };
+        assert_eq!(decide_sandbox(false, false, no_probe), SandboxDecision::Plain);
+        assert_eq!(decide_sandbox(false, true, no_probe), SandboxDecision::Plain);
+
+        assert_eq!(decide_sandbox(true, false, || true), SandboxDecision::Sandboxed);
+        // The override never DISABLES a working sandbox.
+        assert_eq!(decide_sandbox(true, true, || true), SandboxDecision::Sandboxed);
+        assert_eq!(decide_sandbox(true, false, || false), SandboxDecision::Refuse);
+        assert_eq!(decide_sandbox(true, true, || false), SandboxDecision::Plain);
+    }
+
+    #[test]
+    fn refusal_names_cause_and_override() {
+        assert!(SANDBOX_REFUSAL.contains("user namespace"));
+        assert!(SANDBOX_REFUSAL.contains("allow_bash_without_key_sandbox"));
+        assert!(SANDBOX_REFUSAL.contains("other tools stay guarded"));
     }
 }

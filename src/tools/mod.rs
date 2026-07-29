@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 
+pub use bash::{sandbox_available, SANDBOX_REFUSAL};
 pub use guard::KeyGuard;
 pub use skill::SkillTool;
 pub use todo::TodoItem;
@@ -38,6 +39,10 @@ pub struct ToolCtx {
     /// keyless configs and tools outside a keyed session behave exactly as
     /// before. Startup installs the real one via `Session::set_key_guard`.
     pub guard: KeyGuard,
+    /// T18 escape hatch (config `allow_bash_without_key_sandbox`): with
+    /// keys guarded but no working sandbox, bash refuses unless this is
+    /// set. Meaningless while the guard is empty.
+    pub allow_unsandboxed_bash: bool,
 }
 
 impl ToolCtx {
@@ -47,6 +52,7 @@ impl ToolCtx {
             todos: vec![],
             cancel: CancelToken::new(),
             guard: KeyGuard::empty(),
+            allow_unsandboxed_bash: false,
         }
     }
 }

@@ -957,3 +957,113 @@ fn guard_grep_glob_walk_scale_sanity_and_keyless_unchanged() {
     let out = run(&reg, &mut plain, "glob", json!({"pattern": "**/*.key"})).unwrap();
     assert!(out.output.contains(key.to_str().unwrap()), "{}", out.output);
 }
+
+// --- T18 P3: bash key sandbox ------------------------------------------------
+//
+// Environment note: these tests assert whichever arm the environment
+// makes real. On hosts with unprivileged user namespaces (WSL2, most
+// desktop kernels) that is the sandboxed arm. In a container it depends on
+// the runtime's seccomp policy: this project's rootless podman + crun
+// PERMITS nested unshare(CLONE_NEWUSER), so the sandboxed arm runs
+// in-container here too; a locked-down runtime would flip these to the
+// refusal arm instead. The refusal decision itself is covered
+// deterministically by the injected-probe unit tests in bash.rs, so no
+// arm depends on luck to be exercised.
+
+#[test]
+fn guard_bash_sandboxed_masks_key_or_refuses() {
+    let (dir, key, _normal, mut ctx) = guarded_ctx();
+    let reg = Registry::standard();
+    let res = run(
+        &reg,
+        &mut ctx,
+        "bash",
+        json!({"command": format!("cat {}", key.display())}),
+    );
+    if temur::tools::sandbox_available() {
+        // Sandboxed: the key path reads as /dev/null, so cat sees nothing.
+        let out = res.unwrap();
+        assert!(
+            !out.output.contains("placeholder-not-a-real-key"),
+            "key content must never appear: {}",
+            out.output
+        );
+        assert!(out.output.contains("(no output)"), "{}", out.output);
+
+        // A write to the key path inside the sandbox is discarded: the
+        // real file on the host is untouched.
+        run(
+            &reg,
+            &mut ctx,
+            "bash",
+            json!({"command": format!("echo poisoned > {}", key.display())}),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&key).unwrap(),
+            "placeholder-not-a-real-key\n",
+            "host key file must be untouched by a sandboxed write"
+        );
+
+        // Everything else works inside the sandbox.
+        let out = run(
+            &reg,
+            &mut ctx,
+            "bash",
+            json!({"command": format!("cat {}/normal.txt && echo sandbox-alive", dir.path().display())}),
+        )
+        .unwrap();
+        assert!(out.output.contains("ordinary content"), "{}", out.output);
+        assert!(out.output.contains("sandbox-alive"), "{}", out.output);
+    } else {
+        // No sandbox on this host: with keys configured and no override,
+        // bash must refuse with the canonical message.
+        let err = res.unwrap_err().to_string();
+        assert_eq!(err, temur::tools::SANDBOX_REFUSAL);
+    }
+}
+
+#[test]
+fn guard_bash_override_never_refuses() {
+    // allow_bash_without_key_sandbox: with a working sandbox it still
+    // sandboxes (the override never disables it); without one it runs
+    // plain, which by definition can read the placeholder. Either way the
+    // command RUNS.
+    let (_dir, key, _normal, mut ctx) = guarded_ctx();
+    ctx.allow_unsandboxed_bash = true;
+    let reg = Registry::standard();
+    let out = run(
+        &reg,
+        &mut ctx,
+        "bash",
+        json!({"command": format!("cat {}; echo ran", key.display())}),
+    )
+    .unwrap();
+    assert!(out.output.contains("ran"), "{}", out.output);
+    if temur::tools::sandbox_available() {
+        assert!(
+            !out.output.contains("placeholder-not-a-real-key"),
+            "a working sandbox still masks under the override: {}",
+            out.output
+        );
+    }
+}
+
+#[test]
+fn guard_bash_keyless_spawns_exactly_as_before() {
+    // Keyless: no sandbox, no probe, no refusal; a key file on disk that
+    // is NOT configured is readable, byte-identical to pre-T18 behavior.
+    let dir = tempfile::tempdir().unwrap();
+    let stray = dir.path().join("stray.key");
+    std::fs::write(&stray, "placeholder-not-a-real-key\n").unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let out = run(
+        &reg,
+        &mut ctx,
+        "bash",
+        json!({"command": format!("cat {}", stray.display())}),
+    )
+    .unwrap();
+    assert!(out.output.contains("placeholder-not-a-real-key"), "{}", out.output);
+}

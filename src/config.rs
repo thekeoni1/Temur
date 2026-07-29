@@ -86,6 +86,12 @@ pub struct Config {
     /// advisory only. 0 disables the reminder; absent =
     /// [`DEFAULT_KEY_ROTATE_WARN_DAYS`].
     pub key_rotate_warn_days: u64,
+    /// T18 escape hatch: when key files are configured but the kernel
+    /// cannot provide the unprivileged-user-namespace bash sandbox, bash
+    /// REFUSES by default. Setting this true accepts running bash without
+    /// the sandbox on such hosts (the other tools stay guarded; a working
+    /// sandbox is still used when available). Default false.
+    pub allow_bash_without_key_sandbox: bool,
 }
 
 /// One named profile: a nickname bundling provider + model + endpoint +
@@ -193,6 +199,7 @@ impl Default for Config {
             profiles: None,
             profile: None,
             key_rotate_warn_days: DEFAULT_KEY_ROTATE_WARN_DAYS,
+            allow_bash_without_key_sandbox: false,
         }
     }
 }
@@ -484,6 +491,15 @@ mod tests {
         assert_eq!(c.key_rotate_warn_days, DEFAULT_KEY_ROTATE_WARN_DAYS);
         let c: Config = serde_json::from_str(r#"{"key_rotate_warn_days":0}"#).unwrap();
         assert_eq!(c.key_rotate_warn_days, 0);
+    }
+
+    #[test]
+    fn allow_bash_without_key_sandbox_defaults_false_and_parses() {
+        let c: Config = serde_json::from_str("{}").unwrap();
+        assert!(!c.allow_bash_without_key_sandbox);
+        let c: Config =
+            serde_json::from_str(r#"{"allow_bash_without_key_sandbox":true}"#).unwrap();
+        assert!(c.allow_bash_without_key_sandbox);
     }
 
     #[test]
