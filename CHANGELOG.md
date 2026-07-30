@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.8.0 - 2026-07-30
+
 T20 context lifecycle (living with small context windows):
 
 - New `/compact` command: one model call (tools omitted, the session's
