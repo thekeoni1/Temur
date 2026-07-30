@@ -2129,3 +2129,39 @@ script at 100% CPU; killed after 3h) and one merged-line assert
 tests/tui.rs:1076). 120 isolated runs + 40 full-suite runs on an
 idle machine reproduce neither; the T20 diff touches no ui/tui
 file. The passing gate recorded above is a clean full rerun.
+
+## v0.8.0 - close-out (release procedure delta)
+
+What ships: T19 model floor (context-scaled head+tail truncation,
+write read-first enforcement, binary-format nudge, prose tool-call
+execution, eval tasks 8+9) and T20 context lifecycle (/compact,
+unified two-arm context advisory with the resume-time trigger,
+prefix-stability invariant tests), one CHANGELOG section covering
+both - the two-milestones-together pattern from v0.5.0 through
+v0.7.0.
+
+Procedure deltas vs v0.7.0:
+
+- **One of the pair was pushed before stage 1, the other AS stage-1
+  step 1** (the v0.6.0 shape, not the v0.7.0 both-pushed-early
+  shape): T19 was already on main at 4d650d6 (ci 30502421688 green);
+  T20 (27707cd..623c534) was pushed as the explicit first step of
+  the stage-1 prompt under the planning session's authorization,
+  on-push ci run 30561457680 green (test 1m39s, release-gate 4m10s),
+  main == origin == 623c534 verified before the prep commits.
+- **Stage 1 keeps the v0.6.0/v0.7.0 EARLY stop**: version bump +
+  dated CHANGELOG + records + full check.sh gate only; the
+  four-target release.sh build, SHA256SUMS, and installer matrix
+  stay in stage 2 (tag, build, private release, closing gate).
+- **Still no tag, no push of the release-prep commits, no release**
+  at stage 1; the visibility decision (repo stays PRIVATE) and the
+  public-flip gate remain queued behind stage 2, unchanged.
+- Pin-site note for the bump: this cycle leaves NO current-version
+  hit in Cargo.lock at all (v0.7.0's equivalent was ureq-proto's own
+  0.6.x version; no dependency sits at 0.7.0), so the six bumped
+  pins are the complete set and the repo-wide grep after the bump
+  comes back empty outside historical records.
+- The pre-existing headless-TUI key-pump flake recorded in the T20
+  acceptance above remains open going into this release; it is test
+  infrastructure only and does not gate the ship (the stage-1 gate
+  run below was a clean full pass).
