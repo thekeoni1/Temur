@@ -2,7 +2,7 @@
 //! temp dir; the provider is fully scripted — no network.
 
 use temur::agent::events::AgentEvent;
-use temur::agent::{Session, SessionConfig, INTERRUPT_MARKER};
+use temur::agent::{CompactOutcome, Session, SessionConfig, INTERRUPT_MARKER};
 use temur::provider::*;
 use temur::tools::Registry;
 use std::cell::RefCell;
@@ -1986,6 +1986,225 @@ fn clear_persists_the_empty_session_immediately() {
     assert!(seed.history.is_empty());
 }
 
+// ------------------------------------------------------------ T20: /compact
+
+/// Every call fails: the fail-closed arm of `/compact`.
+struct FailingProvider;
+
+impl Provider for FailingProvider {
+    fn stream(
+        &self,
+        _req: &ChatRequest,
+        _on_event: &mut dyn FnMut(StreamEvent),
+        _cancel: &CancelToken,
+    ) -> Result<ResponseMessage, ProviderError> {
+        Err(ProviderError::Api {
+            status: 500,
+            kind: "server_error".into(),
+            message: "boom".into(),
+        })
+    }
+}
+
+#[test]
+fn compact_replaces_history_and_next_request_carries_summary_not_old_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(vec![text("answer one")], StopReason::EndTurn),
+            msg(vec![text("answer two")], StopReason::EndTurn),
+            // The summary call's response.
+            msg(vec![text("Goal: test compaction\nState: two turns done")], StopReason::EndTurn),
+            msg(vec![text("continued")], StopReason::EndTurn),
+        ],
+    );
+    collect_events(&mut session, "first question");
+    collect_events(&mut session, "second question");
+    assert_eq!(session.history().len(), 4);
+
+    let out = session.compact();
+    assert_eq!(out, CompactOutcome::Compacted { before: 4, after: 2 });
+    // The estimate described the old conversation; it must reset.
+    assert_eq!(session.last_context_used(), None);
+    // Session usage keeps accumulating: 3 responses at 10 in / 5 out each.
+    assert_eq!(session.session_usage().input_tokens, Some(30));
+    assert_eq!(session.session_usage().output_tokens, Some(15));
+
+    {
+        // The summary request itself: tools omitted entirely, the whole
+        // history present, and the final message carries the instruction.
+        let reqs = requests.borrow();
+        let sreq = &reqs[2];
+        assert!(sreq.tools.is_empty(), "summary call must omit tools");
+        assert_eq!(sreq.messages.len(), 5); // 4 history + 1 instruction
+        let last = sreq.messages.last().unwrap();
+        assert_eq!(last.role, Role::User);
+        assert!(matches!(
+            &last.content[0],
+            ContentBlock::Text { text } if text.contains("Summarize this conversation")
+        ));
+        assert_eq!(sreq.system.as_deref(), Some("test system"));
+    }
+
+    // The next turn's request: summary + verbatim tail + new prompt, and
+    // NONE of the summarized messages.
+    collect_events(&mut session, "third question");
+    let reqs = requests.borrow();
+    let next = &reqs[3];
+    assert_eq!(next.messages.len(), 3); // merged tail head, assistant, new prompt
+    match &next.messages[0].content[..] {
+        [ContentBlock::Text { text: summary }, ContentBlock::Text { text: orig }] => {
+            assert!(summary.starts_with("[conversation summary (compacted)]"));
+            assert!(summary.contains("Goal: test compaction"));
+            assert_eq!(orig, "second question");
+        }
+        other => panic!("merged first message: {other:?}"),
+    }
+    let all_text: Vec<&str> = next
+        .messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(all_text.iter().any(|t| *t == "answer two"), "verbatim tail kept");
+    assert!(
+        !all_text.iter().any(|t| t.contains("first question") || t.contains("answer one")),
+        "summarized messages must not reach the wire: {all_text:?}"
+    );
+}
+
+#[test]
+fn compact_provider_error_is_fail_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![msg(vec![text("answer")], StopReason::EndTurn)],
+    );
+    collect_events(&mut session, "question");
+    let before = session.history().to_vec();
+    session.switch_provider(
+        Box::new(FailingProvider),
+        "claude-sonnet-5".into(),
+        32_000,
+        None,
+        None,
+    );
+
+    match session.compact() {
+        CompactOutcome::Failed(reason) => assert!(reason.contains("boom"), "{reason}"),
+        other => panic!("expected Failed: {other:?}"),
+    }
+    assert_eq!(session.history(), &before[..], "history untouched on failure");
+    assert_eq!(session.last_context_used(), Some(15));
+}
+
+#[test]
+fn compact_empty_summary_is_fail_closed_but_usage_counts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![
+            msg(vec![text("answer")], StopReason::EndTurn),
+            // Whitespace-only summary: fail-closed.
+            msg(vec![text("  \n ")], StopReason::EndTurn),
+        ],
+    );
+    collect_events(&mut session, "question");
+    let before = session.history().to_vec();
+
+    match session.compact() {
+        CompactOutcome::Failed(reason) => {
+            assert!(reason.contains("empty summary"), "{reason}")
+        }
+        other => panic!("expected Failed: {other:?}"),
+    }
+    assert_eq!(session.history(), &before[..]);
+    // The failed attempt was still real spend: 2 responses accumulated.
+    assert_eq!(session.session_usage().input_tokens, Some(20));
+}
+
+#[test]
+fn compact_on_empty_history_makes_no_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(dir.path(), vec![]);
+    assert_eq!(session.compact(), CompactOutcome::Nothing);
+    assert!(requests.borrow().is_empty(), "no provider call for an empty history");
+}
+
+#[test]
+fn compact_cancelled_leaves_history_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![
+            msg(vec![text("answer")], StopReason::EndTurn),
+            msg(vec![text("a summary that must not land")], StopReason::EndTurn),
+        ],
+    );
+    collect_events(&mut session, "question");
+    let before = session.history().to_vec();
+    // Ctrl+C landed during the summary call (the mock returns a completed
+    // message anyway, mirroring an Ok(partial) landing after a cancel).
+    session.cancel_token().set();
+    assert_eq!(session.compact(), CompactOutcome::Cancelled);
+    assert_eq!(session.history(), &before[..]);
+    session.cancel_token().clear();
+}
+
+#[test]
+fn compact_command_reports_and_persists_immediately() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![
+            msg(vec![text("answer")], StopReason::EndTurn),
+            msg(vec![text("Goal: persist test")], StopReason::EndTurn),
+        ],
+    );
+    collect_events(&mut session, "question");
+
+    let path = dir.path().join("session.json");
+    let mut h = CmdHarness::new();
+    h.persist = Some(path.clone());
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!("/compact builds no provider")
+    };
+    let events = commands::run(commands::parse("/compact"), &mut h.ctx(&mut session, &build));
+    let ns = notices(&events);
+    assert!(
+        ns.iter().any(|n| n.contains("compacted: 2 message(s) summarized into 2")
+            && n.contains("rebuilds the provider's cached prefix")),
+        "compact notice: {ns:?}"
+    );
+    // The compacted state is on disk NOW, like /clear.
+    let loaded = temur::session_store::load(&path).unwrap();
+    assert_eq!(loaded.history.len(), 2);
+    assert!(matches!(
+        &loaded.history[0].content[0],
+        ContentBlock::Text { text } if text.starts_with("[conversation summary (compacted)]")
+    ));
+    assert_eq!(loaded.last_context_used, None);
+}
+
+#[test]
+fn compact_command_on_empty_history_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!()
+    };
+    let events = commands::run(commands::parse("/compact"), &mut h.ctx(&mut session, &build));
+    assert!(
+        notices(&events).iter().any(|n| n.contains("nothing to compact")),
+        "{events:?}"
+    );
+}
+
 #[test]
 fn status_before_any_turn_renders_placeholders_and_no_key_material() {
     let dir = tempfile::tempdir().unwrap();
@@ -2048,6 +2267,7 @@ fn replay_mode_disables_mutating_commands_only() {
         "/model raw-id-9",
         "/models",
         "/clear",
+        "/compact",
         "/thinking on",
         "/sessions",
         "/resume alpha",

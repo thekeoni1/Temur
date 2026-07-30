@@ -10,7 +10,7 @@
 //! `SessionCleared` are chrome/state signals a UI may fold silently.
 
 use crate::agent::events::AgentEvent;
-use crate::agent::Session;
+use crate::agent::{CompactOutcome, Session};
 use crate::config::ResolvedProfile;
 use crate::provider::Provider;
 use crate::session_store;
@@ -23,6 +23,9 @@ pub enum Command {
     Help,
     Status,
     Clear,
+    /// `/compact` (T20): summarize the conversation, continue from the
+    /// summary plus a verbatim tail.
+    Compact,
     /// `/thinking` with no argument: report the current state.
     ThinkingShow,
     ThinkingSet(bool),
@@ -59,6 +62,7 @@ pub fn parse(line: &str) -> Command {
         ("/help", None, _) => Command::Help,
         ("/status", None, _) => Command::Status,
         ("/clear", None, _) => Command::Clear,
+        ("/compact", None, _) => Command::Compact,
         ("/thinking", None, _) => Command::ThinkingShow,
         ("/thinking", Some("on"), None) => Command::ThinkingSet(true),
         ("/thinking", Some("off"), None) => Command::ThinkingSet(false),
@@ -78,7 +82,7 @@ pub fn parse(line: &str) -> Command {
         ("/resume", ..) => Command::Invalid("usage: /resume <session>".into()),
         ("/new", Some(name), None) => Command::New(name.to_string()),
         ("/new", ..) => Command::Invalid("usage: /new <name>".into()),
-        ("/help" | "/status" | "/clear" | "/models" | "/sessions", Some(_), _) => {
+        ("/help" | "/status" | "/clear" | "/compact" | "/models" | "/sessions", Some(_), _) => {
             Command::Invalid(format!("{head} takes no arguments"))
         }
         _ => Command::Unknown(head.to_string()),
@@ -185,6 +189,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     ("/models", "", "list model ids from the active provider"),
     ("/clear", "", "wipe this session's history and start fresh"),
+    (
+        "/compact",
+        "",
+        "summarize the conversation with the model and continue from the summary",
+    ),
     ("/sessions", "", "list saved sessions (all projects)"),
     (
         "/resume",
@@ -271,6 +280,7 @@ pub fn run(cmd: Command, ctx: &mut CommandCtx) -> Vec<AgentEvent> {
         Command::Help => help_lines().into_iter().map(notice).collect(),
         Command::Status => status(ctx),
         Command::Clear => clear(ctx),
+        Command::Compact => compact(ctx),
         Command::ThinkingShow => vec![notice(format!(
             "thinking: {}",
             onoff(ctx.session.thinking())
@@ -353,6 +363,56 @@ fn clear(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
         }
     }
     out
+}
+
+/// `/compact` (T20): one provider call summarizes the conversation; on
+/// success the session's history is the summary plus a verbatim tail (the
+/// boundary and merge rules live in the agent core). Fail-closed there, so
+/// every non-success arm here reports and changes nothing. Replay-guarded
+/// like the mutators: it is both a live network call and a state change.
+/// After success the compacted state is persisted NOW, like `/clear`:
+/// quit-then---continue must resume compacted.
+fn compact(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
+    if ctx.replay_mode {
+        return vec![notice("/compact is unavailable in replay/capture mode")];
+    }
+    match ctx.session.compact() {
+        CompactOutcome::Nothing => vec![notice("nothing to compact: the conversation is empty")],
+        CompactOutcome::Cancelled => vec![notice("compact cancelled; history unchanged")],
+        CompactOutcome::Failed(reason) => {
+            vec![notice(format!("compact failed: {reason}; history unchanged"))]
+        }
+        CompactOutcome::Compacted { before, after } => {
+            // Honest about the cost: the provider cache prefix was built on
+            // the old history and the next request rebuilds it. That is the
+            // deliberate one-time trade for a small window.
+            let mut out = vec![notice(format!(
+                "compacted: {before} message(s) summarized into {after}; the next request rebuilds the provider's cached prefix (one-time cost)"
+            ))];
+            if let Some(path) = ctx.persist_path.as_deref() {
+                let snap = ctx.session.snapshot();
+                let file = session_store::SessionFileRef {
+                    version: session_store::FORMAT_VERSION,
+                    provider: ctx.provider_name,
+                    model: ctx.model,
+                    cwd: ctx.cwd_display,
+                    history: snap.history,
+                    session_usage: snap.session_usage,
+                    todos: snap.todos,
+                    last_context_used: snap.last_context_used,
+                    name: ctx.session_name.as_deref(),
+                };
+                if let Err(e) =
+                    session_store::save(path, &file, ctx.session_max_bytes, &mut |_| {})
+                {
+                    out.push(notice(format!(
+                        "session save failed: {e}; the compacted state is not on disk yet"
+                    )));
+                }
+            }
+            out
+        }
+    }
 }
 
 fn thinking_set(ctx: &mut CommandCtx, on: bool) -> Vec<AgentEvent> {
@@ -852,6 +912,8 @@ mod tests {
             ("/help", Command::Help),
             ("/status", Command::Status),
             ("/clear", Command::Clear),
+            ("/compact", Command::Compact),
+            ("/compact now", Command::Invalid("/compact takes no arguments".into())),
             ("/thinking", Command::ThinkingShow),
             ("/thinking on", Command::ThinkingSet(true)),
             ("/thinking off", Command::ThinkingSet(false)),
@@ -908,8 +970,8 @@ mod tests {
             (
                 "/",
                 vec![
-                    "/help", "/status", "/model", "/models", "/clear", "/sessions",
-                    "/resume", "/new", "/thinking",
+                    "/help", "/status", "/model", "/models", "/clear", "/compact",
+                    "/sessions", "/resume", "/new", "/thinking",
                 ],
             ),
             ("/zzz", vec![]),

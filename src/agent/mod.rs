@@ -114,6 +114,40 @@ pub struct SessionSnapshot<'a> {
 /// user message). One constant, one builder — the shape exists nowhere else.
 pub const INTERRUPT_MARKER: &str = "[interrupted by user]";
 
+/// Header line the compacted-summary text block starts with (T20). The next
+/// request's first user message begins with this, so a transcript reader
+/// (human or model) can tell summary from live conversation.
+pub const COMPACT_SUMMARY_HEADER: &str = "[conversation summary (compacted)]";
+
+/// The final user instruction the `/compact` summary call appends (T20).
+/// Structured headings by design: small local models write poor freeform
+/// summaries, and the headings force the facts a continuation needs.
+const COMPACT_INSTRUCTION: &str = "Summarize this conversation so that work can \
+continue from the summary alone. Reply with ONLY the summary, under these exact \
+headings:\n\
+Goal: what the user is trying to accomplish\n\
+State: what has been done and what is true right now\n\
+Decisions: choices made, and why\n\
+Files: files read, created, or modified, with paths\n\
+Next steps: what remains to be done\n\
+Be specific: name files, commands, and values. The full conversation is about \
+to be discarded; anything not in the summary is lost.";
+
+/// What [`Session::compact`] did. The command layer words the notices; the
+/// variants carry only facts.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CompactOutcome {
+    /// Empty history: no call was made.
+    Nothing,
+    /// The user interrupted the summary call; history untouched.
+    Cancelled,
+    /// Provider error or empty summary; history untouched. The payload is
+    /// the human-readable reason.
+    Failed(String),
+    /// History replaced. Message counts, for the notice.
+    Compacted { before: usize, after: usize },
+}
+
 impl Session {
     pub fn new(provider: Box<dyn Provider>, registry: Registry, cfg: SessionConfig) -> Self {
         Self::build(provider, registry, cfg, None)
@@ -277,6 +311,91 @@ impl Session {
         self.last_context_used = None;
         self.context_warned = false;
         self.tool_ctx.todos.clear();
+    }
+
+    /// Compact the conversation (`/compact`, T20): ONE provider call
+    /// summarizes the history, then the history is replaced by that summary
+    /// plus a verbatim tail (see [`compact_tail_start`]). FAIL-CLOSED: the
+    /// replacement happens only after a completed, successful response with
+    /// non-empty text; any error, cancellation, or empty summary returns
+    /// with history untouched.
+    ///
+    /// The summary request is the CURRENT history plus a final user
+    /// instruction, with tools omitted entirely (no tool_use possible), on
+    /// the session's own model, max_tokens, and system prompt. Cancel works
+    /// like a turn: the provider stack polls the same token.
+    ///
+    /// After success: `last_context_used` is cleared (the estimate described
+    /// the old conversation), the context advisory re-arms, session usage
+    /// totals KEEP accumulating (the summary call's own usage is real spend),
+    /// and todos are untouched. Saving is the caller's job, same as `/clear`.
+    pub fn compact(&mut self) -> CompactOutcome {
+        if self.history.is_empty() {
+            return CompactOutcome::Nothing;
+        }
+        // Alternation-safe instruction: history normally ends with an
+        // assistant message and the instruction is a new user message; when
+        // it already ends with a user message (dangling prompt after a
+        // provider-error turn), the instruction joins that message as an
+        // extra text block instead. The Anthropic wire rejects two
+        // consecutive user messages.
+        let mut messages = self.history.clone();
+        let instruction = ContentBlock::Text {
+            text: COMPACT_INSTRUCTION.to_string(),
+        };
+        match messages.last_mut() {
+            Some(m) if m.role == Role::User => m.content.push(instruction),
+            _ => messages.push(RequestMessage {
+                role: Role::User,
+                content: vec![instruction],
+            }),
+        }
+        let req = ChatRequest {
+            model: self.cfg.model.clone(),
+            max_tokens: self.cfg.max_tokens,
+            system: self.cfg.system.clone(),
+            thinking: self.cfg.thinking,
+            temperature: self.cfg.temperature.map(f64::from),
+            top_p: self.cfg.top_p.map(f64::from),
+            messages,
+            tools: Vec::new(),
+        };
+        // Deltas are dropped: the summary is bookkeeping, not conversation,
+        // and the notice reports the outcome when the call lands.
+        let result = self.provider.stream(&req, &mut |_| {}, &self.cancel);
+        if self.cancel.is_set() {
+            // Interrupted like a turn. A partial that did arrive still cost
+            // real tokens, so its usage is recorded; history stays put.
+            if let Ok(msg) = &result {
+                self.session_usage.add(&msg.usage);
+            }
+            return CompactOutcome::Cancelled;
+        }
+        let msg = match result {
+            Ok(m) => m,
+            Err(e) => return CompactOutcome::Failed(e.to_string()),
+        };
+        self.session_usage.add(&msg.usage);
+        // Concatenated Text blocks only; Thinking blocks are ignored.
+        let summary = msg
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let summary = summary.trim();
+        if summary.is_empty() {
+            return CompactOutcome::Failed("the model returned an empty summary".into());
+        }
+        let before = self.history.len();
+        self.history = compacted_history(summary, &self.history);
+        let after = self.history.len();
+        self.last_context_used = None;
+        self.context_warned = false;
+        CompactOutcome::Compacted { before, after }
     }
 
     /// Flip adaptive thinking for THIS session (`/thinking`); the config
@@ -890,5 +1009,202 @@ fn synth_interrupted(id: &str, name: &str, ui: &mut dyn FnMut(AgentEvent)) -> Co
         tool_use_id: id.to_string(),
         content: INTERRUPT_MARKER.into(),
         is_error: true,
+    }
+}
+
+/// T20 verbatim-tail boundary: the index of the LAST user message that
+/// contains no ToolResult block. Everything from there to the end of history
+/// is kept verbatim (the last user-initiated exchange), which can never
+/// split a tool_use/tool_result pair: every tool_result lives in a user
+/// message that HAS one, so the pair sits entirely inside the tail. `None`
+/// means no such message exists and the summary stands alone.
+fn compact_tail_start(history: &[RequestMessage]) -> Option<usize> {
+    history.iter().rposition(|m| {
+        m.role == Role::User
+            && !m
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+    })
+}
+
+/// T20 merge: the new history after a successful compact. Alternation-safe
+/// on BOTH wires by construction: with a tail, the summary is PREPENDED as
+/// a leading Text block inside the tail's first user message (never a new
+/// message, so no two consecutive user messages exist); with no tail, the
+/// history becomes one user message holding the summary.
+fn compacted_history(summary: &str, history: &[RequestMessage]) -> Vec<RequestMessage> {
+    let summary_text = format!("{COMPACT_SUMMARY_HEADER}\n{summary}");
+    match compact_tail_start(history) {
+        Some(i) => {
+            let mut first = history[i].clone();
+            let mut content = Vec::with_capacity(first.content.len() + 1);
+            content.push(ContentBlock::Text { text: summary_text });
+            content.append(&mut first.content);
+            first.content = content;
+            let mut out = Vec::with_capacity(history.len() - i);
+            out.push(first);
+            out.extend(history[i + 1..].iter().cloned());
+            out
+        }
+        None => vec![RequestMessage {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: summary_text }],
+        }],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user_text(t: &str) -> RequestMessage {
+        RequestMessage {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: t.into() }],
+        }
+    }
+
+    fn assistant_text(t: &str) -> RequestMessage {
+        RequestMessage {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text { text: t.into() }],
+        }
+    }
+
+    fn assistant_tool_use(id: &str) -> RequestMessage {
+        RequestMessage {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: id.into(),
+                name: "read".into(),
+                input: serde_json::json!({}),
+                input_raw: None,
+            }],
+        }
+    }
+
+    fn user_tool_result(id: &str) -> RequestMessage {
+        RequestMessage {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: id.into(),
+                content: "result".into(),
+                is_error: false,
+            }],
+        }
+    }
+
+    #[test]
+    fn tail_starts_at_last_plain_user_message() {
+        // u a u(toolresult-free) a(tool_use) u(tool_result) a: the tail must
+        // start at index 2, keeping the whole final exchange including its
+        // tool_use/tool_result pair.
+        let h = vec![
+            user_text("one"),
+            assistant_text("a1"),
+            user_text("two"),
+            assistant_tool_use("tu_1"),
+            user_tool_result("tu_1"),
+            assistant_text("a2"),
+        ];
+        assert_eq!(compact_tail_start(&h), Some(2));
+    }
+
+    #[test]
+    fn tool_result_only_user_messages_never_start_the_tail() {
+        // The only user messages after index 0 carry tool_results; the tail
+        // must reach back to the plain prompt at 0.
+        let h = vec![
+            user_text("go"),
+            assistant_tool_use("tu_1"),
+            user_tool_result("tu_1"),
+            assistant_tool_use("tu_2"),
+            user_tool_result("tu_2"),
+            assistant_text("done"),
+        ];
+        assert_eq!(compact_tail_start(&h), Some(0));
+    }
+
+    #[test]
+    fn mixed_user_message_with_a_tool_result_is_not_a_boundary() {
+        // A user message holding text AND a tool_result is still an answer
+        // to a tool_use: cutting there would split the pair.
+        let mixed = RequestMessage {
+            role: Role::User,
+            content: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "tu_1".into(),
+                    content: "r".into(),
+                    is_error: false,
+                },
+                ContentBlock::Text { text: "note".into() },
+            ],
+        };
+        let h = vec![user_text("go"), assistant_tool_use("tu_1"), mixed];
+        assert_eq!(compact_tail_start(&h), Some(0));
+    }
+
+    #[test]
+    fn no_plain_user_message_means_no_tail() {
+        let h = vec![user_tool_result("tu_0"), assistant_text("a")];
+        assert_eq!(compact_tail_start(&h), None);
+        let merged = compacted_history("S", &h);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].role, Role::User);
+        match &merged[0].content[..] {
+            [ContentBlock::Text { text }] => {
+                assert!(text.starts_with(COMPACT_SUMMARY_HEADER));
+                assert!(text.ends_with("\nS"));
+            }
+            other => panic!("summary-only message expected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_history_has_no_tail() {
+        assert_eq!(compact_tail_start(&[]), None);
+    }
+
+    #[test]
+    fn single_exchange_history_keeps_itself_as_the_tail() {
+        let h = vec![user_text("only"), assistant_text("reply")];
+        assert_eq!(compact_tail_start(&h), Some(0));
+        let merged = compacted_history("S", &h);
+        assert_eq!(merged.len(), 2);
+        // Summary prepended INSIDE the first user message: one leading Text
+        // block, then the original content, roles alternating as before.
+        match &merged[0].content[..] {
+            [ContentBlock::Text { text: s }, ContentBlock::Text { text: orig }] => {
+                assert!(s.starts_with(COMPACT_SUMMARY_HEADER));
+                assert_eq!(orig, "only");
+            }
+            other => panic!("merged first message: {other:?}"),
+        }
+        assert_eq!(merged[1], assistant_text("reply"));
+    }
+
+    #[test]
+    fn merge_never_creates_consecutive_user_messages() {
+        let h = vec![
+            user_text("one"),
+            assistant_text("a1"),
+            user_text("two"),
+            assistant_tool_use("tu_1"),
+            user_tool_result("tu_1"),
+            assistant_text("a2"),
+        ];
+        let merged = compacted_history("S", &h);
+        assert_eq!(merged.len(), 4); // tail from index 2, summary inside its head
+        assert_eq!(merged[0].role, Role::User);
+        for pair in merged.windows(2) {
+            assert!(
+                !(pair[0].role == Role::User && pair[1].role == Role::User),
+                "consecutive user messages after merge"
+            );
+        }
+        // The tool_use/tool_result pair survived intact.
+        assert_eq!(merged[1], assistant_tool_use("tu_1"));
+        assert_eq!(merged[2], user_tool_result("tu_1"));
     }
 }
