@@ -939,3 +939,88 @@ fn read_error_without_cancel_is_still_an_error() {
         .unwrap_err();
     assert!(matches!(err, ProviderError::Stream(_)), "got {err:?}");
 }
+
+// ---------------- T20 P3: prefix-stability invariant (OpenAI-compat wire) --
+//
+// Same invariant as the Anthropic side: requests are APPEND-ONLY, so a
+// local server's prefix KV reuse (llama.cpp --cache-reuse) keeps working as
+// the conversation grows. This wire has no cache_control at all, so the
+// prefix must match byte for byte with no exemption.
+
+#[test]
+fn prefix_stability_compat_requests_are_append_only() {
+    // H: system + user + assistant(text, thinking, tool_use) + tool result.
+    // The conversion fans tool results out into their own wire messages;
+    // the invariant is over the CONVERTED arrays: the first request's
+    // messages must be a byte-identical prefix of the second's.
+    let mut req_h = sample_request();
+    req_h.messages = vec![
+        RequestMessage {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: "start".into() }],
+        },
+        RequestMessage {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "plan".into(),
+                    signature: None,
+                },
+                ContentBlock::Text { text: "working".into() },
+                ContentBlock::ToolUse {
+                    id: "call_1".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({"filePath": "/tmp/a.txt"}),
+                    input_raw: None,
+                },
+            ],
+        },
+        RequestMessage {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "call_1".into(),
+                content: "file contents".into(),
+                is_error: false,
+            }],
+        },
+    ];
+    let mut req_h1 = req_h.clone();
+    req_h1.messages.push(RequestMessage {
+        role: Role::Assistant,
+        content: vec![ContentBlock::Text { text: "done".into() }],
+    });
+    req_h1.messages.push(RequestMessage {
+        role: Role::User,
+        content: vec![ContentBlock::Text { text: "next".into() }],
+    });
+
+    let (p1, t1) = provider_and_transport(vec![Ok("text_simple")], None);
+    p1.stream(&req_h, &mut |_| {}, &CancelToken::new()).unwrap();
+    let (p2, t2) = provider_and_transport(vec![Ok("text_simple")], None);
+    p2.stream(&req_h1, &mut |_| {}, &CancelToken::new()).unwrap();
+
+    let b1: serde_json::Value = serde_json::from_str(&t1.bodies.borrow()[0]).unwrap();
+    let b2: serde_json::Value = serde_json::from_str(&t2.bodies.borrow()[0]).unwrap();
+
+    // Everything OUTSIDE messages (model, max_tokens, stream flags, tools)
+    // is byte-identical: the appended exchange changes nothing else.
+    let strip_messages = |v: &serde_json::Value| {
+        let mut c = v.clone();
+        c.as_object_mut().unwrap().remove("messages");
+        to_sorted_json_string(&c).unwrap()
+    };
+    assert_eq!(strip_messages(&b1), strip_messages(&b2), "non-message body changed");
+
+    // messages(H) is a byte prefix of messages(H+1). Element 0 is the
+    // system message, so its stability is covered by the same loop.
+    let m1 = b1["messages"].as_array().unwrap();
+    let m2 = b2["messages"].as_array().unwrap();
+    assert!(m2.len() > m1.len(), "appending must grow the array");
+    for i in 0..m1.len() {
+        assert_eq!(
+            to_sorted_json_string(&m1[i]).unwrap(),
+            to_sorted_json_string(&m2[i]).unwrap(),
+            "message {i} was rewritten between H and H+1: the request is not append-only"
+        );
+    }
+}

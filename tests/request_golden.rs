@@ -214,6 +214,117 @@ fn golden_pause_resume() {
     check_golden("pause_resume", &req);
 }
 
+// ------------------- T20 P3: prefix-stability invariant (Anthropic wire) --
+//
+// The cache economics of /compact and the context advisory rest on requests
+// being APPEND-ONLY: growing the history must never rewrite what came
+// before, or the provider-side prefix cache (and llama.cpp KV reuse) is
+// silently useless. The moving cache breakpoint is the one legitimate
+// difference: it leaves the block that is no longer last.
+
+/// Remove every `cache_control` key, recursively.
+fn strip_cache_control(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(m) => {
+            m.remove("cache_control");
+            for (_, val) in m.iter_mut() {
+                strip_cache_control(val);
+            }
+        }
+        serde_json::Value::Array(a) => {
+            for val in a.iter_mut() {
+                strip_cache_control(val);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Canonical bytes of a subvalue: the same sorted-key serialization the
+/// whole request body already uses on this wire.
+fn canon(v: &serde_json::Value) -> String {
+    to_sorted_json_string(v).unwrap()
+}
+
+#[test]
+fn prefix_stability_anthropic_requests_are_append_only() {
+    // H: a realistic mid-conversation history covering text, a signed
+    // thinking block, and a tool_use/tool_result pair. H+1: the exact same
+    // history plus one appended exchange.
+    let mut req_h = base_request();
+    req_h.tools = vec![tool("read"), tool("bash")];
+    req_h.messages = vec![
+        user_text("start"),
+        RequestMessage {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "plan".into(),
+                    signature: Some("EqQBCgIYAhIkSig=".into()),
+                },
+                ContentBlock::Text {
+                    text: "working".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: "tu_1".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({"arg": "/tmp/a.txt"}),
+                    input_raw: None,
+                },
+            ],
+        },
+        RequestMessage {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tu_1".into(),
+                content: "file contents".into(),
+                is_error: false,
+            }],
+        },
+    ];
+    let mut req_h1 = req_h.clone();
+    req_h1.messages.push(RequestMessage {
+        role: Role::Assistant,
+        content: vec![ContentBlock::Text {
+            text: "done".into(),
+        }],
+    });
+    req_h1.messages.push(user_text("next"));
+
+    let b1: serde_json::Value = serde_json::from_str(&body_for(&req_h)).unwrap();
+    let b2: serde_json::Value = serde_json::from_str(&body_for(&req_h1)).unwrap();
+
+    // system and tools: byte-identical across the two requests.
+    assert_eq!(canon(&b1["system"]), canon(&b2["system"]), "system block changed");
+    assert_eq!(canon(&b1["tools"]), canon(&b2["tools"]), "tools block changed");
+
+    // The first |H| serialized message elements: byte-identical MODULO
+    // cache_control markers.
+    let m1 = b1["messages"].as_array().unwrap();
+    let m2 = b2["messages"].as_array().unwrap();
+    assert_eq!(m1.len(), 3);
+    assert_eq!(m2.len(), 5);
+    for i in 0..m1.len() {
+        let mut a = m1[i].clone();
+        let mut b = m2[i].clone();
+        strip_cache_control(&mut a);
+        strip_cache_control(&mut b);
+        assert_eq!(
+            canon(&a),
+            canon(&b),
+            "message {i} was rewritten between H and H+1: the request is not append-only"
+        );
+    }
+
+    // The cache_control difference really is just the ONE moving
+    // message-level breakpoint per request.
+    let marker_count = |v: &serde_json::Value| {
+        serde_json::to_string(v).unwrap().matches("cache_control").count()
+    };
+    assert_eq!(marker_count(&b1["messages"]), 1);
+    assert_eq!(marker_count(&b2["messages"]), 1);
+}
+
 #[test]
 fn input_raw_never_reaches_the_wire() {
     // T4: two requests identical except one history tool_use carries
