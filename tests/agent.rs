@@ -442,12 +442,181 @@ fn context_prewarn_fires_once_per_session() {
     );
     let n1 = notices(&collect_events(&mut session, "one"));
     assert_eq!(n1.len(), 1, "exactly one pre-warn: {n1:?}");
+    // T20 unified wording: both remedies, /compact first.
     assert!(n1[0].contains("context: ~250 of 1000 tokens used"));
-    assert!(n1[0].contains("the next response may not fit (max_tokens 800)"));
-    assert!(n1[0].contains("consider starting a new session"));
+    assert!(n1[0].contains("/compact frees the window"));
+    assert!(n1[0].contains("or start a new session"));
     // Turn two re-satisfies the condition; the warning is once per SESSION.
     let n2 = notices(&collect_events(&mut session, "two"));
     assert!(n2.is_empty(), "no repeat warning: {n2:?}");
+}
+
+#[test]
+fn eighty_percent_arm_fires_independently_of_max_tokens() {
+    let dir = tempfile::tempdir().unwrap();
+    // max_tokens 100: the remaining-window arm needs used > 900, so these
+    // firings can only come from the 80% arm.
+    let mut session = session_with_window(
+        dir.path(),
+        vec![
+            // used 799: one below the 80% threshold, silent.
+            msg_with_usage(
+                vec![text("a")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 700, "output_tokens": 99}),
+            ),
+            // used exactly 800 = 80% of 1000: fires.
+            msg_with_usage(
+                vec![text("b")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 700, "output_tokens": 100}),
+            ),
+        ],
+        Some(1000),
+        100,
+    );
+    let n1 = notices(&collect_events(&mut session, "one"));
+    assert!(n1.is_empty(), "799 of 1000 is below 80%: {n1:?}");
+    let n2 = notices(&collect_events(&mut session, "two"));
+    assert_eq!(n2.len(), 1, "800 of 1000 crosses 80%: {n2:?}");
+    assert!(n2[0].contains("context: ~800 of 1000 tokens used"));
+    assert!(n2[0].contains("/compact frees the window"));
+}
+
+#[test]
+fn no_context_window_means_no_advisory_ever() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = session_with_window(
+        dir.path(),
+        vec![msg_with_usage(
+            vec![text("a")],
+            StopReason::EndTurn,
+            serde_json::json!({"input_tokens": 900_000, "output_tokens": 100}),
+        )],
+        None,
+        100,
+    );
+    let n = notices(&collect_events(&mut session, "one"));
+    assert!(n.is_empty(), "no window, no advisory: {n:?}");
+}
+
+// The resume-time trigger (T20): a session rebuilt from a seed whose
+// RESTORED estimate already crosses the threshold advises immediately.
+
+fn resumed_with_window(
+    dir: &std::path::Path,
+    last_context_used: Option<u64>,
+    responses: Vec<ResponseMessage>,
+    context_window: Option<u64>,
+    max_tokens: u32,
+) -> Session {
+    let provider = MockProvider {
+        responses: RefCell::new(responses),
+        requests: Rc::new(RefCell::new(vec![])),
+    };
+    let cfg = SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens,
+        system: None,
+        thinking: false,
+        cwd: dir.to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window,
+        max_tokens_source: None,
+        prose_tool_calls: true,
+    };
+    let mut file = saved(
+        vec![user_msg("old prompt"), assistant_msg(vec![text("old answer")])],
+        vec![],
+    );
+    file.last_context_used = last_context_used;
+    let (seed, _) = store::prepare_seed(file);
+    Session::resume(Box::new(provider), Registry::standard(), cfg, seed)
+}
+
+#[test]
+fn resume_time_advisory_fires_once_and_latches_across_trigger_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = resumed_with_window(
+        dir.path(),
+        Some(900),
+        vec![msg_with_usage(
+            vec![text("a")],
+            StopReason::EndTurn,
+            serde_json::json!({"input_tokens": 850, "output_tokens": 60}),
+        )],
+        Some(1000),
+        100,
+    );
+    let advisory = session.context_advisory().expect("restored 900 of 1000 must advise");
+    assert!(advisory.contains("context: ~900 of 1000 tokens used"));
+    assert!(advisory.contains("/compact frees the window"));
+    assert!(advisory.contains("or start a new session"));
+    // Latch: the accessor itself does not re-fire...
+    assert_eq!(session.context_advisory(), None);
+    // ...and the OTHER trigger path (the turn loop) honors the same latch
+    // even though this turn's usage (910 of 1000) crosses again.
+    let n = notices(&collect_events(&mut session, "next"));
+    assert!(n.is_empty(), "latched across trigger paths: {n:?}");
+}
+
+#[test]
+fn resume_time_advisory_stays_silent_below_threshold_or_without_window() {
+    let dir = tempfile::tempdir().unwrap();
+    // Below both arms: 100 of 1000 with max_tokens 100.
+    let mut session = resumed_with_window(dir.path(), Some(100), vec![], Some(1000), 100);
+    assert_eq!(session.context_advisory(), None);
+    // No window configured: never advises, whatever the estimate says.
+    let mut session = resumed_with_window(dir.path(), Some(900), vec![], None, 100);
+    assert_eq!(session.context_advisory(), None);
+    // No restored estimate: nothing to judge.
+    let mut session = resumed_with_window(dir.path(), None, vec![], Some(1000), 100);
+    assert_eq!(session.context_advisory(), None);
+}
+
+#[test]
+fn resume_command_emits_the_advisory_when_the_restored_estimate_is_hot() {
+    let dir = tempfile::tempdir().unwrap();
+    let sdir = tempfile::tempdir().unwrap();
+    // The LIVE session has a window; the file being resumed restores a hot
+    // estimate: /resume itself must carry the advisory notice.
+    let mut session = session_with_window(dir.path(), vec![], Some(1000), 100);
+    let mut h = CmdHarness::new();
+    h.sessions_dir = sdir.path().to_path_buf();
+
+    let history = vec![user_msg("old prompt"), assistant_msg(vec![text("old answer")])];
+    let r = store::SessionFileRef {
+        version: FORMAT_VERSION,
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        cwd: "/test",
+        history: &history,
+        session_usage: Usage::default(),
+        todos: &[],
+        last_context_used: Some(900),
+        name: Some("hot"),
+    };
+    store::save(
+        &sdir.path().join("test-9999-hot.json"),
+        &r,
+        temur::config::DEFAULT_SESSION_MAX_BYTES,
+        &mut |_| {},
+    )
+    .unwrap();
+
+    let events = commands::run(commands::parse("/resume hot"), &mut h.ctx(&mut session, &no_build));
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::SessionLoaded { .. })),
+        "{events:?}"
+    );
+    let ns = notices(&events);
+    assert!(
+        ns.iter().any(|n| n.contains("context: ~900 of 1000 tokens used")
+            && n.contains("/compact frees the window")),
+        "resume-time advisory rides the /resume events: {ns:?}"
+    );
 }
 
 #[test]

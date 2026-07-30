@@ -404,6 +404,37 @@ impl Session {
         self.cfg.thinking = on;
     }
 
+    /// The unified context advisory (T20). Fires ONCE per latch period,
+    /// when either arm crosses first: `used >= 80%` of the window, or the
+    /// remaining window is smaller than `max_tokens` (the next response may
+    /// not fit). Returns the advisory and sets the latch; `None` below
+    /// threshold, when already warned, or without a window/estimate (no
+    /// configured `context_window` means no advisory can fire, as before).
+    ///
+    /// Two trigger paths call it: the turn loop after each response, and
+    /// the resume seams (startup `--continue`/`--resume`, `/resume`) right
+    /// after a seed load, because resume is the zero-waste moment to
+    /// compact: no provider cache prefix is warm yet. The latch is shared,
+    /// so a resume-time advisory suppresses the turn-loop one and vice
+    /// versa, and every existing re-arm point (provider switch, `/clear`,
+    /// seed load, `/compact`) resets both.
+    pub fn context_advisory(&mut self) -> Option<String> {
+        if self.context_warned {
+            return None;
+        }
+        let window = self.cfg.context_window?;
+        let used = self.last_context_used?;
+        let eighty = u128::from(used) * 5 >= u128::from(window) * 4;
+        let tight = window.saturating_sub(used) < u64::from(self.cfg.max_tokens);
+        if !(eighty || tight) {
+            return None;
+        }
+        self.context_warned = true;
+        Some(format!(
+            "context: ~{used} of {window} tokens used; /compact frees the window by summarizing the conversation, or start a new session"
+        ))
+    }
+
     // `/status` getters: read-only session facts, no key material anywhere.
     pub fn model(&self) -> &str {
         &self.cfg.model
@@ -514,18 +545,8 @@ impl Session {
                     msg.usage.input_tokens.unwrap_or(0) + msg.usage.output_tokens.unwrap_or(0),
                 );
             }
-            if !self.context_warned {
-                if let (Some(window), Some(used)) =
-                    (self.cfg.context_window, self.last_context_used)
-                {
-                    if window.saturating_sub(used) < u64::from(self.cfg.max_tokens) {
-                        self.context_warned = true;
-                        ui(AgentEvent::Notice(format!(
-                            "context: ~{used} of {window} tokens used; the next response may not fit (max_tokens {}) — consider starting a new session",
-                            self.cfg.max_tokens
-                        )));
-                    }
-                }
+            if let Some(advisory) = self.context_advisory() {
+                ui(AgentEvent::Notice(advisory));
             }
 
             let stop = msg.stop_reason;

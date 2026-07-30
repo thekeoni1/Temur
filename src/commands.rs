@@ -865,6 +865,11 @@ fn resume_session(ctx: &mut CommandCtx, key: String) -> Vec<AgentEvent> {
             ctx.cwd_display
         )));
     }
+    // T20: the resumed estimate may already cross the context threshold;
+    // the advisory fires now (and sets the latch), not one turn late.
+    if let Some(advisory) = ctx.session.context_advisory() {
+        out.push(notice(advisory));
+    }
     out
 }
 
