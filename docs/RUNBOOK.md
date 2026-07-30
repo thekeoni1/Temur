@@ -2165,3 +2165,55 @@ Procedure deltas vs v0.7.0:
   acceptance above remains open going into this release; it is test
   infrastructure only and does not gate the ship (the stage-1 gate
   run below was a clean full pass).
+
+## v0.8.0 release acceptance - recorded result
+
+2026-07-30 (PDT), staged and published same day. Baseline: T19 was
+already on main (4d650d6, ci 30502421688 green); T20 pushed as
+stage-1 step 1 (4d650d6..623c534, ci run 30561457680 green: test
+1m39s, release-gate 4m10s). Stage 1 = three prep commits (db79b01
+bump at all six pin sites, 678c126 CHANGELOG dated 2026-07-30,
+9ed4d37 RUNBOOK close-out delta + ROADMAP ship-vehicle rows), full
+check.sh green, busybox --version printed 0.8.0.
+
+Stage 2, in order, all green:
+
+- Prep commits pushed 623c534..9ed4d37; on-push ci run 30563031243
+  green (test 2m05s 16:47:13Z..16:49:18Z, release-gate 6m46s
+  16:47:18Z..16:54:04Z) - this run exercised the version-skew
+  release gate against the bump.
+- Annotated tag v0.8.0 at 9ed4d37 ("temur v0.8.0 - model floor and
+  context lifecycle (T19+T20)"), pushed (tag object 22029eb).
+  Unsigned as always.
+- Full release.sh (no SKIP_CHECK): check.sh both paths green, leak
+  grep clean (operator patterns + generic shapes, files + history)
+  first try, skew gate "OK: install.sh + README match version 0.8.0
+  and all targets", 4/4 targets gated + version-asserted
+  "temur 0.8.0" (i686 + x86_64 native, aarch64 + armv7 via qemu),
+  SHA256SUMS self-verified, staged at /home/dev/dist/release/v0.8.0/.
+  Installer matrix 6/6 (pass+corrupt+unlisted, host + busybox).
+- Staged sha256s: 23d6a09d4a7a... aarch64, 54e7add33e3a... armv7,
+  1c0100b584d6... i686, 8f717e54a3bb... x86_64 (full sums in the
+  release's SHA256SUMS asset).
+- Private release github.com/thekeoni1/Temur/releases/tag/v0.8.0
+  created FROM INSIDE the repo worktree per the v0.7.0 procedure
+  note (no not-a-git-repository rerun needed this time), title
+  "temur v0.8.0 - model floor and context lifecycle (T19+T20)",
+  notes = the CHANGELOG v0.8.0 section, 5 assets (4 binaries +
+  SHA256SUMS), not draft; 404s while the repo is private, by
+  design. Repo visibility PRIVATE confirmed via gh BEFORE creating
+  the release.
+- Closing gate: authenticated download of the x86_64 binary +
+  SHA256SUMS into a scratch dir; sha256sum -c OK; the downloaded
+  binary's independent sha256 (8f717e54a3bb25d89d373d416d3a14220a
+  ddda65599c35c82a7bd8257b6bfebe) equals the staged one byte for
+  byte.
+
+Honest residuals: the headless-TUI key-pump flake (T20 acceptance
+record above) stayed quiet through every stage-2 gate run; still
+open as test infrastructure, candidate T21 rider. No other deltas
+vs v0.7.0.
+
+Open release items unchanged: the PUBLIC one-liner gate and the
+hostname-blob-history decision stay queued behind the visibility
+flip; ARM hardware smoke still pending hardware.
