@@ -2035,3 +2035,97 @@ by max_iterations); the read-paths set is in-memory only and starts
 empty on --continue/--resume by design; read of a file via bash
 (cat) does not arm the write check - only the read/edit/write tools
 do.
+
+## T20 acceptance - recorded result (no release)
+
+2026-07-29, four commits on main over the T19 head (4d650d6):
+P1 27707cd (/compact, fail-closed summary compaction), P2 3b578af
+(unified context advisory with a resume-time trigger), P3 c4a3370
+(prefix-stability invariant tests, both providers; no violation
+found, so no fix rode along and the request-body goldens are
+untouched), P4 (docs + this record). Every phase ran the full
+check.sh gate (pty, foreground) green before its commit. Version
+stays 0.7.0; T20 rides CHANGELOG Unreleased. Per the grounded
+plan, T20 added NO caching: the Anthropic cache_control
+breakpoints have existed since the initial commit.
+
+Live keyless smoke against llama.cpp server-b10068 serving
+Qwen3-4B-Instruct-2507 Q4_K_M (ctx 8192, --jinja), musl-static
+release binary on the host, isolated XDG dirs, config: keyless
+openai-compat base_url http://127.0.0.1:8080/v1, model qwen3-4b,
+context_window 4096, max_tokens 512, compact profile. NO hosted or
+keyed call anywhere.
+
+(a) Advisory fires live on the NEW 80% arm (three verbose answers;
+80% of 4096 = 3277, and remaining 601 >= max_tokens 512 proves the
+old arm could not have fired here):
+
+  [!] context: ~3495 of 4096 tokens used; /compact frees the window by summarizing the conversation, or start a new session
+
+Exactly one advisory in the session (latch); the later
+"context: ~3911 of 4096 tokens used" line is /status output.
+
+(b) Quit, then --continue: the resume-time trigger fires at seed
+load, BEFORE any turn, and a live /compact lands (6 messages -> 2):
+
+  [!] resumed session: 6 messages, ~9423 tokens in / 1099 out
+  [!] context: ~3911 of 4096 tokens used; /compact frees the window by summarizing the conversation, or start a new session
+  >   [!] compacted: 6 message(s) summarized into 2; the next request rebuilds the provider's cached prefix (one-time cost)
+  [!] context: no usage reported yet
+
+(the last line is /status right after: the estimate reset.)
+
+(c) Saved session file verified on disk after (b): 2 messages,
+last_context_used null, first message role user with TWO text
+blocks, block 0 beginning
+"[conversation summary (compacted)]\nGoal: Explain how TCP
+congestion control, DNS resolution, and TLS 1.3 handshakes work"
+and block 1 the verbatim tail prompt ("Now explain in about 300
+words how TLS 1.3 handshakes work. ..."); last message role
+assistant. Qwen3-4B produced all five structured headings (Goal /
+State / Decisions / Files / Next steps) on the first attempt.
+
+(d) --continue again, post-compact: NO advisory at seed load (the
+restored estimate is null by design), the replayed backscroll shows the
+summary + tail, and a live turn answered from the summary
+("The three topics explained earlier were TCP congestion control,
+DNS resolution, and TLS 1.3 handshakes."). Honest note: AFTER that
+turn completed, the turn-loop advisory fired again at ~3422 of
+4096. That is correct behavior, not a bug: the latch re-arms on
+compaction, and the verbatim tail (a 300-word answer) plus system,
+tools, and a fresh 300-word reply genuinely re-crossed 80% of this
+deliberately tiny window. The resume-time assertion the plan asked
+for (no advisory at seed load post-compact) holds in the same
+transcript.
+
+Deviations and honest limits, all recorded: (1) a cancelled or
+empty-summary attempt still adds the summary call's reported usage
+to the session totals: the tokens were really spent, and the plan's
+"usage kept cumulative" rule is applied to failures too. (2) The
+UI transcript/backscroll is NOT rebuilt on /compact: the display
+keeps showing what happened; only the wire history (and the saved
+file) compact. (3) The advisory estimate remains the T3 one
+round-trip-stale advisory value; both arms judge the previous
+response's usage. (4) The smoke's served model id is /model.gguf
+(llama.cpp single-model listing); the config's model name qwen3-4b
+is accepted by the server regardless, as in prior smokes. (5) The
+CLI /compact is replay-guarded like /clear and /models, so the
+mock-provider /compact coverage lives in the test suites (the
+tests/agent.rs T20 section), not in a --mock transcript.
+
+Pre-existing flake surfaced by the P4 gate, NOT a T20 defect and
+NOT fixed here (out of scope; left for the planning session): the
+tui suite's headless_command_flow tests race their scripted key
+pump against the driver thread. App::handle_key drops Enter while
+busy is true, and the headless ScriptedEvents source pumps keys
+with no delay, so under heavy machine load (the gate's parallel
+container work; the llama server was also up during the first
+run) the Enter ending one scripted line can land before the
+previous turn's TurnComplete/PromptOpen folds busy back to false.
+Observed both ways in P4 gate runs: one hang (driver blocked in
+read_input forever while the render thread spun on the exhausted
+script at 100% CPU; killed after 3h) and one merged-line assert
+("/model sonnet-next" + "/clear" submitted as one line,
+tests/tui.rs:1076). 120 isolated runs + 40 full-suite runs on an
+idle machine reproduce neither; the T20 diff touches no ui/tui
+file. The passing gate recorded above is a clean full rerun.

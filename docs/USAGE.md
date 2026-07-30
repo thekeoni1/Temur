@@ -7,7 +7,8 @@ then the one-shot scripting recipes, then skills.
 > **Capture note.** Every transcript below is from a real run, captured
 > 2026-07-28 against a local llama.cpp server (image `server-b10068`)
 > serving Qwen3-4B-Instruct-2507 Q4_K_M with the compact prompt profile,
-> in a scratch directory `/home/dev/demo`. Input was piped, where a
+> in a scratch directory `/home/dev/demo` (sections that state their own
+> capture setup inline, like "/compact", differ only as stated). Input was piped, where a
 > terminal would echo the typed line after `>`; the transcripts show the
 > input inline exactly as a terminal session displays it. The startup
 > version banner (`temur <version> (model=..., thinking=...)`) is
@@ -54,11 +55,11 @@ What each kind of line means:
   this turn's input/output and cache read/write, then the running
   session totals.
 - `  [!]` marks notices: `/status` output, warnings (for example
-  `[!] context: ~7175 of 8192 tokens used; the next response may not
-  fit ...` when a small context window fills up), and safety stops
-  such as `[!] stopped: two tool calls alternated 3 times in a row`
-  (the doom-loop guard; both examples are from real runs of the
-  sessions above).
+  `[!] context: ~3495 of 4096 tokens used; /compact frees the window
+  by summarizing the conversation, or start a new session` when a
+  small context window fills up; see "/compact" below), and safety
+  stops such as `[!] stopped: two tool calls alternated 3 times in a
+  row` (the doom-loop guard; both examples are from real runs).
 - A row of dots (`.`) is streamed thinking activity, shown as a
   passive indicator. Only the anthropic provider uses thinking, and it
   is off by default (`/thinking on` flips it for the session).
@@ -75,8 +76,9 @@ you want to keep:
 
 - `/clear` wipes the current session's history in place and persists
   the empty state immediately. Use it when the current thread is done
-  or has gone off the rails and you will not want it back, for example
-  when the context notice above starts firing.
+  or has gone off the rails and you will not want it back. When the
+  context advisory starts firing but the thread IS worth keeping,
+  `/compact` (next section) preserves a summary instead.
 - `/new <name>` leaves the current transcript on disk and starts a
   fresh named session for this project. Use it when switching to a
   different piece of work you may want to return to; the old session
@@ -87,6 +89,54 @@ you want to keep:
   the transcript as backscroll. Use it to pick an earlier thread back
   up, in this project or another (resuming another project's session
   warns that tools still run in the current directory).
+
+### /compact: summarize and keep going
+
+When the conversation approaches the context window, temur warns once
+per session, at 80% of the window or when the remaining room is
+smaller than `max_tokens`, whichever comes first (with no
+`context_window` configured there is no estimate to judge, so the
+advisory never fires). The same advisory fires immediately at
+`--continue`/`--resume`/`/resume` when the restored session is already
+past the threshold. A real sequence against a local llama.cpp server
+(Qwen3-4B, `context_window` 4096, `max_tokens` 512): three verbose
+answers crossed 80% and the advisory fired, the session was quit, and
+`--continue` re-warned at load, before any turn:
+
+```
+  [!] resumed session: 6 messages, ~9423 tokens in / 1099 out
+  [!] context: ~3911 of 4096 tokens used; /compact frees the window by summarizing the conversation, or start a new session
+>   [!] compacted: 6 message(s) summarized into 2; the next request rebuilds the provider's cached prefix (one-time cost)
+```
+
+`/compact` makes ONE model call (the session's own model and system
+prompt, tools omitted) asking for a structured summary: goal, state,
+decisions, files touched, next steps. On success the history becomes
+that summary plus a verbatim tail, the last user-initiated exchange
+(from the last user message that is not a tool result through the end),
+so recent work stays byte-exact and a tool call is never split from its
+result. The summary rides INSIDE the tail's first user message as a
+leading `[conversation summary (compacted)]` block, and the compacted
+state is saved immediately, like `/clear`. It is fail-closed: a
+provider error, Ctrl+C (works like interrupting a turn), or an empty
+summary leaves the history exactly as it was and says so.
+
+Two honest costs, both deliberate. First, the provider's cached prompt
+prefix (and a local server's reused KV state) was built on the old
+history, so the request after a `/compact` re-processes its now-short
+prompt from scratch; that one-time cost is why temur never trims
+per-turn, which would pay it on every turn. Resuming is the exception:
+at `--continue`/`/resume` nothing is warm yet, so compacting right
+after the resume-time advisory throws away nothing. Second, the model
+writing the summary is the session's own; a small local model writes a
+rougher summary than a hosted one, which the structured headings exist
+to keep useful.
+
+Naming note: `/compact` is unrelated to the `"compact"` value of
+`prompt_profile` in config.json. That knob picks the SIZE of the tool
+prompts and system prompt served to small models; `/compact` is a
+command that shrinks the conversation history. A session can use
+either, both, or neither.
 
 ## Picking and keeping a model
 

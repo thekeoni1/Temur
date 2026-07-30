@@ -322,8 +322,12 @@ Larger is better whenever the serving machine allows it; anything in the
 is, a property of the server (llama.cpp `-c`, Ollama `num_ctx`) that the
 API does not expose, so you state it. temur then:
 
-- warns once per session when the remaining room drops below
-  `max_tokens` (the next response may not fit);
+- advises once per session when the conversation gets tight: at 80% of
+  the window, or when the remaining room drops below `max_tokens` (the
+  next response may not fit), whichever comes first; the advisory names
+  `/compact` and a new session as the remedies, and also fires at
+  `--continue`/`--resume`/`/resume` when the restored session is
+  already past the threshold;
 - rewords a `max_tokens` truncation that happens near the window to name
   the likely real cause: context overflow.
 
@@ -332,7 +336,8 @@ input+output token count of the most recent response, as reported by the
 server, one round-trip stale, and absent entirely on servers that never
 report usage (then the feature stays silent rather than inventing
 numbers). That's why every figure is written `~N`. It is an advisory, not
-an enforcement: temur never compacts, trims, or blocks requests.
+an enforcement: temur never trims, blocks, or compacts a request on its
+own; `/compact` exists but only ever runs because you typed it.
 
 ## Degradation on quirky servers
 

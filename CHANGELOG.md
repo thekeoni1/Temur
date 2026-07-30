@@ -4,6 +4,33 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+T20 context lifecycle (living with small context windows):
+
+- New `/compact` command: one model call (tools omitted, the session's
+  own model and system prompt) summarizes the conversation under
+  structured headings, then the history becomes that summary plus a
+  verbatim tail, the last user-initiated exchange, merged
+  alternation-safe (the summary rides inside the tail's first user
+  message as a leading text block). Fail-closed: any provider error,
+  interrupt, or empty summary leaves history untouched. On success the
+  context estimate resets, the advisory re-arms, session usage totals
+  keep accumulating (including the summary call itself), todos stay,
+  and the compacted state is persisted immediately, like `/clear`. The
+  notice is honest that the next request rebuilds the provider's
+  cached prefix once.
+- The once-per-session context warning is now a unified advisory with
+  two arms: it fires at 80% of `context_window` OR when the remaining
+  window is smaller than `max_tokens`, whichever comes first, and its
+  wording names both remedies (`/compact`, new session). A second
+  trigger fires it immediately at `--continue`/`--resume`/`/resume`
+  when the restored estimate already crosses the threshold, because
+  resume is the zero-waste moment to compact.
+- Prefix-stability invariant tests on both providers pin that requests
+  are append-only (growing the history never rewrites earlier bytes,
+  modulo the one moving Anthropic cache breakpoint), the property that
+  makes provider prompt caching and llama.cpp `--cache-reuse` prefix
+  KV reuse effective.
+
 T19 model floor (raising the harness floor for weak local models):
 
 - Tool-output truncation now scales to the model's context window

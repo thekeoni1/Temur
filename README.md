@@ -323,6 +323,11 @@ message starting with `/` cannot be sent):
   feed `/model` Tab completion in the TUI)
 - `/clear` - wipe the session; the empty state is persisted immediately,
   so quitting and `--continue` resumes empty
+- `/compact` - one model call summarizes the conversation, then the
+  session continues from that summary plus the last user-initiated
+  exchange kept verbatim (fail-closed: any error, interrupt, or empty
+  summary leaves history untouched; the compacted state is persisted
+  immediately, like `/clear`)
 - `/sessions` - list every saved session, all projects: name (or
   `(default)`), the directory it was recorded in, message count, file
   name, and a title derived from its first prompt; the active session
@@ -384,6 +389,29 @@ that keeps the remainder replayable; the in-memory conversation is
 never trimmed. Two processes in one directory don't corrupt anything:
 last complete writer wins. To start over, `/new` a fresh name or delete
 the file from the sessions dir.
+
+## Context lifecycle
+
+With a `context_window` configured, temur tracks an advisory estimate
+of context use (the last response's reported input+output tokens) and
+warns once per session when the conversation gets tight: at 80% of the
+window, or when the remaining room is smaller than `max_tokens`,
+whichever comes first. The advisory names both remedies: `/compact`
+summarizes the conversation and continues in a fraction of the window;
+a new session starts clean. The same advisory also fires immediately at
+`--continue`/`--resume`/`/resume` when the restored session is already
+past the threshold, and resume is in fact the cheapest moment to
+compact: no provider cache or local KV state is warm yet, so the
+summarization throws away nothing. Requests are append-only by design
+(pinned by a prefix-stability test suite), which is what makes provider
+prompt caching effective: the anthropic provider marks cache
+breakpoints (system+tools, plus a moving one at the end of history),
+and against local llama.cpp the same append-only shape makes prefix KV
+reuse work for free (start the server with `--cache-reuse 256` to keep
+prompt processing incremental across turns). `/compact` deliberately
+invalidates that warm prefix once, in exchange for a small history from
+then on; per-turn trimming, which would invalidate it on every turn, is
+deliberately absent.
 
 ## Key isolation
 
