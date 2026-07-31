@@ -294,9 +294,12 @@ keyless endpoints only.
 
 Est. RAM uses the serve.sh warning's own arithmetic: file size plus
 128 KiB per context token of KV and compute allowance at 8192 ctx
-(about 1.0 GB). Verified rows ran the full seven-task eval (compact
-profile, llama.cpp `server-b10068`, ctx 8192, `--jinja`) on the stated
-date. The Qwen2.5-Coder-3B result deserves its honest detail: it
+(about 1.0 GB). Verified rows ran the full eval as it stood on the
+stated date (compact profile, llama.cpp `server-b10068`, ctx 8192,
+`--jinja`); the eval has since grown to nine tasks (T19 added the gzip
+binary nudge and the large-output tail), so the dated `eval 7/7` rows
+are historical records against the seven-task harness.
+The Qwen2.5-Coder-3B result deserves its honest detail: it
 consistently picked the RIGHT tool, including bash with `rm` on the
 indirect probe, but emitted every call as a fenced JSON block instead
 of a structured tool call on this stack, so temur's prose-tool-call
@@ -387,17 +390,21 @@ is verified from the host: model prose is never trusted as evidence).
 `scripts/weak_model_eval.sh` measures, instead of claiming, how well a
 small model drives temur's tools. Same setup discipline as the demo
 (operator-run, not part of `check.sh`; podman pod with `--network none`;
-nothing ever pulled; musl binary readelf-checked), then seven fixed
+nothing ever pulled; musl binary readelf-checked), then nine fixed
 tasks, each in a fresh work directory with a fresh temur process: a
 plain file write, a read-and-extract, a targeted edit that must leave
 the rest of the file unchanged, a bash mkdir+write, a search across
-three files, an edit-then-bash chain where order matters, and an
+three files, an edit-then-bash chain where order matters, an
 indirect-tool-selection probe ("delete the file", naming no tool: the
-registry has no delete tool, so the model must choose bash by itself).
+registry has no delete tool, so the model must choose bash by itself),
+a gzip binary-format nudge (a valid `.gz` must be produced through a
+scripted bash run, proven by host-side `gunzip`, never by writing raw
+bytes), and a large-output tail task (a needle on the final line of an
+oversized tool output survives only through the head+tail truncation).
 Every task is scored by a host-verified filesystem assertion (model
 prose is never evidence; the indirect probe additionally requires a bash
 `rm` call in the transcript), and the run ends with a fixed-width
-PASS/FAIL table plus a `SCORE: N/7` line.
+PASS/FAIL table plus a `SCORE: N/9` line.
 
 ```sh
 MODEL_GGUF=/path/to/model.gguf scripts/weak_model_eval.sh

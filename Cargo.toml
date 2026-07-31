@@ -2,7 +2,7 @@
 name = "temur"
 version = "0.9.0"
 edition = "2021"
-description = "Dependency-free single static binary coding agent for any Linux — down to 32-bit and embedded — that runs fully offline against local models"
+description = "Zero-runtime-dependency single static binary coding agent for any Linux — down to 32-bit and embedded — that runs fully offline against local models"
 license = "MIT"
 
 [dependencies]

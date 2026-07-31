@@ -1,6 +1,6 @@
 # temur
 
-A dependency-free single static binary coding agent for any Linux system,
+A zero-runtime-dependency single static binary coding agent for any Linux system,
 down to 32-bit and embedded, that runs fully offline against local models.
 
 Mainstream Bun- and Node-based coding agents publish no 32-bit x86 or armv7 builds, and
@@ -47,9 +47,8 @@ serving Qwen3-1.7B Q4_K_M, first attempt.
 agent tasks (write, read-and-extract, targeted edit, bash, multi-file
 search, edit-then-bash chain, indirect delete, gzip binary nudge,
 large-output tail), each scored only by host-verified filesystem
-assertions. Recorded scores: **5/6** on the original six tasks with
-Qwen3-1.7B Q4_K_M (a 1.1 GB model), and the current nine-task score in
-docs/RUNBOOK.md "T19 acceptance"; both through the compact prompt profile,
+assertions. Recorded score: **9/9** with Qwen3-4B-Instruct-2507 Q4_K_M
+(docs/RUNBOOK.md "T19 acceptance"), through the compact prompt profile,
 llama.cpp `server-b10068`, 8192-token context, in a `--network none` pod.
 
 The harness floor itself (T19, active on every provider): tool output
@@ -67,7 +66,9 @@ one unambiguous, losslessly parsed call to a real tool (config
 Prebuilt static binaries ship for `x86_64`, `aarch64`, `armv7` (hard-float,
 Raspberry Pi 2/3+ and other 32-bit ARM userlands), and `i686` (SSE2
 required). Because they are musl-static they run on any Linux distro,
-including Alpine and other musl systems, no glibc needed.
+including Alpine and other musl systems, no glibc needed. Honesty note:
+the `armv7` and `aarch64` binaries are built and version-asserted under
+qemu emulation and have not yet been exercised on ARM hardware.
 
 One-liner (detects your arch, downloads, verifies the checksum, installs to
 `~/.local/bin`; refuses to install anything unverified):
@@ -465,7 +466,7 @@ that hole, on by default whenever any key file is configured:
 - **Redaction.** The ACTIVE provider's key, the one credential temur
   has actually read, is scrubbed from every tool result (successes and
   errors, before output truncation), so even an unexpected leak path
-  cannot echo it back to the model.
+  cannot echo it back verbatim.
 
 The invariant: a keyless config behaves byte-identically to earlier
 releases. No guard, no namespace, no probe, no redaction.
