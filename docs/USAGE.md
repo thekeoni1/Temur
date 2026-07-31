@@ -440,6 +440,60 @@ Ambiguous or truncated shapes are never executed; they get the
 corrective nudge instead. Set `"prose_tool_calls": false` in
 config.json to turn recovery off and restore nudge-only behavior.
 
+## Bash approval mode (T21)
+
+With key files configured, bash normally runs inside the key sandbox
+(README, "Key isolation"). On a kernel that denies unprivileged user
+namespaces (locked-down containers and playgrounds, commonly), the
+sandbox cannot start, and an interactive session asks you about each
+bash command instead of refusing. The prompt shows the exact command;
+`y` runs that one command unsandboxed, anything else denies it. A
+denial goes back to the model as an ordinary tool error, so the turn
+continues and the model can adapt. Nothing is remembered: the next
+command asks again.
+
+A real transcript (plain REPL inside a container whose seccomp policy
+denies `unshare`, keyed profile with a placeholder key file, local
+llama.cpp serving Qwen3-4B):
+
+```
+> Use the bash tool to run exactly this command: echo live-approved > /smoke/home/live-marker.txt
+  → bash
+  [?] bash approval needed: the key sandbox is unavailable on this host,
+      so this command would run with NO key isolation:
+        echo live-approved > /smoke/home/live-marker.txt
+      run it? [y/N]   ✓ bash: echo live-approved > /smoke/home/live-marker.txt
+The command `echo live-approved > /smoke/home/live-marker.txt` was executed successfully, and the file `/smoke/home/live-marker.txt` has been created or updated with the content "live-approved". If you need further actions or verification, let me know!
+>   → bash
+  [?] bash approval needed: the key sandbox is unavailable on this host,
+      so this command would run with NO key isolation:
+        echo live-denied > /smoke/home/deny-marker.txt
+      run it? [y/N]   ✗ bash: bash
+The command to write "live-denied" to `/smoke/home/deny-marker.txt` was not executed, as the user declined to run it. Let me know if you'd like to proceed with any other actions!
+```
+
+(The `y` and `n` answers were typed at the `[y/N]` prompts; in the
+raw pty capture their echo lands with the piped input block rather
+than inline, so they do not appear beside the prompts above.) In the
+TUI the same
+question appears in the input area with the command wrapped below it,
+answered with a single `y`, `n`, or Esc keypress.
+
+The rules, precisely:
+
+- A working sandbox always wins: no prompt, ever, when the sandbox
+  runs. Keyless configs never prompt either (there is nothing to
+  guard).
+- Only interactive sessions ask: the TUI, and the plain REPL when
+  stdin and stdout are a real terminal. One-shot `-p` and piped runs
+  never ask; with keys guarded and no sandbox they refuse bash, and
+  the refusal names both this mode and the config override.
+- `allow_bash_without_key_sandbox: true` silences the ask entirely
+  and runs bash unsandboxed without asking; it exists for
+  non-interactive use on sandbox-less hosts and is a real risk. See
+  README, section "Untrusted hosts", for safer patterns (spend-capped
+  throwaway keys, a LiteLLM-style relay).
+
 ## Where the other guides are
 
 - TUI design, markdown rendering, key bindings, turn interruption:

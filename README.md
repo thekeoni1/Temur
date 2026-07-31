@@ -435,11 +435,16 @@ that hole, on by default whenever any key file is configured:
   existing key file is bind-masked with `/dev/null`: inside the shell
   the key path reads as empty and writes to it are discarded, while the
   host file stays untouched. On kernels without unprivileged user
-  namespaces bash REFUSES to run instead. Setting
+  namespaces, an interactive session (the TUI, or the plain REPL on a
+  real terminal) asks you to approve each bash command before running
+  it unsandboxed, showing the exact command; the default answer is no,
+  and nothing is remembered between commands. Non-interactive runs
+  (one-shot `-p`, piped stdin) refuse to run bash instead. Setting
   `allow_bash_without_key_sandbox` to `true` in `config.json` accepts
-  running bash unsandboxed on such hosts; that is a real risk (an
-  unsandboxed shell can read anything you can), the other layers still
-  apply, and a working sandbox is always used when available.
+  running bash unsandboxed WITHOUT asking, for non-interactive use;
+  that is a real risk (an unsandboxed shell can read anything you can),
+  the other layers still apply, and a working sandbox is always used
+  when available, silencing both the ask and the override.
 - **Redaction.** The ACTIVE provider's key, the one credential temur
   has actually read, is scrubbed from every tool result (successes and
   errors, before output truncation), so even an unexpected leak path
@@ -459,7 +464,39 @@ project root) blocks tool access to that entire directory. Keep key
 files in their own directory, as `temur init` sets up.
 
 `temur doctor` reports the guard count and the sandbox availability,
-and warns when bash would refuse.
+and warns when bash would need approval or refuse.
+
+## Untrusted hosts
+
+Ephemeral playgrounds, throwaway VMs, and shared machines deserve more
+suspicion than your own workstation: anything that reaches the host
+root user, a snapshotting hypervisor, or another user with your file
+access can read whatever key you place there, and temur's key isolation
+only guards against the MODEL, not against the host.
+
+- **Never place a primary key on a host you do not control.** Use a
+  dedicated key with a spend cap, rotate it on a schedule, and revoke
+  it when the machine goes away. `temur doctor` warns when a key file
+  has not been rotated in `key_rotate_warn_days` (default 90).
+- **The durable pattern is a relay you control.** Run a small
+  OpenAI-compatible proxy (LiteLLM is the common choice) on a machine
+  you trust, holding the real provider key. Point the playground
+  profile's `base_url` at the relay and give the playground only a
+  revocable virtual key with its own budget. The existing
+  `openai-compat` provider and per-profile `base_url` support this
+  unchanged; the untrusted host never sees the real credential, and
+  killing the virtual key ends its access without touching anything
+  else.
+- **Locked-down kernels.** Playground containers often deny
+  unprivileged user namespaces, so the bash key sandbox cannot start.
+  Interactive sessions then ask per-command approval (see Key
+  isolation above); for non-interactive use on such a host, either
+  accept `allow_bash_without_key_sandbox` (with a throwaway key only)
+  or leave bash refusing and rely on the other tools.
+- **Paste carefully.** `temur init` never accepts a key at the file
+  PATH question; a key-shaped answer there is dropped with a warning
+  to rotate, because the value reached the terminal. Keys go in only
+  at the hidden prompt, or into the key file with your editor.
 
 ## Scope
 

@@ -2217,3 +2217,107 @@ vs v0.7.0.
 Open release items unchanged: the PUBLIC one-liner gate and the
 hostname-blob-history decision stay queued behind the visibility
 flip; ARM hardware smoke still pending hardware.
+
+## T21 acceptance - recorded result (no release)
+
+2026-07-30, four commits on main over the v0.8.0 head (121ec74):
+P1 4dcbe3e (per-command bash approval: Ask arm, approver plumbing,
+amended refusal, ScriptedSteps harness, probe seam, three new test
+surfaces), P2 b187fae (init key-shaped mis-paste catch + doctor
+approval hint), P3 5b9dd68 (headless key-pump flake fix, harness
+only), P4 (docs + this record). Every phase ran the full check.sh
+gate (pty, foreground) green before its commit; the container suite
+list gained the new approval suite. Version stays 0.8.0; T21 rides
+CHANGELOG Unreleased. NOT pushed: push waits for the planning
+session's verification, per the standing rule.
+
+Decision table as built (decide_sandbox, unit-pinned across all 12
+rows incl. panicking-probe keyless rows with and without an
+approver): keyless -> Plain (never probes); probe ok -> Sandboxed
+(neither override nor approver ever preempts it); override on ->
+Plain (silences the ask); approver installed -> Ask; else ->
+Refuse. Ask at execute time: an already-set cancel token denies
+without prompting; the approver gets the exact command string;
+approve = one PLAIN spawn, never cached; deny = the fixed
+APPROVAL_DENIED constant ("the user declined to run this command")
+as a normal is_error tool_result, turn continues.
+
+Live smoke 2026-07-30, keyless-local only (llama.cpp server-b10068
+serving Qwen3-4B-Instruct-2507 Q4_K_M, ctx 8192, --jinja; musl
+release binary; isolated XDG dirs under the session scratchpad;
+every key file a placeholder string; NO hosted or keyed call
+anywhere):
+
+(a) Working sandbox never prompts: keyed profile (placeholder key,
+guard = 1 file) on the WSL2 host where userns works; "echo
+smoke-a-ran > smoke-a-marker.txt" via the bash tool ran SANDBOXED
+with no approval prompt anywhere in the pty transcript, marker
+written. Approval never preempts a working sandbox, live.
+
+(b) Ask arm GENUINELY live, no fallback needed: i386/debian
+container with --network host and a seccomp profile denying
+unshare (SCMP_ACT_ERRNO/EPERM, archs x86_64+x86+x32); in-container
+`unshare -U true` fails "Operation not permitted", so the probe
+fails for real (the TEMUR_TEST_SANDBOX_UNAVAILABLE seam was NOT
+needed for this arm). Plain REPL over the podman pty, keyed
+profile, live model. First command approved with y:
+
+  [?] bash approval needed: the key sandbox is unavailable on this host,
+      so this command would run with NO key isolation:
+        echo live-approved > /smoke/home/live-marker.txt
+      run it? [y/N]   ✓ bash: echo live-approved > /smoke/home/live-marker.txt
+
+marker written with "live-approved". Second command denied with n:
+✗ bash, deny-marker.txt ABSENT, and the model adapted on the same
+turn's next round ("The command ... was not executed, as the user
+declined to run it."). Session continued to a clean exit.
+
+(c) init mis-paste catch live (pty, openai template):
+"sk-placeholder-0123456789abcdef" answered at the key file PATH
+question printed the WARNING block (looks like key material, path
+question, hidden-prompt-only, rotate), re-asked, and the re-asked
+real path won. grep over the smoke's config/state/home trees finds
+the pasted value in NO file; the config carries the good path; the
+key file was created empty mode 600. Honest note: the pty's own
+input echo shows the typed value in the terminal capture, which is
+exactly the exposure the rotate warning is about.
+
+(d) doctor amended arm live, in the same seccomp container
+(genuine probe failure, --no-network):
+
+  WARN: bash key sandbox: unavailable on this kernel (no unprivileged user namespaces): an interactive session will ask per-command approval before running bash unsandboxed; non-interactive runs refuse. Setting allow_bash_without_key_sandbox to true in config.json accepts running it unsandboxed without asking (the other tools stay guarded; see README.md, section "Untrusted hosts")
+
+P3 proof: the racy multi-line headless test (the T20-recorded
+flake site) now drives the readiness-gated ScriptedSteps source;
+40 consecutive full tui-suite runs green on an idle machine, then
+40 more with every CPU saturated by shell busy-loops, 80/80.
+App::handle_key's busy-Enter drop is untouched. Why both recorded
+failure modes are impossible by construction: a Line step's first
+key is delivered only once busy is false, delivery and key
+handling share the render thread, and nothing can set busy again
+before that line's own Enter, so no Enter is ever dropped (no
+hang) and no chars ever type into a busy session (no merged line).
+
+Design calls and honest limits, recorded: (1) the probe seam
+TEMUR_TEST_SANDBOX_UNAVAILABLE ships in the release binary; it is
+one-way (can only force the RESTRICTIVE direction, never fake a
+working sandbox) and exists for the e2e suites and locked-host
+diagnosis; flagging for planning-session review. (2) The TUI
+approval prompt truncates the DISPLAY of a very long command to at
+most 8 input-area rows; the approver always receives, and the
+plain REPL always prints, the full exact command. (3) While a TUI
+approval prompt is open it consumes every key, including Ctrl+C
+and Esc-as-interrupt; deny (n or Esc) first, then interrupt. An
+interrupt requested BEFORE the ask (cancel token already set)
+denies without prompting. (4) In the plain REPL the approver reads
+the same stdin as the prompt loop, so a y/N answer typed early
+(type-ahead) is consumed as the answer, like any terminal prompt.
+(5) The piped non-interactive e2e observes the refusal via the
+error-marked tool cell and the absent marker; the refusal WORDING
+on the wire is pinned by the bash.rs unit test and the tools.rs
+equality assertion instead (the plain REPL never prints tool error
+bodies). (6) The smoke's served model id remains /model.gguf vs
+config name qwen3-4b, accepted as in all prior smokes.
+
+NEXT: planning-session verification of these four commits
+(read-only), then the ship vehicle decision (likely v0.9.0).

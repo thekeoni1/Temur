@@ -4,6 +4,39 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+T21 bash approval mode and untrusted-host riders:
+
+- With key files configured and no working bash key sandbox (kernels
+  that deny unprivileged user namespaces), an interactive session (TUI,
+  or plain REPL on a real terminal) now asks per-command approval
+  instead of refusing bash outright: the prompt shows the exact
+  command, `y` runs that one command unsandboxed, anything else denies
+  it, and nothing is remembered between commands. A denial goes back to
+  the model as an ordinary tool error, so the turn continues. A working
+  sandbox is never preempted, keyless configs never ask, one-shot `-p`
+  and piped runs never ask (they still refuse), and
+  `allow_bash_without_key_sandbox` still runs plain and now silences
+  the ask entirely. The refusal wording leads with the interactive ask
+  and keeps the config override as the non-interactive answer.
+- `temur init` now catches a key-shaped answer at the key file PATH
+  question (no `/`, 20+ chars, all in `[A-Za-z0-9_-]`): the value is
+  dropped, never used or stored, with a warning that keys are only
+  accepted at the hidden prompt and that the pasted value reached the
+  terminal and should be rotated. Interactive runs re-ask; piped runs
+  fail closed.
+- `temur doctor`'s sandbox-unavailable line now names all three
+  outcomes (interactive ask, non-interactive refusal, config override)
+  and points at the new README "Untrusted hosts" section, which covers
+  spend-capped throwaway keys and the LiteLLM-style relay pattern over
+  the existing per-profile `base_url`.
+- Test-harness only: the headless TUI key pump is now readiness-gated
+  (a scripted line starts only once the app is idle), fixing a
+  pre-existing flake where a zero-delay Enter could race the deliberate
+  busy-Enter drop; `App` key semantics are unchanged. New one-way test
+  seam `TEMUR_TEST_SANDBOX_UNAVAILABLE` forces the sandbox probe to
+  FAIL (never to succeed) so the approval arms are testable on hosts
+  whose kernel supports the sandbox.
+
 ## v0.8.0 - 2026-07-30
 
 T20 context lifecycle (living with small context windows):
