@@ -162,7 +162,7 @@ fn run_with_sandbox_probe(
             )?;
         } else {
             r.warn(
-                "bash key sandbox: unavailable on this kernel (no unprivileged user namespaces): bash will refuse to run; setting allow_bash_without_key_sandbox to true in config.json accepts running it unsandboxed (the other tools stay guarded)",
+                "bash key sandbox: unavailable on this kernel (no unprivileged user namespaces): an interactive session will ask per-command approval before running bash unsandboxed; non-interactive runs refuse. Setting allow_bash_without_key_sandbox to true in config.json accepts running it unsandboxed without asking (the other tools stay guarded; see README.md, section \"Untrusted hosts\")",
             )?;
         }
     }
@@ -856,13 +856,16 @@ mod tests {
     }
 
     #[test]
-    fn keyed_config_without_sandbox_warns_naming_refusal_and_override() {
+    fn keyed_config_without_sandbox_warns_naming_approval_refusal_and_override() {
         let tmp = tempfile::tempdir().unwrap();
         let (healthy, out) = doctor_probed(&keyed_config(tmp.path(), ""), false);
         assert!(healthy, "WARN must not affect the exit code: {out}");
         assert!(out.contains("WARN: bash key sandbox: unavailable"), "{out}");
-        assert!(out.contains("bash will refuse to run"), "{out}");
+        // T21: the arm names all three outcomes and the docs section.
+        assert!(out.contains("ask per-command approval"), "{out}");
+        assert!(out.contains("non-interactive runs refuse"), "{out}");
         assert!(out.contains("allow_bash_without_key_sandbox"), "{out}");
+        assert!(out.contains("README.md, section \"Untrusted hosts\""), "{out}");
     }
 
     #[test]

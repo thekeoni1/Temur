@@ -271,14 +271,42 @@ fn ask_local_base_and_model(
     Ok((base, picked))
 }
 
+/// Does an answer to the key file PATH question look like pasted API key
+/// material instead of a path (T21)? Heuristic as specified: no '/'
+/// anywhere, at least 20 chars, and every char in [A-Za-z0-9_-]. A rare
+/// slashless long filename trips it too; re-answering with a path (any
+/// '/', e.g. ./name) gets through.
+fn looks_like_key_material(answer: &str) -> bool {
+    !answer.contains('/')
+        && answer.chars().count() >= 20
+        && answer
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// The warning when a key-shaped value lands at the PATH question (T21).
+/// It NEVER echoes the value; the value is dropped, never used or stored.
+fn warn_key_shaped(out: &mut dyn Write) -> Result<(), crate::error::Error> {
+    writeln!(out)?;
+    writeln!(out, "WARNING: that answer looks like API key material, not a file path.")?;
+    writeln!(out, "This question takes the PATH of the file that will hold the key; a key")?;
+    writeln!(out, "itself is only ever accepted at the hidden key prompt. The pasted value")?;
+    writeln!(out, "was not used or stored anywhere, but it did reach this terminal, so if")?;
+    writeln!(out, "it was a real key you should rotate it.")?;
+    Ok(())
+}
+
 /// The key FILE PATH question for keyed templates. The key itself never
-/// passes through temur, in any direction. Shared by the fresh wizard and
-/// `init --add`.
+/// passes through temur, in any direction; a key-shaped answer is dropped
+/// with a warning and the question re-asked (interactive) or the wizard
+/// fails closed (piped, where re-asking would misalign the scripted
+/// answers). Shared by the fresh wizard and `init --add`.
 fn ask_key_file(
     slug: &str,
     home: Option<&Path>,
     input: &mut dyn BufRead,
     out: &mut dyn Write,
+    interactive: bool,
 ) -> Result<PathBuf, crate::error::Error> {
     let default = match home {
         Some(h) => h
@@ -288,13 +316,24 @@ fn ask_key_file(
             .to_string(),
         None => String::new(),
     };
-    let answer = ask(input, out, "API key file", &default)?;
-    if answer.is_empty() {
-        return Err(crate::error::Error::Config(
-            "init: no HOME to derive a default key file path; enter one explicitly".into(),
-        ));
+    loop {
+        let answer = ask(input, out, "API key file", &default)?;
+        if answer.is_empty() {
+            return Err(crate::error::Error::Config(
+                "init: no HOME to derive a default key file path; enter one explicitly".into(),
+            ));
+        }
+        if looks_like_key_material(&answer) {
+            warn_key_shaped(out)?;
+            if interactive {
+                continue;
+            }
+            return Err(crate::error::Error::Config(
+                "init: the answer to the key file path question was key-shaped; nothing was stored. Re-run init and answer with a file path".into(),
+            ));
+        }
+        return Ok(expand_tilde(&answer, home));
     }
-    Ok(expand_tilde(&answer, home))
 }
 
 /// Terminal seam for the hidden key prompt (T17 P3). The real
@@ -605,7 +644,7 @@ pub fn run(
     // passes through temur, in any direction.
     let key_file: Option<PathBuf> = match template.key_slug {
         None => None,
-        Some(slug) => Some(ask_key_file(slug, home, input, out)?),
+        Some(slug) => Some(ask_key_file(slug, home, input, out, term.is_tty())?),
     };
 
     // Write the config (parent dir as needed; the config holds no secret,
@@ -758,7 +797,7 @@ pub fn run_add(
             new_profiles.push((template.name.to_string(), p.into()));
         }
         "anthropic" => {
-            let key = ask_key_file("anthropic", home, input, out)?;
+            let key = ask_key_file("anthropic", home, input, out, term.is_tty())?;
             let k = key.display().to_string();
             for (name, model_id) in &ANTHROPIC_PROFILES {
                 let mut p = serde_json::Map::new();
@@ -776,6 +815,7 @@ pub fn run_add(
                 home,
                 input,
                 out,
+                term.is_tty(),
             )?;
             let mut p = serde_json::Map::new();
             p.insert("provider".to_string(), "openai-compat".into());
@@ -1575,5 +1615,107 @@ mod tests {
         assert_eq!((term.begins, term.restores), (1, 1), "guard ran on the error path");
         assert!(!term.hidden, "echo restored despite the error");
         assert_eq!(std::fs::metadata(&key).unwrap().len(), 0, "nothing written");
+    }
+
+    // ------------------------------- T21 P2: key-shaped mis-paste catch
+
+    /// A placeholder shaped like a pasted key (never real key material).
+    const KEY_SHAPED: &str = "sk-placeholder-0123456789abcdef";
+
+    #[test]
+    fn key_shaped_heuristic_matches_keys_not_paths() {
+        assert!(looks_like_key_material(KEY_SHAPED));
+        assert!(looks_like_key_material("placeholder-not-a-real-key"));
+        assert!(looks_like_key_material("AAAAAAAAAA_bbbbbbbbbb-1234"));
+        // Any '/' is a path.
+        assert!(!looks_like_key_material("~/.secrets/temur-openai-key"));
+        assert!(!looks_like_key_material("/etc/keys/k"));
+        assert!(!looks_like_key_material("./sk-placeholder-0123456789abcdef"));
+        // Too short to be a key.
+        assert!(!looks_like_key_material("shortname"));
+        // Chars outside [A-Za-z0-9_-] (a dot, a space) read as a filename.
+        assert!(!looks_like_key_material("my-very-long-keyfile.txt"));
+        assert!(!looks_like_key_material("not a key just words here"));
+    }
+
+    #[test]
+    fn piped_key_shaped_path_answer_fails_closed_and_stores_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.json");
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        // openai template, default model, then the mis-pasted "path".
+        let mut input = std::io::Cursor::new(format!("3\n\n{KEY_SHAPED}\n").into_bytes());
+        let mut out: Vec<u8> = Vec::new();
+        let list = |_: &str| -> Result<Vec<String>, crate::error::Error> {
+            unreachable!("keyed templates never list")
+        };
+        let err = run(
+            &cfg_path,
+            Some(&home),
+            false,
+            &mut input,
+            &mut out,
+            &list,
+            &mut NoTty,
+        )
+        .unwrap_err();
+        let printed = String::from_utf8(out).unwrap();
+        assert!(printed.contains("WARNING: that answer looks like API key material"), "{printed}");
+        assert!(printed.contains("rotate"), "{printed}");
+        let msg = err.to_string();
+        assert!(msg.contains("key-shaped"), "{msg}");
+        assert!(msg.contains("nothing was stored"), "{msg}");
+        // The pasted value appears in NO output and NO file; no config or
+        // key file was created at all.
+        assert!(!printed.contains(KEY_SHAPED), "{printed}");
+        assert!(!msg.contains(KEY_SHAPED), "{msg}");
+        assert!(!cfg_path.exists(), "fail-closed: no config written");
+        let entries: Vec<_> = std::fs::read_dir(&home).unwrap().collect();
+        assert!(entries.is_empty(), "fail-closed: nothing under HOME: {entries:?}");
+    }
+
+    #[test]
+    fn interactive_key_shaped_answer_warns_and_reasks_storing_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.json");
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        // openai template, default model, mis-paste, then a real path; the
+        // final empty line skips the hidden key prompt.
+        let mut input = std::io::Cursor::new(
+            format!("3\n\n{KEY_SHAPED}\n~/.secrets/temur-openai-key\n\n").into_bytes(),
+        );
+        let mut out: Vec<u8> = Vec::new();
+        let list = |_: &str| -> Result<Vec<String>, crate::error::Error> {
+            unreachable!("keyed templates never list")
+        };
+        let mut term = FakeTty::new();
+        run(
+            &cfg_path,
+            Some(&home),
+            false,
+            &mut input,
+            &mut out,
+            &list,
+            &mut term,
+        )
+        .unwrap();
+        let printed = String::from_utf8(out).unwrap();
+        assert!(printed.contains("WARNING: that answer looks like API key material"), "{printed}");
+        assert!(printed.contains("only ever accepted at the hidden key prompt"), "{printed}");
+        // Re-asked: the question printed twice, and the good answer won.
+        assert_eq!(printed.matches("API key file [").count(), 2, "{printed}");
+        let cfg = std::fs::read_to_string(&cfg_path).unwrap();
+        let good = home.join(".secrets").join("temur-openai-key");
+        assert!(cfg.contains(&good.display().to_string()), "{cfg}");
+        // The pasted value appears in NO output and NO file.
+        assert!(!printed.contains(KEY_SHAPED), "{printed}");
+        assert!(!cfg.contains(KEY_SHAPED), "{cfg}");
+        assert_eq!(
+            std::fs::metadata(&good).unwrap().len(),
+            0,
+            "key file created empty; the mis-paste never landed anywhere"
+        );
     }
 }
