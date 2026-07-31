@@ -2358,3 +2358,54 @@ Procedure deltas vs v0.8.0:
 - The container suite list in check.sh gained the T21 approval suite;
   the stage-1 gate run below was a clean full pass at 0.9.0 with the
   bare-container line reading "temur 0.9.0".
+
+## v0.9.0 acceptance - recorded result (SHIPPED, private)
+
+2026-07-30 (local PDT; CI timestamps are Z). v0.9.0 ships T21 alone
+(bash approval mode + untrusted-host riders), per the two-stage
+procedure. Everything below ran on the private repo only.
+
+- Stage-1 recap: T21 pushed 121ec74..4e5690b under planning-session
+  authorization, on-push ci run 30595569722 green (test 1m20s,
+  release-gate 4m23s); three LOCAL prep commits 86b31f3 (bump
+  0.8.0 -> 0.9.0, four-file map per db79b01) + 6e0b14f (CHANGELOG
+  "## v0.9.0 - 2026-07-30") + bab70b9 (RUNBOOK close-out delta +
+  ROADMAP ship-vehicle row); full check.sh green at 0.9.0.
+- Stage 2 prep push 4e5690b..bab70b9; on-push ci run 30601981066
+  green (test 1m58s 03:35:58Z..03:37:56Z, release-gate 6m51s
+  03:35:58Z..03:42:49Z) - the version-skew run against the bump.
+- Annotated tag v0.9.0 at bab70b9 ("temur v0.9.0 - bash approval
+  mode (T21)"), pushed (tag object c65049d). Unsigned as always.
+- Full release.sh (no SKIP_CHECK): check.sh both paths green
+  (bare-container line "temur 0.9.0"), leak grep clean (operator
+  patterns + generic shapes, files + history) first try, skew gate
+  "OK: install.sh + README match version 0.9.0 and all targets",
+  4/4 targets gated + version-asserted "temur 0.9.0" (i686 + x86_64
+  native, aarch64 + armv7 via qemu), SHA256SUMS self-verified,
+  staged at /home/dev/dist/release/v0.9.0/. Installer matrix 6/6
+  (pass+corrupt+unlisted, host + busybox).
+- Staged sha256s: 8394bd0bd442... aarch64, d52bb8bf6de2... armv7,
+  344464a4935f... i686, 9c118a62754d... x86_64 (full sums in the
+  release's SHA256SUMS asset).
+- Private release github.com/thekeoni1/Temur/releases/tag/v0.9.0
+  created FROM INSIDE the repo worktree per the v0.7.0 procedure
+  note, first try, title "temur v0.9.0 - bash approval mode (T21)",
+  notes = the CHANGELOG v0.9.0 section, 5 assets (4 binaries +
+  SHA256SUMS), not draft; 404s while the repo is private, by
+  design. Repo visibility PRIVATE confirmed via gh BEFORE creating
+  the release and re-confirmed after.
+- Closing gate: authenticated download of the x86_64 binary +
+  SHA256SUMS into a scratch dir; sha256sum -c OK; the downloaded
+  binary's independent sha256 (9c118a62754d89bc3d3a860888c5e32872
+  7dca7b4bda99e91bec430f53265651) equals the staged one byte for
+  byte (cmp clean).
+
+Honest residuals: none new this cycle; the T21 one-way probe seam
+(TEMUR_TEST_SANDBOX_UNAVAILABLE, reviewed low-risk) ships in the
+release binaries as recorded in the T21 acceptance. The headless-TUI
+key-pump flake is FIXED as of T21 P3 (harness only, 80/80 proof) and
+stayed quiet through every stage-2 gate run.
+
+Open release items unchanged: the PUBLIC one-liner gate and the
+hostname-blob-history decision stay queued behind the visibility
+flip; ARM hardware smoke still pending hardware.
