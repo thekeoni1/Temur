@@ -2507,3 +2507,39 @@ only new line being the pre-existing T15 model-check NOTE (HTTP 404).
 Honest residuals: Ollama context detection (/api/show) is deliberately
 not built; OFFLINE.md says so and it stays a possible future rider.
 The anthropic 200000 confirmation is the operator follow-up above.
+
+## v0.10.0 - close-out (release procedure delta)
+
+What ships: T22 alone (context-window detection + discoverability:
+the keyless llama.cpp /props probe and doctor context checks with the
+keyless-GET amendment extended to two requests, init context_window
+auto-fill and the anthropic template's baked 200000, /models
+max_input_tokens enrichment on the anthropic wire), plus the two
+planning-approved prose riders (addendum-2 docs claims audit,
+P5-follow-up em-dash sweep + AI-agent/bring-your-own-model scope
+wording), one CHANGELOG section. Second single-milestone release in a
+row.
+
+Procedure deltas vs v0.9.0:
+
+- **T22 pushed AS stage-1 step 1** under the planning session's
+  authorization (the standing shape): b8ced6e..9e390e0 onto cc28ae4
+  (six commits: four phases + two prose riders), on-push ci run
+  30649402355, main == origin == 9e390e0 verified before the prep
+  commits. Job timings recorded in the stage-1 report.
+- **Stage 1 keeps the EARLY stop**: version bump + dated CHANGELOG +
+  records + full check.sh gate only; the four-target release.sh
+  build, SHA256SUMS, and installer matrix stay in stage 2 (tag,
+  build, private release, closing gate).
+- **Still no tag, no push of the release-prep commits, no release**
+  at stage 1; the repo stays PRIVATE and the public-flip gate stays
+  queued behind stage 2, unchanged.
+- Pin-site note for the bump: the four-file map from the v0.9.0 bump
+  (86b31f3) was the complete set again (Cargo.toml, Cargo.lock temur
+  entry, install.sh VERSION, five README pins); the repo-wide grep
+  after the bump comes back empty outside historical records. The
+  0.9.0 leftover in Cargo.lock is the untrusted crate's own version
+  (this cycle's heck/ureq-proto equivalent), not a temur pin.
+- Wording note: the release title should reflect the T22 scope, e.g.
+  "temur v0.10.0 - context-window detection (T22)"; stage 2 decides
+  the exact string.
