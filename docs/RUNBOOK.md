@@ -2321,3 +2321,40 @@ config name qwen3-4b, accepted as in all prior smokes.
 
 NEXT: planning-session verification of these four commits
 (read-only), then the ship vehicle decision (likely v0.9.0).
+
+## v0.9.0 - close-out (release procedure delta)
+
+What ships: T21 alone (bash approval mode: the Ask arm in
+decide_sandbox with interactive per-command approval when keys are
+guarded and the sandbox is unavailable, plain-REPL and TUI approvers,
+amended SANDBOX_REFUSAL; init key-shaped mis-paste catch; doctor
+three-outcome hint; harness-only headless key-pump flake fix; README
+"Untrusted hosts" + USAGE approval guide), one CHANGELOG section.
+First single-milestone release since v0.5.0; the planning session
+proposed v0.9.0 = T21 alone and the operator directed the ship.
+
+Procedure deltas vs v0.8.0:
+
+- **T21 pushed AS stage-1 step 1** under the planning session's
+  authorization (the v0.6.0/v0.8.0 shape): 4dcbe3e..4e5690b onto
+  121ec74, on-push ci run 30595569722 green (test 1m20s,
+  release-gate 4m23s), main == origin == 4e5690b verified before the
+  prep commits.
+- **Stage 1 keeps the EARLY stop**: version bump + dated CHANGELOG +
+  records + full check.sh gate only; the four-target release.sh
+  build, SHA256SUMS, and installer matrix stay in stage 2 (tag,
+  build, private release, closing gate).
+- **Still no tag, no push of the release-prep commits, no release**
+  at stage 1; the repo stays PRIVATE and the public-flip gate stays
+  queued behind stage 2, unchanged.
+- Pin-site note for the bump: the four-file map from the v0.8.0 bump
+  (db79b01) was the complete set again (Cargo.toml, Cargo.lock temur
+  entry, install.sh VERSION, five README pins); the repo-wide grep
+  after the bump comes back empty outside historical records. New
+  this cycle: the `untrusted` crate (a ring dependency) itself sits
+  at version 0.9.0 in Cargo.lock, so a future grep for the CURRENT
+  version must not blind-replace that entry; the temur package entry
+  is the only lock pin.
+- The container suite list in check.sh gained the T21 approval suite;
+  the stage-1 gate run below was a clean full pass at 0.9.0 with the
+  bare-container line reading "temur 0.9.0".
