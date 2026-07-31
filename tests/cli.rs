@@ -466,7 +466,7 @@ fn init_anthropic_template_exact_config_and_empty_600_key_file() {
     assert_eq!(
         written,
         format!(
-            "{{\n  \"profiles\": {{\n    \"fable\":  {{ \"provider\": \"anthropic\", \"model\": \"claude-fable-5\",\n                \"api_key_file\": \"{k}\" }},\n    \"haiku\":  {{ \"provider\": \"anthropic\", \"model\": \"claude-haiku-4-5\",\n                \"api_key_file\": \"{k}\" }},\n    \"opus\":   {{ \"provider\": \"anthropic\", \"model\": \"claude-opus-5\",\n                \"api_key_file\": \"{k}\" }},\n    \"sonnet\": {{ \"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\",\n                \"api_key_file\": \"{k}\" }}\n  }},\n  \"profile\": \"sonnet\"\n}}\n"
+            "{{\n  \"profiles\": {{\n    \"fable\":  {{ \"provider\": \"anthropic\", \"model\": \"claude-fable-5\",\n                \"api_key_file\": \"{k}\",\n                \"context_window\": 200000 }},\n    \"haiku\":  {{ \"provider\": \"anthropic\", \"model\": \"claude-haiku-4-5\",\n                \"api_key_file\": \"{k}\",\n                \"context_window\": 200000 }},\n    \"opus\":   {{ \"provider\": \"anthropic\", \"model\": \"claude-opus-5\",\n                \"api_key_file\": \"{k}\",\n                \"context_window\": 200000 }},\n    \"sonnet\": {{ \"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\",\n                \"api_key_file\": \"{k}\",\n                \"context_window\": 200000 }}\n  }},\n  \"profile\": \"sonnet\"\n}}\n"
         )
     );
     assert!(stdout.contains("Startup profile (number or name) [sonnet]"), "{stdout}");
@@ -632,6 +632,7 @@ fn init_add_anthropic_merges_profiles_and_leaves_the_rest_alone() {
     );
     for (_, p) in profiles {
         assert_eq!(p["api_key_file"], key.display().to_string(), "{written}");
+        assert_eq!(p["context_window"], 200000, "T22 baked window: {written}");
     }
     // The base selection survives byte-relevant: same fields, and NO
     // startup "profile" key was invented.

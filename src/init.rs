@@ -82,6 +82,19 @@ const ANTHROPIC_PROFILES: [(&str, &str); 4] = [
 /// pre-T16 default model (claude-sonnet-5): no default flip.
 const ANTHROPIC_DEFAULT_PROFILE: &str = "sonnet";
 
+/// The local template's context_window when the /props probe could not
+/// answer (server down, or not llama.cpp): the README recipe's baked
+/// value, matching serve.sh's default CTX.
+const LOCAL_BAKED_CONTEXT_WINDOW: u64 = 8192;
+
+/// The anthropic template's context_window (T22): current Claude models
+/// serve a 200k input context. KNOWLEDGE-BASED, not detected — the models
+/// API reports max_input_tokens only on an authenticated call, which init
+/// never makes; the in-session /models command (T22 P3) reads the real
+/// value off the wire, so a drift surfaces there as an operator follow-up
+/// (the T16 haiku-alias precedent).
+const ANTHROPIC_CONTEXT_WINDOW: u64 = 200_000;
+
 const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 const XAI_BASE_URL: &str = "https://api.x.ai/v1";
@@ -119,26 +132,32 @@ const MODEL_SHORTLIST: &[&str] = &[
 /// field order matches the README recipes byte for byte; user-supplied
 /// strings go through serde_json escaping. `base_url` is the local
 /// template's answered base URL (T15); when it is the default the render
-/// stays byte-identical to the pre-T15 recipe.
+/// stays byte-identical to the pre-T15 recipe. `detected_window` is the
+/// local template's /props answer (T22): written verbatim when present,
+/// the baked [`LOCAL_BAKED_CONTEXT_WINDOW`] otherwise.
 fn render_config(
     template: &Template,
     model: &str,
     key_file: Option<&str>,
     base_url: Option<&str>,
+    detected_window: Option<u64>,
 ) -> String {
     let m = serde_json::to_string(model).expect("string serializes");
     match template.name {
-        "local" => match base_url {
-            Some(b) if b != crate::config::DEFAULT_OPENAI_COMPAT_BASE_URL => {
-                let b = serde_json::to_string(b).expect("string serializes");
-                format!(
-                    "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{ \"base_url\": {b},\n                     \"model\": {m}, \"context_window\": 8192 }}\n}}\n"
-                )
+        "local" => {
+            let w = detected_window.unwrap_or(LOCAL_BAKED_CONTEXT_WINDOW);
+            match base_url {
+                Some(b) if b != crate::config::DEFAULT_OPENAI_COMPAT_BASE_URL => {
+                    let b = serde_json::to_string(b).expect("string serializes");
+                    format!(
+                        "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{ \"base_url\": {b},\n                     \"model\": {m}, \"context_window\": {w} }}\n}}\n"
+                    )
+                }
+                _ => format!(
+                    "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{ \"model\": {m}, \"context_window\": {w} }}\n}}\n"
+                ),
             }
-            _ => format!(
-                "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{ \"model\": {m}, \"context_window\": 8192 }}\n}}\n"
-            ),
-        },
+        }
         "anthropic" => {
             // T16: the curated profile set. `model` carries the answered
             // STARTUP PROFILE NAME (from pick_startup_profile), not a model
@@ -150,7 +169,7 @@ fn render_config(
                 let comma = if i + 1 == ANTHROPIC_PROFILES.len() { "" } else { "," };
                 let label = format!("\"{name}\":");
                 s.push_str(&format!(
-                    "    {label:<9} {{ \"provider\": \"anthropic\", \"model\": \"{model_id}\",\n                \"api_key_file\": {k} }}{comma}\n"
+                    "    {label:<9} {{ \"provider\": \"anthropic\", \"model\": \"{model_id}\",\n                \"api_key_file\": {k},\n                \"context_window\": {ANTHROPIC_CONTEXT_WINDOW} }}{comma}\n"
                 ));
             }
             s.push_str(&format!("  }},\n  \"profile\": {m}\n}}\n"));
@@ -241,13 +260,18 @@ fn pick_model(
 /// The local template's flow (T15): ask for the base URL, try the keyless
 /// listing there and run the picker, falling back to the free-text model
 /// question (after the baked shortlist) when the listing fails or is empty.
-/// Returns `(base_url, model)`. Shared by the fresh wizard and `init --add`.
+/// T22: then probe the same server's `/props` for its actual context
+/// allocation — found, it is announced and returned for the render to
+/// write verbatim; not found (server down, or not llama.cpp) is silent
+/// and the baked value applies. Returns `(base_url, model, n_ctx)`.
+/// Shared by the fresh wizard and `init --add`.
 fn ask_local_base_and_model(
     template: &Template,
     input: &mut dyn BufRead,
     out: &mut dyn Write,
     list_models: &dyn Fn(&str) -> Result<Vec<String>, crate::error::Error>,
-) -> Result<(String, String), crate::error::Error> {
+    probe_context: &dyn Fn(&str) -> Option<u64>,
+) -> Result<(String, String, Option<u64>), crate::error::Error> {
     let base = ask(
         input,
         out,
@@ -268,7 +292,14 @@ fn ask_local_base_and_model(
             ask(input, out, "Model id", template.default_model)?
         }
     };
-    Ok((base, picked))
+    let detected = probe_context(&base);
+    if let Some(n) = detected {
+        writeln!(
+            out,
+            "Detected a context allocation of {n} tokens from the server (llama.cpp\n/props, n_ctx); writing \"context_window\": {n}."
+        )?;
+    }
+    Ok((base, picked, detected))
 }
 
 /// Does an answer to the key file PATH question look like pasted API key
@@ -580,13 +611,15 @@ fn pick_startup_profile(
 /// The wizard. Writes `cfg_path`; refuses to overwrite an existing config
 /// unless `force`. Returns the lines it printed through `out`.
 ///
-/// `list_models` is the ONE network call the wizard may make (T15): an
-/// unauthenticated keyless listing GET, injected from main (the real
-/// [`crate::provider::list_models_keyless`]) so tests script listings
-/// without a network. It is only ever called for the keyless local
-/// template; keyed templates stay free-text — their key files are created
-/// EMPTY below, so no authenticated listing is possible at init time even
-/// in principle, and init never reads keys.
+/// `list_models` and `probe_context` are the TWO network calls the wizard
+/// may make (T15, extended by T22 under the same amendment): both
+/// unauthenticated keyless GETs, injected from main (the real
+/// [`crate::provider::list_models_keyless`] and
+/// [`crate::provider::probe_props_context`]) so tests script them without
+/// a network. They are only ever called for the keyless local template;
+/// keyed templates stay free-text — their key files are created EMPTY
+/// below, so no authenticated request is possible at init time even in
+/// principle, and init never reads keys.
 pub fn run(
     cfg_path: &Path,
     home: Option<&Path>,
@@ -594,6 +627,7 @@ pub fn run(
     input: &mut dyn BufRead,
     out: &mut dyn Write,
     list_models: &dyn Fn(&str) -> Result<Vec<String>, crate::error::Error>,
+    probe_context: &dyn Fn(&str) -> Option<u64>,
     term: &mut dyn KeyEntryTerminal,
 ) -> Result<(), crate::error::Error> {
     if cfg_path.exists() && !force {
@@ -627,9 +661,12 @@ pub fn run(
     // free-text question after a one-line note — the wizard must complete
     // offline. Keyed templates: free text, unchanged (see `list_models`).
     let mut base_url: Option<String> = None;
+    let mut detected_window: Option<u64> = None;
     let model = if template.key_slug.is_none() {
-        let (base, picked) = ask_local_base_and_model(template, input, out, list_models)?;
+        let (base, picked, detected) =
+            ask_local_base_and_model(template, input, out, list_models, probe_context)?;
         base_url = Some(base);
+        detected_window = detected;
         picked
     } else if template.name == "anthropic" {
         // T16: the anthropic template writes a fixed profile set, so the
@@ -657,6 +694,7 @@ pub fn run(
         &model,
         key_file.as_ref().map(|p| p.display().to_string()).as_deref(),
         base_url.as_deref(),
+        detected_window,
     );
     std::fs::write(cfg_path, &rendered)?;
     writeln!(out)?;
@@ -700,6 +738,7 @@ pub fn run_add(
     input: &mut dyn BufRead,
     out: &mut dyn Write,
     list_models: &dyn Fn(&str) -> Result<Vec<String>, crate::error::Error>,
+    probe_context: &dyn Fn(&str) -> Option<u64>,
     term: &mut dyn KeyEntryTerminal,
 ) -> Result<(), crate::error::Error> {
     let template = TEMPLATES
@@ -781,7 +820,8 @@ pub fn run_add(
     let mut key_file: Option<PathBuf> = None;
     match template.name {
         "local" => {
-            let (base, model) = ask_local_base_and_model(template, input, out, list_models)?;
+            let (base, model, detected) =
+                ask_local_base_and_model(template, input, out, list_models, probe_context)?;
             let mut p = serde_json::Map::new();
             p.insert("provider".to_string(), "openai-compat".into());
             p.insert("model".to_string(), model.into());
@@ -791,9 +831,13 @@ pub fn run_add(
             // The fresh local template's small-model limits, carried into
             // the profile so switching to it behaves like a fresh local
             // config (a profile's absent max_tokens would inherit the
-            // global value instead).
+            // global value instead). context_window: the /props answer
+            // when the probe got one (T22), the baked value otherwise.
             p.insert("max_tokens".to_string(), 4096.into());
-            p.insert("context_window".to_string(), 8192.into());
+            p.insert(
+                "context_window".to_string(),
+                detected.unwrap_or(LOCAL_BAKED_CONTEXT_WINDOW).into(),
+            );
             new_profiles.push((template.name.to_string(), p.into()));
         }
         "anthropic" => {
@@ -804,6 +848,7 @@ pub fn run_add(
                 p.insert("provider".to_string(), "anthropic".into());
                 p.insert("model".to_string(), (*model_id).into());
                 p.insert("api_key_file".to_string(), k.clone().into());
+                p.insert("context_window".to_string(), ANTHROPIC_CONTEXT_WINDOW.into());
                 new_profiles.push(((*name).to_string(), p.into()));
             }
             key_file = Some(key);
@@ -911,7 +956,7 @@ mod tests {
             } else {
                 t.default_model
             };
-            let rendered = render_config(t, model_arg, key, None);
+            let rendered = render_config(t, model_arg, key, None, None);
             let cfg: crate::config::Config =
                 serde_json::from_str(&rendered).unwrap_or_else(|e| {
                     panic!("template {} renders invalid config: {e}\n{rendered}", t.name)
@@ -941,7 +986,7 @@ mod tests {
     #[test]
     fn model_and_path_strings_are_json_escaped() {
         let t = &TEMPLATES[2]; // openai
-        let rendered = render_config(t, "we\"ird", Some("/k\"ey"), None);
+        let rendered = render_config(t, "we\"ird", Some("/k\"ey"), None, None);
         let cfg: crate::config::Config = serde_json::from_str(&rendered).expect("escaped");
         let r = cfg.resolve_base().unwrap();
         assert_eq!(r.model, "we\"ird");
@@ -955,22 +1000,35 @@ mod tests {
         let t = &TEMPLATES[0]; // local
         let expect = "{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": { \"model\": \"qwen3-1.7b\", \"context_window\": 8192 }\n}\n";
         // Both the no-answer path and an answered default render the recipe.
-        assert_eq!(render_config(t, "qwen3-1.7b", None, None), expect);
+        assert_eq!(render_config(t, "qwen3-1.7b", None, None, None), expect);
         assert_eq!(
             render_config(
                 t,
                 "qwen3-1.7b",
                 None,
-                Some(crate::config::DEFAULT_OPENAI_COMPAT_BASE_URL)
+                Some(crate::config::DEFAULT_OPENAI_COMPAT_BASE_URL),
+                None
             ),
             expect
         );
+        // A detected n_ctx equal to the baked value renders the same bytes.
+        assert_eq!(render_config(t, "qwen3-1.7b", None, None, Some(8192)), expect);
+    }
+
+    #[test]
+    fn local_render_detected_window_replaces_the_baked_value() {
+        let t = &TEMPLATES[0];
+        let rendered = render_config(t, "m", None, None, Some(16384));
+        assert!(rendered.contains("\"context_window\": 16384"), "{rendered}");
+        assert!(!rendered.contains("8192"), "{rendered}");
+        let cfg: crate::config::Config = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(cfg.resolve_base().unwrap().context_window, Some(16384));
     }
 
     #[test]
     fn local_render_custom_base_url_survives_and_parses() {
         let t = &TEMPLATES[0];
-        let rendered = render_config(t, "m", None, Some("http://10.0.0.9:11434/v1"));
+        let rendered = render_config(t, "m", None, Some("http://10.0.0.9:11434/v1"), None);
         let cfg: crate::config::Config = serde_json::from_str(&rendered).unwrap();
         let r = cfg.resolve_base().unwrap();
         assert_eq!(r.base_url, "http://10.0.0.9:11434/v1");
@@ -978,20 +1036,31 @@ mod tests {
         assert!(r.api_key_file.is_none());
     }
 
-    /// Drive the whole wizard with piped answers and a scripted listing.
-    fn run_wizard(
+    /// Drive the whole wizard with piped answers, a scripted listing, and
+    /// a scripted /props probe (T22).
+    fn run_wizard_probed(
         answers: &str,
         list: &dyn Fn(&str) -> Result<Vec<String>, crate::error::Error>,
+        probe: &dyn Fn(&str) -> Option<u64>,
     ) -> Result<(String, String), crate::error::Error> {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_path = tmp.path().join("config.json");
         let mut input = std::io::Cursor::new(answers.as_bytes().to_vec());
         let mut out: Vec<u8> = Vec::new();
-        run(&cfg_path, None, false, &mut input, &mut out, list, &mut NoTty)?;
+        run(&cfg_path, None, false, &mut input, &mut out, list, probe, &mut NoTty)?;
         Ok((
             std::fs::read_to_string(&cfg_path).unwrap(),
             String::from_utf8(out).unwrap(),
         ))
+    }
+
+    /// [`run_wizard_probed`] with a probe that never answers — the pre-T22
+    /// behavior every older test drives.
+    fn run_wizard(
+        answers: &str,
+        list: &dyn Fn(&str) -> Result<Vec<String>, crate::error::Error>,
+    ) -> Result<(String, String), crate::error::Error> {
+        run_wizard_probed(answers, list, &|_| None)
     }
 
     fn ids(v: &[&str]) -> Vec<String> {
@@ -1091,10 +1160,58 @@ mod tests {
         );
     }
 
+    // ---------------------------------------- T22: context auto-fill (local)
+
+    #[test]
+    fn local_wizard_autofills_the_detected_context_window_with_a_notice() {
+        let list = |_: &str| Ok(ids(&["served-model"]));
+        let probe = |base: &str| {
+            assert_eq!(
+                base,
+                crate::config::DEFAULT_OPENAI_COMPAT_BASE_URL,
+                "probe asks the ANSWERED base"
+            );
+            Some(16384)
+        };
+        let (cfg, out) = run_wizard_probed("\n\n\n", &list, &probe).unwrap();
+        assert!(cfg.contains("\"context_window\": 16384"), "{cfg}");
+        assert!(!cfg.contains("8192"), "{cfg}");
+        assert!(
+            out.contains("Detected a context allocation of 16384 tokens"),
+            "{out}"
+        );
+        assert!(out.contains("/props"), "source named: {out}");
+        assert!(out.contains("\"context_window\": 16384"), "{out}");
+    }
+
+    #[test]
+    fn local_wizard_probe_none_keeps_the_baked_value_silently() {
+        let list = |_: &str| Ok(ids(&["served-model"]));
+        let (cfg, out) = run_wizard_probed("\n\n\n", &list, &|_| None).unwrap();
+        assert!(cfg.contains("\"context_window\": 8192"), "{cfg}");
+        assert!(!out.contains("Detected a context allocation"), "{out}");
+        assert!(!out.contains("/props"), "{out}");
+    }
+
+    #[test]
+    fn local_wizard_probe_runs_even_when_the_listing_fails() {
+        // A llama.cpp server could in principle 500 the listing yet still
+        // answer /props; more importantly the two calls are independent.
+        let list = |_: &str| -> Result<Vec<String>, crate::error::Error> {
+            Err(crate::error::Error::Models("connection refused".into()))
+        };
+        let (cfg, out) = run_wizard_probed("\n\n\n", &list, &|_| Some(4096)).unwrap();
+        assert!(cfg.contains("\"context_window\": 4096"), "{cfg}");
+        assert!(out.contains("Detected a context allocation of 4096 tokens"), "{out}");
+    }
+
     #[test]
     fn keyed_templates_never_call_the_listing() {
         let list = |_: &str| -> Result<Vec<String>, crate::error::Error> {
             panic!("keyed templates must not attempt a listing")
+        };
+        let probe = |_: &str| -> Option<u64> {
+            panic!("keyed templates must not attempt a /props probe")
         };
         let tmp = tempfile::tempdir().unwrap();
         let cfg_path = tmp.path().join("config.json");
@@ -1103,8 +1220,8 @@ mod tests {
             std::io::Cursor::new(format!("2\n\n{}\n", key_path.display()).into_bytes());
         let mut out: Vec<u8> = Vec::new();
         // home None + explicit key path; the wizard completes without ever
-        // touching `list`.
-        run(&cfg_path, None, false, &mut input, &mut out, &list, &mut NoTty).unwrap();
+        // touching `list` or `probe`.
+        run(&cfg_path, None, false, &mut input, &mut out, &list, &probe, &mut NoTty).unwrap();
         let cfg = std::fs::read_to_string(&cfg_path).unwrap();
         assert!(cfg.contains("\"model\": \"claude-sonnet-5\""), "{cfg}");
         let printed = String::from_utf8(out).unwrap();
@@ -1119,6 +1236,9 @@ mod tests {
         let list = |_: &str| -> Result<Vec<String>, crate::error::Error> {
             panic!("anthropic template must not attempt a listing")
         };
+        let probe = |_: &str| -> Option<u64> {
+            panic!("anthropic template must not attempt a /props probe")
+        };
         let tmp = tempfile::tempdir().unwrap();
         let cfg_path = tmp.path().join("config.json");
         let key_path = tmp.path().join("throwaway-key");
@@ -1126,7 +1246,7 @@ mod tests {
             format!("2\n{profile_answers}{}\n", key_path.display()).into_bytes(),
         );
         let mut out: Vec<u8> = Vec::new();
-        run(&cfg_path, None, false, &mut input, &mut out, &list, &mut NoTty).unwrap();
+        run(&cfg_path, None, false, &mut input, &mut out, &list, &probe, &mut NoTty).unwrap();
         (
             std::fs::read_to_string(&cfg_path).unwrap(),
             String::from_utf8(out).unwrap(),
@@ -1136,15 +1256,16 @@ mod tests {
     #[test]
     fn anthropic_render_is_byte_exact_for_the_default_profile() {
         let t = &TEMPLATES[1]; // anthropic
-        let rendered = render_config(t, "sonnet", Some("/home/u/.secrets/temur-anthropic-key"), None);
-        let expect = "{\n  \"profiles\": {\n    \"fable\":  { \"provider\": \"anthropic\", \"model\": \"claude-fable-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\" },\n    \"haiku\":  { \"provider\": \"anthropic\", \"model\": \"claude-haiku-4-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\" },\n    \"opus\":   { \"provider\": \"anthropic\", \"model\": \"claude-opus-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\" },\n    \"sonnet\": { \"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\" }\n  },\n  \"profile\": \"sonnet\"\n}\n";
+        let rendered =
+            render_config(t, "sonnet", Some("/home/u/.secrets/temur-anthropic-key"), None, None);
+        let expect = "{\n  \"profiles\": {\n    \"fable\":  { \"provider\": \"anthropic\", \"model\": \"claude-fable-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 200000 },\n    \"haiku\":  { \"provider\": \"anthropic\", \"model\": \"claude-haiku-4-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 200000 },\n    \"opus\":   { \"provider\": \"anthropic\", \"model\": \"claude-opus-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 200000 },\n    \"sonnet\": { \"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 200000 }\n  },\n  \"profile\": \"sonnet\"\n}\n";
         assert_eq!(rendered, expect);
     }
 
     #[test]
     fn anthropic_render_parses_with_four_profiles_sharing_the_key() {
         let t = &TEMPLATES[1];
-        let rendered = render_config(t, "opus", Some("/tmp/k"), None);
+        let rendered = render_config(t, "opus", Some("/tmp/k"), None, None);
         let cfg: crate::config::Config = serde_json::from_str(&rendered).unwrap();
         let profiles = cfg.resolved_profiles().expect("profiles validate");
         assert_eq!(
@@ -1157,6 +1278,11 @@ mod tests {
             assert_eq!(resolved.model, *model_id);
             assert_eq!(resolved.provider, "anthropic");
             assert_eq!(resolved.api_key_file.as_deref(), Some("/tmp/k"), "shared key");
+            assert_eq!(
+                resolved.context_window,
+                Some(ANTHROPIC_CONTEXT_WINDOW),
+                "T22: the baked hosted window"
+            );
         }
         let (active, resolved) = cfg.startup_selection(&profiles).expect("selection resolves");
         assert_eq!(active.as_deref(), Some("opus"));
@@ -1202,13 +1328,15 @@ mod tests {
         panic!("this template must not attempt a listing")
     }
 
-    /// Write `cfg` into a tempdir and drive `run_add` with piped answers.
-    /// Returns (result, config file content, printed output, tempdir).
-    fn drive_add(
+    /// Write `cfg` into a tempdir and drive `run_add` with piped answers
+    /// and a scripted /props probe (T22). Returns (result, config file
+    /// content, printed output, tempdir).
+    fn drive_add_probed(
         cfg: &str,
         template: &str,
         answers: &str,
         list: &dyn Fn(&str) -> Result<Vec<String>, crate::error::Error>,
+        probe: &dyn Fn(&str) -> Option<u64>,
     ) -> (
         Result<(), crate::error::Error>,
         String,
@@ -1220,13 +1348,29 @@ mod tests {
         std::fs::write(&cfg_path, cfg).unwrap();
         let mut input = std::io::Cursor::new(answers.as_bytes().to_vec());
         let mut out: Vec<u8> = Vec::new();
-        let result = run_add(&cfg_path, None, template, &mut input, &mut out, list, &mut NoTty);
+        let result =
+            run_add(&cfg_path, None, template, &mut input, &mut out, list, probe, &mut NoTty);
         (
             result,
             std::fs::read_to_string(&cfg_path).unwrap(),
             String::from_utf8(out).unwrap(),
             tmp,
         )
+    }
+
+    /// [`drive_add_probed`] with a probe that never answers.
+    fn drive_add(
+        cfg: &str,
+        template: &str,
+        answers: &str,
+        list: &dyn Fn(&str) -> Result<Vec<String>, crate::error::Error>,
+    ) -> (
+        Result<(), crate::error::Error>,
+        String,
+        String,
+        tempfile::TempDir,
+    ) {
+        drive_add_probed(cfg, template, answers, list, &|_| None)
     }
 
     #[test]
@@ -1242,7 +1386,7 @@ mod tests {
         result.unwrap();
         let k = key.display();
         let expect = format!(
-            "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{\n    \"model\": \"qwen3-1.7b\",\n    \"context_window\": 8192\n  }},\n  \"profiles\": {{\n    \"fable\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-fable-5\",\n      \"api_key_file\": \"{k}\"\n    }},\n    \"haiku\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-haiku-4-5\",\n      \"api_key_file\": \"{k}\"\n    }},\n    \"opus\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-opus-5\",\n      \"api_key_file\": \"{k}\"\n    }},\n    \"sonnet\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-sonnet-5\",\n      \"api_key_file\": \"{k}\"\n    }}\n  }}\n}}\n"
+            "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{\n    \"model\": \"qwen3-1.7b\",\n    \"context_window\": 8192\n  }},\n  \"profiles\": {{\n    \"fable\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-fable-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 200000\n    }},\n    \"haiku\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-haiku-4-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 200000\n    }},\n    \"opus\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-opus-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 200000\n    }},\n    \"sonnet\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-sonnet-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 200000\n    }}\n  }}\n}}\n"
         );
         assert_eq!(cfg, expect, "golden merge: only a profiles key appended");
         // The startup "profile" key was NOT invented: the base selection
@@ -1346,6 +1490,21 @@ mod tests {
     }
 
     #[test]
+    fn add_local_autofills_the_detected_context_window() {
+        let list = |_: &str| Ok(ids(&["served-model"]));
+        let anthropic_base = "{\n  \"profiles\": {\n    \"sonnet\": {\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-sonnet-5\",\n      \"api_key_file\": \"/tmp/k\"\n    }\n  },\n  \"profile\": \"sonnet\"\n}\n";
+        let (result, cfg, out, _tmp) =
+            drive_add_probed(anthropic_base, "local", "\n\n", &list, &|_| Some(32768));
+        result.unwrap();
+        let parsed: crate::config::Config = serde_json::from_str(&cfg).unwrap();
+        let profiles = parsed.resolved_profiles().unwrap();
+        assert_eq!(profiles["local"].context_window, Some(32768));
+        assert!(out.contains("Detected a context allocation of 32768 tokens"), "{out}");
+        // The existing profile's fields are untouched by the merge.
+        assert!(profiles["sonnet"].context_window.is_none(), "{cfg}");
+    }
+
+    #[test]
     fn add_collision_fails_closed_naming_every_collision() {
         let cfg_before = "{\n  \"profiles\": {\n    \"opus\": {\n      \"provider\": \"anthropic\",\n      \"model\": \"my-opus\"\n    },\n    \"sonnet\": {\n      \"provider\": \"anthropic\",\n      \"model\": \"my-sonnet\"\n    }\n  }\n}\n";
         let (result, cfg_after, out, _tmp) =
@@ -1363,9 +1522,18 @@ mod tests {
         let cfg_path = tmp.path().join("config.json");
         let mut input = std::io::Cursor::new(Vec::new());
         let mut out: Vec<u8> = Vec::new();
-        let err = run_add(&cfg_path, None, "openai", &mut input, &mut out, &no_listing, &mut NoTty)
-            .unwrap_err()
-            .to_string();
+        let err = run_add(
+            &cfg_path,
+            None,
+            "openai",
+            &mut input,
+            &mut out,
+            &no_listing,
+            &|_| None,
+            &mut NoTty,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("no config at"), "{err}");
         assert!(err.contains("temur init"), "points at the plain wizard: {err}");
         assert!(!cfg_path.exists(), "no config invented");
@@ -1532,7 +1700,8 @@ mod tests {
             format!("3\n\n{}\n{PLACEHOLDER}\n", key.display()).into_bytes(),
         );
         let mut out: Vec<u8> = Vec::new();
-        run(&cfg_path, None, false, &mut input, &mut out, &no_listing, &mut NoTty).unwrap();
+        run(&cfg_path, None, false, &mut input, &mut out, &no_listing, &|_| None, &mut NoTty)
+            .unwrap();
         assert_eq!(std::fs::read_to_string(&key).unwrap(), format!("{PLACEHOLDER}\n"));
         let printed = String::from_utf8(out).unwrap();
         assert!(printed.contains("key saved (hidden)"), "{printed}");
@@ -1657,6 +1826,7 @@ mod tests {
             &mut input,
             &mut out,
             &list,
+            &|_| None,
             &mut NoTty,
         )
         .unwrap_err();
@@ -1698,6 +1868,7 @@ mod tests {
             &mut input,
             &mut out,
             &list,
+            &|_| None,
             &mut term,
         )
         .unwrap();
