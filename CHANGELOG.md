@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.9.0 - 2026-07-30
+
 T21 bash approval mode and untrusted-host riders:
 
 - With key files configured and no working bash key sandbox (kernels
