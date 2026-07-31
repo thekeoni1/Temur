@@ -1,9 +1,10 @@
 # temur
 
-A zero-runtime-dependency single static binary coding agent for any Linux system,
-down to 32-bit and embedded, that runs fully offline against local models.
+A zero-runtime-dependency single static binary AI agent for any Linux
+system, down to 32-bit and embedded. Bring your own model: hosted or
+fully offline against local models.
 
-Mainstream Bun- and Node-based coding agents publish no 32-bit x86 or armv7 builds, and
+Mainstream Bun- and Node-based agents publish no 32-bit x86 or armv7 builds, and
 their "single executable" bundles embed a runtime on the order of 90 MB;
 temur's release binary is a ~5 MB statically linked ELF with no interpreter
 and no shared-library dependencies, so it loads on old x86 machines, armv7

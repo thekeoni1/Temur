@@ -263,7 +263,7 @@ pub fn props_url(base_url: &str) -> String {
 /// Extract `default_generation_settings.n_ctx` from a llama.cpp `/props`
 /// body: the server's ACTUAL context allocation (its `-c` flag), which is
 /// the true local limit whatever the model's trained context is. `None`
-/// for anything else — bad JSON, missing fields, zero. Pure, unit-tested
+/// for anything else (bad JSON, missing fields, zero). Pure, unit-tested
 /// against canned JSON.
 pub fn parse_props_context(body: &str) -> Option<u64> {
     serde_json::from_str::<Value>(body)
@@ -315,7 +315,7 @@ pub struct ModelEntry {
 }
 
 /// Extract `data[].id` (+ `max_input_tokens` where present) from a
-/// model-listing body — the envelope BOTH wires share (Anthropic
+/// model-listing body, the envelope BOTH wires share (Anthropic
 /// `GET /v1/models` and OpenAI-compat `GET /models`). Pure, so the
 /// parsing is unit-testable offline against literal JSON. Entries without
 /// a string `id` are skipped; an empty `data` array is a valid empty
@@ -341,7 +341,7 @@ pub fn parse_models_entries(body: &str) -> Result<Vec<ModelEntry>, crate::error:
         .collect())
 }
 
-/// [`parse_models_entries`] reduced to bare ids — what the keyless
+/// [`parse_models_entries`] reduced to bare ids: what the keyless
 /// listing (init, doctor) consumes; windows are a `/models`-command
 /// concern only.
 pub fn parse_models_json(body: &str) -> Result<Vec<String>, crate::error::Error> {

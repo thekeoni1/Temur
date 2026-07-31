@@ -151,7 +151,7 @@ fn run() -> Result<ExitCode, error::Error> {
     match cmd.as_deref() {
         Some("init") => {
             let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-            // T15+T22: the wizard's ONLY network capabilities — the two
+            // T15+T22: the wizard's ONLY network capabilities, the two
             // keyless, unauthenticated GETs (listing + /props context
             // probe), both on the short timeout.
             let list = |base: &str| {

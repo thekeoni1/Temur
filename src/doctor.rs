@@ -212,7 +212,7 @@ fn run_with_sandbox_probe(
     // the model listing: unauthenticated by construction, short timeout,
     // keyless openai-compat profiles only, never under --no-network).
     // Independently of the probe, a profile with NO context_window gets a
-    // one-line NOTE — the T20 context advisory and the T19 tool-output
+    // one-line NOTE: the T20 context advisory and the T19 tool-output
     // scaling are off without it, whatever the provider. Probes are
     // cached per base_url like the listings.
     let mut props: std::collections::BTreeMap<String, Option<u64>> =
@@ -235,7 +235,7 @@ fn run_with_sandbox_probe(
 /// allocation means the advisory fires too late and requests can fail at
 /// the real limit; smaller is safe but early); WARN suggesting the exact
 /// config line when context_window is unset. No probe answer (keyed
-/// profile, --no-network, or a non-llama.cpp server — all normal): a NOTE
+/// profile, --no-network, or a non-llama.cpp server, all normal): a NOTE
 /// when context_window is unset, silence when it is set. NOTEs and WARNs
 /// never affect the exit code.
 fn context_check(
@@ -879,7 +879,7 @@ mod tests {
     #[test]
     fn context_check_non_llamacpp_server_is_silent_when_set_note_when_unset() {
         // Plain canned server: /props answers the MODELS body, which does
-        // not parse as props — exactly a non-llama.cpp server's behavior.
+        // not parse as props, exactly a non-llama.cpp server's behavior.
         let base = canned_server(r#"{"data":[{"id":"served"}]}"#);
         let (healthy, out) =
             doctor_over(&keyless_config_with_window(&base, "served", 8192), false);

@@ -88,7 +88,7 @@ const ANTHROPIC_DEFAULT_PROFILE: &str = "sonnet";
 const LOCAL_BAKED_CONTEXT_WINDOW: u64 = 8192;
 
 /// The anthropic template's context_window (T22): current Claude models
-/// serve a 200k input context. KNOWLEDGE-BASED, not detected — the models
+/// serve a 200k input context. KNOWLEDGE-BASED, not detected: the models
 /// API reports max_input_tokens only on an authenticated call, which init
 /// never makes; the in-session /models command (T22 P3) reads the real
 /// value off the wire, so a drift surfaces there as an operator follow-up
@@ -261,7 +261,7 @@ fn pick_model(
 /// listing there and run the picker, falling back to the free-text model
 /// question (after the baked shortlist) when the listing fails or is empty.
 /// T22: then probe the same server's `/props` for its actual context
-/// allocation — found, it is announced and returned for the render to
+/// allocation: found, it is announced and returned for the render to
 /// write verbatim; not found (server down, or not llama.cpp) is silent
 /// and the baked value applies. Returns `(base_url, model, n_ctx)`.
 /// Shared by the fresh wizard and `init --add`.
@@ -617,7 +617,7 @@ fn pick_startup_profile(
 /// [`crate::provider::list_models_keyless`] and
 /// [`crate::provider::probe_props_context`]) so tests script them without
 /// a network. They are only ever called for the keyless local template;
-/// keyed templates stay free-text — their key files are created EMPTY
+/// keyed templates stay free-text: their key files are created EMPTY
 /// below, so no authenticated request is possible at init time even in
 /// principle, and init never reads keys.
 pub fn run(
@@ -1054,7 +1054,7 @@ mod tests {
         ))
     }
 
-    /// [`run_wizard_probed`] with a probe that never answers — the pre-T22
+    /// [`run_wizard_probed`] with a probe that never answers, the pre-T22
     /// behavior every older test drives.
     fn run_wizard(
         answers: &str,

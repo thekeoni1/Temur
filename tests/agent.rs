@@ -1890,7 +1890,7 @@ struct CmdHarness {
     cached_models: Vec<temur::provider::ModelEntry>,
 }
 
-/// Listing entries with no windows — the pre-T22 shape most tests drive.
+/// Listing entries with no windows, the pre-T22 shape most tests drive.
 fn entries(ids: &[&str]) -> Vec<temur::provider::ModelEntry> {
     ids.iter()
         .map(|id| temur::provider::ModelEntry { id: id.to_string(), context_window: None })

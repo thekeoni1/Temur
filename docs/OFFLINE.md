@@ -2,7 +2,7 @@
 
 Offline is not a degraded mode of temur. It is the point. One static
 binary with zero runtime dependencies, pointed at a local inference
-server, is a complete coding agent with no internet anywhere in the loop:
+server, is a complete AI agent with no internet anywhere in the loop:
 air-gapped labs, regulated networks, ships, field sites, or just a laptop
 on a plane.
 
