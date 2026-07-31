@@ -182,6 +182,14 @@ against a local llama.cpp server (`base_url` defaults to
 }
 ```
 
+`context_window` is advisory-only (it never goes on the wire; it drives
+the context advisory and the tool-output caps) and is now detectable:
+against a running llama.cpp server, `temur init` fills it with the
+server's real allocation and `temur doctor` checks a configured value
+against the same source; on an anthropic profile, `/models` compares it
+to the limit the API itself reports. Details in the "Context lifecycle"
+section below and docs/OFFLINE.md.
+
 Server setup for llama.cpp, Ollama, and LM Studio (including reaching a
 Windows-host server from WSL2), LAN topology, recommended small
 models, and the compact prompt profile: [docs/OFFLINE.md](docs/OFFLINE.md).
@@ -197,13 +205,17 @@ effective default model):
 {
   "profiles": {
     "fable":  { "provider": "anthropic", "model": "claude-fable-5",
-                "api_key_file": "/home/you/.secrets/temur-anthropic-key" },
+                "api_key_file": "/home/you/.secrets/temur-anthropic-key",
+                "context_window": 200000 },
     "haiku":  { "provider": "anthropic", "model": "claude-haiku-4-5",
-                "api_key_file": "/home/you/.secrets/temur-anthropic-key" },
+                "api_key_file": "/home/you/.secrets/temur-anthropic-key",
+                "context_window": 200000 },
     "opus":   { "provider": "anthropic", "model": "claude-opus-5",
-                "api_key_file": "/home/you/.secrets/temur-anthropic-key" },
+                "api_key_file": "/home/you/.secrets/temur-anthropic-key",
+                "context_window": 200000 },
     "sonnet": { "provider": "anthropic", "model": "claude-sonnet-5",
-                "api_key_file": "/home/you/.secrets/temur-anthropic-key" }
+                "api_key_file": "/home/you/.secrets/temur-anthropic-key",
+                "context_window": 200000 }
   },
   "profile": "sonnet"
 }
@@ -398,7 +410,12 @@ warns once per session when the conversation gets tight: at 80% of the
 window, or when the remaining room is smaller than `max_tokens`,
 whichever comes first. The advisory names both remedies: `/compact`
 summarizes the conversation and continues in a fraction of the window;
-a new session starts clean. The same advisory also fires immediately at
+a new session starts clean. Getting the window right is checked, not
+guessed: `temur doctor` compares the configured value against a local
+llama.cpp server's real allocation (and NOTEs any profile missing one),
+`temur init` auto-fills it from the same source, and `/models` on an
+anthropic profile judges it against the API's reported
+`max_input_tokens`. The same advisory also fires immediately at
 `--continue`/`--resume`/`/resume` when the restored session is already
 past the threshold, and resume is in fact the cheapest moment to
 compact: no provider cache or local KV state is warm yet, so the

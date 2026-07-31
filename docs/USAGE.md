@@ -109,6 +109,24 @@ answers crossed 80% and the advisory fired, the session was quit, and
 >   [!] compacted: 6 message(s) summarized into 2; the next request rebuilds the provider's cached prefix (one-time cost)
 ```
 
+Where should the `context_window` number come from? For a local
+llama.cpp server the truth is the server's own context allocation (its
+`-c` flag), not the model card, and temur reads it from the server's
+`/props` endpoint: `temur init` writes the detected value into a fresh
+local config when the server is up, and `temur doctor` compares a
+configured value against the same source, warning in both directions
+(configured larger than the allocation means this advisory fires too
+late and requests can fail at the real limit; smaller is safe but
+early) and naming the exact line to add when the value is missing.
+Non-llama.cpp servers answer nothing useful at `/props` and stay
+silent, and doctor NOTEs any profile with no `context_window` at all.
+On an anthropic profile the truth is the per-model `max_input_tokens`
+the models API reports, and the `/models` command already receives it:
+after a listing, a configured window larger than the reported value
+draws a warning, and a missing one draws a hint naming the exact config
+line. Doctor never calls the authenticated models API; the hosted check
+rides only the `/models` request you make yourself.
+
 `/compact` makes ONE model call (the session's own model and system
 prompt, tools omitted) asking for a structured summary: goal, state,
 decisions, files touched, next steps. On success the history becomes

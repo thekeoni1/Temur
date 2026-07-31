@@ -319,8 +319,18 @@ Larger is better whenever the serving machine allows it; anything in the
 ## `context_window`: what it does and does not do
 
 `openai_compat.context_window` tells temur how big the *served* context
-is, a property of the server (llama.cpp `-c`, Ollama `num_ctx`) that the
-API does not expose, so you state it. temur then:
+is, a property of the server (llama.cpp `-c`, Ollama `num_ctx`) that
+the OpenAI-compatible API itself does not expose. llama.cpp does expose
+it out of band, at the server root's `/props` endpoint
+(`default_generation_settings.n_ctx`), and temur reads it there with
+the same unauthenticated keyless GET discipline as the model listing:
+`temur init` auto-fills a fresh local config with the detected value
+(server down, or any non-llama.cpp server, keeps the baked 8192), and
+`temur doctor` checks a configured value against the live allocation,
+warning on a mismatch in either direction and suggesting the exact
+config line when the value is missing. Ollama's equivalent
+(`/api/show`) is deliberately not probed, so for Ollama and LM Studio
+you still state the value by hand. However it gets set, temur then:
 
 - advises once per session when the conversation gets tight: at 80% of
   the window, or when the remaining room drops below `max_tokens` (the

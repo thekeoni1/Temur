@@ -4,6 +4,40 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+T22 context-window detection and discoverability:
+
+- `temur doctor` now checks `context_window` per profile. On keyless
+  openai-compat profiles with network allowed it reads the server's
+  real context allocation from llama.cpp's `/props` endpoint
+  (`default_generation_settings.n_ctx`, the server's `-c` flag): a
+  matching configured value PASSes; a mismatch WARNs naming both
+  values and the consequence direction (configured larger than the
+  allocation means the context advisory fires too late and requests
+  can fail at the real limit; smaller is safe but early); a missing
+  value WARNs with the exact config line to add. Non-llama.cpp servers
+  answer nothing useful there and stay silent. Independently, any
+  profile without a `context_window` gets a one-line NOTE that the
+  context advisory and the context-scaled tool-output caps are off for
+  it. Keyed profiles and `--no-network` are never probed; the probe
+  takes only a base URL, so it is unauthenticated by construction, the
+  second and last request under the keyless-GET amendment (RUNBOOK
+  record).
+- `temur init` (local template, fresh and `--add`): with the server
+  up, the wizard now writes the detected allocation as
+  `context_window` instead of the baked 8192, with a notice naming the
+  value and its source; server down or not llama.cpp keeps the baked
+  value, byte-identical to before. The anthropic template's four
+  profiles now carry `"context_window": 200000` (knowledge-based, not
+  detected; the `/models` enrichment below reads the real value off
+  the wire). Existing configs are never rewritten.
+- `/models` on an anthropic profile now uses the per-model
+  `max_input_tokens` the listing response already carries: a
+  configured `context_window` larger than the reported value draws a
+  warning naming both, a missing one draws a hint naming the exact
+  config line to add, equal or smaller stays silent. No new network
+  calls, and the cached listing keeps the reported windows (still
+  cleared on a provider change).
+
 ## v0.9.0 - 2026-07-30
 
 T21 bash approval mode and untrusted-host riders:

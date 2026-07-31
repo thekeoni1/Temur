@@ -2438,3 +2438,72 @@ x-api-key, or bearer material, the same assertion the T15 listing
 test makes. No other surface calls either function; list_models_live
 (the in-session /models command) remains the only authenticated
 listing path and is never called by init or doctor.
+
+## T22 acceptance - recorded result (no release)
+
+2026-07-31, four commits on main over the v0.9.0 baseline (cc28ae4):
+P1 b8ced6e (keyless /props probe + doctor context checks + the
+amendment extension record above), P2 a17eeb1 (init auto-fill + the
+anthropic template's baked context_window 200000), P3 10fd849
+(/models context enrichment on the anthropic wire), P4 (docs + this
+record). Every phase ran the full check.sh gate (pty, foreground)
+green. Version stays 0.9.0; T22 rides CHANGELOG Unreleased. One
+harness incident, no code cause: the first P1 gate run hung ~11h in
+the container TUI pty smoke step and was killed; the clean re-run
+passed end to end, and every later gate run passed first try.
+
+Security posture: the keyless-GET amendment now covers exactly TWO
+requests (record above). The anthropic template's context_window
+200000 is KNOWLEDGE-BASED, pending the operator's live confirmation
+via /models on a real key (the P3 hint/warning notices make any drift
+visible); the P2/P3 anthropic-side behavior is mock/fixture-tested
+only, no live Anthropic call was made from the build session.
+
+The T22-planned init-closing autosave line was found ALREADY SHIPPED
+by T16 P4 (aac3852); it was verified live in this smoke instead of
+being duplicated.
+
+Live smoke (Qwen3-1.7B-Q4_K_M via serve.sh with CTX=6144, a value
+deliberately distinct from the baked 8192; keyless, isolated XDG
+dirs, gnu-debug binary; all first-attempt green, transcripts
+verbatim):
+
+(a) init with the server UP auto-filled the real allocation and named
+the source, and (d) the closing autosave line printed:
+
+    Model (number or id) [/model.gguf]: Detected a context allocation of 6144 tokens from the server (llama.cpp
+    /props, n_ctx); writing "context_window": 6144.
+    ...
+    Next: start your local server (see docs/OFFLINE.md), run temur doctor
+    to check the setup, then temur to start.
+    Conversations are saved automatically per working directory; temur --continue
+    resumes the last one.
+
+with the written config carrying "context_window": 6144.
+
+(b) doctor with the value hand-edited to 16384 WARNed naming both
+values and the consequence direction, then PASSed once corrected:
+
+    WARN: context_window 16384 is larger than the server context allocation (n_ctx 6144) at http://127.0.0.1:8080/v1: the context advisory fires too late and requests can fail at the real limit
+    doctor: 7 pass, 1 warn, 0 fail
+
+    PASS: context_window 6144 matches the server context allocation (n_ctx 6144) at http://127.0.0.1:8080/v1
+    doctor: 8 pass, 0 warn, 0 fail
+
+and with the value REMOVED, the WARN suggested the exact line:
+
+    WARN: no context_window configured; the server at http://127.0.0.1:8080/v1 allocates n_ctx 6144: add "context_window": 6144 to the profile
+
+(c) doctor --no-network with the value set printed no context line at
+all (SKIP lines only); with the value unset it printed exactly the
+offline NOTE:
+
+    NOTE: no context_window configured: the context usage advisory and context-scaled tool-output caps are off for this profile
+
+and against a 404-everything non-llama.cpp endpoint (python
+http.server) with the value set, the context checks were silent, the
+only new line being the pre-existing T15 model-check NOTE (HTTP 404).
+
+Honest residuals: Ollama context detection (/api/show) is deliberately
+not built; OFFLINE.md says so and it stays a possible future rider.
+The anthropic 200000 confirmation is the operator follow-up above.
