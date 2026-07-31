@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.10.0 - 2026-07-31
+
 T22 context-window detection and discoverability:
 
 - `temur doctor` now checks `context_window` per profile. On keyless
