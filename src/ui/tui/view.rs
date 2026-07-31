@@ -26,7 +26,7 @@ pub fn draw(app: &mut App, frame: &mut Frame) {
     let [header, transcript, input, status, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
-        Constraint::Length(1),
+        Constraint::Length(approval_height(app, frame.area().width)),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
@@ -224,7 +224,49 @@ fn draw_transcript(app: &mut App, frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(visible), area);
 }
 
+/// Rows the input area needs (T21): 1 normally; question line + the exact
+/// wrapped command while an approval prompt is open, capped so a giant
+/// command cannot squeeze the transcript out.
+fn approval_height(app: &App, width: u16) -> u16 {
+    match &app.approval {
+        None => 1,
+        Some(cmd) => {
+            let budget = (width as usize).saturating_sub(2 + 4);
+            let mut rows: usize = 1;
+            for raw in cmd.lines() {
+                rows += wrap(raw, budget.max(1)).len();
+            }
+            (rows as u16).clamp(2, 8)
+        }
+    }
+}
+
+/// The modal bash approval prompt (T21): question line, then the exact
+/// command indented, all in the warning color. No cursor: the answer is a
+/// single keypress, not an edited line.
+fn draw_approval(cmd: &str, frame: &mut Frame, area: Rect) {
+    let yellow = Style::default().fg(Color::Yellow);
+    let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+        "? no key sandbox on this host: run this bash command WITHOUT it? [y/N]",
+        yellow.add_modifier(Modifier::BOLD),
+    ))];
+    let budget = (area.width as usize).saturating_sub(2 + 4);
+    'outer: for raw in cmd.lines() {
+        for l in wrap(raw, budget.max(1)) {
+            if lines.len() >= area.height as usize {
+                break 'outer;
+            }
+            lines.push(Line::from(Span::styled(format!("    {l}"), yellow)));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
 fn draw_input(app: &App, frame: &mut Frame, area: Rect) {
+    if let Some(cmd) = &app.approval {
+        draw_approval(cmd, frame, area);
+        return;
+    }
     let prefix = format!("{BAR} > ");
     let budget = (area.width as usize).saturating_sub(display_width(&prefix) + 1);
 
@@ -278,7 +320,12 @@ fn draw_input(app: &App, frame: &mut Frame, area: Rect) {
 }
 
 fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
-    let left: Vec<Span> = if app.busy {
+    let left: Vec<Span> = if app.approval.is_some() {
+        vec![Span::styled(
+            "  y approve this one command · n or esc deny",
+            Style::default().fg(Color::Yellow),
+        )]
+    } else if app.busy {
         if app.force_quit_armed {
             vec![
                 Span::raw(format!("  {} working… ", app.spinner())),

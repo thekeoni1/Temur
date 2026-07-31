@@ -78,6 +78,9 @@ pub enum Action {
     /// Esc during a running turn: the runtime sets the session's cancel
     /// token; the turn lands cooperatively (T6).
     Interrupt,
+    /// T21: the user answered the bash approval prompt (y = true; n or
+    /// Esc = false). The runtime forwards it to the blocked agent thread.
+    Approval(bool),
 }
 
 pub struct App {
@@ -95,6 +98,10 @@ pub struct App {
     /// Esc was pressed this turn; shown as "interrupting…" until the turn
     /// actually lands (TurnComplete clears it).
     pub interrupting: bool,
+    /// T21: the command a pending bash approval prompt is asking about.
+    /// While `Some`, keys answer the prompt (y/n/Esc) and nothing else;
+    /// set by the runtime on an approval request, cleared by the answer.
+    pub approval: Option<String>,
     turn_started_ms: u64,
     // Session info for chrome.
     pub title: Option<String>,
@@ -145,6 +152,7 @@ impl App {
             busy: false,
             force_quit_armed: false,
             interrupting: false,
+            approval: None,
             turn_started_ms: 0,
             title: None,
             model,
@@ -347,6 +355,24 @@ impl App {
         // terminals when enhanced flags are on).
         if key.kind == KeyEventKind::Release {
             return Action::None;
+        }
+        // T21: a pending approval prompt consumes every key. The answer is
+        // restricted to y (approve once) / n or Esc (deny); anything else
+        // is ignored, so a stray keystroke can never approve. Deny is the
+        // only default: the prompt closes exclusively on an explicit
+        // answer (or the runtime's channel teardown, which also denies).
+        if self.approval.is_some() {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.approval = None;
+                    return Action::Approval(true);
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    self.approval = None;
+                    return Action::Approval(false);
+                }
+                _ => return Action::None,
+            }
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         // Any key other than a second Ctrl+C disarms the force-quit prompt.

@@ -28,28 +28,41 @@ const MAX_TIMEOUT_MS: u64 = 600_000;
 // Everything the pre_exec closure touches is pre-computed BYTES: it runs
 // between fork and exec in a threaded process, so it must not allocate.
 
-/// The refusal wording when keys are configured and no sandbox is
-/// possible. One constant so the tool error and the tests cannot drift.
-pub const SANDBOX_REFUSAL: &str = "bash is disabled: key files are configured, and this kernel does not allow the unprivileged user namespace sandbox that isolates them from shell commands. The other tools stay guarded. To accept running bash WITHOUT the key sandbox, set \"allow_bash_without_key_sandbox\": true in config.json.";
+/// The refusal wording when keys are configured, no sandbox is possible,
+/// and no approver is installed (T21: the NON-interactive arm; interactive
+/// sessions ask per command instead of refusing). One constant so the tool
+/// error and the tests cannot drift.
+pub const SANDBOX_REFUSAL: &str = "bash is disabled: key files are configured, and this kernel does not allow the unprivileged user namespace sandbox that isolates them from shell commands. In an interactive session temur asks for per-command approval instead; this non-interactive session cannot ask. The other tools stay guarded. For non-interactive use, set \"allow_bash_without_key_sandbox\": true in config.json to accept running bash WITHOUT the key sandbox.";
+
+/// The denial wording when the user answers no at the approval prompt
+/// (T21). Returned as a normal is_error tool_result, so the model can
+/// adapt and the turn continues.
+pub const APPROVAL_DENIED: &str = "the user declined to run this command";
 
 /// What a spawn should do, given the guard and host facts. Pure, so the
 /// whole decision table is unit-testable with an injected probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SandboxDecision {
-    /// No keys configured (or override accepted): spawn byte-identically
-    /// to pre-T18 behavior, no unshare at all.
+    /// No keys configured (or override accepted, or the user approved this
+    /// one command): spawn byte-identically to pre-T18 behavior, no
+    /// unshare at all.
     Plain,
     Sandboxed,
+    /// T21: sandbox unavailable, override off, but an interactive approver
+    /// is installed: ask the user about THIS command.
+    Ask,
     Refuse,
 }
 
 /// Keyless configs never even probe: the invariant is that they spawn
-/// exactly as before T18. With keys, a working sandbox always wins (the
-/// override does NOT disable it); the override only rescues hosts where
-/// the probe fails.
+/// exactly as before T18. With keys, a working sandbox always wins
+/// (neither the override nor an approver ever preempts it); the override
+/// silences the ask entirely; the T21 Ask arm rescues interactive sessions
+/// on hosts where the probe fails; non-interactive sessions still refuse.
 fn decide_sandbox(
     keys_guarded: bool,
     allow_unsandboxed: bool,
+    approver_available: bool,
     probe: impl FnOnce() -> bool,
 ) -> SandboxDecision {
     if !keys_guarded {
@@ -59,7 +72,10 @@ fn decide_sandbox(
         return SandboxDecision::Sandboxed;
     }
     if allow_unsandboxed {
-        SandboxDecision::Plain
+        return SandboxDecision::Plain;
+    }
+    if approver_available {
+        SandboxDecision::Ask
     } else {
         SandboxDecision::Refuse
     }
@@ -154,6 +170,14 @@ fn install_sandbox(cmd: &mut Command, masks: &[std::path::PathBuf]) -> std::io::
 pub fn sandbox_available() -> bool {
     static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *AVAILABLE.get_or_init(|| {
+        // T21 test seam: force the probe to FAIL, so the Ask/Refuse arms
+        // are reachable on hosts whose kernel would let the real probe
+        // succeed (the e2e suites and the live-smoke fallback). One-way by
+        // design: the seam can only make behavior MORE restrictive; there
+        // is no way to fake a WORKING sandbox.
+        if std::env::var_os("TEMUR_TEST_SANDBOX_UNAVAILABLE").is_some() {
+            return false;
+        }
         let mut cmd = Command::new("true");
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -236,15 +260,33 @@ impl Tool for BashTool {
         }
         // T18 layer 2: with key files guarded, bash MUST run sandboxed (or
         // refuse; or run plain when the config explicitly accepts the
-        // risk). A keyless guard takes the Plain arm without probing:
+        // risk; or, T21, ask the user per command in an interactive
+        // session). A keyless guard takes the Plain arm without probing:
         // byte-identical spawn to pre-T18.
         match decide_sandbox(
             !ctx.guard.is_empty(),
             ctx.allow_unsandboxed_bash,
+            ctx.bash_approver.is_some(),
             sandbox_available,
         ) {
             SandboxDecision::Plain => {}
             SandboxDecision::Refuse => return Err(ToolError::failed(SANDBOX_REFUSAL)),
+            SandboxDecision::Ask => {
+                // Default is DENY: an interrupt already requested (cancel
+                // token set) denies without even prompting, and the
+                // approver itself answers false for anything but an
+                // explicit yes. An approved command runs PLAIN, this one
+                // time only; the decision is never cached.
+                let approved = !ctx.cancel.is_set()
+                    && ctx
+                        .bash_approver
+                        .as_mut()
+                        .map(|approve| approve(&p.command))
+                        .unwrap_or(false);
+                if !approved {
+                    return Err(ToolError::failed(APPROVAL_DENIED));
+                }
+            }
             SandboxDecision::Sandboxed => {
                 // Mask what exists; a configured-but-missing key file has
                 // nothing to mask (and layer 1 still guards its path).
@@ -356,26 +398,43 @@ impl Tool for BashTool {
 mod tests {
     use super::*;
 
-    /// The full T18 decision table with an injected probe. The probe must
-    /// not even RUN for keyless configs (the invariant is "no unshare at
-    /// all"), asserted via a panicking probe.
+    /// The full T18+T21 decision table with an injected probe. The probe
+    /// must not even RUN for keyless configs (the invariant is "no unshare
+    /// at all"), asserted via a panicking probe, with and without an
+    /// approver.
     #[test]
     fn sandbox_decision_table() {
         let no_probe = || -> bool { panic!("keyless configs must never probe") };
-        assert_eq!(decide_sandbox(false, false, no_probe), SandboxDecision::Plain);
-        assert_eq!(decide_sandbox(false, true, no_probe), SandboxDecision::Plain);
+        assert_eq!(decide_sandbox(false, false, false, no_probe), SandboxDecision::Plain);
+        assert_eq!(decide_sandbox(false, true, false, no_probe), SandboxDecision::Plain);
+        assert_eq!(decide_sandbox(false, false, true, no_probe), SandboxDecision::Plain);
+        assert_eq!(decide_sandbox(false, true, true, no_probe), SandboxDecision::Plain);
 
-        assert_eq!(decide_sandbox(true, false, || true), SandboxDecision::Sandboxed);
-        // The override never DISABLES a working sandbox.
-        assert_eq!(decide_sandbox(true, true, || true), SandboxDecision::Sandboxed);
-        assert_eq!(decide_sandbox(true, false, || false), SandboxDecision::Refuse);
-        assert_eq!(decide_sandbox(true, true, || false), SandboxDecision::Plain);
+        // A working sandbox always wins: neither the override nor an
+        // approver ever preempts or disables it.
+        assert_eq!(decide_sandbox(true, false, false, || true), SandboxDecision::Sandboxed);
+        assert_eq!(decide_sandbox(true, true, false, || true), SandboxDecision::Sandboxed);
+        assert_eq!(decide_sandbox(true, false, true, || true), SandboxDecision::Sandboxed);
+        assert_eq!(decide_sandbox(true, true, true, || true), SandboxDecision::Sandboxed);
+
+        // Probe failed: the override silences the ask entirely; without it
+        // an approver gets the Ask arm; without either, refuse.
+        assert_eq!(decide_sandbox(true, true, false, || false), SandboxDecision::Plain);
+        assert_eq!(decide_sandbox(true, true, true, || false), SandboxDecision::Plain);
+        assert_eq!(decide_sandbox(true, false, true, || false), SandboxDecision::Ask);
+        assert_eq!(decide_sandbox(true, false, false, || false), SandboxDecision::Refuse);
     }
 
     #[test]
-    fn refusal_names_cause_and_override() {
+    fn refusal_names_cause_interactive_ask_and_override() {
         assert!(SANDBOX_REFUSAL.contains("user namespace"));
         assert!(SANDBOX_REFUSAL.contains("allow_bash_without_key_sandbox"));
         assert!(SANDBOX_REFUSAL.contains("other tools stay guarded"));
+        // T21: the wording leads with the interactive per-command ask and
+        // keeps the config override as the final, non-interactive answer.
+        assert!(SANDBOX_REFUSAL.contains("asks for per-command approval"));
+        let ask = SANDBOX_REFUSAL.find("per-command approval").unwrap();
+        let override_pos = SANDBOX_REFUSAL.find("allow_bash_without_key_sandbox").unwrap();
+        assert!(ask < override_pos, "the ask must come before the override");
     }
 }

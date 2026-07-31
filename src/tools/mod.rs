@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 
-pub use bash::{sandbox_available, SANDBOX_REFUSAL};
+pub use bash::{sandbox_available, APPROVAL_DENIED, SANDBOX_REFUSAL};
 pub use guard::KeyGuard;
 pub use skill::SkillTool;
 pub use todo::TodoItem;
@@ -52,6 +52,12 @@ pub struct ToolCtx {
     /// keys guarded but no working sandbox, bash refuses unless this is
     /// set. Meaningless while the guard is empty.
     pub allow_unsandboxed_bash: bool,
+    /// T21 bash approval: an interactive UI's per-command approver, called
+    /// with the exact command string when keys are guarded, the sandbox is
+    /// unavailable, and the override is off (the Ask arm). `None` (the
+    /// default everywhere) means no UI can ask, so that arm refuses
+    /// instead: every non-interactive construction site is untouched.
+    pub bash_approver: Option<Box<dyn FnMut(&str) -> bool>>,
     /// T19 read-first enforcement: canonicalized paths whose content this
     /// session has seen (read tool, edit reads its file, a successful write
     /// knows what it wrote). `write` refuses to overwrite an EXISTING file
@@ -70,6 +76,7 @@ impl ToolCtx {
             cancel: CancelToken::new(),
             guard: KeyGuard::empty(),
             allow_unsandboxed_bash: false,
+            bash_approver: None,
             read_paths: std::collections::HashSet::new(),
         }
     }

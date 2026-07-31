@@ -498,7 +498,7 @@ fn repl(
     session.set_redaction_key(startup_key);
 
     let mut ui: Box<dyn Ui> = if use_tui {
-        Box::new(TuiUi::new(
+        let tui = TuiUi::new(
             SessionInfo {
                 model: model.clone(),
                 thinking: cfg.thinking,
@@ -512,10 +512,21 @@ fn repl(
             // T6: the render thread holds the session's cancel token so
             // Esc can interrupt a running turn.
             session.cancel_token(),
-        )?)
+        )?;
+        // T21: the TUI is interactive by construction, so it can ask
+        // per-command bash approval when the key sandbox is unavailable.
+        session.set_bash_approver(tui.bash_approver());
+        Box::new(tui)
     } else if oneshot.is_some() {
+        // T21: one-shot -p NEVER installs an approver; its Ask arm stays a
+        // refusal, terminal or not.
         Box::new(temur::ui::oneshot::OneShotUi::stdio())
     } else {
+        // T21: the plain REPL is interactive only on a real terminal;
+        // piped runs (the mock e2e suites) stay byte-identical.
+        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+            session.set_bash_approver(temur::ui::repl::stdin_bash_approver());
+        }
         Box::new(ReplUi::new())
     };
     // Resume output surfaces through the same seam as everything else, after

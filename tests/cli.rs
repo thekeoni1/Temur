@@ -973,3 +973,160 @@ fn existing_broken_config_error_is_unchanged() {
     );
     assert!(!stderr.contains("no config file found"), "{stderr}");
 }
+
+// ------------------------------------------------- T21: bash approval (e2e)
+//
+// The Ask arm needs a probe-FAIL, forced deterministically via the one-way
+// TEMUR_TEST_SANDBOX_UNAVAILABLE seam (set on the CHILD only, so nothing
+// in this process is touched), and an interactive terminal, provided by a
+// pty from script(1). Placeholder key material only, as everywhere.
+
+/// Config with one keyed anthropic profile whose key file is a placeholder
+/// inside the sandbox home; returns the key path.
+fn guarded_mock_config(sb: &Sandbox) -> PathBuf {
+    let key = sb.home.join("api.key");
+    std::fs::write(&key, "placeholder-not-a-real-key\n").unwrap();
+    sb.write_config(&format!(
+        r#"{{"profiles":{{"a":{{"provider":"anthropic","model":"claude-sonnet-5","api_key_file":"{}"}}}},"profile":"a"}}"#,
+        key.display()
+    ));
+    key
+}
+
+fn approval_fixtures() -> String {
+    format!("{},{}", fixture("bash_approval.sse"), fixture("text_simple.sse"))
+}
+
+/// Run the binary under a pty (script(1)) so stdin/stdout ARE a terminal,
+/// with `stdin` relayed in. Returns (exit code of script, pty output).
+fn run_pty(sb: &Sandbox, args: &str, stdin: &str, force_probe_fail: bool) -> (i32, String) {
+    let mut c = Command::new("script");
+    c.args(["-qec", &format!("{BIN} {args}"), "/dev/null"])
+        .env("XDG_CONFIG_HOME", &sb.config_home)
+        .env("XDG_STATE_HOME", &sb.state_home)
+        .env("HOME", &sb.home)
+        .env_remove("APP_SECRET_FILE")
+        .env_remove("TEMUR_SKILLS_DIR")
+        .env_remove("OPENCODE_SKILLS_DIR")
+        .current_dir(&sb.home);
+    if force_probe_fail {
+        c.env("TEMUR_TEST_SANDBOX_UNAVAILABLE", "1");
+    } else {
+        c.env_remove("TEMUR_TEST_SANDBOX_UNAVAILABLE");
+    }
+    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = c.spawn().expect("spawn script(1) pty wrapper");
+    let _ = child.stdin.take().unwrap().write_all(stdin.as_bytes());
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.code().expect("no exit code (signal?)"),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn approval_pty_yes_prompts_with_the_exact_command_and_runs_it() {
+    let sb = sandbox();
+    guarded_mock_config(&sb);
+    let (code, out) = run_pty(
+        &sb,
+        &format!("--plain --mock {}", approval_fixtures()),
+        "do it\ny\nexit\n",
+        true,
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("bash approval needed"), "{out}");
+    assert!(out.contains("echo approval-ran > approval-marker.txt"), "exact command shown: {out}");
+    assert!(out.contains("run it? [y/N]"), "{out}");
+    assert!(out.contains("✓ bash"), "approved bash succeeds: {out}");
+    assert!(out.contains("Hello, world!"), "second round: {out}");
+    assert_eq!(
+        std::fs::read_to_string(sb.home.join("approval-marker.txt")).unwrap(),
+        "approval-ran\n",
+        "the approved command must actually run"
+    );
+}
+
+#[test]
+fn approval_pty_no_denies_and_the_session_continues() {
+    let sb = sandbox();
+    guarded_mock_config(&sb);
+    let (code, out) = run_pty(
+        &sb,
+        &format!("--plain --mock {}", approval_fixtures()),
+        "do it\nn\nexit\n",
+        true,
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("run it? [y/N]"), "{out}");
+    assert!(out.contains("✗ bash"), "denied bash is an error result: {out}");
+    assert!(out.contains("Hello, world!"), "the session continues: {out}");
+    assert!(
+        !sb.home.join("approval-marker.txt").exists(),
+        "a denied command must not run: {out}"
+    );
+}
+
+#[test]
+fn approval_piped_noninteractive_still_refuses() {
+    let sb = sandbox();
+    guarded_mock_config(&sb);
+    let mut c = sb.cmd();
+    c.env("TEMUR_TEST_SANDBOX_UNAVAILABLE", "1")
+        .args(["--plain", "--mock", &approval_fixtures()]);
+    let (code, stdout, stderr) = run(c, "do it\nexit\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!stdout.contains("[y/N]"), "piped stdin must never prompt: {stdout}");
+    assert!(stdout.contains("✗ bash"), "refusal is an error result: {stdout}");
+    assert!(stdout.contains("Hello, world!"), "the session continues: {stdout}");
+    assert!(
+        !sb.home.join("approval-marker.txt").exists(),
+        "a refused command must not run"
+    );
+}
+
+#[test]
+fn approval_keyless_pty_never_prompts_and_runs_plain() {
+    let sb = sandbox();
+    sb.write_config("{}");
+    let (code, out) = run_pty(
+        &sb,
+        &format!("--plain --mock {}", approval_fixtures()),
+        "do it\nexit\n",
+        true,
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("[y/N]"), "keyless must never prompt: {out}");
+    assert!(out.contains("✓ bash"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(sb.home.join("approval-marker.txt")).unwrap(),
+        "approval-ran\n"
+    );
+}
+
+#[test]
+fn approval_working_sandbox_pty_never_prompts() {
+    if !temur::tools::sandbox_available() {
+        eprintln!("skip: no unprivileged user namespaces in this environment");
+        return;
+    }
+    let sb = sandbox();
+    guarded_mock_config(&sb);
+    let (code, out) = run_pty(
+        &sb,
+        &format!("--plain --mock {}", approval_fixtures()),
+        "do it\nexit\n",
+        false,
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        !out.contains("[y/N]"),
+        "a working sandbox is never preempted by approval: {out}"
+    );
+    assert!(out.contains("✓ bash"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(sb.home.join("approval-marker.txt")).unwrap(),
+        "approval-ran\n",
+        "sandboxed bash still writes ordinary files"
+    );
+}

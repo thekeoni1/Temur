@@ -1809,3 +1809,153 @@ fn headless_resume_backscroll_renders_in_final_frame() {
     assert!(body.contains("▌ [!] resumed session: 3 messages"), "summary:\n{body}");
     assert!(body.contains("never answered"), "advisory follows the rebuild:\n{body}");
 }
+
+// ------------------------------------------------- T21: bash approval prompt
+
+/// Force the sandbox probe to fail for this process (the one-way test
+/// seam), so guarded sessions take the Ask arm. Safe here: no other test
+/// in this binary consults `sandbox_available`, so the cached answer is
+/// always set AFTER the env var.
+fn force_probe_fail() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| std::env::set_var("TEMUR_TEST_SANDBOX_UNAVAILABLE", "1"));
+    assert!(!temur::tools::sandbox_available());
+}
+
+#[test]
+fn approval_prompt_restricts_keys_to_y_n_esc() {
+    let mut a = app();
+    a.busy = true;
+    a.approval = Some("echo hi".into());
+    // Anything that is not an answer is consumed and ignored: no typing,
+    // no interrupt, no quit while the prompt is open.
+    assert_eq!(a.handle_key(key(KeyCode::Char('x'))), Action::None);
+    assert_eq!(a.handle_key(key(KeyCode::Enter)), Action::None);
+    assert_eq!(a.handle_key(ctrl('c')), Action::None);
+    assert!(a.input.is_empty(), "no key may leak into the input line");
+    assert!(a.approval.is_some(), "prompt still open");
+    // y approves and closes.
+    assert_eq!(a.handle_key(key(KeyCode::Char('y'))), Action::Approval(true));
+    assert!(a.approval.is_none());
+    // n and Esc deny and close.
+    a.approval = Some("echo hi".into());
+    assert_eq!(a.handle_key(key(KeyCode::Char('n'))), Action::Approval(false));
+    a.approval = Some("echo hi".into());
+    assert_eq!(a.handle_key(key(KeyCode::Esc)), Action::Approval(false));
+    // With the prompt closed, Esc while busy is an interrupt again.
+    assert_eq!(a.handle_key(key(KeyCode::Esc)), Action::Interrupt);
+}
+
+#[test]
+fn approval_prompt_renders_question_command_and_hint() {
+    let mut a = app();
+    a.busy = true;
+    a.approval = Some("cat /etc/hosts && echo done".into());
+    let rows = render(&mut a, 100, 14);
+    let body = rows.join("\n");
+    assert!(
+        body.contains("run this bash command WITHOUT it? [y/N]"),
+        "question line:\n{body}"
+    );
+    assert!(body.contains("cat /etc/hosts && echo done"), "exact command:\n{body}");
+    assert!(
+        body.contains("y approve this one command · n or esc deny"),
+        "status hint:\n{body}"
+    );
+}
+
+/// Build a guarded session over the approval fixture plus a second text
+/// response, a gated step script, and the TUI approver; run one turn.
+/// Returns (tempdir, final frame rows).
+fn approval_turn(answer: KeyCode) -> (tempfile::TempDir, Vec<String>) {
+    force_probe_fail();
+    let dir = tempfile::tempdir().unwrap();
+    let key_file = dir.path().join("api.key");
+    std::fs::write(&key_file, "placeholder-not-a-real-key\n").unwrap();
+    let provider = AnthropicProvider::new(
+        "https://mock.invalid",
+        "mock-key".into(),
+        Box::new(ReplayTransport::new(vec![
+            format!("{}/tests/fixtures/bash_approval.sse", env!("CARGO_MANIFEST_DIR")).into(),
+            format!("{}/tests/fixtures/text_simple.sse", env!("CARGO_MANIFEST_DIR")).into(),
+        ])),
+    );
+    let cfg = SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens: 32_000,
+        system: Some("test system".into()),
+        thinking: false,
+        cwd: dir.path().to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+        max_tokens_source: None,
+        prose_tool_calls: true,
+    };
+    let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
+    session.set_key_guard(
+        temur::tools::KeyGuard::from_paths(vec![key_file]),
+        false,
+    );
+
+    let steps = vec![
+        temur::ui::tui::ScriptStep::Line("do the approval task".into()),
+        temur::ui::tui::ScriptStep::ApprovalKey(answer),
+    ];
+    let (mut ui, snapshot) = TuiUi::headless_steps(
+        SessionInfo {
+            model: "claude-sonnet-5".into(),
+            thinking: false,
+            cwd: dir.path().display().to_string(),
+            version: "test".into(),
+            profiles: vec![],
+            provider: "anthropic".into(),
+        },
+        100,
+        30,
+        steps,
+        session.cancel_token(),
+    );
+    session.set_bash_approver(ui.bash_approver());
+
+    let line = ui.read_input().expect("scripted submit reaches read_input");
+    assert_eq!(line, "do the approval task");
+    session.turn(&line, &mut |ev| ui.event(&ev)).unwrap();
+    drop(ui);
+    let rows = snapshot.lock().unwrap().clone();
+    (dir, rows)
+}
+
+#[test]
+fn headless_approval_yes_runs_the_command_and_the_turn_completes() {
+    let (dir, rows) = approval_turn(KeyCode::Char('y'));
+    let body = rows.join("\n");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("approval-marker.txt")).unwrap(),
+        "approval-ran\n",
+        "the approved command must actually run:\n{body}"
+    );
+    assert!(body.contains("▌ # bash"), "bash block tool:\n{body}");
+    assert!(!body.contains("# bash ✗"), "approved bash is not an error:\n{body}");
+    assert!(body.contains("Hello, world!"), "second round text:\n{body}");
+    assert!(
+        !body.contains("[y/N]"),
+        "the prompt must be gone from the final frame:\n{body}"
+    );
+}
+
+#[test]
+fn headless_approval_no_denies_and_the_session_continues() {
+    let (dir, rows) = approval_turn(KeyCode::Char('n'));
+    let body = rows.join("\n");
+    assert!(
+        !dir.path().join("approval-marker.txt").exists(),
+        "a denied command must not run:\n{body}"
+    );
+    assert!(body.contains("# bash ✗"), "denied bash is an error result:\n{body}");
+    assert!(
+        body.contains("Hello, world!"),
+        "the turn continues after a denial:\n{body}"
+    );
+}

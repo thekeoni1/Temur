@@ -17,7 +17,7 @@ use crate::agent::events::AgentEvent;
 use crate::cancel::CancelToken;
 use app::{Action, App, TICK_MS};
 use ratatui::backend::Backend;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, Once};
@@ -42,19 +42,37 @@ enum ToUi {
     Event(AgentEvent),
     /// The agent is blocked in `read_input` — authoritative idle signal.
     PromptOpen,
+    /// T21: the agent thread is blocked inside the bash approver, waiting
+    /// for a y/N answer about this exact command.
+    ApprovalRequest {
+        command: String,
+        reply: mpsc::Sender<bool>,
+    },
     Shutdown,
+}
+
+/// App-state facts the render loop hands each poll (T21/P3). Scripted
+/// sources gate delivery on them; the real crossterm source ignores them
+/// (a human types against the same rendered state).
+#[derive(Debug, Clone, Copy)]
+pub struct Readiness {
+    /// Not mid-turn: a line submitted now cannot hit the deliberate
+    /// busy-Enter drop in `App::handle_key`.
+    pub idle: bool,
+    /// A bash approval prompt is open and consuming keys.
+    pub approval_open: bool,
 }
 
 /// Where terminal events come from; lets the whole runtime run headless in
 /// tests with a scripted key sequence.
 pub trait EventSource: Send {
-    fn next(&mut self, timeout: Duration) -> std::io::Result<Option<Event>>;
+    fn next(&mut self, timeout: Duration, ready: Readiness) -> std::io::Result<Option<Event>>;
 }
 
 struct CrosstermEvents;
 
 impl EventSource for CrosstermEvents {
-    fn next(&mut self, timeout: Duration) -> std::io::Result<Option<Event>> {
+    fn next(&mut self, timeout: Duration, _ready: Readiness) -> std::io::Result<Option<Event>> {
         if event::poll(timeout)? {
             event::read().map(Some)
         } else {
@@ -63,7 +81,10 @@ impl EventSource for CrosstermEvents {
     }
 }
 
-/// Scripted source for headless tests: one event per poll, then quiet.
+/// Raw scripted source for headless tests: one event per poll, zero delay,
+/// then quiet. Deliberate-timing tests (Esc mid-turn) use this; anything
+/// scripting MULTIPLE lines around a turn belongs on [`ScriptedSteps`],
+/// because zero-delay delivery races the busy-Enter drop (P3).
 pub struct ScriptedEvents(std::collections::VecDeque<Event>);
 
 impl ScriptedEvents {
@@ -73,8 +94,71 @@ impl ScriptedEvents {
 }
 
 impl EventSource for ScriptedEvents {
-    fn next(&mut self, _timeout: Duration) -> std::io::Result<Option<Event>> {
+    fn next(&mut self, _timeout: Duration, _ready: Readiness) -> std::io::Result<Option<Event>> {
         Ok(self.0.pop_front())
+    }
+}
+
+/// One unit of a readiness-gated headless script (T21/P3).
+pub enum ScriptStep {
+    /// Type the line and press Enter, starting only once the app is idle.
+    /// This is what makes the two recorded flake modes impossible by
+    /// construction: no Enter can be delivered while `busy` (so none is
+    /// dropped and no lines merge), and no line is consumed early (so the
+    /// driver's `read_input` always gets every scripted line).
+    Line(String),
+    /// Press one key, only once the approval prompt is open; a scripted
+    /// answer delivered earlier would be typed into the input line instead.
+    ApprovalKey(KeyCode),
+    /// Deliver immediately, whatever the app state (e.g. Esc mid-turn).
+    Raw(Event),
+}
+
+/// Readiness-gated scripted source (T21/P3): delivers one event per poll
+/// like [`ScriptedEvents`], but starts each step only when the app state
+/// says the step's keys can land the way a human's would.
+pub struct ScriptedSteps {
+    steps: std::collections::VecDeque<ScriptStep>,
+    /// Key events of the step currently being delivered.
+    buf: std::collections::VecDeque<Event>,
+}
+
+impl ScriptedSteps {
+    pub fn new(steps: Vec<ScriptStep>) -> Self {
+        ScriptedSteps {
+            steps: steps.into(),
+            buf: std::collections::VecDeque::new(),
+        }
+    }
+}
+
+impl EventSource for ScriptedSteps {
+    fn next(&mut self, _timeout: Duration, ready: Readiness) -> std::io::Result<Option<Event>> {
+        if let Some(ev) = self.buf.pop_front() {
+            return Ok(Some(ev));
+        }
+        match self.steps.front() {
+            None => Ok(None),
+            Some(ScriptStep::Line(_)) if !ready.idle => Ok(None),
+            Some(ScriptStep::ApprovalKey(_)) if !ready.approval_open => Ok(None),
+            Some(_) => match self.steps.pop_front().expect("front checked") {
+                ScriptStep::Line(s) => {
+                    for c in s.chars() {
+                        self.buf.push_back(Event::Key(KeyEvent::new(
+                            KeyCode::Char(c),
+                            KeyModifiers::NONE,
+                        )));
+                    }
+                    self.buf
+                        .push_back(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+                    Ok(self.buf.pop_front())
+                }
+                ScriptStep::ApprovalKey(code) => {
+                    Ok(Some(Event::Key(KeyEvent::new(code, KeyModifiers::NONE))))
+                }
+                ScriptStep::Raw(ev) => Ok(Some(ev)),
+            },
+        }
     }
 }
 
@@ -143,13 +227,36 @@ impl TuiUi {
     }
 
     /// Headless runtime for tests: same threads, channels, and render loop,
-    /// but over a `TestBackend` and a scripted key sequence. The final frame
-    /// is captured into the returned handle when the loop shuts down.
+    /// but over a `TestBackend` and a raw scripted key sequence. The final
+    /// frame is captured into the returned handle when the loop shuts down.
     pub fn headless(
         info: SessionInfo,
         width: u16,
         height: u16,
         script: Vec<Event>,
+        cancel: CancelToken,
+    ) -> (TuiUi, Arc<Mutex<Vec<String>>>) {
+        Self::headless_with_source(info, width, height, ScriptedEvents::new(script), cancel)
+    }
+
+    /// Headless runtime over a readiness-gated step script (T21/P3): the
+    /// harness for anything that submits multiple lines around turns, or
+    /// answers an approval prompt.
+    pub fn headless_steps(
+        info: SessionInfo,
+        width: u16,
+        height: u16,
+        steps: Vec<ScriptStep>,
+        cancel: CancelToken,
+    ) -> (TuiUi, Arc<Mutex<Vec<String>>>) {
+        Self::headless_with_source(info, width, height, ScriptedSteps::new(steps), cancel)
+    }
+
+    fn headless_with_source(
+        info: SessionInfo,
+        width: u16,
+        height: u16,
+        mut source: impl EventSource + 'static,
         cancel: CancelToken,
     ) -> (TuiUi, Arc<Mutex<Vec<String>>>) {
         let snapshot = Arc::new(Mutex::new(Vec::new()));
@@ -164,7 +271,6 @@ impl TuiUi {
                 let mut app = App::new(info.model, info.thinking, info.cwd, info.version);
                 app.profiles = info.profiles;
                 app.provider = info.provider;
-                let mut source = ScriptedEvents::new(script);
                 let (terminal, _) =
                     render_loop(terminal, app, rx, tx_input, &mut source, cancel);
                 let buf = terminal.backend().buffer();
@@ -188,6 +294,28 @@ impl TuiUi {
             },
             snapshot,
         )
+    }
+
+    /// The per-command bash approver an interactive TUI session installs
+    /// (T21): sends the exact command to the render thread and blocks the
+    /// calling (agent) thread until the user answers the rendered y/N
+    /// prompt. Any channel breakage (render thread gone, shutdown while
+    /// pending) denies.
+    pub fn bash_approver(&self) -> Box<dyn FnMut(&str) -> bool> {
+        let tx = self.tx.clone();
+        Box::new(move |command: &str| {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            if tx
+                .send(ToUi::ApprovalRequest {
+                    command: command.to_string(),
+                    reply: reply_tx,
+                })
+                .is_err()
+            {
+                return false;
+            }
+            reply_rx.recv().unwrap_or(false)
+        })
     }
 }
 
@@ -222,6 +350,10 @@ fn render_loop<B: Backend>(
     cancel: CancelToken,
 ) -> (Terminal<B>, LoopEnd) {
     let start = Instant::now();
+    // T21: the reply channel of the approval prompt currently on screen.
+    // Dropped un-answered on any loop exit, which the blocked agent thread
+    // reads as a denial.
+    let mut pending_approval: Option<mpsc::Sender<bool>> = None;
     let end = loop {
         // Drain everything the agent thread sent since the last frame; a
         // shutdown still gets one final draw below so the last frame shows
@@ -234,6 +366,10 @@ fn render_loop<B: Backend>(
                     app.fold(&ev);
                 }
                 Ok(ToUi::PromptOpen) => app.prompt_open(),
+                Ok(ToUi::ApprovalRequest { command, reply }) => {
+                    app.approval = Some(command);
+                    pending_approval = Some(reply);
+                }
                 // Shutdown/disconnect can only follow every other message
                 // (Drop sends it last), so nothing is left behind here.
                 Ok(ToUi::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => {
@@ -254,7 +390,11 @@ fn render_loop<B: Backend>(
             break LoopEnd::Shutdown;
         }
 
-        match events.next(Duration::from_millis(TICK_MS)) {
+        let ready = Readiness {
+            idle: !app.busy,
+            approval_open: app.approval.is_some(),
+        };
+        match events.next(Duration::from_millis(TICK_MS), ready) {
             Ok(Some(Event::Key(key))) => match app.handle_key(key) {
                 Action::Submit(line) => {
                     if line == "exit" || line == "quit" {
@@ -286,6 +426,14 @@ fn render_loop<B: Backend>(
                 // set the flag; the blocked agent thread notices at its
                 // next cooperative checkpoint and lands the turn.
                 Action::Interrupt => cancel.set(),
+                // T21: unblock the agent thread with the user's answer. A
+                // vanished receiver just means the approver gave up (it
+                // denies on its own); nothing to do.
+                Action::Approval(approve) => {
+                    if let Some(reply) = pending_approval.take() {
+                        let _ = reply.send(approve);
+                    }
+                }
                 Action::None => {}
             },
             // Resize just needs the redraw that happens next iteration.

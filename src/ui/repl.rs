@@ -31,6 +31,32 @@ impl Default for ReplUi {
     }
 }
 
+/// The plain REPL's bash approver (T21): prompt on the terminal between
+/// tool events, showing the exact command and why it needs approval, and
+/// read one y/N line. Default is DENY: empty input, anything but y/yes
+/// (case-insensitive), EOF, and read errors all deny. Installed by main
+/// ONLY when stdin and stdout are real terminals, so piped runs (the mock
+/// e2e suites) never see it.
+pub fn stdin_bash_approver() -> Box<dyn FnMut(&str) -> bool> {
+    Box::new(|command: &str| {
+        println!("  [?] bash approval needed: the key sandbox is unavailable on this host,");
+        println!("      so this command would run with NO key isolation:");
+        for line in command.lines() {
+            println!("        {line}");
+        }
+        print!("      run it? [y/N] ");
+        let _ = std::io::stdout().flush();
+        let mut answer = String::new();
+        match std::io::stdin().lock().read_line(&mut answer) {
+            Ok(0) | Err(_) => false,
+            Ok(_) => {
+                let answer = answer.trim();
+                answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")
+            }
+        }
+    })
+}
+
 impl Ui for ReplUi {
     fn event(&mut self, ev: &AgentEvent) {
         match ev {

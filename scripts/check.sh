@@ -35,7 +35,7 @@ container_suites() { # $1 = deps dir, $2 = label
     # CARGO_BIN_EXE path, so the bin dir is mounted read-only at that same
     # path inside the container.
     BINDIR=$(dirname "$1")
-    for suite in sse_parser provider openai_compat request_golden tools agent live_conformance live_conformance_openai weak_model session_store skills tui sigint cli; do
+    for suite in sse_parser provider openai_compat request_golden tools agent live_conformance live_conformance_openai weak_model session_store skills tui sigint cli approval; do
         TBIN=$(ls -t "$1/${suite}"-* 2>/dev/null | grep -v '\.d$' | head -1 || true)
         [ -n "$TBIN" ] || continue
         echo "-- $suite ($(basename "$TBIN")) --"
