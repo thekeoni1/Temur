@@ -2409,3 +2409,32 @@ stayed quiet through every stage-2 gate run.
 Open release items unchanged: the PUBLIC one-liner gate and the
 hostname-blob-history decision stay queued behind the visibility
 flip; ARM hardware smoke still pending hardware.
+
+## T22 - keyless /props probe (T15 amendment extension record)
+
+What changed versus T15. The T15 keyless-GET amendment allowed init
+and doctor exactly ONE network request: list_models_keyless, an
+unauthenticated GET of {base}/models taking only a base URL. T22
+extends that contract, deliberately and with the same shape, to
+exactly TWO requests:
+
+- GET {base}/models (list_models_keyless, unchanged), and
+- GET {root}/props (probe_props_context, src/provider/mod.rs), where
+  root is the base URL with an SDK-conventional trailing /v1
+  stripped: llama.cpp serves /props at the server ROOT. The response
+  field default_generation_settings.n_ctx is the server's actual
+  context allocation (its -c flag), the true local limit.
+
+Both requests are made only for KEYLESS openai-compat profiles,
+never under --no-network, and both are incapable of auth by
+construction: each function takes just a base URL and a timeout, so
+it cannot attach an auth header or touch a key file even in
+principle. Same global timeout (KEYLESS_LISTING_TIMEOUT_SECS, 3s).
+The probe is additionally fail-silent: ANY problem (refused, 404,
+unparseable body) is None, not an error, because non-llama.cpp
+servers answering nothing useful at /props is normal. The provider
+e2e test asserts the /props request head carries no authorization,
+x-api-key, or bearer material, the same assertion the T15 listing
+test makes. No other surface calls either function; list_models_live
+(the in-session /models command) remains the only authenticated
+listing path and is never called by init or doctor.

@@ -207,7 +207,77 @@ fn run_with_sandbox_probe(
         }
     }
 
+    // Context-window checks (T22). The llama.cpp /props probe is the
+    // SECOND keyless request doctor may make (same amendment contract as
+    // the model listing: unauthenticated by construction, short timeout,
+    // keyless openai-compat profiles only, never under --no-network).
+    // Independently of the probe, a profile with NO context_window gets a
+    // one-line NOTE — the T20 context advisory and the T19 tool-output
+    // scaling are off without it, whatever the provider. Probes are
+    // cached per base_url like the listings.
+    let mut props: std::collections::BTreeMap<String, Option<u64>> =
+        std::collections::BTreeMap::new();
+    context_check(&mut r, "", &active, no_network, &mut props)?;
+    for (name, p) in &profiles {
+        if *p == active {
+            continue; // the active profile: already checked above
+        }
+        let prefix = format!("profile \"{name}\" ");
+        context_check(&mut r, &prefix, p, no_network, &mut props)?;
+    }
+
     finish(r)
+}
+
+/// One context-window check (T22). Four outcomes when the /props probe
+/// answered: PASS on an exact match; WARN naming both values and the
+/// consequence direction on a mismatch (configured larger than the server
+/// allocation means the advisory fires too late and requests can fail at
+/// the real limit; smaller is safe but early); WARN suggesting the exact
+/// config line when context_window is unset. No probe answer (keyed
+/// profile, --no-network, or a non-llama.cpp server — all normal): a NOTE
+/// when context_window is unset, silence when it is set. NOTEs and WARNs
+/// never affect the exit code.
+fn context_check(
+    r: &mut Report<'_>,
+    prefix: &str,
+    p: &crate::config::ResolvedProfile,
+    no_network: bool,
+    props: &mut std::collections::BTreeMap<String, Option<u64>>,
+) -> std::io::Result<()> {
+    let probed = if !no_network && p.provider == "openai-compat" && p.api_key_file.is_none() {
+        *props.entry(p.base_url.clone()).or_insert_with(|| {
+            crate::provider::probe_props_context(
+                &p.base_url,
+                std::time::Duration::from_secs(crate::provider::KEYLESS_LISTING_TIMEOUT_SECS),
+            )
+        })
+    } else {
+        None
+    };
+    match (probed, p.context_window) {
+        (Some(n), Some(c)) if c == n => r.pass(&format!(
+            "{prefix}context_window {c} matches the server context allocation (n_ctx {n}) at {}",
+            p.base_url
+        )),
+        (Some(n), Some(c)) if c > n => r.warn(&format!(
+            "{prefix}context_window {c} is larger than the server context allocation (n_ctx {n}) at {}: the context advisory fires too late and requests can fail at the real limit",
+            p.base_url
+        )),
+        (Some(n), Some(c)) => r.warn(&format!(
+            "{prefix}context_window {c} is smaller than the server context allocation (n_ctx {n}) at {}: safe, but the advisory fires earlier than it needs to",
+            p.base_url
+        )),
+        (Some(n), None) => r.warn(&format!(
+            "{prefix}no context_window configured; the server at {} allocates n_ctx {n}: add \"context_window\": {n} to the profile",
+            p.base_url
+        )),
+        (None, None) => writeln!(
+            r.out,
+            "NOTE: {prefix}no context_window configured: the context usage advisory and context-scaled tool-output caps are off for this profile"
+        ),
+        (None, Some(_)) => Ok(()),
+    }
 }
 
 /// How many server ids a model-mismatch WARN prints before folding the
@@ -582,6 +652,46 @@ mod tests {
         format!("http://127.0.0.1:{port}/v1")
     }
 
+    /// Path-aware sibling of [`canned_server`] for the T22 context checks:
+    /// `GET /props` answers `props_body`, every other GET answers `body`.
+    fn canned_server_with_props(body: &'static str, props_body: &'static str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                use std::io::{Read, Write};
+                let mut req = Vec::new();
+                let mut buf = [0u8; 1024];
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            req.extend_from_slice(&buf[..n]);
+                            if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let head = String::from_utf8_lossy(&req);
+                if head.starts_with("GET ") {
+                    let picked = if head.starts_with("GET /props ") {
+                        props_body
+                    } else {
+                        body
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{picked}",
+                        picked.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                }
+            }
+        });
+        format!("http://127.0.0.1:{port}/v1")
+    }
+
     /// Run doctor over a literal config in a tempdir, capturing output.
     fn doctor_over(config: &str, no_network: bool) -> (bool, String) {
         let tmp = tempfile::tempdir().unwrap();
@@ -693,6 +803,137 @@ mod tests {
             out.contains("WARN: profile \"other\" model \"gone\" is not in the server listing"),
             "{out}"
         );
+    }
+
+    // ------------------------------------ T22: context-window checks (/props)
+
+    /// A keyless openai-compat config with a context_window.
+    fn keyless_config_with_window(base: &str, model: &str, window: u64) -> String {
+        format!(
+            r#"{{"provider":"openai-compat","openai_compat":{{"base_url":"{base}","model":"{model}","context_window":{window}}}}}"#
+        )
+    }
+
+    const LLAMA_MODELS: &str = r#"{"data":[{"id":"served"}]}"#;
+    const LLAMA_PROPS_8192: &str =
+        r#"{"default_generation_settings":{"n_ctx":8192},"total_slots":1}"#;
+
+    #[test]
+    fn context_check_pass_on_exact_match() {
+        let base = canned_server_with_props(LLAMA_MODELS, LLAMA_PROPS_8192);
+        let (healthy, out) =
+            doctor_over(&keyless_config_with_window(&base, "served", 8192), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "PASS: context_window 8192 matches the server context allocation (n_ctx 8192) at {base}"
+            )),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn context_check_configured_larger_warns_with_the_consequence() {
+        let base = canned_server_with_props(LLAMA_MODELS, LLAMA_PROPS_8192);
+        let (healthy, out) =
+            doctor_over(&keyless_config_with_window(&base, "served", 16384), false);
+        assert!(healthy, "WARN must not affect the exit code: {out}");
+        assert!(
+            out.contains("WARN: context_window 16384 is larger than the server context allocation (n_ctx 8192)"),
+            "{out}"
+        );
+        assert!(
+            out.contains("advisory fires too late") && out.contains("requests can fail"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn context_check_configured_smaller_warns_safe_but_early() {
+        let base = canned_server_with_props(LLAMA_MODELS, LLAMA_PROPS_8192);
+        let (healthy, out) =
+            doctor_over(&keyless_config_with_window(&base, "served", 4096), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains("WARN: context_window 4096 is smaller than the server context allocation (n_ctx 8192)"),
+            "{out}"
+        );
+        assert!(out.contains("safe, but the advisory fires earlier"), "{out}");
+    }
+
+    #[test]
+    fn context_check_unset_warn_suggests_the_exact_config_line() {
+        let base = canned_server_with_props(LLAMA_MODELS, LLAMA_PROPS_8192);
+        let (healthy, out) = doctor_over(&keyless_config(&base, "served"), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains("WARN: no context_window configured;")
+                && out.contains("allocates n_ctx 8192")
+                && out.contains("add \"context_window\": 8192 to the profile"),
+            "{out}"
+        );
+        // The WARN replaces the offline NOTE; never both for one profile.
+        assert!(!out.contains("NOTE: no context_window"), "{out}");
+    }
+
+    #[test]
+    fn context_check_non_llamacpp_server_is_silent_when_set_note_when_unset() {
+        // Plain canned server: /props answers the MODELS body, which does
+        // not parse as props — exactly a non-llama.cpp server's behavior.
+        let base = canned_server(r#"{"data":[{"id":"served"}]}"#);
+        let (healthy, out) =
+            doctor_over(&keyless_config_with_window(&base, "served", 8192), false);
+        assert!(healthy, "{out}");
+        assert!(
+            !out.contains("server context allocation") && !out.contains("NOTE: no context_window"),
+            "probe None + window set = silence: {out}"
+        );
+        let (healthy, out) = doctor_over(&keyless_config(&base, "served"), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains("NOTE: no context_window configured: the context usage advisory"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn context_note_offline_is_per_profile_and_only_for_unset() {
+        let cfg = r#"{"profiles":{
+            "bare":{"provider":"openai-compat","base_url":"http://127.0.0.1:1/v1","model":"m"},
+            "sized":{"provider":"openai-compat","base_url":"http://127.0.0.1:1/v1","model":"m","context_window":8192}},
+            "profile":"sized"}"#;
+        let (healthy, out) = doctor_over(cfg, true);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains("NOTE: profile \"bare\" no context_window configured"),
+            "{out}"
+        );
+        assert_eq!(
+            out.matches("no context_window configured").count(),
+            1,
+            "one line per affected profile, none for the sized one: {out}"
+        );
+        assert!(!out.contains("server context allocation"), "no probe offline: {out}");
+    }
+
+    #[test]
+    fn context_check_keyed_profile_is_never_probed() {
+        // The canned server WOULD answer /props; a keyed profile must not
+        // ask, so the only context line is the offline NOTE.
+        let base = canned_server_with_props(LLAMA_MODELS, LLAMA_PROPS_8192);
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("k");
+        std::fs::write(&key, "value\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let cfg = format!(
+            r#"{{"provider":"openai-compat","openai_compat":{{"base_url":"{base}","model":"m","api_key_file":"{}"}}}}"#,
+            key.display()
+        );
+        let (healthy, out) = doctor_over(&cfg, false);
+        assert!(healthy, "{out}");
+        assert!(!out.contains("server context allocation"), "{out}");
+        assert!(out.contains("NOTE: no context_window configured"), "{out}");
     }
 
     // ------------------------------- T17 P4: key-rotation reminder (mtime)

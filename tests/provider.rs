@@ -838,3 +838,81 @@ fn keyless_listing_bad_json_is_a_clean_error() {
     assert!(err.contains("bad JSON"), "{err}");
     server.join().unwrap();
 }
+
+// ------------------------------------------- T22: llama.cpp /props probe
+
+#[test]
+fn props_url_strips_a_trailing_v1_only() {
+    assert_eq!(props_url("http://127.0.0.1:8080/v1"), "http://127.0.0.1:8080/props");
+    assert_eq!(props_url("http://127.0.0.1:8080/v1/"), "http://127.0.0.1:8080/props");
+    assert_eq!(props_url("http://127.0.0.1:8080"), "http://127.0.0.1:8080/props");
+    // A non-/v1 path is a deliberate choice; only the SDK-conventional
+    // suffix is rewritten.
+    assert_eq!(props_url("http://host:9/custom"), "http://host:9/custom/props");
+    assert_eq!(props_url("http://host:9/v1beta"), "http://host:9/v1beta/props");
+}
+
+#[test]
+fn parse_props_context_reads_n_ctx_and_rejects_everything_else() {
+    // Canned llama.cpp /props shape (fields around n_ctx are real noise).
+    let body = r#"{
+        "default_generation_settings": {
+            "id": 0, "n_ctx": 8192, "speculative": false,
+            "params": {"n_predict": -1, "temperature": 0.8}
+        },
+        "total_slots": 1, "model_path": "/model.gguf",
+        "chat_template": "..."
+    }"#;
+    assert_eq!(parse_props_context(body), Some(8192));
+    // Zero is not a usable window.
+    assert_eq!(
+        parse_props_context(r#"{"default_generation_settings":{"n_ctx":0}}"#),
+        None
+    );
+    // Missing field, wrong type, wrong shape, not JSON: all None.
+    assert_eq!(parse_props_context(r#"{"default_generation_settings":{}}"#), None);
+    assert_eq!(
+        parse_props_context(r#"{"default_generation_settings":{"n_ctx":"big"}}"#),
+        None
+    );
+    assert_eq!(parse_props_context(r#"{"n_ctx": 4096}"#), None);
+    assert_eq!(parse_props_context("<html>404</html>"), None);
+}
+
+#[test]
+fn props_probe_reads_n_ctx_from_the_root_and_sends_no_auth_header() {
+    let (base, server) = one_shot_server(
+        "HTTP/1.1 200 OK",
+        r#"{"default_generation_settings":{"n_ctx":16384},"total_slots":1}"#,
+    );
+    assert_eq!(probe_props_context(&base, KEYLESS_TIMEOUT), Some(16384));
+    let request = server.join().unwrap();
+    let head = request.to_ascii_lowercase();
+    // The ROOT path: the base URL's /v1 is stripped for this endpoint.
+    assert!(head.starts_with("get /props "), "path: {request}");
+    // The amendment contract, same assertion as the keyless listing:
+    // NOTHING resembling credentials may be on this wire.
+    assert!(!head.contains("authorization"), "{request}");
+    assert!(!head.contains("x-api-key"), "{request}");
+    assert!(!head.contains("bearer"), "{request}");
+}
+
+#[test]
+fn props_probe_http_error_and_bad_body_and_refusal_are_all_none() {
+    let (base, server) = one_shot_server("HTTP/1.1 404 Not Found", "not found");
+    assert_eq!(probe_props_context(&base, KEYLESS_TIMEOUT), None);
+    server.join().unwrap();
+
+    let (base, server) = one_shot_server("HTTP/1.1 200 OK", "<html>gateway</html>");
+    assert_eq!(probe_props_context(&base, KEYLESS_TIMEOUT), None);
+    server.join().unwrap();
+
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    assert_eq!(
+        probe_props_context(&format!("http://127.0.0.1:{port}/v1"), KEYLESS_TIMEOUT),
+        None
+    );
+}

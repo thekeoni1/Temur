@@ -251,6 +251,58 @@ pub fn list_models_keyless(
     parse_models_json(&body)
 }
 
+/// Derive the llama.cpp `/props` URL from an openai-compat base URL. The
+/// endpoint lives at the server ROOT, not under the SDK-conventional
+/// `/v1`, so a trailing `/v1` is stripped. Pure, unit-tested.
+pub fn props_url(base_url: &str) -> String {
+    let root = base_url.trim_end_matches('/');
+    let root = root.strip_suffix("/v1").unwrap_or(root);
+    format!("{root}/props")
+}
+
+/// Extract `default_generation_settings.n_ctx` from a llama.cpp `/props`
+/// body: the server's ACTUAL context allocation (its `-c` flag), which is
+/// the true local limit whatever the model's trained context is. `None`
+/// for anything else — bad JSON, missing fields, zero. Pure, unit-tested
+/// against canned JSON.
+pub fn parse_props_context(body: &str) -> Option<u64> {
+    serde_json::from_str::<Value>(body)
+        .ok()?
+        .get("default_generation_settings")?
+        .get("n_ctx")?
+        .as_u64()
+        .filter(|&n| n > 0)
+}
+
+/// The SECOND (and last) keyless request init and doctor may make (T22),
+/// under the same amendment contract as [`list_models_keyless`]: an
+/// unauthenticated GET of `{root}/props`, taking only a base URL, so it
+/// can never attach an auth header or touch a key file by construction.
+/// Same global timeout discipline as the keyless listing. Returns the
+/// server's context allocation, or `None` for ANY problem (network, HTTP
+/// status, unparseable body): non-llama.cpp servers 404 or answer
+/// something else here, and that is normal, not an error.
+pub fn probe_props_context(base_url: &str, timeout: std::time::Duration) -> Option<u64> {
+    use std::io::Read;
+    rustls::crypto::ring::default_provider().install_default().ok();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_global(Some(timeout))
+        .build()
+        .new_agent();
+    let res = agent.get(&props_url(base_url)).call().ok()?;
+    if !(200..300).contains(&res.status().as_u16()) {
+        return None;
+    }
+    let mut body = String::new();
+    let _ = res
+        .into_body()
+        .into_reader()
+        .take(64 * 1024)
+        .read_to_string(&mut body);
+    parse_props_context(&body)
+}
+
 /// Extract `data[].id` from a model-listing body — the envelope BOTH wires
 /// share (Anthropic `GET /v1/models` and OpenAI-compat `GET /models`).
 /// Pure, so the parsing is unit-testable offline against literal JSON.
