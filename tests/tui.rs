@@ -1014,13 +1014,17 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
 
-    let mut script: Vec<Event> = Vec::new();
-    for line in ["hi", "/model sonnet-next", "/clear", "exit"] {
-        script.extend(line.chars().map(|c| Event::Key(key(KeyCode::Char(c)))));
-        script.push(Event::Key(key(KeyCode::Enter)));
-    }
+    // P3: readiness-gated steps, NOT raw events. The raw source delivers
+    // with zero delay, so under machine load the "/model" line's Enter
+    // could land while the "hi" turn was still busy and be dropped (the
+    // deliberate busy-Enter rule), merging lines or blocking the driver
+    // below forever. A Line step starts only once the app is idle.
+    let steps: Vec<temur::ui::tui::ScriptStep> = ["hi", "/model sonnet-next", "/clear", "exit"]
+        .into_iter()
+        .map(|l| temur::ui::tui::ScriptStep::Line(l.into()))
+        .collect();
 
-    let (mut ui, snapshot) = TuiUi::headless(
+    let (mut ui, snapshot) = TuiUi::headless_steps(
         SessionInfo {
             model: "claude-sonnet-5".into(),
             thinking: false,
@@ -1031,7 +1035,7 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
         },
         100,
         30,
-        script,
+        steps,
         session.cancel_token(),
     );
 
