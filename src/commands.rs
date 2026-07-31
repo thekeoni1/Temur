@@ -133,19 +133,23 @@ pub struct CommandCtx<'a> {
     /// only — reading and writing it is [`crate::config::persist_model`]'s
     /// job, and nothing else here touches the file.
     pub config_path: &'a Path,
-    /// Model ids cached from the last `/models` listing (T16), threaded
-    /// read-only from the driver loop, which keeps them in sync with the UI
-    /// cache (refreshed on every listing, cleared when a switch changes the
-    /// provider). Empty = no usable listing: every advisory stays silent.
-    pub cached_model_ids: &'a [String],
+    /// The last `/models` listing (T16; T22 carries the reported windows
+    /// too), threaded MUTABLY from the driver loop: [`models_list`]
+    /// refreshes it on every successful listing, and the loop clears it
+    /// when a switch changes the provider (same lifecycle as the UI's id
+    /// cache). Empty = no usable listing: every advisory stays silent.
+    pub cached_models: &'a mut Vec<crate::provider::ModelEntry>,
     #[allow(clippy::type_complexity)]
     pub build_provider:
         &'a dyn Fn(&ResolvedProfile) -> Result<Box<dyn Provider>, crate::error::Error>,
     /// The `/models` listing GET, injected like `build_provider` so the
     /// live/network decision stays in main and tests script results.
+    /// Returns full entries (T22): ids plus the windows the wire reports.
     #[allow(clippy::type_complexity)]
-    pub list_models:
-        &'a dyn Fn(&ResolvedProfile) -> Result<Vec<String>, crate::error::Error>,
+    pub list_models: &'a dyn Fn(
+        &ResolvedProfile,
+    )
+        -> Result<Vec<crate::provider::ModelEntry>, crate::error::Error>,
     /// Assembles the full system prompt for a prompt profile (T9). Injected
     /// from main — the default-prompt consts, the config override rule, the
     /// skills section, and `{cwd}` all stay there. Infallible, so a switch
@@ -549,7 +553,7 @@ fn activate_profile(ctx: &mut CommandCtx, name: &str) -> Result<(), AgentEvent> 
 /// the key file read inside the build path. The replay guard already fired
 /// in [`model_switch`].
 fn raw_model_switch(ctx: &mut CommandCtx, id: String) -> Vec<AgentEvent> {
-    let listed = ctx.cached_model_ids.iter().any(|m| m == &id);
+    let listed = ctx.cached_models.iter().any(|m| m.id == id);
     if !listed && id.starts_with("claude-") && ctx.active_resolved.provider != "anthropic" {
         // Exact-model match first, else first anthropic profile; BTreeMap
         // iteration is name order, which is the tiebreak by design.
@@ -580,7 +584,7 @@ fn raw_model_switch(ctx: &mut CommandCtx, id: String) -> Vec<AgentEvent> {
     // T16 advisory: the last `/models` listing is the only offline signal a
     // raw id has. Absence never blocks — servers alias ids and the listing
     // may be stale — the switch stands and the notice says exactly that.
-    if *ctx.model == id && !listed && !ctx.cached_model_ids.is_empty() {
+    if *ctx.model == id && !listed && !ctx.cached_models.is_empty() {
         out.push(notice(format!(
             "note: {id:?} is not in the last /models listing; the switch stands — a wrong id surfaces as the provider's error on the next turn"
         )));
@@ -756,9 +760,51 @@ fn models_list(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
         return vec![notice("/models is unavailable in replay/capture mode")];
     }
     match (ctx.list_models)(ctx.active_resolved) {
-        Ok(ids) if ids.is_empty() => vec![notice("the provider reported no models")],
-        Ok(ids) => vec![AgentEvent::ModelsListed(ids)],
+        Ok(entries) if entries.is_empty() => vec![notice("the provider reported no models")],
+        Ok(entries) => {
+            let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
+            let mut out = vec![AgentEvent::ModelsListed(ids)];
+            out.extend(context_window_notice(ctx, &entries).map(notice));
+            // T22: the cache now carries the windows too, so nothing needs
+            // a second request to re-derive them; the driver loop still
+            // clears it when a switch changes the provider.
+            *ctx.cached_models = entries;
+            out
+        }
         Err(e) => vec![notice(format!("/models failed: {e}"))],
+    }
+}
+
+/// The T22 context enrichment, riding the one listing request `/models`
+/// already made: when the ACTIVE model appears in the fresh listing with
+/// a known window (the anthropic wire's max_input_tokens; openai-compat
+/// listings carry none, and only the anthropic provider is judged, so a
+/// proxy's exotic listing fields never trigger this), compare it to the
+/// configured context_window. Configured larger than reported: warning
+/// (the T20 advisory fires too late and requests can fail at the real
+/// limit). Unset: hint naming the exact config line. Equal or smaller,
+/// or no known window: silence. Never a network call of its own.
+fn context_window_notice(
+    ctx: &CommandCtx,
+    entries: &[crate::provider::ModelEntry],
+) -> Option<String> {
+    if ctx.active_resolved.provider != "anthropic" {
+        return None;
+    }
+    let reported = entries
+        .iter()
+        .find(|e| e.id == *ctx.model)?
+        .context_window?;
+    match ctx.active_resolved.context_window {
+        Some(c) if c > reported => Some(format!(
+            "warning: configured context_window {c} is larger than the max_input_tokens {reported} the API reports for {}; the context advisory fires too late, and requests can fail at the real limit",
+            ctx.model
+        )),
+        None => Some(format!(
+            "hint: the API reports max_input_tokens {reported} for {}; add \"context_window\": {reported} to the profile to enable the context advisory",
+            ctx.model
+        )),
+        _ => None,
     }
 }
 

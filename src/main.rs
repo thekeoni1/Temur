@@ -631,9 +631,11 @@ fn repl(
     // T15: the file `/model --save` edits — the exact path startup loaded.
     let cfg_path = config::config_path();
     // T16: the driver-loop mirror of the UI's `/models` id cache — the
-    // command layer reads it for the raw-id advisory. Same lifecycle as the
-    // TUI cache: refreshed on every listing, dropped on a provider change.
-    let mut cached_model_ids: Vec<String> = Vec::new();
+    // command layer reads it for the raw-id advisory, and (T22) it carries
+    // the wire-reported windows too, refreshed by the command layer itself
+    // on every listing. Same drop rule as the TUI cache: cleared on a
+    // provider change.
+    let mut cached_models: Vec<temur::provider::ModelEntry> = Vec::new();
     let mut cached_ids_provider = resolved.provider.clone();
     while let Some(line) = ui.read_input() {
         if !use_tui {
@@ -659,7 +661,7 @@ fn repl(
                     prompt_profile: &mut current_prompt_profile,
                     active_resolved: &mut active_resolved,
                     config_path: &cfg_path,
-                    cached_model_ids: &cached_model_ids,
+                    cached_models: &mut cached_models,
                     build_provider: &build,
                     list_models: &list_models,
                     rebuild_system: &rebuild_system,
@@ -674,15 +676,13 @@ fn repl(
                 session.set_redaction_key(key);
             }
             for ev in &events {
-                match ev {
-                    AgentEvent::ModelsListed(ids) => cached_model_ids = ids.clone(),
-                    AgentEvent::ModelSwitched { provider, .. }
-                        if *provider != cached_ids_provider =>
-                    {
-                        cached_model_ids.clear();
+                // The listing cache itself is refreshed inside the command
+                // layer (T22); the loop only enforces the drop rule.
+                if let AgentEvent::ModelSwitched { provider, .. } = ev {
+                    if *provider != cached_ids_provider {
+                        cached_models.clear();
                         cached_ids_provider = provider.clone();
                     }
-                    _ => {}
                 }
                 ui.event(ev);
             }

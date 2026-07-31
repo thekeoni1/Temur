@@ -916,3 +916,40 @@ fn props_probe_http_error_and_bad_body_and_refusal_are_all_none() {
         None
     );
 }
+
+// -------------------------- T22: listing entries carry max_input_tokens
+
+#[test]
+fn parse_models_entries_reads_max_input_tokens_zero_or_absent_is_unknown() {
+    // Anthropic wire shape with the documented max_input_tokens field;
+    // one entry carries 0 (unknown) and one omits it entirely.
+    let body = r#"{
+        "data": [
+            {"type": "model", "id": "claude-sonnet-5", "display_name": "Claude Sonnet 5",
+             "max_input_tokens": 200000},
+            {"type": "model", "id": "claude-opus-4-8", "max_input_tokens": 0},
+            {"type": "model", "id": "claude-haiku-4-5"}
+        ],
+        "has_more": false
+    }"#;
+    let entries = parse_models_entries(body).unwrap();
+    assert_eq!(
+        entries,
+        vec![
+            ModelEntry { id: "claude-sonnet-5".into(), context_window: Some(200_000) },
+            ModelEntry { id: "claude-opus-4-8".into(), context_window: None },
+            ModelEntry { id: "claude-haiku-4-5".into(), context_window: None },
+        ]
+    );
+    // The id-only view is unchanged for the same body.
+    assert_eq!(
+        parse_models_json(body).unwrap(),
+        vec!["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5"]
+    );
+    // OpenAI-compat shape: no such field, windows all None.
+    let compat = r#"{"object":"list","data":[{"id":"/model.gguf","owned_by":"llamacpp"}]}"#;
+    assert_eq!(
+        parse_models_entries(compat).unwrap(),
+        vec![ModelEntry { id: "/model.gguf".into(), context_window: None }]
+    );
+}

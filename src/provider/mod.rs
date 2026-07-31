@@ -138,7 +138,7 @@ pub fn build_live_with_key(
 /// status, never echoing headers.
 pub fn list_models_live(
     p: &crate::config::ResolvedProfile,
-) -> Result<Vec<String>, crate::error::Error> {
+) -> Result<Vec<ModelEntry>, crate::error::Error> {
     use std::io::Read;
     rustls::crypto::ring::default_provider().install_default().ok();
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -179,7 +179,7 @@ pub fn list_models_live(
             "model listing GET {url}: HTTP {status}"
         )));
     }
-    parse_models_json(&body)
+    parse_models_entries(&body)
 }
 
 /// Serialize a request body with recursively SORTED object keys — the
@@ -303,12 +303,24 @@ pub fn probe_props_context(base_url: &str, timeout: std::time::Duration) -> Opti
     parse_props_context(&body)
 }
 
-/// Extract `data[].id` from a model-listing body — the envelope BOTH wires
-/// share (Anthropic `GET /v1/models` and OpenAI-compat `GET /models`).
-/// Pure, so the parsing is unit-testable offline against literal JSON.
-/// Entries without a string `id` are skipped; an empty `data` array is a
-/// valid empty listing.
-pub fn parse_models_json(body: &str) -> Result<Vec<String>, crate::error::Error> {
+/// One row of a model listing (T22): the id both wires share, plus the
+/// context window where a wire reports one. The Anthropic listing carries
+/// a per-model `max_input_tokens` ("maximum input context window size in
+/// tokens"); 0 or absent is unknown. OpenAI-compat listings have no such
+/// field, so their windows are always `None`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelEntry {
+    pub id: String,
+    pub context_window: Option<u64>,
+}
+
+/// Extract `data[].id` (+ `max_input_tokens` where present) from a
+/// model-listing body — the envelope BOTH wires share (Anthropic
+/// `GET /v1/models` and OpenAI-compat `GET /models`). Pure, so the
+/// parsing is unit-testable offline against literal JSON. Entries without
+/// a string `id` are skipped; an empty `data` array is a valid empty
+/// listing.
+pub fn parse_models_entries(body: &str) -> Result<Vec<ModelEntry>, crate::error::Error> {
     let v: Value = serde_json::from_str(body)
         .map_err(|e| crate::error::Error::Models(format!("model listing: bad JSON: {e}")))?;
     let Some(data) = v.get("data").and_then(|d| d.as_array()) else {
@@ -318,8 +330,22 @@ pub fn parse_models_json(body: &str) -> Result<Vec<String>, crate::error::Error>
     };
     Ok(data
         .iter()
-        .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(str::to_string))
+        .filter_map(|m| {
+            let id = m.get("id").and_then(|i| i.as_str())?;
+            let window = m
+                .get("max_input_tokens")
+                .and_then(Value::as_u64)
+                .filter(|&w| w > 0);
+            Some(ModelEntry { id: id.to_string(), context_window: window })
+        })
         .collect())
+}
+
+/// [`parse_models_entries`] reduced to bare ids — what the keyless
+/// listing (init, doctor) consumes; windows are a `/models`-command
+/// concern only.
+pub fn parse_models_json(body: &str) -> Result<Vec<String>, crate::error::Error> {
+    Ok(parse_models_entries(body)?.into_iter().map(|e| e.id).collect())
 }
 
 pub trait Provider {

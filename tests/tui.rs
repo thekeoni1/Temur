@@ -939,7 +939,10 @@ fn headless_command_flow_status_leaves_title_alone() {
         context_window: None,
         prompt_profile: temur::tools::PromptProfile::Full,
     };
-    let list = |_: &temur::config::ResolvedProfile| -> Result<Vec<String>, temur::error::Error> {
+    let list = |_: &temur::config::ResolvedProfile| -> Result<
+        Vec<temur::provider::ModelEntry>,
+        temur::error::Error,
+    > {
         unreachable!("no /models in this script")
     };
     let build = |_: &temur::config::ResolvedProfile| -> Result<
@@ -947,6 +950,7 @@ fn headless_command_flow_status_leaves_title_alone() {
         temur::error::Error,
     > { unreachable!("/status builds nothing") };
 
+    let mut cached_models: Vec<temur::provider::ModelEntry> = Vec::new();
     while let Some(line) = ui.read_input() {
         assert!(line.starts_with('/'), "script only sends commands");
         let mut ctx = temur::commands::CommandCtx {
@@ -965,7 +969,7 @@ fn headless_command_flow_status_leaves_title_alone() {
             prompt_profile: &mut prompt_profile,
             active_resolved: &mut active_resolved,
             config_path: std::path::Path::new("/nonexistent/temur-test-config.json"),
-            cached_model_ids: &[],
+            cached_models: &mut cached_models,
             build_provider: &build,
             list_models: &list,
             rebuild_system: &rebuild,
@@ -1068,7 +1072,10 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
         context_window: None,
         prompt_profile: temur::tools::PromptProfile::Full,
     };
-    let list = |_: &temur::config::ResolvedProfile| -> Result<Vec<String>, temur::error::Error> {
+    let list = |_: &temur::config::ResolvedProfile| -> Result<
+        Vec<temur::provider::ModelEntry>,
+        temur::error::Error,
+    > {
         unreachable!("no /models in this script")
     };
     let build = |p: &temur::config::ResolvedProfile| -> Result<
@@ -1081,6 +1088,7 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
         Ok(Box::new(BlockUntilCancelled))
     };
 
+    let mut cached_models: Vec<temur::provider::ModelEntry> = Vec::new();
     while let Some(line) = ui.read_input() {
         if line.starts_with('/') {
             let mut ctx = temur::commands::CommandCtx {
@@ -1099,7 +1107,7 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
                 prompt_profile: &mut prompt_profile,
                 active_resolved: &mut active_resolved,
                 config_path: std::path::Path::new("/nonexistent/temur-test-config.json"),
-            cached_model_ids: &[],
+                cached_models: &mut cached_models,
                 build_provider: &build,
                 list_models: &list,
                 rebuild_system: &rebuild,
@@ -1575,7 +1583,10 @@ fn headless_tab_completion_submits_the_completed_command() {
         context_window: None,
         prompt_profile: temur::tools::PromptProfile::Full,
     };
-    let list = |_: &temur::config::ResolvedProfile| -> Result<Vec<String>, temur::error::Error> {
+    let list = |_: &temur::config::ResolvedProfile| -> Result<
+        Vec<temur::provider::ModelEntry>,
+        temur::error::Error,
+    > {
         unreachable!("no /models in this script")
     };
     let build = |_: &temur::config::ResolvedProfile| -> Result<
@@ -1583,6 +1594,7 @@ fn headless_tab_completion_submits_the_completed_command() {
         temur::error::Error,
     > { unreachable!("/status builds nothing") };
 
+    let mut cached_models: Vec<temur::provider::ModelEntry> = Vec::new();
     while let Some(line) = ui.read_input() {
         assert_eq!(line, "/status", "Tab completed the head word before submit");
         let mut ctx = temur::commands::CommandCtx {
@@ -1601,7 +1613,7 @@ fn headless_tab_completion_submits_the_completed_command() {
             prompt_profile: &mut prompt_profile,
             active_resolved: &mut active_resolved,
             config_path: std::path::Path::new("/nonexistent/temur-test-config.json"),
-            cached_model_ids: &[],
+            cached_models: &mut cached_models,
             build_provider: &build,
             list_models: &list,
             rebuild_system: &rebuild,

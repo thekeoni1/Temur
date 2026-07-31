@@ -1882,10 +1882,19 @@ struct CmdHarness {
     config_path: std::path::PathBuf,
     /// Mirrors main's list_models injection; tests swap in fakes.
     #[allow(clippy::type_complexity)]
-    list: Box<dyn Fn(&ResolvedProfile) -> Result<Vec<String>, temur::error::Error>>,
-    /// Mirrors main's cached_model_ids local (T16): the last `/models`
-    /// listing, empty until a test fills it.
-    cached_model_ids: Vec<String>,
+    list: Box<
+        dyn Fn(&ResolvedProfile) -> Result<Vec<temur::provider::ModelEntry>, temur::error::Error>,
+    >,
+    /// Mirrors main's cached_models local (T16; T22 windows): the last
+    /// `/models` listing, empty until a test (or a listing) fills it.
+    cached_models: Vec<temur::provider::ModelEntry>,
+}
+
+/// Listing entries with no windows — the pre-T22 shape most tests drive.
+fn entries(ids: &[&str]) -> Vec<temur::provider::ModelEntry> {
+    ids.iter()
+        .map(|id| temur::provider::ModelEntry { id: id.to_string(), context_window: None })
+        .collect()
 }
 
 /// The base (non-profile) selection the harness starts on, mirroring what
@@ -1929,7 +1938,7 @@ impl CmdHarness {
             active_resolved: base_resolved(),
             config_path: "/nonexistent/temur-test-config.json".into(),
             list: Box::new(|_| unreachable!("no list_models injected")),
-            cached_model_ids: Vec::new(),
+            cached_models: Vec::new(),
         }
     }
 
@@ -1956,7 +1965,7 @@ impl CmdHarness {
             prompt_profile: &mut self.prompt_profile,
             active_resolved: &mut self.active_resolved,
             config_path: &self.config_path,
-            cached_model_ids: &self.cached_model_ids,
+            cached_models: &mut self.cached_models,
             build_provider: build,
             list_models: &*self.list,
             rebuild_system: &*self.rebuild,
@@ -2608,13 +2617,15 @@ fn models_list_renders_ids_empty_and_errors() {
     let mut h = CmdHarness::new();
     h.list = Box::new(|p| {
         assert_eq!(p.model, "claude-sonnet-5", "listing sees the active selection");
-        Ok(vec!["m-1".into(), "m-2".into()])
+        Ok(entries(&["m-1", "m-2"]))
     });
     let events = commands::run(commands::parse("/models"), &mut h.ctx(&mut session, &build));
     assert_eq!(
         events,
         vec![AgentEvent::ModelsListed(vec!["m-1".into(), "m-2".into()])]
     );
+    // T22: the listing refreshed the cache, windows included (none here).
+    assert_eq!(h.cached_models, entries(&["m-1", "m-2"]));
 
     // Empty listing → a notice, not an empty listing event.
     let mut h = CmdHarness::new();
@@ -2636,6 +2647,112 @@ fn models_list_renders_ids_empty_and_errors() {
         notices(&events).iter().any(|n| n.starts_with("/models failed:") && n.contains("HTTP 500")),
         "{events:?}"
     );
+}
+
+// -------------------------------- T22: /models context enrichment notices
+
+/// One listing entry with a reported window.
+fn wentry(id: &str, window: u64) -> temur::provider::ModelEntry {
+    temur::provider::ModelEntry { id: id.to_string(), context_window: Some(window) }
+}
+
+#[test]
+fn models_hints_the_exact_config_line_when_context_window_is_unset() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!("/models builds no provider")
+    };
+    // base_resolved: anthropic, claude-sonnet-5, context_window None.
+    let mut h = CmdHarness::new();
+    h.list = Box::new(|_| {
+        Ok(vec![wentry("claude-sonnet-5", 200_000), wentry("claude-opus-5", 200_000)])
+    });
+    let events = commands::run(commands::parse("/models"), &mut h.ctx(&mut session, &build));
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::ModelsListed(_))),
+        "{events:?}"
+    );
+    let ns = notices(&events);
+    assert_eq!(
+        ns,
+        vec![
+            "hint: the API reports max_input_tokens 200000 for claude-sonnet-5; add \"context_window\": 200000 to the profile to enable the context advisory"
+        ],
+        "{events:?}"
+    );
+    // The cache carries the windows: no second request would be needed.
+    assert_eq!(h.cached_models[0], wentry("claude-sonnet-5", 200_000));
+}
+
+#[test]
+fn models_warns_when_configured_context_window_exceeds_the_reported_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!("/models builds no provider")
+    };
+    let mut h = CmdHarness::new();
+    h.active_resolved.context_window = Some(300_000);
+    h.list = Box::new(|_| Ok(vec![wentry("claude-sonnet-5", 200_000)]));
+    let events = commands::run(commands::parse("/models"), &mut h.ctx(&mut session, &build));
+    let ns = notices(&events);
+    assert_eq!(ns.len(), 1, "{events:?}");
+    assert!(
+        ns[0].starts_with("warning: configured context_window 300000 is larger than the max_input_tokens 200000"),
+        "{ns:?}"
+    );
+    assert!(ns[0].contains("claude-sonnet-5"), "{ns:?}");
+    assert!(
+        ns[0].contains("fires too late") && ns[0].contains("requests can fail"),
+        "{ns:?}"
+    );
+}
+
+#[test]
+fn models_stays_silent_when_equal_smaller_unknown_or_not_anthropic() {
+    let dir = tempfile::tempdir().unwrap();
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!("/models builds no provider")
+    };
+    let quiet = |h: &mut CmdHarness| {
+        let dir2 = tempfile::tempdir().unwrap();
+        let (mut session, _) = session_with(dir2.path(), vec![]);
+        let events = commands::run(commands::parse("/models"), &mut h.ctx(&mut session, &build));
+        assert!(
+            notices(&events).is_empty(),
+            "no context notice expected: {events:?}"
+        );
+        drop(dir2);
+    };
+    let _ = &dir;
+    // Equal: silence.
+    let mut h = CmdHarness::new();
+    h.active_resolved.context_window = Some(200_000);
+    h.list = Box::new(|_| Ok(vec![wentry("claude-sonnet-5", 200_000)]));
+    quiet(&mut h);
+    // Smaller than reported: safe, silence.
+    let mut h = CmdHarness::new();
+    h.active_resolved.context_window = Some(100_000);
+    h.list = Box::new(|_| Ok(vec![wentry("claude-sonnet-5", 200_000)]));
+    quiet(&mut h);
+    // Window unknown on the wire (0 or absent parses to None): silence
+    // even with context_window unset.
+    let mut h = CmdHarness::new();
+    h.list = Box::new(|_| Ok(entries(&["claude-sonnet-5"])));
+    quiet(&mut h);
+    // Active model not in the listing: silence.
+    let mut h = CmdHarness::new();
+    h.list = Box::new(|_| Ok(vec![wentry("some-other-model", 200_000)]));
+    quiet(&mut h);
+    // Not the anthropic provider: silence even if a proxy reports windows.
+    let mut h = CmdHarness::new();
+    h.active = Some("b".into());
+    h.provider_name = "openai-compat".into();
+    h.model = "model-b".into();
+    h.active_resolved = h.profiles["b"].clone(); // context_window 4096
+    h.list = Box::new(|_| Ok(vec![wentry("model-b", 1_000)]));
+    quiet(&mut h);
 }
 
 #[test]
@@ -2943,7 +3060,7 @@ fn raw_switch_advises_when_the_id_is_absent_from_the_cached_listing() {
     let dir = tempfile::tempdir().unwrap();
     let (mut session, _) = session_with(dir.path(), vec![]);
     let mut h = CmdHarness::new();
-    h.cached_model_ids = vec!["served-a".into(), "served-b".into()];
+    h.cached_models = entries(&["served-a", "served-b"]);
     let events = commands::run(
         commands::parse("/model bogus-id"),
         &mut h.ctx(&mut session, &build_ok),
@@ -2968,7 +3085,7 @@ fn raw_switch_stays_silent_when_the_id_is_listed_or_no_listing_exists() {
     let dir = tempfile::tempdir().unwrap();
     let (mut session, _) = session_with(dir.path(), vec![]);
     let mut h = CmdHarness::new();
-    h.cached_model_ids = vec!["served-a".into()];
+    h.cached_models = entries(&["served-a"]);
     let events = commands::run(
         commands::parse("/model served-a"),
         &mut h.ctx(&mut session, &build_ok),
@@ -3024,7 +3141,7 @@ fn hop_rule0_cached_listing_wins_no_hop_no_warning() {
     let dir = tempfile::tempdir().unwrap();
     let (mut session, _) = session_with(dir.path(), vec![]);
     let mut h = hop_harness();
-    h.cached_model_ids = vec!["claude-opus-5".into()];
+    h.cached_models = entries(&["claude-opus-5"]);
     let events = commands::run(
         commands::parse("/model claude-opus-5"),
         &mut h.ctx(&mut session, &build_ok),
