@@ -10,7 +10,7 @@ lexopt = "0.3"
 log = "0.4"
 env_logger = "0.11"
 serde = { version = "1", features = ["derive"] }
-# preserve_order (T15): `/model --save` re-serializes the user's config
+# preserve_order: `/model --save` re-serializes the user's config
 # file, and their key order must survive the round trip. Pulls in indexmap,
 # pure Rust; the forbidden-deps gate below stays authoritative.
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -20,7 +20,7 @@ thiserror = "2"
 # webpki-roots (the i386/debian runtime image ships no ca-certificates).
 ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-# Root store for doctor's raw TLS-handshake probe (T14). Already in the
+# Root store for doctor's raw TLS-handshake probe. Already in the
 # tree transitively via ureq's rustls-webpki-roots feature; this direct
 # line adds no new code, it only makes the roots nameable.
 webpki-roots = "1"
@@ -29,15 +29,15 @@ regex = "1"
 globset = "0.4"
 ignore = "0.4"
 wait-timeout = "0.2"
-# TUI (milestone B): pure-Rust stack — ratatui + its re-exported crossterm
+# TUI: pure-Rust stack, ratatui + its re-exported crossterm
 # (no direct crossterm pin, avoiding version skew). No C build, no cmake,
 # no crypto; the forbidden-dep scan in check.sh keeps enforcing that.
 ratatui = "0.29"
 unicode-width = "0.2" # already in ratatui's tree; used directly for wrapping
-# Plain-REPL SIGINT (F4, v0.1.1): sigaction without SA_RESTART. FFI-only,
+# Plain-REPL SIGINT (v0.1.1): sigaction without SA_RESTART. FFI-only,
 # already in the tree transitively via ring; musl-safe on every target.
 libc = "0.2"
-# TUI markdown rendering (T8-P2): pure-Rust CommonMark pull parser; we
+# TUI markdown rendering: pure-Rust CommonMark pull parser; we
 # write the terminal renderer ourselves. No default features (no html
 # writer, no getopts); options enabled in code: strikethrough only.
 # Adds only unicase beyond crates already in the tree (bitflags, memchr).

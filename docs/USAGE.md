@@ -405,7 +405,7 @@ active at that moment.
 
 ## Picking and keeping a model
 
-Two T15 conveniences remove the "type a model id blind, keep it by
+Two conveniences (T15) remove the "type a model id blind, keep it by
 editing JSON" round trip. Both are real transcripts against a local
 llama.cpp server (keyless; the listing GET init and doctor make there
 is unauthenticated and never touches key files).

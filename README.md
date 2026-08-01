@@ -69,7 +69,8 @@ through the compact prompt profile (llama.cpp `server-b10068`,
 Score: **9/9**. The recorded transcript lives in
 [docs/RUNBOOK.md](docs/RUNBOOK.md), record "T19 acceptance".
 
-The harness floor itself (T19, active on every provider): tool output
+The same harness floor is active on every provider, hosted
+included: tool output
 over the per-result cap keeps its true head AND tail around a
 narrowing marker instead of losing the end; `write` refuses to
 overwrite a file the session has not read; prompts steer binary
@@ -139,8 +140,8 @@ running local server it lists the models actually served and fills in
 the server's real context allocation; for keyed templates it creates
 the key file empty (mode 600) and offers a hidden paste prompt whose
 input is never echoed or stored anywhere but the key file (a narrow,
-documented amendment, docs/RUNBOOK.md "T17 amendment record"; no other
-surface accepts key material). `temur doctor` then checks the setup
+documented amendment; the record "T17 - init hidden key entry" in
+docs/RUNBOOK.md; no other surface accepts key material). `temur doctor` then checks the setup
 read-only: config, key-file metadata, endpoint reachability, and
 whether each configured model and context window matches what the
 server reports.

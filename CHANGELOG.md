@@ -6,7 +6,7 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## v0.10.0 - 2026-07-31
 
-T22 context-window detection and discoverability:
+Context-window detection and discoverability (T22):
 
 - `temur doctor` now checks `context_window` per profile. On keyless
   openai-compat profiles with network allowed it reads the server's
@@ -42,7 +42,7 @@ T22 context-window detection and discoverability:
 
 ## v0.9.0 - 2026-07-30
 
-T21 bash approval mode and untrusted-host riders:
+Bash approval mode and untrusted-host riders (T21):
 
 - With key files configured and no working bash key sandbox (kernels
   that deny unprivileged user namespaces), an interactive session (TUI,
@@ -77,7 +77,7 @@ T21 bash approval mode and untrusted-host riders:
 
 ## v0.8.0 - 2026-07-30
 
-T20 context lifecycle (living with small context windows):
+Context lifecycle: living with small context windows (T20):
 
 - New `/compact` command: one model call (tools omitted, the session's
   own model and system prompt) summarizes the conversation under
@@ -104,7 +104,7 @@ T20 context lifecycle (living with small context windows):
   makes provider prompt caching and llama.cpp `--cache-reuse` prefix
   KV reuse effective.
 
-T19 model floor (raising the harness floor for weak local models):
+Model floor: raising the harness floor for weak local models (T19):
 
 - Tool-output truncation now scales to the model's context window
   and keeps both ends: the per-result cap is `context_window`
@@ -138,7 +138,7 @@ T19 model floor (raising the harness floor for weak local models):
 
 ## v0.7.0 - 2026-07-29
 
-T18 key isolation (guaranteeing tools cannot reach configured keys):
+Key isolation: guaranteeing tools cannot reach configured keys (T18):
 
 - File guard for read/write/edit/glob/grep: every configured
   `api_key_file` (active selection and all named profiles) plus the
@@ -167,7 +167,7 @@ T18 key isolation (guaranteeing tools cannot reach configured keys):
   when keys exist but no sandbox is possible (naming the refusal or
   the override), never affecting the exit code.
 
-T17 provider onboarding:
+Provider onboarding (T17):
 
 - `temur init --add <template>` merges a template into an EXISTING
   config as named profiles instead of overwriting it: `anthropic` adds
@@ -203,7 +203,7 @@ T17 provider onboarding:
 
 ## v0.6.0 - 2026-07-28
 
-T16 model-access footgun fixes:
+Model-access footgun fixes (T16):
 
 - Cross-provider hop: `/model <claude-* id>` on a non-anthropic
   provider with an anthropic profile configured now switches to that
@@ -237,7 +237,7 @@ T16 model-access footgun fixes:
   that conversations are saved automatically per working directory and
   `temur --continue` resumes the last one.
 
-T15 model-selection onboarding polish:
+Model-selection onboarding polish (T15):
 
 - `temur init`, local template: a Base URL question (default
   `http://127.0.0.1:8080/v1`) now precedes the model question, and when
@@ -281,7 +281,7 @@ T15 model-selection onboarding polish:
 
 ## v0.5.0 - 2026-07-28
 
-T14 onboarding + one-shot mode (built before T13, which awaits keys):
+Onboarding + one-shot mode (T14; built before T13, which awaits keys):
 
 - First-run quickstart: running with no config file, no `--mock`, and no
   usable credential now prints guidance (the config path looked for,
@@ -329,7 +329,7 @@ T14 onboarding + one-shot mode (built before T13, which awaits keys):
   dev-machine recipe from installing/using temur, and README links to
   USAGE.md and TUI.md.
 
-T12 CI:
+CI (T12):
 
 - Two-tier GitHub Actions CI (first-party actions only). Tier 1 on
   every push to main: a hermetic test job (cargo build + full suite +
@@ -348,7 +348,7 @@ T12 CI:
 
 ## v0.4.0 - 2026-07-27
 
-T11 multi-model ergonomics:
+Multi-model ergonomics (T11):
 
 - `scripts/serve.sh start [model]` selects a `.gguf` from `MODELS_DIR`
   by name: exact basename beats unique substring, case-insensitive;
@@ -375,7 +375,7 @@ T11 multi-model ergonomics:
 
 ## v0.3.0 - 2026-07-26
 
-T9 command ergonomics:
+Command ergonomics (T9):
 
 - Per-profile prompt profiles: a profile's `prompt_profile` overrides the
   global one (own > global > full), validated at startup; `/model`
@@ -392,7 +392,7 @@ T9 command ergonomics:
   (default `$HOME/models`) holds exactly one `.gguf`; zero or several
   files fail with the searched dir and count.
 
-T10 session management:
+Session management (T10):
 
 - Named multi-session per project: the default session keeps the exact
   pre-T10 filename; `/new <name>` creates named sibling sessions
@@ -413,7 +413,7 @@ T10 session management:
 
 ## v0.2.0 - 2026-07-26
 
-T8 daily-driver UX:
+Daily-driver UX (T8):
 
 - Slash commands (`/help`, `/status`, `/model`, `/clear`, `/thinking`)
   and named config profiles with atomic in-session `/model` switching.
