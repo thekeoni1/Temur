@@ -42,7 +42,7 @@ could not load.
 
 **Zero-internet operation.** `scripts/offline_demo.sh` creates a
 podman pod with `--network none`, asserts the negative first (a TLS
-probe to the internet MUST fail inside the pod), then requires the
+probe to the internet must fail inside the pod), then requires the
 model to drive a real `bash` tool call whose output file is verified
 from the host: model prose is never accepted as evidence. Recorded
 pass: llama.cpp `server-b10068` serving Qwen3-1.7B Q4_K_M, first
@@ -71,7 +71,7 @@ Score: **9/9**. The recorded transcript lives in
 
 The same harness floor is active on every provider, hosted
 included: tool output
-over the per-result cap keeps its true head AND tail around a
+over the per-result cap keeps its true head and tail around a
 narrowing marker instead of losing the end; `write` refuses to
 overwrite a file the session has not read; prompts steer binary
 formats to scripted `bash` runs instead of corrupt raw writes; and a

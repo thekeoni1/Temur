@@ -1,5 +1,11 @@
 # CLAUDE.md: build-agent working rules
 
+> **What this file is.** The literal instruction set the AI builder
+> (Claude Code) operates under in this repository, checked in
+> deliberately as part of the build story. Paths and identities below
+> are real and machine-specific by design; docs/SETUP.md reproduces
+> the machine they belong to.
+
 You are building a Rust CLI application (referred to here as "the product") that,
 among other things, calls the Anthropic API. Read these rules before acting. They
 encode hard constraints; when in doubt, stop and ask rather than guess.
