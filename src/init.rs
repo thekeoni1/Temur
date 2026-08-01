@@ -347,8 +347,13 @@ fn ask_key_file(
             .to_string(),
         None => String::new(),
     };
+    writeln!(
+        out,
+        "Where should the key be stored? Answer with a file path; the key \
+         itself is pasted later at a hidden prompt, never here."
+    )?;
     loop {
-        let answer = ask(input, out, "API key file", &default)?;
+        let answer = ask(input, out, "API key file path", &default)?;
         if answer.is_empty() {
             return Err(crate::error::Error::Config(
                 "init: no HOME to derive a default key file path; enter one explicitly".into(),
@@ -1410,6 +1415,11 @@ mod tests {
         );
         assert!(out.contains("/model <name> switches to one"), "{out}");
         assert!(out.contains("Paste your key into"), "{out}");
+        // The T13 path explainer shows on the --add wizard path too.
+        assert!(
+            out.contains("pasted later at a hidden prompt, never here"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -1876,7 +1886,15 @@ mod tests {
         assert!(printed.contains("WARNING: that answer looks like API key material"), "{printed}");
         assert!(printed.contains("only ever accepted at the hidden key prompt"), "{printed}");
         // Re-asked: the question printed twice, and the good answer won.
-        assert_eq!(printed.matches("API key file [").count(), 2, "{printed}");
+        assert_eq!(printed.matches("API key file path [").count(), 2, "{printed}");
+        // The T13 explainer precedes the question, once per call: the
+        // re-ask after the mis-paste does not repeat it (the warning
+        // already explains).
+        assert_eq!(
+            printed.matches("pasted later at a hidden prompt, never here").count(),
+            1,
+            "{printed}"
+        );
         let cfg = std::fs::read_to_string(&cfg_path).unwrap();
         let good = home.join(".secrets").join("temur-openai-key");
         assert!(cfg.contains(&good.display().to_string()), "{cfg}");
