@@ -4,6 +4,33 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+Launch-readiness documentation pass (T23; prose and layout only, no
+code or behavior change):
+
+- README rebuilt for a first-time reader: badge row, a short pitch,
+  the nine-task weak-model eval as a table near the top
+  (Qwen3-4B-Instruct-2507 Q4_K_M, 9/9, RUNBOOK pointer), Install and
+  Quickstart within the first two screens, a minimal Configure, a
+  short Untrusted hosts, and a "How this was built" section naming
+  the AI-directed, gate-everything workflow plainly. The tag-pinned
+  install lines are byte-identical. Deep reference material (full
+  command list, session model, context lifecycle, configuration
+  recipes, key isolation, untrusted-host practice) merged into
+  docs/USAGE.md, deduplicated against what was already there.
+- Root tidy: the machine-setup and v1-plan documents moved from the
+  root into docs/ (now docs/SETUP.md and docs/IMPLEMENTATION_PLAN.md)
+  with every live reference updated; the root now holds README,
+  CHANGELOG, ROADMAP, LICENSE, CLAUDE.md, and the cargo manifests.
+- Milestone codes moved out of user-facing lead lines: earlier
+  release sections in this changelog now lead with the feature and
+  keep the code parenthetical, and README and Cargo.toml prose drop
+  bare codes; RUNBOOK record titles stay verbatim.
+- New scripts/bump_version.sh: a stage-1 helper that rewrites the
+  four-file version map (Cargo.toml, Cargo.lock, scripts/install.sh
+  VERSION, the README tag pins) on a clean tree, prints the
+  resulting diff, and never commits. release.sh gate 3 remains the
+  authority on version skew.
+
 ## v0.10.0 - 2026-07-31
 
 Context-window detection and discoverability (T22):

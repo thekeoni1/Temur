@@ -2607,3 +2607,56 @@ knowledge-based until the operator's live /models confirmation
 Open release items unchanged: the PUBLIC one-liner gate and the
 hostname-blob-history decision stay queued behind the visibility
 flip; ARM hardware smoke still pending hardware.
+
+## T23 acceptance - recorded result (no release)
+
+2026-07-31, six commits on main over the v0.10.0 baseline (b6d41ed),
+prose and layout only, no Rust and no gate-script change: P1 a33bd6e
+(root tidy: the setup and v1-plan documents to docs/, live
+references updated), P2 9474ebb (README rebuilt 533 -> 237 lines,
+deep reference merged into docs/USAGE.md 523 -> 854 lines), P3
+5406bcb (milestone codes out of user-facing lead lines), P4 f6dff2a
+(README "How this was built"; CLAUDE.md deliberately untouched, see
+residuals), P5 377a0cf (scripts/bump_version.sh) plus the close-out
+commit carrying this record. A baseline check.sh gate ran green at
+b6d41ed before any edit, and every phase ran the full check.sh gate
+green (pty via script(1), launched as a background task per the
+accepted v0.10.0 deviation); the known container TUI pty smoke flake
+did not appear once this cycle. Version stays 0.10.0; T23 rides
+CHANGELOG Unreleased and ships as v0.11.0.
+
+Hard constraints verified: the compiled-string headings (README
+"## Configure", "## Untrusted hosts", docs/OFFLINE.md "## Recommended
+small models") survive; the five tag-pinned install lines in README
+are byte-identical (grep -Fx against the pre-restructure file, and
+release.sh gate 3 logic re-ran green inside every check.sh run); the
+tests/cli.rs pointer assertions are untouched and green in all
+container suites.
+
+bump_version.sh scratch-branch test (branch t23-bump-test, created at
+377a0cf, reverted and deleted after): all three refusal paths
+exercised (tag-shaped version exit 2, unchanged version exit 1, dirty
+tree exit 1), then a real `bump_version.sh 0.11.0` run produced
+exactly the four-file diff (Cargo.toml version, Cargo.lock temur
+entry, scripts/install.sh VERSION=0.11.0, and all five README tag-pin
+lines flipped to v0.11.0, zero stragglers reported) and committed
+nothing. The working tree was verified clean after the revert, main
+untouched at version 0.10.0.
+
+Sweeps: git diff origin/main..HEAD added lines carry ZERO em dashes;
+the only bare SETUP.md references left repo-wide are two CHANGELOG
+history lines (kept as written); every relative markdown link in
+README.md and docs/ resolves (scripted check, 7 files, 0 broken).
+
+Honest residuals: the CLAUDE.md preface (framing it as the checked-in
+AI-builder instruction set) is DRAFTED but uncommitted, because the
+plan requires the operator to see the full file in session and sign
+off, and the operator was not available during the build run; it is
+the one open T23 item. The README landed at 237 lines against the
+~180 target: the byte-identical install block, the nine-row eval
+table, and the honesty material were kept whole rather than cut to
+the number. The three README badges 404 while the repo is private
+(expected; they resolve at the public flip). The P3 Cargo.toml
+comment reword covered five comment lines, not just the two the plan
+named; the three extras carried the same kind of bare milestone code
+and got the same one-word treatment.
