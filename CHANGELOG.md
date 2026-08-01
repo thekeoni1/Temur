@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.11.0 - 2026-08-01
+
 Launch-readiness documentation pass (T23; prose and layout only, no
 code or behavior change):
 
