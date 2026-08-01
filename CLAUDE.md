@@ -29,7 +29,7 @@ enforced by the OS, not just by these rules. Do not try to escalate around them.
 
 ## Paths (three roles, keep them separate)
 - Project tree (source only): the repository checkout, machine-specific;
-  `<PROJECT>` in `SETUP.md`.
+  `<PROJECT>` in `docs/SETUP.md`.
 - Runtime dir (built artifacts + launch script, owned by `appsvc`): `/srv/rustcode-runtime`
   (launcher is `/srv/rustcode-runtime/run-app.sh`, binary at `bin/app`). You may build
   into it as directed, but it is `appsvc`-owned runtime territory, not source.

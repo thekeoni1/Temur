@@ -655,7 +655,7 @@ release item, deferred to the visibility flip (RUNBOOK).
 
 T12 (CI) and T14 (onboarding + one-shot) ship together as v0.5.0,
 plus a stage-1 usage-docs pass (docs/USAGE.md with transcripts from
-real local-model runs, the SETUP.md audience note, README links to
+real local-model runs, the docs/SETUP.md audience note, README links to
 USAGE.md and TUI.md). Same two-stage procedure as v0.3.0/v0.4.0:
 stage 1 (docs, bump, CHANGELOG staging, close-out records, full
 release.sh + installer gates) stops at gated LOCAL artifacts with no

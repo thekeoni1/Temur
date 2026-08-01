@@ -26,7 +26,7 @@ install -o appsvc -g appsvc -m 755 /home/dev/dist/temur /srv/rustcode-runtime/bi
 mkdir -p /srv/rustcode-runtime/work && chown appsvc:appsvc /srv/rustcode-runtime/work
 ```
 
-## 2. Inject the real credential (root; once; see SETUP.md)
+## 2. Inject the real credential (root; once; see docs/SETUP.md)
 
 ```sh
 install -o appsvc -g appsvc -m 600 /path/to/real-credential /srv/rustcode-secrets/credential
@@ -1361,7 +1361,7 @@ release-gate on every push to main, dispatch-only container gate) and
 T14 onboarding + one-shot mode (first-run quickstart, `-p` one-shot
 with the 0/1/130 exit contract, `temur init`, `temur doctor`,
 tests/cli.rs black-box suite), plus the stage-1 usage docs
-(docs/USAGE.md, SETUP.md audience note, README links).
+(docs/USAGE.md, docs/SETUP.md audience note, README links).
 
 Procedure deltas vs v0.4.0:
 

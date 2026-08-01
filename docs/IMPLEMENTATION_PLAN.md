@@ -227,7 +227,7 @@ Deployment is therefore operator-mediated, like secret injection:
    staging `~/dist/opencode-rust` (ext4); record sha256 in `docs/RUNBOOK.md`.
 2. **Operator (root, `wsl -d Ubuntu -u root`)**:
    `install -o appsvc -g appsvc -m 755 /home/dev/dist/opencode-rust /srv/rustcode-runtime/bin/app`
-   and inject the real credential per `SETUP.md` (if not already done).
+   and inject the real credential per `docs/SETUP.md` (if not already done).
 3. **Operator runs Tier-1 smoke**: `runuser -u appsvc -- /srv/rustcode-runtime/run-app.sh`
    (launcher exports `APP_SECRET_FILE`; binary runs natively, it's i686 ELF on the
    multilib host). RUNBOOK provides the scripted smoke prompts: read a file, run a

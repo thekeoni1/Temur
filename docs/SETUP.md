@@ -2,8 +2,8 @@
 
 > **Audience note.** This document reproduces temur's DEVELOPMENT/BUILD machine
 > from scratch, including its security boundary. None of it is needed to install
-> or use temur: for that, see the README's [Install](README.md#install) and
-> [Quickstart](README.md#quickstart) sections, and [docs/USAGE.md](docs/USAGE.md).
+> or use temur: for that, see the README's [Install](../README.md#install) and
+> [Quickstart](../README.md#quickstart) sections, and [docs/USAGE.md](USAGE.md).
 
 Executable recipe: run the stages top to bottom on a fresh **Windows 11 (x64)**
 machine to reproduce this project's build environment **including the security
