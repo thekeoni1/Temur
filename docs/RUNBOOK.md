@@ -2608,6 +2608,35 @@ Open release items unchanged: the PUBLIC one-liner gate and the
 hostname-blob-history decision stay queued behind the visibility
 flip; ARM hardware smoke still pending hardware.
 
+## v0.11.0 - close-out (release procedure delta)
+
+What ships: T23 alone (launch-readiness documentation pass: root
+tidy, README rebuild + USAGE reference merge, milestone codes out of
+user-facing lead lines, the "How this was built" section, and
+scripts/bump_version.sh), plus the operator-approved rider (the
+CLAUDE.md preface exactly as drafted in P4, and the README caps
+polish dropping the last two ALL-CAPS stress words). Prose, layout,
+and one POSIX helper script; zero Rust and zero gate-script changes,
+the first release with no behavior delta at all.
+
+Procedure deltas vs v0.10.0:
+
+- **T23 pushed AS stage-1 step 1** under the planning session's
+  authorization: a33bd6e..80b0dc3 onto b6d41ed (seven commits: six
+  phases + the rider), on-push ci run 30704288792 green (test 59s,
+  release-gate 4m56s), main == origin == 80b0dc3 verified before the
+  prep commits.
+- **The version bump used scripts/bump_version.sh for the first real
+  time** (its scratch-branch run under the T23 record was the
+  rehearsal): the printed diff touched exactly the four-file map and
+  nothing else, and the post-bump repo-wide grep found 0.10.0 only in
+  CHANGELOG/ROADMAP/RUNBOOK historical records. The helper stays
+  advisory; release.sh gate 3 remains the skew authority.
+- Stage 1 keeps the early stop: bump + dated CHANGELOG + records +
+  full check.sh gate only; tag, four-target build, SHA256SUMS,
+  private release, and the closing gate stay in stage 2. No tag, no
+  push of the prep commits, no release; the repo stays PRIVATE.
+
 ## T23 acceptance - recorded result (no release)
 
 2026-07-31, six commits on main over the v0.10.0 baseline (b6d41ed),
