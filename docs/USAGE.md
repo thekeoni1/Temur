@@ -1,8 +1,9 @@
 # Using temur day to day
 
-This guide assumes temur is installed and configured (README "Install",
-"Quickstart", and "Configure"). It walks one real interactive session,
-then the one-shot scripting recipes, then skills.
+This guide assumes temur is installed (README "Install" and
+"Quickstart"). It walks one real interactive session, then the full
+command, session, context, and configuration reference, the one-shot
+scripting recipes, skills, and the key-isolation model.
 
 > **Capture note.** Every transcript below is from a real run, captured
 > 2026-07-28 against a local llama.cpp server (image `server-b10068`)
@@ -68,11 +69,76 @@ To leave: `exit`, `quit`, or Ctrl+D (EOF); temur prints `bye`. Ctrl+C
 during a turn interrupts the turn, not the program (details in
 [TUI.md](TUI.md), "Turn interruption").
 
+## Command reference
+
+Inside a session, any input line starting with `/` is a command: it
+never reaches the model or the history (which also means a literal
+message starting with `/` cannot be sent):
+
+- `/help` - list commands
+- `/status` - profile, provider, model, thinking, prompt profile,
+  context use, session file
+- `/model` - list profiles, then two hint lines saying what a
+  non-profile argument does · `/model <name>` - switch profiles
+  mid-session · `/model <model-id>` - switch the model WITHIN the
+  active provider (profile names win on collision; endpoint,
+  credentials, limits, and prompt profile stay; a bad id surfaces as
+  the provider's error on the next turn; if the id is absent from the
+  last `/models` listing an advisory notice says so, without blocking).
+  Exception - the cross-provider hop: a `claude-*` id on a
+  non-anthropic provider with an anthropic profile configured switches
+  to that profile instead (the exact-model match, else the first
+  anthropic profile by name), then applies the id on top when it is
+  not the profile's own model; the notice names the profile. An id the
+  active provider actually listed in `/models` always switches
+  literally, and with no anthropic profile a hint notice explains the
+  hop. · `/model <model-id> --save` - the same switch, persisted to
+  config.json on success (a surgical edit: your key order and unknown
+  fields survive; when a profile is active - including one a hop just
+  activated - the save site is that profile's `model` and the notice
+  names it) · `/model --save` - persist the currently active model;
+  `--save` with a profile name is an error (the startup profile stays
+  the hand-edited `profile` key)
+- `/models` - list model ids from the active provider (live GET; ids
+  feed `/model` Tab completion in the TUI)
+- `/clear` - wipe the session; the empty state is persisted immediately,
+  so quitting and `--continue` resumes empty
+- `/compact` - one model call summarizes the conversation, then the
+  session continues from that summary plus the last user-initiated
+  exchange kept verbatim (fail-closed: any error, interrupt, or empty
+  summary leaves history untouched; the compacted state is persisted
+  immediately, like `/clear`)
+- `/sessions` - list every saved session, all projects: name (or
+  `(default)`), the directory it was recorded in, message count, file
+  name, and a title derived from its first prompt; the active session
+  is starred
+- `/resume <session>` - switch to a saved session by name or file-name
+  prefix; the saved history renders into the transcript as backscroll
+- `/new <name>` - start a fresh named session for this project (the
+  file is created on the first turn)
+- `/thinking` · `/thinking on|off` - show or flip adaptive thinking for
+  this session (only the anthropic provider uses it)
+
+Under `--mock`/`--capture-sse` the state-mutating commands, and
+`/models`, which is a live network GET, report themselves unavailable
+to keep replays deterministic.
+
+In the TUI (the default on a terminal; design notes and key bindings in
+[TUI.md](TUI.md)), assistant replies render as
+markdown (headings, emphasis, lists, quotes, links, and code blocks
+behind a dim gutter) in the same monochrome, default-terminal-color
+style; the plain REPL prints raw text unchanged. TUI command
+ergonomics: `/`-input renders in the cyan accent, the status row shows
+a live hint for the command being typed, and Tab cycles completions
+in place (command names; profile names and `/models`-cached ids after
+`/model`; `/sessions`-cached session keys after `/resume`; `on|off`
+after `/thinking`) with BackTab reversing.
+
 ### /clear vs /new vs /resume
 
-Every live run saves the conversation after each turn (README
-"Sessions" has the full model). Three commands manage it; pick by what
-you want to keep:
+Every live run saves the conversation after each turn (the "Sessions"
+section below has the full model). Three commands manage it; pick by
+what you want to keep:
 
 - `/clear` wipes the current session's history in place and persists
   the empty state immediately. Use it when the current thread is done
@@ -90,15 +156,69 @@ you want to keep:
   up, in this project or another (resuming another project's session
   warns that tools still run in the current directory).
 
+## Sessions
+
+Every live run saves the conversation after each turn, under
+`$XDG_STATE_HOME/temur/sessions/` (fallback
+`~/.local/state/temur/sessions/`; state, not config, because transcripts
+carry tool output and grow to megabytes). Each working directory has a
+**default session**, plus any number of **named sessions** created with
+`/new <name>` (names keep `[A-Za-z0-9._-]` and cap at 32 chars). A plain
+start uses the default session; `temur --continue` resumes it.
+
+`/sessions` lists everything saved, across all projects, newest first.
+`/resume <key>`, or `temur --resume <key>` at startup, switches to a
+saved session: a key is a session name (a name in the current project
+wins; a globally-unique name works from anywhere; a duplicated one is an
+error listing the candidates) or a file-name prefix, which is how
+default sessions are addressed. Resuming renders the saved history into
+the transcript as backscroll (prompts, replies, and tool names - tool
+output and arguments are not replayed) and redirects saving to the
+resumed file. Resuming another project's session warns that tools still
+run in the current directory. A failed `/resume` (unknown key,
+ambiguous key, unreadable file) changes nothing.
+
+The saved history is provider-neutral, so a session recorded against
+one provider resumes against another. Saves are atomic (write, fsync,
+rename) and the FORMAT contains no timestamps, so a power cut at any
+instant leaves the previous complete file, resumable on a clock-less
+device. The `/sessions` listing order (newest first) comes from
+filesystem mtimes, which is display-only metadata read at list time: on
+a clock-less device every file sorts equal and the listing falls back
+to name order, and nothing else depends on it. Past the size cap the
+file drops its oldest exchanges, always cutting at a message boundary
+that keeps the remainder replayable; the in-memory conversation is
+never trimmed. Two processes in one directory don't corrupt anything:
+last complete writer wins. To start over, `/new` a fresh name or delete
+the file from the sessions dir.
+
+## Context lifecycle
+
+With a `context_window` configured, temur tracks an advisory estimate
+of context use (the last response's reported input+output tokens) and
+warns once per session when the conversation gets tight: at 80% of the
+window, or when the remaining room is smaller than `max_tokens`,
+whichever comes first. The advisory names both remedies: `/compact`
+summarizes the conversation and continues in a fraction of the window;
+a new session starts clean. The same advisory also fires immediately
+at `--continue`/`--resume`/`/resume` when the restored session is
+already past the threshold.
+
+Requests are append-only by design (pinned by a prefix-stability test
+suite), which is what makes provider prompt caching effective: the
+anthropic provider marks cache breakpoints (system+tools, plus a
+moving one at the end of history), and against local llama.cpp the
+same append-only shape makes prefix KV reuse work for free (start the
+server with `--cache-reuse 256` to keep prompt processing incremental
+across turns). `/compact` deliberately invalidates that warm prefix
+once, in exchange for a small history from then on; per-turn trimming,
+which would invalidate it on every turn, is deliberately absent.
+
 ### /compact: summarize and keep going
 
-When the conversation approaches the context window, temur warns once
-per session, at 80% of the window or when the remaining room is
-smaller than `max_tokens`, whichever comes first (with no
-`context_window` configured there is no estimate to judge, so the
-advisory never fires). The same advisory fires immediately at
-`--continue`/`--resume`/`/resume` when the restored session is already
-past the threshold. A real sequence against a local llama.cpp server
+The advisory above needs a configured `context_window`: with none
+there is no estimate to judge, and it never fires. A real sequence
+against a local llama.cpp server
 (Qwen3-4B, `context_window` 4096, `max_tokens` 512): three verbose
 answers crossed 80% and the advisory fired, the session was quit, and
 `--continue` re-warned at load, before any turn:
@@ -155,6 +275,133 @@ Naming note: `/compact` is unrelated to the `"compact"` value of
 prompts and system prompt served to small models; `/compact` is a
 command that shrinks the conversation history. A session can use
 either, both, or neither.
+
+## Configuration reference
+
+Config lives at `~/.config/temur/config.json`; README "Configure"
+shows the minimal keyless starter and `temur init` writes any of the
+recipes below for you. The default provider is `anthropic` (model
+`claude-sonnet-5`); any API key is read from a file path at startup,
+never from env or argv.
+
+The Anthropic template writes a curated profile set over the current
+model tiers, every profile reading the same key file, and asks which
+profile to start on (default `sonnet`, keeping `claude-sonnet-5` as the
+effective default model):
+
+```json
+{
+  "profiles": {
+    "fable":  { "provider": "anthropic", "model": "claude-fable-5",
+                "api_key_file": "/home/you/.secrets/temur-anthropic-key",
+                "context_window": 200000 },
+    "haiku":  { "provider": "anthropic", "model": "claude-haiku-4-5",
+                "api_key_file": "/home/you/.secrets/temur-anthropic-key",
+                "context_window": 200000 },
+    "opus":   { "provider": "anthropic", "model": "claude-opus-5",
+                "api_key_file": "/home/you/.secrets/temur-anthropic-key",
+                "context_window": 200000 },
+    "sonnet": { "provider": "anthropic", "model": "claude-sonnet-5",
+                "api_key_file": "/home/you/.secrets/temur-anthropic-key",
+                "context_window": 200000 }
+  },
+  "profile": "sonnet"
+}
+```
+
+The hosted OpenAI-compatible templates share one shape and differ only
+in endpoint and default model; the xAI one, for instance (OpenAI:
+`https://api.openai.com/v1` / `gpt-4o-mini`; Gemini:
+`https://generativelanguage.googleapis.com/v1beta/openai` /
+`gemini-2.5-flash`):
+
+```json
+{
+  "provider": "openai-compat",
+  "openai_compat": { "base_url": "https://api.x.ai/v1",
+                     "model": "grok-4",
+                     "api_key_file": "/home/you/.secrets/temur-xai-key" }
+}
+```
+
+The hosted OpenAI, Gemini, and xAI templates are written to their
+published compat specs but not yet live-verified against those
+endpoints (that verification is a parked milestone awaiting keys).
+
+Two more optional keys: `sessions_dir` overrides where saved sessions
+live (default: the state dir, see "Sessions" above), and
+`session_max_bytes` caps the saved session file's size (default 4 MiB,
+minimum 64 KiB).
+
+`temur doctor` verifies a config without side effects, one
+PASS/WARN/FAIL line per check: config parse and the same validation as
+startup, key files by metadata only (present, non-empty by size, mode
+600, WARN on group/other bits, a rotation reminder once a key file is
+older than `key_rotate_warn_days`), sessions dir writability, one
+TCP-connect/TLS-handshake reachability probe per endpoint, and, for
+keyless local endpoints only, whether each configured model and
+`context_window` matches what the server itself reports (unauthenticated
+GETs; mismatches are WARNs, since servers alias ids). `--no-network`
+skips the probes and those checks. Running `temur` with no config at
+all prints quickstart pointers instead of a raw credential error.
+
+### Adding a provider
+
+`temur init --add <local|anthropic|openai|gemini|xai>` merges a
+template into your EXISTING config as named profiles, leaving every
+other setting, the startup `profile` key included, untouched:
+`anthropic` adds the four-profile set above sharing one key file;
+`openai`, `gemini`, and `xai` each add one profile named after the
+template; `local` adds a keyless `local` profile through the same
+base-URL question and model picker as the fresh wizard. A name
+collision with any existing profile aborts the whole merge with the
+file untouched. Afterwards `/model <name>` switches to the new
+profile; set `"profile": "<name>"` in config.json to make it the
+startup default.
+
+For keyed templates the wizard (fresh or `--add`) creates the key
+file empty (mode 600), then offers a hidden paste prompt: input is
+never echoed, Enter skips, and a pasted key is written only to the
+key file. A non-empty existing key file is never prompted for or
+touched. As a rotation reminder, `temur doctor` WARNs when a key
+file has not changed in `key_rotate_warn_days` days (optional config
+field; default 90, `0` disables); re-running `temur init --add`
+re-prompts after you rotate the key at the provider.
+
+### Named profiles and in-session switching
+
+Define named profiles (nicknames bundling provider + model + endpoint +
+key file + limits) and switch between them from inside a session with
+`/model <name>`, no quit-and-edit-JSON round trip:
+
+```json
+{
+  "profiles": {
+    "local":  { "provider": "openai-compat", "model": "qwen3-1.7b",
+                "max_tokens": 4096, "context_window": 8192 },
+    "sonnet": { "provider": "anthropic", "model": "claude-sonnet-5",
+                "max_tokens": 32000 }
+  },
+  "profile": "local"
+}
+```
+
+Optional `profile` picks the startup profile; omit it and the base
+provider/model fields apply exactly as before profiles existed. Profile
+fields: `provider` (`"anthropic"` or `"openai-compat"`), `model`
+(required), and optional `base_url` (default: the provider's own default
+endpoint), `api_key_file` (path to a key file: openai-compat profiles
+without one are keyless, anthropic profiles without one fall back to
+`APP_SECRET_FILE`), `max_tokens` (default: the global value),
+`context_window`, and `prompt_profile` (`"full"` or `"compact"` for
+THIS profile; default: the global `prompt_profile` - switching between
+profiles swaps the system prompt and tool descriptions accordingly, and
+an explicit `system_prompt` still wins in either profile). Every
+profile is validated at startup, so `/model` can
+only fail on a credential/IO problem, and a failed switch leaves the
+session untouched. History continues across a switch (it is stored
+provider-neutrally), and each save records whichever provider/model is
+active at that moment.
 
 ## Picking and keeping a model
 
@@ -458,10 +705,63 @@ Ambiguous or truncated shapes are never executed; they get the
 corrective nudge instead. Set `"prose_tool_calls": false` in
 config.json to turn recovery off and restore nudge-only behavior.
 
+## Key isolation
+
+Tools run in the same process, as the same user, as temur itself, so
+file modes alone cannot keep the model away from API keys: anything the
+key-owning user can read, a shell command could too. Three layers close
+that hole, on by default whenever any key file is configured:
+
+- **File guard** (read, write, edit, glob, grep). Every configured
+  `api_key_file` (the active selection and every named profile) plus the
+  `APP_SECRET_FILE` path is protected. A tool path is denied when it
+  resolves to a protected file (symlinks and not-yet-existing write
+  targets are canonicalized first), when it lies under a protected
+  file's parent directory (a secrets directory holds sibling keys), or
+  when it shares the file's device and inode identity (hardlinks,
+  renames). grep never reads a protected file, glob never lists one,
+  and writes are denied too: overwriting a key is destruction and a
+  poisoning vector.
+- **bash sandbox.** With keys configured, every bash command runs in an
+  unprivileged user namespace plus a private mount namespace where each
+  existing key file is bind-masked with `/dev/null`: inside the shell
+  the key path reads as empty and writes to it are discarded, while the
+  host file stays untouched. On kernels without unprivileged user
+  namespaces, an interactive session (the TUI, or the plain REPL on a
+  real terminal) asks you to approve each bash command before running
+  it unsandboxed, showing the exact command; the default answer is no,
+  and nothing is remembered between commands. Non-interactive runs
+  (one-shot `-p`, piped stdin) refuse to run bash instead. Setting
+  `allow_bash_without_key_sandbox` to `true` in `config.json` accepts
+  running bash unsandboxed WITHOUT asking, for non-interactive use;
+  that is a real risk (an unsandboxed shell can read anything you can),
+  the other layers still apply, and a working sandbox is always used
+  when available, silencing both the ask and the override.
+- **Redaction.** The ACTIVE provider's key, the one credential temur
+  has actually read, is scrubbed from every tool result (successes and
+  errors, before output truncation), so even an unexpected leak path
+  cannot echo it back verbatim.
+
+The invariant: a keyless config behaves byte-identically to earlier
+releases. No guard, no namespace, no probe, no redaction.
+
+Honest limits: the identity check knows a key's identity only while the
+file exists at its configured path, so a hardlink made beforehand
+escapes it if the key file itself is later removed; redaction covers
+the active key only (inactive profiles' keys are never read, so there
+is nothing to redact them with); a masked write inside the bash sandbox
+is discarded silently rather than reported; and the parent-directory
+rule means a key file placed in a broad directory (a home directory, a
+project root) blocks tool access to that entire directory. Keep key
+files in their own directory, as `temur init` sets up.
+
+`temur doctor` reports the guard count and the sandbox availability,
+and warns when bash would need approval or refuse.
+
 ## Bash approval mode (T21)
 
 With key files configured, bash normally runs inside the key sandbox
-(README, "Key isolation"). On a kernel that denies unprivileged user
+("Key isolation" above). On a kernel that denies unprivileged user
 namespaces (locked-down containers and playgrounds, commonly), the
 sandbox cannot start, and an interactive session asks you about each
 bash command instead of refusing. The prompt shows the exact command;
@@ -509,8 +809,40 @@ The rules, precisely:
 - `allow_bash_without_key_sandbox: true` silences the ask entirely
   and runs bash unsandboxed without asking; it exists for
   non-interactive use on sandbox-less hosts and is a real risk. See
-  README, section "Untrusted hosts", for safer patterns (spend-capped
-  throwaway keys, a LiteLLM-style relay).
+  "Untrusted hosts in practice" below for safer patterns
+  (spend-capped throwaway keys, a LiteLLM-style relay).
+
+## Untrusted hosts in practice
+
+Ephemeral playgrounds, throwaway VMs, and shared machines deserve more
+suspicion than your own workstation: anything that reaches the host
+root user, a snapshotting hypervisor, or another user with your file
+access can read whatever key you place there, and temur's key isolation
+only guards against the MODEL, not against the host.
+
+- **Never place a primary key on a host you do not control.** Use a
+  dedicated key with a spend cap, rotate it on a schedule, and revoke
+  it when the machine goes away. `temur doctor` warns when a key file
+  has not been rotated in `key_rotate_warn_days` (default 90).
+- **The durable pattern is a relay you control.** Run a small
+  OpenAI-compatible proxy (LiteLLM is the common choice) on a machine
+  you trust, holding the real provider key. Point the playground
+  profile's `base_url` at the relay and give the playground only a
+  revocable virtual key with its own budget. The existing
+  `openai-compat` provider and per-profile `base_url` support this
+  unchanged; the untrusted host never sees the real credential, and
+  killing the virtual key ends its access without touching anything
+  else.
+- **Locked-down kernels.** Playground containers often deny
+  unprivileged user namespaces, so the bash key sandbox cannot start.
+  Interactive sessions then ask per-command approval (see "Bash
+  approval mode" above); for non-interactive use on such a host,
+  either accept `allow_bash_without_key_sandbox` (with a throwaway
+  key only) or leave bash refusing and rely on the other tools.
+- **Paste carefully.** `temur init` never accepts a key at the file
+  PATH question; a key-shaped answer there is dropped with a warning
+  to rotate, because the value reached the terminal. Keys go in only
+  at the hidden prompt, or into the key file with your editor.
 
 ## Where the other guides are
 
@@ -519,5 +851,4 @@ The rules, precisely:
 - Local/offline model serving (llama.cpp, Ollama, LM Studio, WSL2
   topology), recommended small models, the compact prompt profile:
   [OFFLINE.md](OFFLINE.md).
-- The full command and session reference: README "Commands" and
-  "Sessions".
+- Install, quickstart, and the starter config: the README.
