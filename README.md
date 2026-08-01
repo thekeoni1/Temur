@@ -216,6 +216,19 @@ maintenance surface (several would threaten the static-musl constraint) and
 none serves constrained, offline, or weak-model use. Small surface is a
 feature.
 
+## How this was built
+
+temur is built by directing Claude Code, an AI coding agent, under a
+fixed set of working rules checked into this repo as
+[CLAUDE.md](CLAUDE.md); the build machine and its security boundary
+are reproduced step by step in [docs/SETUP.md](docs/SETUP.md). Every
+change passes `scripts/check.sh` (static musl build, container test
+suites, REPL and TUI smokes, a bare-busybox run) before it lands, and
+agent-facing behavior is scored by the scripted weak-model eval rather
+than judged by eye. The transparency is deliberate: the working rules,
+the acceptance records in docs/RUNBOOK.md, and the self-analysis in
+ROADMAP.md are part of the project, not internal scaffolding.
+
 ## Attribution
 
 The tool prompt texts are ported near-verbatim from
