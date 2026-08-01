@@ -2689,3 +2689,55 @@ the number. The three README badges 404 while the repo is private
 comment reword covered five comment lines, not just the two the plan
 named; the three extras carried the same kind of bare milestone code
 and got the same one-word treatment.
+
+## v0.11.0 acceptance - recorded result (SHIPPED, private)
+
+2026-08-01, stage 2 all green, ships T23 launch-readiness docs plus
+two riders. Tag lands on the stage-2 rider head, not on the stage-1
+prep head, per the stage-2 prompt's step 0.
+
+- Stage-2 rider e919600 "clear stray executable bits (drvfs
+  artifact)": 41 tracked files normalized 100755 -> 100644
+  (.gitignore, Cargo.lock, seven src/*.rs, ten prompts, twenty
+  fixtures, live_conformance.rs, three TUI files), diff mode-only
+  with 0 insertions and 0 deletions, every scripts/*.sh verified
+  still 755; full check.sh green before commit.
+- Push 80b0dc3..e919600 (the three stage-1 prep commits + the
+  rider); on-push ci run 30707441331 green (test 1m59s
+  16:07:36Z..16:09:35Z, release-gate 7m30s 16:07:43Z..16:15:13Z,
+  the version-skew run); main == origin == e919600 verified.
+- Annotated tag v0.11.0 at e919600, message exactly "temur v0.11.0 -
+  launch-readiness docs (T23)" (one short line per the v0.9.0
+  truncation lesson), verified verbatim via git tag -n1 BEFORE the
+  push; tag object e6a4aca, pushed and verified via ls-remote.
+  Unsigned as always.
+- Full release.sh, no SKIP_CHECK, green FIRST TRY (the container TUI
+  pty smoke stayed quiet the whole cycle, zero reruns): inner
+  check.sh ALL CHECKS PASSED, leak grep clean (operator patterns +
+  generic shapes, files + history), skew gate "OK: install.sh +
+  README match version 0.11.0 and all targets", 4/4 targets gated
+  and version-asserted "temur 0.11.0" (i686 + x86_64 native,
+  aarch64 + armv7 qemu), SHA256SUMS self-verified (4/4 OK), staged
+  at /home/dev/dist/release/v0.11.0/.
+- Staged sha256s: 137e581539f1... aarch64, ffb2c9eeef80... armv7,
+  178b4a2a4e1d... i686, b31be50da303... x86_64 (full sums in the
+  release's SHA256SUMS asset).
+- Private release github.com/thekeoni1/Temur/releases/tag/v0.11.0
+  created from inside the repo worktree with absolute asset paths,
+  title per tag, notes = the CHANGELOG v0.11.0 section, 5 assets
+  (4 binaries + SHA256SUMS), not draft; repo isPrivate true
+  confirmed via gh BEFORE creating the release and again after.
+- Closing gate: authenticated download of SHA256SUMS + the x86_64
+  binary; sha256sum -c OK; downloaded SHA256SUMS byte-identical to
+  staged (cmp clean); downloaded x86_64 sha
+  (b31be50da303bcea1664c0b551ffdcb6321707499b509fb050503c329a24cf66)
+  equals the staged artifact byte for byte (cmp clean).
+- Installer matrix 6/6 (pass + corrupt + unlisted, GNU host and
+  busybox container).
+
+Honest residuals: none new this stage. Still open and unchanged: ARM
+hardware smoke pending hardware; the PUBLIC one-liner gate, the
+hostname-blob-history decision, and the demo GIF recording stay
+queued behind the visibility flip; T13 hosted verification (with the
+anthropic context_window 200000 live /models confirmation) is next in
+the queue.
