@@ -2543,3 +2543,67 @@ Procedure deltas vs v0.9.0:
 - Wording note: the release title should reflect the T22 scope, e.g.
   "temur v0.10.0 - context-window detection (T22)"; stage 2 decides
   the exact string.
+
+## v0.10.0 acceptance - recorded result (SHIPPED, private)
+
+2026-07-31 (local PDT; CI timestamps are Z and cross into 2026-08-01).
+v0.10.0 ships T22 alone (context-window detection + discoverability,
+plus the two planning-approved prose riders), per the two-stage
+procedure. Everything below ran on the private repo only.
+
+- Stage-1 recap: T22 pushed cc28ae4..9e390e0 under planning-session
+  authorization, on-push ci run 30649402355 green (test 1m35s,
+  release-gate 5m35s); three LOCAL prep commits b9bb443 (bump
+  0.9.0 -> 0.10.0, four-file map per 86b31f3) + 2cf4909 (CHANGELOG
+  "## v0.10.0 - 2026-07-31") + 45ebaee (RUNBOOK close-out delta +
+  ROADMAP ship-vehicle row); full check.sh green at 0.10.0.
+- Stage 2 prep push 9e390e0..45ebaee; on-push ci run 30681425471
+  green (test 2m25s 03:09:13Z..03:11:38Z, release-gate 7m49s
+  03:09:07Z..03:16:56Z) - the version-skew run against the bump.
+- Annotated tag v0.10.0 at 45ebaee ("temur v0.10.0 - context
+  detection (T22)"), message kept to one short line deliberately
+  after the v0.9.0 truncation lesson, verified verbatim via
+  git tag -n1 before the push; pushed (tag object 6911606).
+  Unsigned as always. The close-out's suggested wording said
+  "context-window detection"; stage 2 fixed the exact string as
+  "context detection (T22)" in the ship prompt.
+- Full release.sh (no SKIP_CHECK): check.sh both paths green
+  (bare-container line "temur 0.10.0"), leak grep clean (operator
+  patterns + generic shapes, files + history) first try, skew gate
+  "OK: install.sh + README match version 0.10.0 and all targets",
+  4/4 targets gated + version-asserted "temur 0.10.0" (i686 + x86_64
+  native, aarch64 + armv7 via qemu), SHA256SUMS self-verified,
+  staged at /home/dev/dist/release/v0.10.0/. The container TUI pty
+  smoke passed FIRST TRY in this run (no rerun needed; the stage-1
+  gate had needed two reruns for the known flake, see below).
+  Installer matrix 6/6 (pass+corrupt+unlisted, host + busybox).
+- Staged sha256s: f41d8ae7d275... aarch64, 3e45111a5e7d... armv7,
+  d642393f9074... i686, 57bdc0e623e9... x86_64 (full sums in the
+  release's SHA256SUMS asset).
+- Private release github.com/thekeoni1/Temur/releases/tag/v0.10.0
+  created FROM INSIDE the repo worktree per the v0.7.0 procedure
+  note, first try, title "temur v0.10.0 - context detection (T22)",
+  notes = the CHANGELOG v0.10.0 section, 5 assets (4 binaries +
+  SHA256SUMS), not draft; 404s while the repo is private, by
+  design. Repo visibility PRIVATE confirmed via gh BEFORE creating
+  the release and re-confirmed after.
+- Closing gate: authenticated download of the x86_64 binary +
+  SHA256SUMS into a scratch dir; sha256sum -c OK; downloaded
+  SHA256SUMS byte-identical to the staged file (cmp clean); the
+  downloaded binary's independent sha256 (57bdc0e623e9bd98bf950
+  58c8c4bc1db168ec515e056295e22d982c8bd4220b2) equals the staged
+  one byte for byte (cmp clean).
+
+Honest residuals: the check.sh container TUI pty smoke flake
+(scripted keys dropped while the busy latch is set; the T21 P3
+readiness fix covers the in-repo harness, not check.sh's podman pty
+path) hung TWO stage-1 gate runs this cycle before a clean third run,
+then stayed quiet through every stage-2 gate; rider candidate stays
+open: readiness-gate or timeout+retry for that step in check.sh. The
+anthropic template's baked context_window 200000 remains
+knowledge-based until the operator's live /models confirmation
+(rides T13 hosted verification, front of queue).
+
+Open release items unchanged: the PUBLIC one-liner gate and the
+hostname-blob-history decision stay queued behind the visibility
+flip; ARM hardware smoke still pending hardware.
