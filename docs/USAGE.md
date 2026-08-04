@@ -294,20 +294,30 @@ effective default model):
   "profiles": {
     "fable":  { "provider": "anthropic", "model": "claude-fable-5",
                 "api_key_file": "/home/you/.secrets/temur-anthropic-key",
-                "context_window": 200000 },
+                "context_window": 1000000 },
     "haiku":  { "provider": "anthropic", "model": "claude-haiku-4-5",
                 "api_key_file": "/home/you/.secrets/temur-anthropic-key",
                 "context_window": 200000 },
     "opus":   { "provider": "anthropic", "model": "claude-opus-5",
                 "api_key_file": "/home/you/.secrets/temur-anthropic-key",
-                "context_window": 200000 },
+                "context_window": 1000000 },
     "sonnet": { "provider": "anthropic", "model": "claude-sonnet-5",
                 "api_key_file": "/home/you/.secrets/temur-anthropic-key",
-                "context_window": 200000 }
+                "context_window": 1000000 }
   },
   "profile": "sonnet"
 }
 ```
+
+The baked `context_window` values are per model, not one shared number:
+haiku serves 200k of input where the other three serve 1M. They are
+knowledge as of 2026-08-03, read once off the authenticated models API,
+not detected at init time, because `init` never makes an authenticated
+call. Both `/models` and `doctor` check them against the live wire, so
+if a tier's real limit moves you will see it there. A config written by
+an older version keeps whatever it was written with; nothing rewrites an
+existing profile, so re-run `temur init` into a scratch config (or edit
+the numbers by hand) if you want the current values.
 
 The hosted OpenAI-compatible templates share one shape and differ only
 in endpoint and default model; the xAI one, for instance (OpenAI:
