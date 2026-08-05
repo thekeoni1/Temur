@@ -26,6 +26,29 @@ struct Template {
     key_slug: Option<&'static str>,
 }
 
+/// The hosted templates' default model ids carry live evidence from the
+/// T13 acceptance run of 2026-08-05, where the shipped defaults were the
+/// thing that failed:
+///
+/// - openai: `gpt-4o-mini` was absent from the operator's account listing
+///   entirely (11 ids, all gpt-4o or gpt-5 family), so the template could
+///   not make a call as shipped. `gpt-4o` is listed and answered a real
+///   tool turn first try, with the completion limit below baked beside it.
+///   The gpt-5 era ids stay out of reach from a fresh profile for a
+///   different reason: they reject `max_tokens` outright and want
+///   `max_completion_tokens`, which is our request encoding rather than
+///   anything config can fix; queued on the roadmap.
+/// - gemini: `gemini-2.5-flash` is retired for new users, in Google's own
+///   404 words. `gemini-3.6-flash` answered a real tool turn live.
+///   Note that Gemini's listing prefixes every id with `models/`, so this
+///   bare id is a wire id that works, not a listing entry.
+/// - xai: no key was available, so `grok-4` is still spec-written, not
+///   live-verified.
+///
+/// KNOWLEDGE-OF-THAT-DATE, like the anthropic table below: init never
+/// makes an authenticated call, so nothing here is detected. Hosted model
+/// ids retire, which is exactly how this list broke; `/models` in session
+/// is where a stale default surfaces.
 const TEMPLATES: [Template; 5] = [
     Template {
         number: "1",
@@ -45,14 +68,14 @@ const TEMPLATES: [Template; 5] = [
         number: "3",
         name: "openai",
         describe: "OpenAI API (openai-compat, key file)",
-        default_model: "gpt-4o-mini",
+        default_model: "gpt-4o",
         key_slug: Some("openai"),
     },
     Template {
         number: "4",
         name: "gemini",
         describe: "Gemini API (openai-compat, key file)",
-        default_model: "gemini-2.5-flash",
+        default_model: "gemini-3.6-flash",
         key_slug: Some("gemini"),
     },
     // T17: flagship coverage. The default model id is free text like every
@@ -74,7 +97,7 @@ const TEMPLATES: [Template; 5] = [
 ///
 /// The third field is the profile's baked `context_window` (T13 P2.5).
 /// It is PER MODEL, not one shared constant: the operator's live
-/// acceptance on 2026-08-03 read `max_input_tokens` off the authenticated
+/// acceptance on 2026-08-04 read `max_input_tokens` off the authenticated
 /// `/v1/models` wire and haiku reported a fifth of what the other three
 /// do, so a single number would have been wrong for whichever tier it did
 /// not match. Haiku's value was measured on `claude-haiku-4-5-20251001`,
@@ -114,6 +137,24 @@ fn compat_base_url(template_name: &str) -> &'static str {
         "gemini" => GEMINI_BASE_URL,
         "xai" => XAI_BASE_URL,
         other => unreachable!("template {other} has no fixed base URL"),
+    }
+}
+
+/// A hosted template's baked `max_tokens`, for providers whose completion
+/// cap is BELOW temur's global default of
+/// [`crate::config::DEFAULT_MAX_TOKENS`]. Absent means "the global default
+/// is fine", which is the answer for every provider but one.
+///
+/// gpt-4o caps completions at 16384 and rejects the request outright above
+/// it, so a fresh openai profile inheriting the global 32000 failed every
+/// call until the operator set this by hand (T13 acceptance, live
+/// 2026-08-05). Gemini accepted 32000 on the same run, so it bakes
+/// nothing. Same lookup shape as [`compat_base_url`], for the same reason:
+/// the fresh render and `init --add` must agree.
+fn compat_max_tokens(template_name: &str) -> Option<u32> {
+    match template_name {
+        "openai" => Some(16_384),
+        _ => None,
     }
 }
 
@@ -186,8 +227,15 @@ fn render_config(
             let base = compat_base_url(template.name);
             let k = serde_json::to_string(key_file.expect("keyed template"))
                 .expect("string serializes");
+            // Same top-level placement as the local template's limit, and
+            // omitted entirely when the global default already fits, so the
+            // templates that need nothing render byte-identically to before.
+            let limit = match compat_max_tokens(template.name) {
+                Some(n) => format!("  \"max_tokens\": {n},\n"),
+                None => String::new(),
+            };
             format!(
-                "{{\n  \"provider\": \"openai-compat\",\n  \"openai_compat\": {{ \"base_url\": \"{base}\",\n                     \"model\": {m},\n                     \"api_key_file\": {k} }}\n}}\n"
+                "{{\n  \"provider\": \"openai-compat\",\n{limit}  \"openai_compat\": {{ \"base_url\": \"{base}\",\n                     \"model\": {m},\n                     \"api_key_file\": {k} }}\n}}\n"
             )
         }
         other => unreachable!("unknown template {other}"),
@@ -878,6 +926,12 @@ pub fn run_add(
             p.insert("provider".to_string(), "openai-compat".into());
             p.insert("base_url".to_string(), compat_base_url(hosted).into());
             p.insert("model".to_string(), model.into());
+            // The provider's completion cap when it is below the global
+            // default, exactly as the fresh render bakes it; a profile with
+            // no max_tokens would inherit the global value instead.
+            if let Some(n) = compat_max_tokens(hosted) {
+                p.insert("max_tokens".to_string(), n.into());
+            }
             p.insert("api_key_file".to_string(), key.display().to_string().into());
             new_profiles.push((hosted.to_string(), p.into()));
             key_file = Some(key);
@@ -989,6 +1043,16 @@ mod tests {
                     assert_eq!(resolved.provider, "openai-compat");
                     assert_eq!(resolved.api_key_file.as_deref(), Some("/tmp/k"));
                     assert_eq!(resolved.base_url, compat_base_url(t.name));
+                    // T13: a fresh hosted config bakes the provider's
+                    // completion cap only where it is below the global
+                    // default; gpt-4o rejected 32000 live.
+                    assert_eq!(
+                        resolved.max_tokens,
+                        compat_max_tokens(t.name)
+                            .unwrap_or(crate::config::DEFAULT_MAX_TOKENS),
+                        "template {}",
+                        t.name
+                    );
                 }
                 other => panic!("unknown template {other}"),
             }
@@ -1303,7 +1367,7 @@ mod tests {
         assert_eq!(
             ANTHROPIC_PROFILES.map(|(_, _, w)| w),
             [1_000_000, 200_000, 1_000_000, 1_000_000],
-            "live 2026-08-03: haiku is the odd one out"
+            "live 2026-08-04: haiku is the odd one out"
         );
         let (active, resolved) = cfg.startup_selection(&profiles).expect("selection resolves");
         assert_eq!(active.as_deref(), Some("opus"));
@@ -1441,8 +1505,8 @@ mod tests {
     #[test]
     fn add_hosted_templates_add_one_profile_each() {
         for (template, base, default_model) in [
-            ("openai", OPENAI_BASE_URL, "gpt-4o-mini"),
-            ("gemini", GEMINI_BASE_URL, "gemini-2.5-flash"),
+            ("openai", OPENAI_BASE_URL, "gpt-4o"),
+            ("gemini", GEMINI_BASE_URL, "gemini-3.6-flash"),
             ("xai", XAI_BASE_URL, "grok-4"),
         ] {
             let tmp = tempfile::tempdir().unwrap();
@@ -1461,6 +1525,10 @@ mod tests {
             assert_eq!(p.provider, "openai-compat", "{template}");
             assert_eq!(p.base_url, base, "{template}");
             assert_eq!(p.model, default_model, "{template}");
+            // T13: gpt-4o's completion cap is baked into the profile. The
+            // others bake nothing and inherit the config's global, which in
+            // this merge target is the local template's 4096.
+            assert_eq!(p.max_tokens, compat_max_tokens(template).unwrap_or(4096), "{template}");
             assert_eq!(
                 p.api_key_file.as_deref(),
                 Some(key.display().to_string().as_str()),
@@ -1605,7 +1673,7 @@ mod tests {
         assert_eq!(parsed.profile.as_deref(), Some("mine"), "startup key untouched");
         let profiles = parsed.resolved_profiles().unwrap();
         assert_eq!(profiles["mine"].model, "claude-opus-5");
-        assert_eq!(profiles["openai"].model, "gpt-4o-mini");
+        assert_eq!(profiles["openai"].model, "gpt-4o");
     }
 
     // ------------------------------------- T17 P3: hidden key entry (piped)

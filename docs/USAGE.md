@@ -311,7 +311,7 @@ effective default model):
 
 The baked `context_window` values are per model, not one shared number:
 haiku serves 200k of input where the other three serve 1M. They are
-knowledge as of 2026-08-03, read once off the authenticated models API,
+knowledge as of 2026-08-04, read once off the authenticated models API,
 not detected at init time, because `init` never makes an authenticated
 call. Both `/models` and `doctor` check them against the live wire, so
 if a tier's real limit moves you will see it there. A config written by
@@ -321,9 +321,9 @@ the numbers by hand) if you want the current values.
 
 The hosted OpenAI-compatible templates share one shape and differ only
 in endpoint and default model; the xAI one, for instance (OpenAI:
-`https://api.openai.com/v1` / `gpt-4o-mini`; Gemini:
+`https://api.openai.com/v1` / `gpt-4o`; Gemini:
 `https://generativelanguage.googleapis.com/v1beta/openai` /
-`gemini-2.5-flash`):
+`gemini-3.6-flash`):
 
 ```json
 {
@@ -333,6 +333,11 @@ in endpoint and default model; the xAI one, for instance (OpenAI:
                      "api_key_file": "/home/you/.secrets/temur-xai-key" }
 }
 ```
+
+The OpenAI template is the one exception to that shape: it also writes
+`"max_tokens": 16384`, because gpt-4o caps completions there and rejects
+anything larger, while temur's default is 32000. The others accept the
+default and bake nothing.
 
 The hosted OpenAI, Gemini, and xAI templates are written to their
 published compat specs but not yet live-verified against those
