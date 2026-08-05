@@ -118,8 +118,8 @@ impl OpenAiCompatProvider {
             }
             // An error envelope can replace a chunk mid-stream; record it
             // and keep reading, like the Anthropic path does.
-            if let Ok(env) = serde_json::from_str::<types::ErrorEnvelope>(&data) {
-                if let Some(err) = env.error {
+            if let Ok(env) = serde_json::from_str::<types::ErrorPayload>(&data) {
+                if let Some(err) = env.into_error() {
                     acc.error = Some(err.into_body());
                     continue;
                 }
@@ -185,9 +185,11 @@ impl Provider for OpenAiCompatProvider {
 fn transport_error_to_provider(e: TransportError) -> ProviderError {
     match e {
         TransportError::Status { code, body, .. } => {
-            let parsed = serde_json::from_str::<types::ErrorEnvelope>(&body)
+            // ErrorPayload, not ErrorEnvelope: Google answers with the
+            // envelope wrapped in a one-element array (T13 F9).
+            let parsed = serde_json::from_str::<types::ErrorPayload>(&body)
                 .ok()
-                .and_then(|env| env.error)
+                .and_then(types::ErrorPayload::into_error)
                 .map(types::WireError::into_body);
             match parsed {
                 Some(err) => ProviderError::Api {

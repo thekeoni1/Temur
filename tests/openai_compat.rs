@@ -409,6 +409,75 @@ fn length_maps_to_max_tokens() {
     let provider = provider_with(vec![Ok("length_stop")]);
     let msg = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
     assert_eq!(msg.stop_reason, Some(StopReason::MaxTokens));
+    // T13 F10: the truncation is also recorded in stop_details, which is
+    // how it survives the ToolUse override when calls were assembled too.
+    assert_eq!(
+        msg.stop_details.expect("truncation carries details").kind,
+        "max_tokens"
+    );
+}
+
+// --- T13 F10: assembled tool calls win over finish_reason ------------------
+
+#[test]
+fn stop_with_assembled_calls_still_means_tool_use() {
+    // The T13 finding, live 2026-08-05 and pinned by curl: Gemini's compat
+    // surface reports finish_reason "tool_calls" on the NON-streaming
+    // response and "stop" on the STREAMING one for the identical request
+    // with the identical call attached. temur streams. Mapping "stop"
+    // faithfully made the agent loop discard a real, well-formed write call
+    // in silence (no tool ran, no file appeared, the saved session was left
+    // holding a tool_use with no tool_result). The call id and arguments
+    // below are the ones from that captured session.
+    let provider = provider_with(vec![Ok("gemini_stop_with_calls")]);
+    let mut events = vec![];
+    let msg = provider
+        .stream(&sample_request(), &mut |e| events.push(e), &CancelToken::new())
+        .unwrap();
+    assert_eq!(msg.stop_reason, Some(StopReason::ToolUse));
+    assert!(msg.stop_details.is_none()); // nothing was truncated
+    assert_eq!(events, vec![StreamEvent::ToolUseStarted { name: "write".into() }]);
+    match &msg.content[0] {
+        ContentBlock::ToolUse { id, name, input, input_raw } => {
+            assert_eq!(id, "guEZm7Du");
+            assert_eq!(name, "write");
+            assert_eq!(
+                input,
+                &serde_json::json!({
+                    "filePath": "/tmp/t13-gemini.txt",
+                    "content": "hello from gemini\n"
+                })
+            );
+            assert_eq!(input_raw.as_deref(), None);
+        }
+        other => panic!("expected tool_use, got {other:?}"),
+    }
+}
+
+#[test]
+fn absent_finish_reason_with_calls_still_means_tool_use() {
+    // The original quirk the F10 rule generalizes: a local server that ends
+    // the stream without ever sending finish_reason. Unchanged behavior.
+    let provider = provider_with(vec![Ok("quirk_no_finish_reason")]);
+    let msg = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
+    assert_eq!(msg.stop_reason, Some(StopReason::ToolUse));
+    assert!(msg.stop_details.is_none());
+    match &msg.content[0] {
+        ContentBlock::ToolUse { id, name, .. } => {
+            assert_eq!(id, "call_L1");
+            assert_eq!(name, "read");
+        }
+        other => panic!("expected tool_use, got {other:?}"),
+    }
+}
+
+#[test]
+fn tool_calls_finish_reason_is_untouched_by_the_override() {
+    // The ordinary OpenAI path: same answer before and after F10.
+    let provider = provider_with(vec![Ok("tool_fragmented")]);
+    let msg = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
+    assert_eq!(msg.stop_reason, Some(StopReason::ToolUse));
+    assert!(msg.stop_details.is_none());
 }
 
 #[test]
@@ -499,6 +568,36 @@ fn bare_string_error_body_tolerated() {
     }
 }
 
+#[test]
+fn array_wrapped_error_body_is_unwrapped() {
+    // T13 F9, the real shape captured live 2026-08-05: Google wraps the
+    // OpenAI error envelope in a ONE-ELEMENT JSON ARRAY. The object-only
+    // parser dropped it to defaults and printed
+    // "api error (HTTP 404) api_error:" with no message, hiding the one
+    // sentence that explained the failure (a retired model id). 404 is not
+    // retryable, so one call is all it takes.
+    let (provider, transport) = provider_and_transport(
+        vec![Err(TransportError::Status {
+            code: 404,
+            retry_after: None,
+            body: r#"[{"error":{"code":404,"message":"models/gemini-2.5-flash is not found for API version v1beta, or is not supported for generateContent.","status":"NOT_FOUND"}}]"#
+                .into(),
+        })],
+        None,
+    );
+    let err = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap_err();
+    match err {
+        ProviderError::Api { status, kind, message } => {
+            assert_eq!(status, 404);
+            // No "type" and a NUMERIC "code": the label comes from "status".
+            assert_eq!(kind, "NOT_FOUND");
+            assert!(message.contains("is not found for API version"), "{message}");
+        }
+        other => panic!("expected Api error, got {other:?}"),
+    }
+    assert_eq!(transport.bodies.borrow().len(), 1); // no retry
+}
+
 // --- quirk fixtures: local servers (llama.cpp / Ollama) --------------------
 
 #[test]
@@ -553,9 +652,22 @@ fn quirk_whole_call_in_one_chunk_without_index() {
 fn truncated_tool_arguments_preserved_as_input_raw() {
     // Arguments cut off by finish_reason "length": input stays {}, and the
     // raw fragment the model actually emitted survives as input_raw.
+    //
+    // T13 F10 changed the stop reason here: calls were assembled, so the
+    // response dispatches (ToolUse) rather than ending the turn, and the
+    // truncation rides in stop_details so the agent reports it as well. The
+    // mangled trailing call is not executed either way: the agent's lossless
+    // repair guard (T4) sees input_raw and feeds the error back instead.
     let provider = provider_with(vec![Ok("tool_truncated_args")]);
     let msg = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
-    assert_eq!(msg.stop_reason, Some(StopReason::MaxTokens));
+    assert_eq!(msg.stop_reason, Some(StopReason::ToolUse));
+    assert_eq!(
+        msg.stop_details
+            .as_ref()
+            .expect("truncation still surfaced")
+            .kind,
+        "max_tokens"
+    );
     match &msg.content[0] {
         ContentBlock::ToolUse {
             id,

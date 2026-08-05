@@ -9,9 +9,10 @@
 //! Tolerance policy mirrors the Anthropic provider's, tuned for local
 //! servers whose compatibility is approximate: unknown fields are ignored,
 //! absent usage stays `None` (never zero), absent tool-call IDs are
-//! synthesized, `finish_reason` values we don't know map to `Unknown`, and
-//! a missing `finish_reason` with assembled tool calls is inferred as tool
-//! use rather than dropped.
+//! synthesized, `finish_reason` values we don't know map to `Unknown`,
+//! assembled tool calls always mean tool use whatever `finish_reason` says
+//! or fails to say (T13 F10), and an error body wrapped in a JSON array is
+//! unwrapped (T13 F9).
 
 use crate::provider::types as neutral;
 use crate::provider::StreamEvent;
@@ -300,10 +301,16 @@ pub struct ApiErrorBody {
     pub kind: Option<String>,
     #[serde(default)]
     pub code: Option<Value>,
+    /// Google's compat surface names the error class here and leaves `type`
+    /// absent, with a NUMERIC `code` (T13 F9, captured live 2026-08-05).
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 impl ApiErrorBody {
-    /// Best label available: `type`, else a string `code`, else generic.
+    /// Best label available: `type`, else a string `code`, else `status`,
+    /// else generic. `status` is last so every shape that already produced
+    /// a label keeps producing the same one.
     pub fn kind_label(&self) -> String {
         self.kind
             .clone()
@@ -312,6 +319,7 @@ impl ApiErrorBody {
                     .as_ref()
                     .and_then(|c| c.as_str().map(String::from))
             })
+            .or_else(|| self.status.clone())
             .unwrap_or_else(|| "api_error".into())
     }
 }
@@ -331,6 +339,7 @@ impl WireError {
                 message,
                 kind: None,
                 code: None,
+                status: None,
             },
         }
     }
@@ -340,6 +349,40 @@ impl WireError {
 pub struct ErrorEnvelope {
     #[serde(default)]
     pub error: Option<WireError>,
+}
+
+/// The error body as it actually arrives (T13 F9). OpenAI and every local
+/// server send the bare envelope; Google's compat surface wraps that same
+/// envelope in a ONE-ELEMENT JSON ARRAY, which the object-only shape failed
+/// to parse, so a live 404 on a retired model id printed
+/// `api error (HTTP 404) api_error:` with no message at all. Captured live
+/// 2026-08-05 during T13 acceptance.
+///
+/// Deliberately untagged and permissive: an ordinary chunk still parses as
+/// `One` with no error, which is what the mid-stream check relies on.
+///
+/// VARIANT ORDER IS LOAD-BEARING. serde can build a struct from a sequence
+/// positionally, so an `One`-first enum matches `[{"error":{...}}]` as an
+/// ErrorEnvelope whose `error` field is the whole first element, silently
+/// reproducing the empty-message bug this type exists to fix. Sequence
+/// first, object second.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum ErrorPayload {
+    Many(Vec<ErrorEnvelope>),
+    One(ErrorEnvelope),
+}
+
+impl ErrorPayload {
+    /// The first error carried by the payload, whatever shape wrapped it.
+    /// No observed server sends more than one element; scanning past a
+    /// leading element that has no `error` is free tolerance.
+    pub fn into_error(self) -> Option<WireError> {
+        match self {
+            ErrorPayload::One(e) => e.error,
+            ErrorPayload::Many(v) => v.into_iter().find_map(|e| e.error),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -489,18 +532,39 @@ impl ChunkAccumulator {
                 input_raw,
             });
         }
-        // Quirk: a stream that made tool calls but never sent finish_reason
-        // still means "execute the tools", not "stopped for no reason".
-        let stop_reason = match self.finish_reason {
-            Some(s) => Some(map_finish_reason(&s)),
-            None if had_calls => Some(neutral::StopReason::ToolUse),
-            None => None,
+        // T13 F10, generalizing the older "absent finish_reason" quirk to
+        // "absent OR wrong": a stream that assembled tool calls means
+        // "execute the tools", whatever finish_reason says or fails to say.
+        // Gemini's compat surface reports "tool_calls" on the NON-streaming
+        // response and "stop" on the STREAMING one for the identical request
+        // with the identical calls attached (pinned by curl, live
+        // 2026-08-05). Mapping that faithfully made the agent loop drop
+        // real, well-formed tool calls in silence, since it dispatches only
+        // on ToolUse and the prose-recovery fallback is guarded by "no
+        // ToolUse block present". ToolUse therefore wins over every other
+        // mapped reason and over absence.
+        let mapped = self.finish_reason.as_deref().map(map_finish_reason);
+        let truncated = mapped == Some(neutral::StopReason::MaxTokens);
+        let stop_reason = if had_calls {
+            Some(neutral::StopReason::ToolUse)
+        } else {
+            mapped
         };
+        // "length" is the user's problem whether or not calls were
+        // assembled, so the truncation rides in stop_details and survives
+        // the override above; the agent reports it AND dispatches. A
+        // trailing call the cut mangled is caught by the agent's lossless
+        // repair guard (T4) and fed back as an error rather than executed.
+        let stop_details = truncated.then(|| neutral::StopDetails {
+            kind: "max_tokens".into(),
+            category: None,
+            explanation: None,
+        });
         // Structured-output refusal: the wire says finish_reason "stop" but
         // streams the text into `refusal`. Map it to the neutral refusal
         // shape (reason + explanation), same as Anthropic's stop_details.
         let (stop_reason, stop_details) = if self.refusal.is_empty() {
-            (stop_reason, None) // content_filter carries no details on this wire
+            (stop_reason, stop_details) // content_filter carries no details
         } else {
             (
                 Some(neutral::StopReason::Refusal),

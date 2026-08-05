@@ -694,6 +694,46 @@ fn max_tokens_notice_names_the_profile_after_a_switch() {
 }
 
 #[test]
+fn truncation_is_reported_when_the_response_also_made_tool_calls() {
+    // T13 F10: a response can both assemble tool calls and hit the limit.
+    // The provider says ToolUse (the calls must run) and carries the
+    // truncation in stop_details; the agent runs the tools AND reports the
+    // truncation, in that order, with the usual wording.
+    let dir = tempfile::tempdir().unwrap();
+    let mut truncated = msg_with_usage(
+        vec![tool_use("call_1", "read", serde_json::json!({"filePath": "nope.txt"}))],
+        StopReason::ToolUse,
+        serde_json::json!({"input_tokens": 150, "output_tokens": 100}),
+    );
+    truncated.stop_details = Some(StopDetails {
+        kind: "max_tokens".into(),
+        category: None,
+        explanation: None,
+    });
+    let mut session = session_with_window(
+        dir.path(),
+        vec![truncated, msg(vec![text("done")], StopReason::EndTurn)],
+        None,
+        800,
+    );
+    let events = collect_events(&mut session, "hi");
+    assert!(notices(&events)
+        .iter()
+        .any(|n| n == "response truncated: max_tokens (800, from config) reached; raise max_tokens in config.json"),
+        "{events:?}");
+    // The tool still ran, and the notice preceded it.
+    let notice_at = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::Notice(n) if n.contains("response truncated")))
+        .expect("truncation notice");
+    let tool_at = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::ToolEnd { .. }))
+        .expect("the tool call was dispatched");
+    assert!(notice_at < tool_at, "{events:?}");
+}
+
+#[test]
 fn no_usage_reported_stays_silent_despite_window() {
     let dir = tempfile::tempdir().unwrap();
     // Quirk server: never reports usage. A tiny window would certainly warn

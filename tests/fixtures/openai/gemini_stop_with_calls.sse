@@ -1,0 +1,5 @@
+data: {"id":"chatcmpl-gemini-001","object":"chat.completion.chunk","created":1722900000,"model":"models/gemini-flash-latest","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"guEZm7Du","type":"function","function":{"name":"write","arguments":"{\"filePath\": \"/tmp/t13-gemini.txt\", \"content\": \"hello from gemini\\n\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-gemini-001","object":"chat.completion.chunk","created":1722900000,"model":"models/gemini-flash-latest","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":13074,"completion_tokens":65,"total_tokens":13139}}
+
+data: [DONE]

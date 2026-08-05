@@ -446,6 +446,41 @@ impl Session {
         ))
     }
 
+    /// The "response truncated" notice. Shared by the plain MaxTokens stop
+    /// and the T13 F10 case where one response BOTH assembled tool calls and
+    /// hit the limit: there the neutral stop reason is ToolUse (the calls
+    /// must still run) and the truncation arrives in `stop_details`, so the
+    /// user hears about it either way. Wording is identical in both, and
+    /// identical to the pre-T13 strings.
+    fn truncation_notice(&self) -> String {
+        // Near the configured window, max_tokens is the symptom, overflow
+        // the likely cause. Providers stay faithful wire mappers; this
+        // heuristic lives here. Without a window (or without usage) the
+        // wording is EXACTLY the old string.
+        let near_window = match (self.cfg.context_window, self.last_context_used) {
+            (Some(window), Some(used)) => used + u64::from(self.cfg.max_tokens) >= window,
+            _ => false,
+        };
+        if near_window {
+            let used = self.last_context_used.unwrap_or(0);
+            let window = self.cfg.context_window.unwrap_or(0);
+            format!(
+                "response truncated: max_tokens reached near the context window (~{used} of {window} tokens) — likely context overflow; consider starting a new session"
+            )
+        } else {
+            // T16: name the limit and where it came from, so the fix is
+            // findable without guessing which config knob applied.
+            let source = match &self.cfg.max_tokens_source {
+                Some(p) => format!("from profile {p:?}"),
+                None => "from config".into(),
+            };
+            format!(
+                "response truncated: max_tokens ({}, {source}) reached; raise max_tokens in config.json",
+                self.cfg.max_tokens
+            )
+        }
+    }
+
     // `/status` getters: read-only session facts, no key material anywhere.
     pub fn model(&self) -> &str {
         &self.cfg.model
@@ -605,6 +640,14 @@ impl Session {
                     break;
                 }
                 Some(StopReason::ToolUse) => {
+                    // T13 F10: a response can both assemble tool calls and
+                    // hit max_tokens. The calls still run (they are what the
+                    // model asked for), and the truncation is still reported,
+                    // BEFORE the tools, so the notice reads in the order the
+                    // events happened.
+                    if stop_details.as_ref().is_some_and(|d| d.kind == "max_tokens") {
+                        ui(AgentEvent::Notice(self.truncation_notice()));
+                    }
                     self.history.push(RequestMessage {
                         role: Role::Assistant,
                         content: content.clone(),
@@ -876,37 +919,7 @@ impl Session {
                     }
                     match other {
                         Some(StopReason::MaxTokens) => {
-                            // Near the configured window, max_tokens is the
-                            // symptom, overflow the likely cause. Providers
-                            // stay faithful wire mappers; this heuristic
-                            // lives here. Without a window (or without
-                            // usage) the wording is EXACTLY the old string.
-                            let near_window = match (self.cfg.context_window, self.last_context_used)
-                            {
-                                (Some(window), Some(used)) => {
-                                    used + u64::from(self.cfg.max_tokens) >= window
-                                }
-                                _ => false,
-                            };
-                            if near_window {
-                                let used = self.last_context_used.unwrap_or(0);
-                                let window = self.cfg.context_window.unwrap_or(0);
-                                ui(AgentEvent::Notice(format!(
-                                    "response truncated: max_tokens reached near the context window (~{used} of {window} tokens) — likely context overflow; consider starting a new session"
-                                )));
-                            } else {
-                                // T16: name the limit and where it came
-                                // from, so the fix is findable without
-                                // guessing which config knob applied.
-                                let source = match &self.cfg.max_tokens_source {
-                                    Some(p) => format!("from profile {p:?}"),
-                                    None => "from config".into(),
-                                };
-                                ui(AgentEvent::Notice(format!(
-                                    "response truncated: max_tokens ({}, {source}) reached; raise max_tokens in config.json",
-                                    self.cfg.max_tokens
-                                )));
-                            }
+                            ui(AgentEvent::Notice(self.truncation_notice()));
                         }
                         Some(StopReason::ModelContextWindowExceeded) => ui(AgentEvent::Notice(
                             "context window exceeded; consider starting a new session".into(),
