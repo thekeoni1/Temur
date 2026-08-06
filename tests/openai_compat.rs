@@ -197,12 +197,14 @@ fn history_fans_out_tool_results_and_drops_thinking() {
                     name: "read".into(),
                     input: serde_json::json!({"filePath": "/tmp/a.txt"}),
                     input_raw: None,
+                    provider_state: None,
                 },
                 ContentBlock::ToolUse {
                     id: "call_B2".into(),
                     name: "bash".into(),
                     input: serde_json::json!({"command": "ls /tmp"}),
                     input_raw: None,
+                    provider_state: None,
                 },
             ],
         },
@@ -268,6 +270,7 @@ fn assistant_tool_only_message_omits_content() {
                 name: "read".into(),
                 input: serde_json::json!({}),
                 input_raw: None,
+                provider_state: None,
             }],
         },
         RequestMessage {
@@ -438,7 +441,7 @@ fn stop_with_assembled_calls_still_means_tool_use() {
     assert!(msg.stop_details.is_none()); // nothing was truncated
     assert_eq!(events, vec![StreamEvent::ToolUseStarted { name: "write".into() }]);
     match &msg.content[0] {
-        ContentBlock::ToolUse { id, name, input, input_raw } => {
+        ContentBlock::ToolUse { id, name, input, input_raw, .. } => {
             assert_eq!(id, "guEZm7Du");
             assert_eq!(name, "write");
             assert_eq!(
@@ -469,6 +472,80 @@ fn absent_finish_reason_with_calls_still_means_tool_use() {
         }
         other => panic!("expected tool_use, got {other:?}"),
     }
+}
+
+// --- T13 F12: thought-signature round-trip ---------------------------------
+
+/// The two signatures below are the real ones Gemini issued during T13
+/// acceptance on 2026-08-05, captured with curl in both wire modes and kept
+/// at t13-live/evidence/f12-stream.txt and f12-nostream.txt. They are opaque
+/// model state, not credentials.
+const STREAM_SIGNATURE: &str = "EsQBCsEBARFNMg/q0t/lTqXvzD1piM85/it7/DCHMg0cr1ucVIHPWB06ua3+/AQblwEZIqHj9zFn2APCgWNCdHzrZvcS+/rWYny81ZDY2EgTH+4EWhb5JO18jMX0zoAzL34RJRcClz+7WUlZnCcpXzt0Xwt2VWm22z4yf5QNGLrbRcb9GnWai56F8b9IT/tsEd01fLNDcXN9KUiRyXm3gFq5OI7/WvK3OwQhjLRPQxpzvCK55EXJbcGllXADnn0yfjzPmvbiJA==";
+const NOSTREAM_SIGNATURE: &str = "EpwBCpkBARFNMg+ES77DLRpBh+6f43zwUVYyzy0TNdI+og0KXZkirqjt69w5aeMBrLD9FWSxKn0CK17vz7ik1asDqbirAoPZ9zSB0H4mVTEaMoqds8TaXWcPdyie9uVqLpnrKalmLxQd8n1le9b9fVIQjkYRVAKlZFc8kggGdsruV6sUE5JXq5O8L+rav/ebdy61THBFZ+GgtzgakB0x";
+
+#[test]
+fn thought_signature_survives_the_stream() {
+    // Response side. The fixture is the streaming capture verbatim, which
+    // is also a second, independent confirmation of F10: Gemini attaches a
+    // real tool call to finish_reason "stop".
+    let provider = provider_with(vec![Ok("gemini_thought_signature")]);
+    let msg = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
+    assert_eq!(msg.stop_reason, Some(StopReason::ToolUse));
+    match &msg.content[0] {
+        ContentBlock::ToolUse { id, name, provider_state, .. } => {
+            assert_eq!(id, "b9GNMQmu");
+            assert_eq!(name, "read");
+            assert_eq!(
+                provider_state.as_ref().expect("signature preserved"),
+                &serde_json::json!({"google": {"thought_signature": STREAM_SIGNATURE}})
+            );
+        }
+        other => panic!("expected tool_use, got {other:?}"),
+    }
+}
+
+#[test]
+fn thought_signature_goes_back_on_the_wire_verbatim() {
+    // Request side, driven by the NON-streaming capture: temur has no
+    // non-streaming parser, so that capture's job is to pin what we must
+    // send back. Gemini 400s the next request when this is missing, which
+    // is what broke the agent loop on its first round trip.
+    let state = serde_json::json!({"google": {"thought_signature": NOSTREAM_SIGNATURE}});
+    let wire = temur::provider::openai_compat::types::convert_history(&[RequestMessage {
+        role: Role::Assistant,
+        content: vec![ContentBlock::ToolUse {
+            id: "Imz6G105".into(),
+            name: "read".into(),
+            input: serde_json::json!({"filePath": "/tmp/a.txt"}),
+            input_raw: None,
+            provider_state: Some(state.clone()),
+        }],
+    }]);
+    let body = serde_json::to_value(&wire[0]).unwrap();
+    assert_eq!(body["tool_calls"][0]["extra_content"], state);
+    // Nesting intact, not flattened or re-keyed on the way through.
+    assert_eq!(
+        body["tool_calls"][0]["extra_content"]["google"]["thought_signature"],
+        serde_json::json!(NOSTREAM_SIGNATURE)
+    );
+}
+
+#[test]
+fn absent_provider_state_leaves_the_body_byte_identical() {
+    // Every provider but Google: the field must not appear at all, so the
+    // request goldens are untouched.
+    let wire = temur::provider::openai_compat::types::convert_history(&[RequestMessage {
+        role: Role::Assistant,
+        content: vec![ContentBlock::ToolUse {
+            id: "call_A1".into(),
+            name: "read".into(),
+            input: serde_json::json!({"filePath": "/tmp/a.txt"}),
+            input_raw: None,
+            provider_state: None,
+        }],
+    }]);
+    let body = serde_json::to_string(&wire[0]).unwrap();
+    assert!(!body.contains("extra_content"), "{body}");
 }
 
 #[test]
@@ -709,6 +786,7 @@ fn truncated_tool_arguments_preserved_as_input_raw() {
             name,
             input,
             input_raw,
+            ..
         } => {
             assert_eq!(id, "call_T1");
             assert_eq!(name, "write");
@@ -739,6 +817,7 @@ fn input_raw_never_reaches_the_wire() {
                     name: "read".into(),
                     input: serde_json::json!({}),
                     input_raw,
+                    provider_state: None,
                 }],
             },
             RequestMessage {
@@ -1119,6 +1198,7 @@ fn prefix_stability_compat_requests_are_append_only() {
                     name: "read".into(),
                     input: serde_json::json!({"filePath": "/tmp/a.txt"}),
                     input_raw: None,
+                    provider_state: None,
                 },
             ],
         },

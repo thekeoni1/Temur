@@ -56,6 +56,12 @@ pub struct ToolCall {
     #[serde(rename = "type")]
     pub kind: &'static str, // always "function"
     pub function: FunctionBody,
+    /// Provider round-trip state, echoed back exactly as received (T13
+    /// F12). Gemini puts `{"google":{"thought_signature":"..."}}` here and
+    /// 400s the next request without it. Skipped when absent, so every
+    /// other server sees the byte-identical body it saw before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_content: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -115,12 +121,15 @@ pub fn convert_history(messages: &[neutral::RequestMessage]) -> Vec<RequestMessa
                             text.push_str(t);
                         }
                         // input_raw is deliberately dropped: raw unparseable
-                        // arguments never reach any wire.
+                        // arguments never reach any wire. provider_state is
+                        // the opposite case: it came FROM this wire and must
+                        // go back to it verbatim (T13 F12).
                         neutral::ContentBlock::ToolUse {
                             id,
                             name,
                             input,
                             input_raw: _,
+                            provider_state,
                         } => {
                             tool_calls.push(ToolCall {
                                 id: id.clone(),
@@ -129,6 +138,7 @@ pub fn convert_history(messages: &[neutral::RequestMessage]) -> Vec<RequestMessa
                                     name: name.clone(),
                                     arguments: input.to_string(),
                                 },
+                                extra_content: provider_state.clone(),
                             });
                         }
                         _ => {} // thinking / redacted / tool_result-in-wrong-role / unknown
@@ -238,6 +248,10 @@ pub struct ToolCallDelta {
     pub id: Option<String>,
     #[serde(default)]
     pub function: Option<FunctionDelta>,
+    /// Opaque provider state riding along with the call (T13 F12). Gemini
+    /// sends it in the same fragment as the name; nothing here reads it.
+    #[serde(default)]
+    pub extra_content: Option<Value>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -394,6 +408,8 @@ struct PendingCall {
     id: Option<String>,
     name: String,
     arguments: String,
+    /// T13 F12: opaque state to echo back, kept exactly as it arrived.
+    extra_content: Option<Value>,
 }
 
 /// Assembles a complete neutral [`neutral::ResponseMessage`] from a stream
@@ -485,6 +501,11 @@ impl ChunkAccumulator {
         if call.id.is_none() {
             call.id = frag.id.clone().filter(|s| !s.is_empty());
         }
+        // Same first-wins rule as the id: a later fragment must not blank
+        // out state an earlier one carried (T13 F12).
+        if call.extra_content.is_none() {
+            call.extra_content = frag.extra_content.clone();
+        }
         if let Some(f) = &frag.function {
             if let Some(name) = &f.name {
                 if call.name.is_empty() && !name.is_empty() {
@@ -530,6 +551,7 @@ impl ChunkAccumulator {
                 name: call.name,
                 input,
                 input_raw,
+                provider_state: call.extra_content,
             });
         }
         // T13 F10, generalizing the older "absent finish_reason" quirk to

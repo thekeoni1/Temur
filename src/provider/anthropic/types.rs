@@ -379,12 +379,15 @@ impl From<&neutral::ContentBlock> for ContentBlock {
                 ContentBlock::RedactedThinking { data: data.clone() }
             }
             // input_raw is deliberately dropped: raw unparseable arguments
-            // never reach any wire.
+            // never reach any wire. provider_state is dropped for the same
+            // reason openai-compat drops thinking signatures: it is another
+            // wire's round-trip state and means nothing here (T13 F12).
             neutral::ContentBlock::ToolUse {
                 id,
                 name,
                 input,
                 input_raw: _,
+                provider_state: _,
             } => ContentBlock::ToolUse {
                 id: id.clone(),
                 name: name.clone(),
@@ -427,6 +430,9 @@ impl From<ContentBlock> for neutral::ContentBlock {
                 // Attached (when applicable) by the accumulator's
                 // into_neutral_message, which owns the failed-parse map.
                 input_raw: None,
+                // This wire has no such concept: Anthropic verifies thinking
+                // blocks, not tool calls (T13 F12).
+                provider_state: None,
             },
             ContentBlock::ToolResult {
                 tool_use_id,

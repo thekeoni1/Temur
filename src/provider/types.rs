@@ -51,6 +51,22 @@ pub enum ContentBlock {
         /// model actually emitted instead of a generic missing-field error.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         input_raw: Option<String>,
+        /// Opaque round-trip state for providers that verify their own tool
+        /// calls; others ignore it. Same contract as `Thinking.signature`,
+        /// one level down: carried back verbatim, never shown, never
+        /// interpreted.
+        ///
+        /// Gemini is the provider that needs it (T13 F12, captured live
+        /// 2026-08-05). Its OpenAI-compat surface attaches
+        /// `extra_content.google.thought_signature` to every tool call and
+        /// rejects the NEXT request with HTTP 400 INVALID_ARGUMENT if the
+        /// signature does not come back on the echoed call, which broke the
+        /// agent loop on its first round trip while single-shot calls
+        /// worked. Absent for every other provider, and absent means the
+        /// field is not serialized at all, so request goldens and session
+        /// files are byte-identical to before wherever it does not apply.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_state: Option<Value>,
     },
     /// Request-only (sent back by us after executing tools).
     ToolResult {

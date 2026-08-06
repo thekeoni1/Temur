@@ -655,11 +655,14 @@ impl Session {
                     let calls: Vec<(String, String, serde_json::Value, Option<String>)> = content
                         .iter()
                         .filter_map(|b| match b {
+                            // provider_state is round-trip state for the wire
+                            // it came from; execution never looks at it.
                             ContentBlock::ToolUse {
                                 id,
                                 name,
                                 input,
                                 input_raw,
+                                ..
                             } => Some((id.clone(), name.clone(), input.clone(), input_raw.clone())),
                             _ => None,
                         })
@@ -1125,6 +1128,7 @@ mod tests {
                 name: "read".into(),
                 input: serde_json::json!({}),
                 input_raw: None,
+                provider_state: None,
             }],
         }
     }

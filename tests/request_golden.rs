@@ -132,12 +132,14 @@ fn golden_tool_history() {
                     name: "read".into(),
                     input: serde_json::json!({"arg": "/tmp/a.txt"}),
                     input_raw: None,
+                    provider_state: None,
                 },
                 ContentBlock::ToolUse {
                     id: "tu_2".into(),
                     name: "bash".into(),
                     input: serde_json::json!({"arg": "ls /tmp"}),
                     input_raw: None,
+                    provider_state: None,
                 },
             ],
         },
@@ -270,6 +272,7 @@ fn prefix_stability_anthropic_requests_are_append_only() {
                     name: "read".into(),
                     input: serde_json::json!({"arg": "/tmp/a.txt"}),
                     input_raw: None,
+                    provider_state: None,
                 },
             ],
         },
@@ -341,6 +344,7 @@ fn input_raw_never_reaches_the_wire() {
                     name: "read".into(),
                     input: serde_json::json!({}),
                     input_raw,
+                    provider_state: None,
                 }],
             },
             RequestMessage {
@@ -358,5 +362,46 @@ fn input_raw_never_reaches_the_wire() {
         body_with(None),
         body_with(Some("{\"filePath\": \"trunc".into())),
         "input_raw changed the Anthropic request body"
+    );
+}
+
+#[test]
+fn provider_state_never_reaches_the_anthropic_wire() {
+    // T13 F12: Gemini's thought signature is another wire's round-trip
+    // state. The Anthropic converter drops it, exactly as openai-compat
+    // drops Anthropic thinking signatures, so a history that switched
+    // providers mid-session cannot leak one provider's opaque state into
+    // the other's request. Byte-identical bodies is the assertion.
+    let body_with = |provider_state: Option<serde_json::Value>| {
+        let mut req = base_request();
+        req.messages = vec![
+            user_text("start"),
+            RequestMessage {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "tu_1".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({"arg": "/tmp/a.txt"}),
+                    input_raw: None,
+                    provider_state,
+                }],
+            },
+            RequestMessage {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tu_1".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                }],
+            },
+        ];
+        body_for(&req)
+    };
+    assert_eq!(
+        body_with(None),
+        body_with(Some(
+            serde_json::json!({"google": {"thought_signature": "EsQBCsEB-opaque"}})
+        )),
+        "provider_state changed the Anthropic request body"
     );
 }

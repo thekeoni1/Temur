@@ -51,6 +51,7 @@ fn tool_use(id: &str, name: &str, input: serde_json::Value) -> ContentBlock {
         name: name.into(),
         input,
         input_raw: None,
+        provider_state: None,
     }
 }
 
@@ -1070,6 +1071,7 @@ fn tool_use_incomplete(id: &str, name: &str, raw: &str) -> ContentBlock {
         name: name.into(),
         input: serde_json::json!({}),
         input_raw: Some(raw.into()),
+        provider_state: None,
     }
 }
 

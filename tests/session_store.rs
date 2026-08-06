@@ -92,6 +92,7 @@ fn every_block_kind_round_trips_including_thinking_signatures() {
                 name: "read".into(),
                 input: serde_json::json!({"file_path": "/work/a.txt"}),
                 input_raw: None,
+                provider_state: None,
             },
             ContentBlock::ToolUse {
                 id: "toolu_2".into(),
@@ -100,6 +101,7 @@ fn every_block_kind_round_trips_including_thinking_signatures() {
                 // input stayed {} and the raw string was preserved.
                 input: serde_json::json!({}),
                 input_raw: Some("{\"file_path\": \"/work/b.txt\", \"content\": \"trunc".into()),
+                provider_state: None,
             },
         ]),
         RequestMessage {
@@ -275,6 +277,72 @@ fn unknown_content_blocks_are_filtered_on_load() {
     );
 }
 
+#[test]
+fn sessions_written_before_provider_state_still_load() {
+    // T13 F12 added an optional opaque field to tool_use. Every session
+    // saved before it exists lacks the key entirely, and must load with the
+    // field absent rather than failing the parse.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.json");
+    std::fs::write(
+        &path,
+        r#"{"version":1,"provider":"openai-compat","model":"m","cwd":"/w","history":[
+            {"role":"assistant","content":[
+                {"type":"tool_use","id":"call_1","name":"read","input":{"filePath":"/tmp/a.txt"}}
+            ]}]}"#,
+    )
+    .unwrap();
+    let f = store::load(&path).unwrap();
+    assert_eq!(
+        f.history[0].content,
+        vec![ContentBlock::ToolUse {
+            id: "call_1".into(),
+            name: "read".into(),
+            input: serde_json::json!({"filePath": "/tmp/a.txt"}),
+            input_raw: None,
+            provider_state: None,
+        }]
+    );
+}
+
+#[test]
+fn provider_state_round_trips_through_a_saved_session() {
+    // And the other direction: a Gemini tool call keeps its signature
+    // across a save/load, so resuming a session can still answer the call.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.json");
+    let state = serde_json::json!({"google": {"thought_signature": "EsQBCsEB-opaque"}});
+    let history = vec![RequestMessage {
+        role: Role::Assistant,
+        content: vec![ContentBlock::ToolUse {
+            id: "b9GNMQmu".into(),
+            name: "read".into(),
+            input: serde_json::json!({"filePath": "/tmp/a.txt"}),
+            input_raw: None,
+            provider_state: Some(state.clone()),
+        }],
+    }];
+    let r = store::SessionFileRef {
+        version: FORMAT_VERSION,
+        provider: "openai-compat",
+        model: "gemini-3.6-flash",
+        cwd: "/w",
+        history: &history,
+        session_usage: Usage::default(),
+        todos: &[],
+        last_context_used: None,
+        name: None,
+    };
+    store::save(&path, &r, temur::config::DEFAULT_SESSION_MAX_BYTES, &mut |_| {}).unwrap();
+    let f = store::load(&path).unwrap();
+    match &f.history[0].content[0] {
+        ContentBlock::ToolUse { provider_state, .. } => {
+            assert_eq!(provider_state.as_ref(), Some(&state))
+        }
+        other => panic!("expected tool_use, got {other:?}"),
+    }
+}
+
 // ------------------------------------------------------------------ size cap
 
 /// Assert the saved history is replayable: it starts with a plain user
@@ -314,6 +382,7 @@ fn two_big_exchanges(pad: usize) -> Vec<RequestMessage> {
             name: "read".into(),
             input: serde_json::json!({"file_path": "/a"}),
             input_raw: None,
+            provider_state: None,
         }]),
         tool_result("t1", &big, false),
         assistant(vec![ContentBlock::Text {
@@ -325,6 +394,7 @@ fn two_big_exchanges(pad: usize) -> Vec<RequestMessage> {
             name: "read".into(),
             input: serde_json::json!({"file_path": "/b"}),
             input_raw: None,
+            provider_state: None,
         }]),
         tool_result("t2", &big, false),
         assistant(vec![ContentBlock::Text {
@@ -651,6 +721,7 @@ fn trailing_plain_user_message_is_dropped_but_tool_results_are_kept() {
             name: "read".into(),
             input: serde_json::json!({}),
             input_raw: None,
+            provider_state: None,
         }]),
         tool_result("t1", "contents", false),
     ]);
@@ -723,12 +794,14 @@ fn replay_flattens_interleaved_history_and_is_documented_lossy() {
                 name: "read".into(),
                 input: serde_json::json!({"file_path": "/a"}),
                 input_raw: None,
+                provider_state: None,
             },
             ContentBlock::ToolUse {
                 id: "t2".into(),
                 name: "bash".into(),
                 input: serde_json::json!({"command": "ls"}),
                 input_raw: None,
+                provider_state: None,
             },
         ]),
         RequestMessage {
@@ -779,6 +852,7 @@ fn replay_handles_interrupt_markers_and_empty_history() {
             name: "bash".into(),
             input: serde_json::json!({"command": "sleep 60"}),
             input_raw: None,
+            provider_state: None,
         }]),
         tool_result("t1", temur::agent::INTERRUPT_MARKER, true),
     ];
@@ -825,6 +899,7 @@ fn interrupted_turn_shapes_survive_the_resume_seam() {
             name: "bash".into(),
             input: serde_json::json!({"command": "sleep 60"}),
             input_raw: None,
+            provider_state: None,
         }]),
         tool_result("t1", temur::agent::INTERRUPT_MARKER, true),
     ]);
