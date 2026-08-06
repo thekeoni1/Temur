@@ -10,9 +10,9 @@
 //! servers whose compatibility is approximate: unknown fields are ignored,
 //! absent usage stays `None` (never zero), absent tool-call IDs are
 //! synthesized, `finish_reason` values we don't know map to `Unknown`,
-//! assembled tool calls always mean tool use whatever `finish_reason` says
-//! or fails to say (T13 F10), and an error body wrapped in a JSON array is
-//! unwrapped (T13 F9).
+//! assembled tool calls mean tool use whatever `finish_reason` says or
+//! fails to say unless it says refusal (T13 F10), and an error body
+//! wrapped in a JSON array is unwrapped (T13 F9).
 
 use crate::provider::types as neutral;
 use crate::provider::StreamEvent;
@@ -542,13 +542,22 @@ impl ChunkAccumulator {
         // real, well-formed tool calls in silence, since it dispatches only
         // on ToolUse and the prose-recovery fallback is guarded by "no
         // ToolUse block present". ToolUse therefore wins over every other
-        // mapped reason and over absence.
+        // mapped reason and over absence, with ONE exception.
+        //
+        // Refusal is excluded (P3.5 amendment). Executing side-effectful
+        // calls out of a FILTERED completion is the dangerous direction of
+        // this rule, and a refusal is nothing like the silence F10 fixed:
+        // the agent's Refusal arm prints a notice, discards the output,
+        // never auto-retries, and breaks WITHOUT pushing the assistant
+        // turn, so no dangling tool_use is saved either. It also keeps this
+        // wire's two refusal signals consistent, since the `delta.refusal`
+        // override further down already beats ToolUse.
         let mapped = self.finish_reason.as_deref().map(map_finish_reason);
         let truncated = mapped == Some(neutral::StopReason::MaxTokens);
-        let stop_reason = if had_calls {
-            Some(neutral::StopReason::ToolUse)
-        } else {
-            mapped
+        let stop_reason = match mapped {
+            Some(neutral::StopReason::Refusal) => mapped,
+            _ if had_calls => Some(neutral::StopReason::ToolUse),
+            _ => mapped,
         };
         // "length" is the user's problem whether or not calls were
         // assembled, so the truncation rides in stop_details and survives

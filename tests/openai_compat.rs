@@ -472,6 +472,41 @@ fn absent_finish_reason_with_calls_still_means_tool_use() {
 }
 
 #[test]
+fn content_filter_beats_assembled_calls() {
+    // The one exception to the F10 override (P3.5 amendment): a FILTERED
+    // completion must not dispatch side-effectful calls. The calls survive
+    // in content, but the stop reason keeps the agent on its Refusal arm,
+    // which shows a notice, discards, never auto-retries, and breaks
+    // without pushing the assistant turn.
+    let provider = provider_with(vec![Ok("content_filter_with_calls")]);
+    let msg = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
+    assert_eq!(msg.stop_reason, Some(StopReason::Refusal));
+    assert!(msg.stop_details.is_none()); // content_filter carries no details
+    assert!(
+        matches!(&msg.content[0], ContentBlock::ToolUse { name, .. } if name == "bash"),
+        "the call is still reported, just not dispatched: {:?}",
+        msg.content
+    );
+}
+
+#[test]
+fn refusal_text_beats_assembled_calls_too() {
+    // The wire's other refusal signal, for consistency with the row above:
+    // refusal text streams via delta.refusal (finish_reason "stop") while
+    // tool calls were assembled. The refusal override runs last and wins,
+    // carrying the explanation.
+    let provider = provider_with(vec![Ok("refusal_delta_with_calls")]);
+    let msg = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
+    assert_eq!(msg.stop_reason, Some(StopReason::Refusal));
+    let details = msg.stop_details.as_ref().expect("refusal carries details");
+    assert_eq!(details.kind, "refusal");
+    assert_eq!(
+        details.explanation.as_deref(),
+        Some("I'm sorry, I can't assist with that request.")
+    );
+}
+
+#[test]
 fn tool_calls_finish_reason_is_untouched_by_the_override() {
     // The ordinary OpenAI path: same answer before and after F10.
     let provider = provider_with(vec![Ok("tool_fragmented")]);

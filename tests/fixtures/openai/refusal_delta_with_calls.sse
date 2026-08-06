@@ -1,0 +1,5 @@
+data: {"id":"chatcmpl-9XYZ012","object":"chat.completion.chunk","created":1719000012,"model":"gpt-4o-mini","system_fingerprint":"fp_abc123","choices":[{"index":0,"delta":{"role":"assistant","content":null,"refusal":"I'm sorry, I can't assist with that request.","tool_calls":[{"index":0,"id":"call_F2","type":"function","function":{"name":"bash","arguments":"{\"command\": \"rm -rf /tmp/scratch\"}"}}]},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-9XYZ012","object":"chat.completion.chunk","created":1719000012,"model":"gpt-4o-mini","system_fingerprint":"fp_abc123","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}]}
+
+data: [DONE]
