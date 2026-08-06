@@ -2763,7 +2763,7 @@ record, with every code claim confirmed in-tree at verification time
 and live values taken from the operator transcripts. Findings 9 to 12
 are the build session's own, from the code it changed.
 
-Twelve findings, with dispositions.
+Thirteen findings, with dispositions.
 
 - **Finding 1 (P2). Anthropic template context_window under-reports
   5x.** The anthropic init template baked context_window 200000 into
@@ -2905,6 +2905,25 @@ Twelve findings, with dispositions.
   request goldens and session files are byte-identical wherever it
   does not apply.
 
+- **Finding 13 (P4 gate). The TUI busy-loops when stdin is not a
+  TTY.** Found by the P4 gate hanging twice at the container TUI pty
+  smoke, and worth separating from the harness flake it was filed as
+  for three release cycles: the container's TUI came up correctly and
+  rendered its prompt ("# new session", "ask anything"), the smoke's
+  scripted input was never consumed, and no turn ever ran, but the
+  process did not sit idle waiting. It emitted roughly 1.6 KB/s of
+  redraw output at about 7% CPU for the entire 2.5 hour stall,
+  measured live (2662252 bytes at T0, 2670469 five seconds later) and
+  totalling 2.6 MB of ANSI redraws for one static screen. podman's own
+  warning names the condition: "The input device is not a TTY".
+  Whether the spin is reachable outside this harness is NOT
+  established, and deliberately was not investigated mid-milestone.
+  DISPOSITION: queued in two parts (roadmap): (a) product, the TUI
+  should block on its event source or refuse non-TTY stdin with an
+  error pointing at one-shot `-p`; (b) harness, check.sh needs a
+  readiness gate or timeout on the pty smokes so a hang fails in
+  minutes with a diagnosis rather than sitting for hours.
+
 Live verification results, per provider:
 
 - **Anthropic**: verified 2026-08-03 and 2026-08-04. Four-profile
@@ -2929,13 +2948,23 @@ Live verification results, per provider:
 - **xAI**: not verified. No key was available; the template is
   written to the published spec and the docs say so.
 
-Gate results: full scripts/check.sh green at every phase (P1, P2.5,
-P3.5, the P3.5 rider, P3.6, and P4). The musl TUI pty smoke hung once
-during the P3.6 rider gate, ten minutes of silence with the container
-still up; recovery was to kill the run, podman kill the stuck
-container, confirm no remnants, and rerun clean, which passed. That is
-the fourth recorded occurrence of the same flake across the v0.10.0,
-v0.11.0, and T13 cycles, and it is unrelated to anything T13 changed.
+Gate results: full scripts/check.sh green at every code phase (P1,
+P2.5, P3.5, the P3.5 rider, and P3.6). The musl TUI pty smoke hung
+once during the P3.6 rider gate, ten minutes of silence with the
+container still up; recovery was to kill the run, podman kill the
+stuck container, confirm no remnants, and rerun clean, which passed.
+
+P4's own gate never went green in this environment, and that is
+recorded here rather than smoothed over. Two consecutive runs on the
+P4 commit hung at the gnu-debug container TUI pty smoke (the second
+for 2.5 hours before it was stopped), which is finding 13 above. Both
+runs passed everything up to that step: all fifteen test suites, both
+mock REPLs, and the host pty smoke; neither reached the musl
+acceptance path. The planning session accepted P4 on the evidence
+rather than ordering a third identical rerun: P4 is docs-only, the
+binary it gates is byte-identical to the one that had just taken a
+full green gate at 8605e14, and everything but the one hanging step
+was green twice. check.sh was not modified to work around it.
 
 Honest residuals:
 

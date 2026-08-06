@@ -220,6 +220,15 @@ milestone. Roughly in the order they would pay off:
   the reported one.** Deliberate today (under-configuring only makes
   the advisory fire early), but a hint would be better than silence.
 - **`/models` listing renders two ids on one line** in some widths.
+- **The TUI busy-loops when stdin is not a TTY (finding 13), in two
+  parts.** (a) Product: the TUI should block on its event source, or
+  refuse non-TTY stdin outright with a clear error pointing at `-p`.
+  Today it renders the prompt, never consumes input, and spins at
+  roughly 1.6 KB/s of redraw output and 7% CPU indefinitely. (b)
+  Harness: `check.sh` needs a readiness gate or a timeout on the TUI
+  pty smokes, so a hang fails in minutes with a diagnosis instead of
+  sitting for hours. Part (b) is what has cost real time across the
+  v0.10.0, v0.11.0, and T13 cycles; part (a) is why it happens.
 
 **Next milestone: T24, session cost visibility** for keyed users, the
 dogfood item that predates this list.
