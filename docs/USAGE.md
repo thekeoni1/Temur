@@ -339,9 +339,31 @@ The OpenAI template is the one exception to that shape: it also writes
 anything larger, while temur's default is 32000. The others accept the
 default and bake nothing.
 
-The hosted OpenAI, Gemini, and xAI templates are written to their
-published compat specs but not yet live-verified against those
-endpoints (that verification is a parked milestone awaiting keys).
+The OpenAI, Gemini, and Anthropic paths were verified against the real
+endpoints on 2026-08-05; xAI was not, for want of a key. Three limits
+are worth knowing before you hit them:
+
+- **gpt-5 era model ids do not work from a fresh profile.** They
+  reject `max_tokens` and require `max_completion_tokens`, which is
+  how temur encodes the request, not something config can change. Use
+  `gpt-4o` until that lands.
+- **A hosted profile has no `context_window`,** so the context
+  advisory and the context-scaled tool-output caps are off for it and
+  `/status` says "window size unknown". `init` never makes an
+  authenticated call, so it cannot detect one; set the value by hand
+  if you want the advisory.
+- **`/status` understates spend on Gemini.** Its thinking tokens are
+  not reported separately in the usage it returns, so the session
+  total is a floor, not a total.
+
+Gemini needed two fixes before its tool calling worked at all, both
+shipped: its streaming responses report `finish_reason` "stop" while
+attaching real tool calls, and it requires the opaque thought
+signature on each call to be echoed back on the following request.
+Model ids in its listing all carry a `models/` prefix, and the bare
+form works on the wire; note that appearing in that listing is no
+guarantee an id is usable, since retired ids stay listed and 404 for
+new accounts.
 
 Two more optional keys: `sessions_dir` overrides where saved sessions
 live (default: the state dir, see "Sessions" above), and

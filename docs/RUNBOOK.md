@@ -2741,3 +2741,221 @@ hostname-blob-history decision, and the demo GIF recording stay
 queued behind the visibility flip; T13 hosted verification (with the
 anthropic context_window 200000 live /models confirmation) is next in
 the queue.
+
+## T13 acceptance - recorded result (no release)
+
+2026-08-03 to 2026-08-05. Live verification of the openai-compat
+provider against real hosted endpoints, plus the Anthropic path,
+unparked once keys existed. Two-session protocol throughout: the
+operator typed every live command in their own terminal, the build
+session never saw key material, and every transcript was skimmed
+before it was pasted back. Preserved evidence lives outside the repo
+at /home/dev/t13-live: the operator checklist with a RESULT block per
+leg, the corrupt session that proved finding 10
+(evidence/finding10-dangling-tool-use-session.json), and the two curl
+captures that settled finding 12 (evidence/f12-stream.txt and
+f12-nostream.txt, opaque signature blobs, no credentials).
+
+Provenance note for findings 1 to 8: the original P2 (2026-08-03) and
+hosted-legs (2026-08-05) reports arrived as terminal-garbled pastes.
+The statements recorded here are the planning session's verified
+record, with every code claim confirmed in-tree at verification time
+and live values taken from the operator transcripts. Findings 9 to 12
+are the build session's own, from the code it changed.
+
+Twelve findings, with dispositions.
+
+- **Finding 1 (P2). Anthropic template context_window under-reports
+  5x.** The anthropic init template baked context_window 200000 into
+  all four profiles via the single constant ANTHROPIC_CONTEXT_WINDOW
+  (then src/init.rs:90), used by both the wizard row and --add,
+  pinned in two goldens, recipe repeated 4x in docs/USAGE.md. The
+  live API reported max_input_tokens 1000000 for claude-sonnet-5, so
+  a fresh profile started at roughly a fifth of the real window.
+  CHANGELOG and RUNBOOK had labeled the 200000 knowledge-based
+  pending live confirmation; the confirmation arrived and
+  contradicted it. DISPOSITION: fixed inside T13 as P2.5 (178576a), a
+  per-model table: claude-sonnet-5, claude-opus-5, claude-fable-5 =
+  1000000; claude-haiku-4-5 = 200000, measured on
+  claude-haiku-4-5-20251001 (the bare alias is absent from
+  /v1/models, so /models can never judge a haiku profile; that blind
+  spot is its own roadmap item). Error direction recorded:
+  under-reporting fires the usage advisory early, which is safe; a
+  blanket 1000000 would have overstated haiku past its real limit and
+  failed requests; the per-model table avoids the dangerous
+  direction.
+- **Finding 2 (P2). Turn footers relabel retroactively.**
+  Cell::TurnTail carries no model field; src/ui/tui/view.rs:192
+  formats the footer from app.model at draw time, so after /model
+  hops the scrollback shows whichever model is active now on every
+  past turn. Model switching itself is correct. Cheap fix: carry the
+  model in the cell at push time. DISPOSITION: queued (roadmap,
+  footer relabel).
+- **Finding 3 (P2). The model refuses before the guards can fire.**
+  Asked to read a credential-looking path, claude-sonnet-5 refused on
+  its own judgment before emitting any tool call, so the naive
+  key-isolation prompt tests the model layer, not the product layer,
+  and is inconclusive as a guard test. That is real defense in depth,
+  but the docs must say it honestly instead of implying the obvious
+  prompt proves the guards. The mechanism itself was then tested with
+  a harmless 55 byte decoy file registered as a profile key path: the
+  read tool was denied with the key isolation message, and sandboxed
+  bash saw 0 bytes for the file (the /dev/null bind mask,
+  namespace-local), while the file stayed intact outside the
+  namespace. DISPOSITION: docs-honesty item, landed in P4 (USAGE key
+  isolation note pointing at this record).
+- **Finding 4 (P2). Stale installed binary, no skew warning.** The
+  installed ~/.local/bin/temur was 0.5.0, four minor versions behind
+  the tree; the operator's first three runs exercised the old binary
+  and produced old wording, an old doctor, and two false alarms
+  before a version assert was added to the checklist. The product
+  gives no signal that the running binary is stale. DISPOSITION:
+  queued as a feature candidate (version-skew warning).
+- **Finding 5 (hosted legs). OpenAI template default absent from the
+  live listing.** The openai template's default model, gpt-4o-mini,
+  was not among the 11 ids the live account listing returned, so init
+  --add openai wrote a profile that could not complete a single call.
+  DISPOSITION: fixed inside T13 in the P3.5 template repair
+  (6ea78d4); the template now bakes gpt-4o, which passed live.
+- **Finding 6 (hosted legs). Hosted templates baked no max_tokens,**
+  so openai, gemini, and xai profiles inherited the Anthropic-sized
+  global DEFAULT_MAX_TOKENS of 32000 (src/config.rs:9). That exceeds
+  gpt-4o's 16384 completion cap, so the first OpenAI turn returned
+  400. DISPOSITION: fixed inside T13 in P3.5 (6ea78d4): the openai
+  template bakes max_tokens 16384 via the compat_max_tokens lookup;
+  gemini bakes none, because Gemini accepted 32000 live.
+- **Finding 7 (hosted legs). The gpt-5 family rejects max_tokens**
+  and requires max_completion_tokens; our request encoding always
+  sends max_tokens. Combined with finding 5 at capture time, every
+  current OpenAI model was unreachable from a fresh profile: the
+  gpt-4 era ids that accept max_tokens were largely gone from the
+  listing, and the gpt-5 ids that remained refused the parameter.
+  This is a request encoding change, not a config value.
+  DISPOSITION: queued (roadmap, max_completion_tokens support; until
+  it lands, gpt-5 era ids stay unreachable and the docs say so).
+- **Finding 8 (hosted legs). Gemini template default retired, and
+  every listed id is prefixed.** The template's default,
+  gemini-2.5-flash, returned 404 "no longer available to new users"
+  in Google's own words, and all 59 ids in the live listing carry a
+  models/ prefix. DISPOSITION: fixed inside T13 in P3.5 (6ea78d4):
+  the template now bakes bare gemini-3.6-flash, which R2 and R2''
+  verified reaches the model. Ruling recorded for the docs: the bare
+  id is kept deliberately, and appearing in the listing is no
+  guarantee an id is usable, since models/gemini-2.5-flash is listed
+  and 404s.
+- **Finding 9 (hosted legs). Array-wrapped error bodies parse to
+  nothing.** Google wraps the OpenAI error envelope in a
+  one-element JSON array, which the object-only parser dropped to
+  defaults: a live 404 printed "api error (HTTP 404) api_error:" with
+  no message at all, hiding the one sentence that explained the
+  failure. DISPOSITION: fixed inside T13 in P3.5 (b52ff5e).
+  ErrorPayload accepts both shapes at both parse sites. Variant order
+  is load-bearing and commented as such: serde builds a struct from a
+  sequence positionally, so an object-first untagged enum silently
+  reproduces the bug, which it did once during implementation. The
+  label also falls back to "status" when a body carries no "type" and
+  a numeric "code", which is exactly the captured Gemini shape.
+- **Finding 10 (hosted legs). Assembled tool calls were discarded in
+  silence.** Gemini's streaming response reports finish_reason "stop"
+  while attaching real tool calls; its non-streaming response reports
+  "tool_calls" for the identical request, pinned by curl. temur
+  streams. The agent loop dispatches only on ToolUse and the
+  prose-recovery fallback is guarded by "no ToolUse block present",
+  so a well-formed write call fell past every recovery path: no tool
+  ran, no file appeared, nothing printed, and the saved session was
+  left holding a tool_use with no tool_result. Reproduced on two
+  models and two tools. DISPOSITION: fixed inside T13 in P3.5
+  (b52ff5e), with rider 3bf706b. A response that assembled tool calls
+  means tool use regardless of what finish_reason says or fails to
+  say, generalizing the older absent-finish_reason quirk from
+  "absent" to "absent or wrong". Refusal is the one exception
+  (rider): a filtered completion must not dispatch side-effectful
+  calls, and unlike finding 10 the refusal path is visible, discards,
+  never auto-retries, and breaks without pushing the assistant turn,
+  so it cannot leave a dangling tool_use either. finish_reason
+  "length" still surfaces truncation, and now does so even when calls
+  were assembled, the truncation riding in stop_details so it
+  survives the override.
+- **Finding 11 (hosted legs). Thinking tokens are not accounted.**
+  Gemini does not report them separately in the usage it returns, so
+  /status understates session spend on that provider: the total is a
+  floor presented as a total. DISPOSITION: queued (roadmap, usage
+  accounting); the docs name the caveat in the meantime.
+- **Finding 12 (P3R, and only reachable because finding 10 was
+  fixed).** With calls finally dispatching, the Gemini leg got one
+  request further and died on the next one: HTTP 400
+  INVALID_ARGUMENT, "Function call is missing a thought_signature in
+  functionCall parts ... position 2". Single-shot tool calling
+  worked; the agent loop broke on its first round trip, which is the
+  shape that matters. The operator settled the decisive question by
+  curl in both wire modes: Google does hand us the signature, at
+  tool_calls[].extra_content.google.thought_signature, streaming and
+  non-streaming alike, and our ToolCallDelta had no such field, so
+  serde dropped it on the way in and there was nothing left to echo
+  on the way out. DISPOSITION: fixed inside T13 as P3.6 (efe1e5b)
+  with rider 8605e14. The neutral ContentBlock::ToolUse gains one
+  optional opaque field, provider_state, documented against the
+  ContentBlock::Thinking.signature precedent it copies; openai-compat
+  fills it from extra_content and re-emits it verbatim; the anthropic
+  converter drops it in both directions, exactly as openai-compat
+  drops Anthropic thinking signatures, so a session that switched
+  providers cannot leak one wire's opaque state into the other's
+  request. Absent is the common case and costs nothing:
+  skip_serializing_if keeps the field out of the JSON entirely, so
+  request goldens and session files are byte-identical wherever it
+  does not apply.
+
+Live verification results, per provider:
+
+- **Anthropic**: verified 2026-08-03 and 2026-08-04. Four-profile
+  template, doctor with the sandbox PASS gate, one agentic turn with
+  autosave, profile hops, both key-isolation arms, and the per-model
+  max_input_tokens capture that produced finding 1's table.
+- **OpenAI**: verified 2026-08-05 on gpt-4o. The write-tool turn
+  succeeded first try (17 bytes, correct content, session autosaved,
+  no key material in either artifact) once findings 5 and 6 were
+  worked around by hand; both are now fixed in the template. The
+  regression leg after the finding 10 fix passed unchanged, which was
+  its purpose: the override sits in conversion code the OpenAI path
+  shares.
+- **Gemini**: verified 2026-08-05 on the P3.6 binary, after two
+  failed attempts that produced findings 8, 10, and 12. The final run
+  is a full pass of the whole loop, not just the first response:
+  three tool calls (glob, write, read) across four requests, every
+  round trip carrying the signature back, no 400, final assistant
+  text, and the file on disk with the right single line. The saved
+  session holds 3 tool_use and 3 tool_result, each paired, and all
+  three signatures preserved (2460, 376, and 176 chars).
+- **xAI**: not verified. No key was available; the template is
+  written to the published spec and the docs say so.
+
+Gate results: full scripts/check.sh green at every phase (P1, P2.5,
+P3.5, the P3.5 rider, P3.6, and P4). The musl TUI pty smoke hung once
+during the P3.6 rider gate, ten minutes of silence with the container
+still up; recovery was to kill the run, podman kill the stuck
+container, confirm no remnants, and rerun clean, which passed. That is
+the fourth recorded occurrence of the same flake across the v0.10.0,
+v0.11.0, and T13 cycles, and it is unrelated to anything T13 changed.
+
+Honest residuals:
+
+- Four findings ship unfixed by deliberate ruling: 2, 4, 7, and 11,
+  all queued on the roadmap with the docs naming the two that a user
+  can actually hit (gpt-5 era ids unreachable, Gemini spend
+  understated).
+- xAI remains unverified, and no amount of care in the template
+  substitutes for one live call.
+- The R2 session landing from the finding 12 failure was overwritten
+  before it was captured: sessions are one file per working
+  directory, and the OpenAI regression leg ran in the same directory
+  next. Accepted rather than reproduced, since the failure was a
+  provider error and the landing policy has its own tests.
+- The Gemini template default is a concrete pinned id, which is what
+  retired under us once already. It is kept deliberately: it reached
+  the model live, and listing membership is not a usability
+  guarantee.
+- One cosmetic, unfiled beyond the roadmap queue: the /models listing
+  rendered two ids on one line in the operator's terminal, and a
+  refused turn that had already streamed a tool call leaves its tool
+  cell open (pre-existing on the refusal path, reachable again now
+  that Refusal is excluded from the dispatch override).

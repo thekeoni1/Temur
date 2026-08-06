@@ -4,6 +4,44 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+Hosted-provider verification (T13): the openai-compat provider run
+against the real OpenAI and Gemini endpoints for the first time, with
+every fix below found by that run rather than by review.
+
+- **Tool calls now dispatch on assembled calls, whatever
+  `finish_reason` says.** Gemini's streaming responses report "stop"
+  while attaching real tool calls (its non-streaming responses report
+  "tool_calls" for the identical request). temur streams, believed the
+  wire, and silently discarded well-formed calls: no tool ran, nothing
+  printed, and the saved session was left holding a `tool_use` with no
+  `tool_result`. Assembled calls now mean tool use regardless, with
+  one exception: a completion the provider filtered still refuses
+  rather than dispatching. `finish_reason` "length" continues to
+  report truncation, now even when calls were assembled too.
+- **Gemini's thought signatures round-trip.** Its tool calls carry
+  opaque state that must come back on the next request, or the request
+  is rejected, which broke the agent loop on its first round trip
+  while single-shot calls worked. Tool calls now carry optional opaque
+  provider state through the neutral types, saved sessions, and back
+  onto the wire it came from. Absent for every other provider, and
+  absent means absent: request bodies and session files are unchanged
+  wherever it does not apply.
+- **Error bodies wrapped in a JSON array are unwrapped.** Google sends
+  one, so a 404 printed `api error (HTTP 404) api_error:` with no
+  message at all, hiding the sentence that explained the failure.
+- **Hosted template defaults repaired from live evidence.** The OpenAI
+  template defaults to `gpt-4o` and bakes its 16384 completion cap,
+  because the previous default was absent from a real account listing
+  and because a fresh profile inheriting the global 32000 was rejected
+  on every call. The Gemini template defaults to `gemini-3.6-flash`;
+  the previous default is retired for new accounts.
+- **Per-model context windows in the Anthropic template**, read off
+  the authenticated models API rather than assumed: haiku serves 200k
+  where the other three serve 1M, so one shared constant was wrong for
+  whichever tier it did not match.
+- `temur init` now says the key file path question out loud, so the
+  key cannot be pasted where the path belongs.
+
 ## v0.11.0 - 2026-08-01
 
 Launch-readiness documentation pass (T23; prose and layout only, no

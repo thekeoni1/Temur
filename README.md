@@ -182,15 +182,38 @@ key is read from a file path at startup, never from env or argv.
 `context_window` is advisory-only and checked, not guessed: `temur
 init` fills it from a running llama.cpp server's real allocation,
 `temur doctor` compares a configured value against the same source,
-and `/models` on an anthropic profile judges it against the limit the
-API itself reports.
+and `/models` on an anthropic profile compares it against the limit
+the API itself reports. That last check is one-directional on purpose
+and worth knowing exactly: it warns when your value is larger than the
+API reports, hints the exact config line when you have set none, and
+stays silent when your value is smaller, since under-configuring only
+makes the advisory fire early.
 
 The rest of the configuration surface is in
 [docs/USAGE.md](docs/USAGE.md): the Anthropic multi-profile recipe,
-the hosted OpenAI / Gemini / xAI templates (spec-written, not yet
-live-verified against those endpoints), named profiles, `temur init
---add`, and the context lifecycle (`/compact`, the context advisory,
-prompt caching). Server setup for llama.cpp, Ollama, and LM Studio,
+the hosted OpenAI / Gemini / xAI templates (live-verified with
+caveats, per provider: see below), named profiles, `temur init --add`,
+and the context lifecycle (`/compact`, the context advisory, prompt
+caching).
+
+Hosted providers, verified against the real endpoints on 2026-08-05,
+with the caveats named rather than averaged away:
+
+- **Anthropic**: live-verified, including the four-profile template
+  and per-model context windows read off the API.
+- **OpenAI**: live-verified on `gpt-4o`, which the template now
+  defaults to and whose 16384 completion cap it bakes. The gpt-5 era
+  ids are not reachable from a fresh profile yet: they reject
+  `max_tokens` and want `max_completion_tokens`, which is a request
+  encoding temur does not speak.
+- **Gemini**: live-verified, tool calls included, after two fixes the
+  verification itself found (its streaming responses report
+  `finish_reason` "stop" while attaching real tool calls, and it
+  requires its opaque thought signatures echoed back or it rejects
+  the next request). Token accounting understates spend here, because
+  thinking tokens are not reported separately.
+- **xAI**: unverified. No key was available; the template is written
+  to the published spec. Server setup for llama.cpp, Ollama, and LM Studio,
 plus recommended small models: [docs/OFFLINE.md](docs/OFFLINE.md).
 
 ## Untrusted hosts
