@@ -531,6 +531,53 @@ fn thought_signature_goes_back_on_the_wire_verbatim() {
 }
 
 #[test]
+fn the_signature_is_on_request_two_of_the_loop() {
+    // The live failure end to end, through real provider code: Gemini
+    // answers with a signed tool call, the agent sends the tool result
+    // back, and THAT request is the one Google 400s when the signature is
+    // missing. Response side and request side are pinned separately above;
+    // this composes them the way the agent loop does, which is the shape
+    // that actually broke on 2026-08-05.
+    let (provider, transport) =
+        provider_and_transport(vec![Ok("gemini_thought_signature"), Ok("text_simple")], None);
+    let mut req = sample_request();
+    let first = provider.stream(&req, &mut |_| {}, &CancelToken::new()).unwrap();
+
+    // Exactly what the agent does next: append the assistant turn, answer
+    // every call, ask again.
+    req.messages.push(RequestMessage {
+        role: Role::Assistant,
+        content: first.content.clone(),
+    });
+    req.messages.push(RequestMessage {
+        role: Role::User,
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: "b9GNMQmu".into(),
+            content: "file contents".into(),
+            is_error: false,
+        }],
+    });
+    provider.stream(&req, &mut |_| {}, &CancelToken::new()).unwrap();
+
+    let bodies = transport.bodies.borrow();
+    assert_eq!(bodies.len(), 2);
+    let sent: serde_json::Value = serde_json::from_str(&bodies[1]).unwrap();
+    let assistant = sent["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "assistant")
+        .expect("the assistant turn is echoed back");
+    assert_eq!(
+        assistant["tool_calls"][0]["extra_content"]["google"]["thought_signature"],
+        serde_json::json!(STREAM_SIGNATURE),
+        "request two must carry the signature Gemini issued in request one"
+    );
+    // Request one never had it: nothing invents state.
+    assert!(!bodies[0].contains("extra_content"), "{}", bodies[0]);
+}
+
+#[test]
 fn absent_provider_state_leaves_the_body_byte_identical() {
     // Every provider but Google: the field must not appear at all, so the
     // request goldens are untouched.
