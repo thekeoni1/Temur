@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.12.0 - 2026-08-07
+
 Hosted-provider verification (T13): the openai-compat provider run
 against the real OpenAI and Gemini endpoints for the first time, with
 every fix below found by that run rather than by review.
