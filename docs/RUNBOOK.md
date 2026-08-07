@@ -2998,3 +2998,43 @@ Honest residuals:
   refused turn that had already streamed a tool call leaves its tool
   cell open (pre-existing on the refusal path, reachable again now
   that Refusal is excluded from the dispatch override).
+
+## v0.12.0 - close-out (release procedure delta)
+
+What ships: T13 alone (hosted-provider verification: the openai-compat
+provider run against the real OpenAI and Gemini endpoints, with the
+init key-path question, the anthropic per-model context_window, the
+four openai-compat correctness fixes, the Gemini thought-signature
+round-trip, and the docs plus acceptance record), plus the two P4
+riders (finding 13 promoted from harness flake to product finding on
+measured evidence, and the container TUI pty smoke re-gated on the
+app rather than on the clock). Third single-milestone release in a
+row, and the first whose ship head is a gate-script commit.
+
+Procedure deltas vs v0.11.0:
+
+- **T13 pushed AS stage-1 step 1** under the planning session's
+  authorization (the standing shape): faf202d..6c9a3ee onto de9901d
+  (ten commits: six phases and phase riders, plus the two P4 riders),
+  on-push ci run 31211229630 green, main == origin == 6c9a3ee
+  verified before the prep commits. Job timings recorded in the
+  stage-1 report.
+- **The check.sh smoke stalls that shadowed the last three cycles are
+  fixed, not endured.** Every prior stage-1 record carried a
+  kill-and-rerun note for the container TUI pty smoke; rider 2
+  root-caused it to the smoke's own blind timing and replaced the
+  sleeps with readiness and turn gates over a held-open fifo, bounded
+  at 180s. The stage-3 prep gate is therefore the first stage-1 gate
+  run whose smoke either passes or fails loudly, and a hang here is a
+  stop-and-report, not a rerun.
+- **The version bump used scripts/bump_version.sh** for the second
+  time, printed diff touching exactly the four-file map: Cargo.toml,
+  the temur line of Cargo.lock (the third-party untrusted crate stays
+  pinned at its own 0.9.0), scripts/install.sh VERSION, and the five
+  README tag-pin lines. The helper stays advisory; release.sh gate 3
+  remains the skew authority.
+- Stage 1 keeps the early stop: bump + dated CHANGELOG + records +
+  full check.sh gate only; tag, four-target build, SHA256SUMS,
+  private release, installer matrix, and the closing gate stay in
+  stage 2. No tag, no push of the prep commits, no release; the repo
+  stays PRIVATE.
