@@ -3038,3 +3038,58 @@ Procedure deltas vs v0.11.0:
   private release, installer matrix, and the closing gate stay in
   stage 2. No tag, no push of the prep commits, no release; the repo
   stays PRIVATE.
+
+## v0.12.0 acceptance - recorded result (SHIPPED, private)
+
+2026-08-07, stage 2 all green, ships T13 hosted-provider verification
+plus the two P4 riders. No pre-tag rider this cycle: the tag lands
+directly on the stage-1 prep head 837995c.
+
+- Push 6c9a3ee..837995c (the three stage-1 prep commits: 3c60b89
+  version bump, 537fa1b CHANGELOG release cut, 837995c docs
+  close-out); on-push ci run 31225282702 green (test 2m09s
+  22:52:23Z..22:54:32Z, release-gate 7m32s 22:52:23Z..22:59:55Z);
+  main == origin == 837995c verified.
+- Annotated tag v0.12.0 at 837995c, message exactly "temur v0.12.0 -
+  hosted verification (T13)" (one short line), verified verbatim via
+  git cat-file tag BEFORE the push: object line 837995c, message that
+  one line and nothing more. Tag object
+  5ee4adac5287adb0014586c2f2077931e3d23844, pushed. Unsigned as
+  always. Not retagged.
+- Full release.sh, no SKIP_CHECK, green FIRST TRY: inner check.sh ALL
+  CHECKS PASSED, leak grep clean (operator patterns + generic shapes,
+  files + history), skew gate "OK: install.sh + README match version
+  0.12.0 and all targets", 4/4 targets gated and version-asserted
+  "temur 0.12.0" (i686 + x86_64 native, aarch64 + armv7 qemu),
+  SHA256SUMS self-verified (4/4 OK), staged at
+  /home/dev/dist/release/v0.12.0/.
+- **Rider 2's smoke fix held on its second independent exercise.**
+  All three TUI pty smokes in this gate run (host gnu-debug,
+  container gnu-debug, container musl) passed without stalling, well
+  inside the 180s bound, on the first attempt. Zero kill-and-rerun
+  for the first time in four cycles; the bare busybox leg printed
+  "temur 0.12.0" as expected.
+- Staged sha256s: db27e673ea86... aarch64, 8cc324b0c5b6... armv7,
+  53726b1b5e02... i686, 44e81cdb9102... x86_64; SHA256SUMS itself
+  f34a00c0c09f... (full sums in the release's SHA256SUMS asset).
+- Private release github.com/thekeoni1/Temur/releases/tag/v0.12.0
+  created with title per tag, notes = the CHANGELOG v0.12.0 section,
+  5 assets (4 binaries + SHA256SUMS), not draft; repo isPrivate true
+  confirmed via gh BEFORE creating the release and again after.
+- Closing gate, fresh files in a scratch dir: downloaded x86_64 sha
+  44e81cdb9102327d2765e3bdfecb0e05a4df2a06848c3986249f55b4be6922eb
+  equals the staged value and cmp against the staged archive is
+  clean; the downloaded SHA256SUMS is cmp-identical to the staged
+  one.
+- Installer matrix 6/6 twice: once against the staged directory and
+  once against a fresh full download of all five published assets
+  (pass + corrupt + unlisted, GNU host and busybox container).
+
+Honest residuals: none new this stage. The ARM artifacts remain
+verified at build level under qemu only, hardware smoke pending
+hardware. Still queued behind the visibility flip: the PUBLIC
+one-liner gate, the hostname-blob-history decision, and the demo GIF
+recording. Also open and unchanged from the T13 record: the anthropic
+1M-context tiers were confirmed against the live models API but the
+hosted acceptance itself covered OpenAI and Gemini, so no live
+Anthropic agent-loop run rides this release.
