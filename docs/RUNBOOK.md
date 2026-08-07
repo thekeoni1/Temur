@@ -2918,6 +2918,16 @@ Thirteen findings, with dispositions.
   warning names the condition: "The input device is not a TTY".
   Whether the spin is reachable outside this harness is NOT
   established, and deliberately was not investigated mid-milestone.
+  Rider 2 closed part (b) and, on a reproduction of the same shape
+  (the container TUI left redrawing with no alt-screen leave),
+  measured the stall instead of inferring it: the output is a steady
+  ten redraws per second rather than a busy loop, it is byte-for-byte
+  unchanged when stdin is held open past the turn, so pipe EOF is not
+  the trigger, and what strands the TUI is the smoke's own blind
+  timing, since container startup measured between 1.8 and 3.0
+  seconds against a one second sleep while the mock turn takes 0.2
+  seconds, so a slow start lands the scripted "exit" Enter inside the
+  running turn where the TUI ignores Enter by design.
   DISPOSITION: queued in two parts (roadmap): (a) product, the TUI
   should block on its event source or refuse non-TTY stdin with an
   error pointing at one-shot `-p`; (b) harness, check.sh needs a

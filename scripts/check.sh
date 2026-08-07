@@ -81,14 +81,15 @@ mock_repl_openai() { # $1 = bin dir, $2 = image, $3 = label
 
 # TUI pty smokes: the real binary through the real crossterm path (raw
 # mode + alternate screen), which TestBackend can't prove. stty sizes the
-# pty (script(1)/podman -t leave it 0x0 when stdin is a pipe); the first
-# sleep lets the app enter raw mode before input arrives; the second lets
-# the mock turn finish (Enter is deliberately ignored while a turn runs).
-# ratatui draws diffs with per-word cursor jumps, so greps use single
-# tokens only.
+# pty (script(1)/podman -t leave it 0x0 when stdin is a pipe). ratatui
+# draws diffs with per-word cursor jumps, so greps use single tokens only.
 ESC=$(printf '\033')
 # Single-quote the fixture list so the inner sh -c survives spaces in $PROJ.
 MOCKARGS="--tui --mock '$FIXTURES'"
+# Wall-clock bound on any one pty smoke. Nothing here should take close to
+# this; it exists so a stall fails in minutes with a diagnosis instead of
+# sitting until someone notices.
+TUI_TIMEOUT=180
 tui_input() { sleep 1; printf 'do the smoke task\r'; sleep 2; printf 'exit\r'; sleep 1; }
 check_tui_log() {
     grep -aq "${ESC}\[?1049h" "$1" || { echo "FAIL($2): no alt-screen enter"; exit 1; }
@@ -97,11 +98,57 @@ check_tui_log() {
         grep -aq "$tok" "$1" || { echo "FAIL($2): missing '$tok'"; exit 1; }
     done
 }
+tui_diagnose() { # $1 = log file
+    echo "  log $1 holds $(wc -c < "$1" 2>/dev/null || echo 0) bytes; last 400 below"
+    tail -c 400 "$1" 2>/dev/null | cat -v
+    echo ""
+}
+# Block until the app proves it reached a state, rather than guessing how
+# long it takes to get there. CT_DEADLINE bounds the whole smoke, not each
+# gate separately, so a stall cannot add up past TUI_TIMEOUT.
+tui_wait() { # $1 = log, $2 = marker, $3 = what we're waiting for, $4 = label
+    while [ "$(date +%s)" -lt "$CT_DEADLINE" ]; do
+        grep -aq "$2" "$1" 2>/dev/null && return 0
+        sleep 0.1
+    done
+    echo "FAIL($4): never saw $3 within the ${TUI_TIMEOUT}s bound"
+    exec 3>&- 2>/dev/null || true
+    podman rm -f "$CT_NAME" >/dev/null 2>&1 || true
+    tui_diagnose "$1"
+    exit 1
+}
+# Input is gated on what the app has actually done, not on blind sleeps.
+# Container startup was measured between 1.8s and 3.0s while the mock turn
+# itself takes 0.2s, so the old fixed schedule (keys at 1s, "exit" at 3s)
+# raced: a slow start pushed the "exit" Enter into the running turn, where
+# the TUI ignores Enter by design, and the run then sat at its idle redraw
+# tick with nothing to stop it. The fifo stays open for the life of the
+# run so stdin never closes under the app.
 container_tui() { # $1 = bin dir, $2 = label, $3 = log file
-    tui_input | podman run --rm -i -t \
+    CT_DIR=$(mktemp -d)
+    CT_NAME="temur-tui-$2-$$"
+    CT_DEADLINE=$(( $(date +%s) + TUI_TIMEOUT ))
+    mkfifo "$CT_DIR/in"
+    : > "$3"
+    timeout -k 5 "$TUI_TIMEOUT" podman run --rm -i -t --name "$CT_NAME" \
         -v "$1":/app:ro -v "$PROJ":"$PROJ":ro "$IMG" \
         sh -c "stty rows 24 cols 100; /app/temur $MOCKARGS" \
-        > "$3"
+        < "$CT_DIR/in" > "$3" 2>&1 &
+    CT_PID=$!
+    # Read-write so the open cannot itself block if podman never starts.
+    exec 3<> "$CT_DIR/in"
+    tui_wait "$3" "${ESC}\[?1049h" "the alternate screen" "$2"
+    printf 'do the smoke task\r' >&3
+    tui_wait "$3" "world!" "the turn output" "$2"
+    printf 'exit\r' >&3
+    CT_RC=0
+    wait "$CT_PID" || CT_RC=$?
+    exec 3>&-
+    podman rm -f "$CT_NAME" >/dev/null 2>&1 || true
+    rm -rf "$CT_DIR"
+    [ "$CT_RC" -eq 0 ] || {
+        echo "FAIL($2): container run exited $CT_RC (timeout is ${TUI_TIMEOUT}s)"
+        tui_diagnose "$3"; exit 1; }
     check_tui_log "$3" "$2"
     echo "TUI pty smoke OK ($2)"
 }
@@ -150,7 +197,9 @@ echo "== container: mock REPL via openai-compat provider (gnu-debug) =="
 mock_repl_openai "$(dirname "$GNU_BIN")" "$IMG" gnu
 
 echo "== host: TUI pty smoke =="
-tui_input | script -qec "stty rows 24 cols 100; env $HOST_ISOLATION $GNU_BIN $MOCKARGS" "$CHECK_TMP/tui-check-host.log" >/dev/null
+tui_input | timeout -k 5 "$TUI_TIMEOUT" script -qec "stty rows 24 cols 100; env $HOST_ISOLATION $GNU_BIN $MOCKARGS" "$CHECK_TMP/tui-check-host.log" >/dev/null || {
+    echo "FAIL(host): pty smoke exited nonzero or outlived the ${TUI_TIMEOUT}s bound"
+    tui_diagnose "$CHECK_TMP/tui-check-host.log"; exit 1; }
 check_tui_log "$CHECK_TMP/tui-check-host.log" host
 echo "TUI pty smoke OK (host)"
 
