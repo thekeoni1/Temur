@@ -1,0 +1,5 @@
+data: {"id":"chatcmpl-gemini-gap-001","object":"chat.completion.chunk","created":1722900000,"model":"gemini-3.6-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"done"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-gemini-gap-001","object":"chat.completion.chunk","created":1722900000,"model":"gemini-3.6-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":48,"completion_tokens":19,"total_tokens":103}}
+
+data: [DONE]

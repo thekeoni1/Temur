@@ -11,8 +11,10 @@
 //! absent usage stays `None` (never zero), absent tool-call IDs are
 //! synthesized, `finish_reason` values we don't know map to `Unknown`,
 //! assembled tool calls mean tool use whatever `finish_reason` says or
-//! fails to say unless it says refusal (T13 F10), and an error body
-//! wrapped in a JSON array is unwrapped (T13 F9).
+//! fails to say unless it says refusal (T13 F10), an error body
+//! wrapped in a JSON array is unwrapped (T13 F9), and a `total_tokens`
+//! larger than the sum of the named counts folds its gap into the output
+//! count, which is where an unreported thinking spend belongs (T25 F11).
 
 use crate::provider::types as neutral;
 use crate::provider::StreamEvent;
@@ -268,6 +270,11 @@ pub struct Usage {
     pub prompt_tokens: Option<u64>,
     #[serde(default)]
     pub completion_tokens: Option<u64>,
+    /// The server's own total (T25 F11). Parsed because on some wires it is
+    /// the ONLY place the thinking spend is reported; see the conversion
+    /// below for what the gap means and why folding it is safe.
+    #[serde(default)]
+    pub total_tokens: Option<u64>,
     #[serde(default)]
     pub prompt_tokens_details: Option<PromptTokensDetails>,
 }
@@ -280,9 +287,37 @@ pub struct PromptTokensDetails {
 
 impl From<Usage> for neutral::Usage {
     fn from(u: Usage) -> Self {
+        // T25 F11, captured live 2026-08-05 from gemini-3.6-flash and kept
+        // at t13-live/evidence/f12-nostream.txt: the response ends
+        // "usage":{"completion_tokens":19,"prompt_tokens":48,
+        // "total_tokens":103}. 48 + 19 is 67, not 103. The missing 36 is
+        // the thinking spend, which Gemini bills and counts in its total
+        // but reports in NEITHER named field, so reading completion_tokens
+        // alone understates a thinking turn by most of what it cost.
+        //
+        // Fold the gap into output_tokens, which is where the thinking
+        // spend belongs and how it is priced. Safe on every other wire we
+        // know of, because the fold is a no-op unless a server both reports
+        // a total and reports one larger than its own parts:
+        //   - OpenAI counts reasoning INSIDE completion_tokens, so its
+        //     total is exactly the sum and the gap is zero.
+        //   - llama.cpp and friends sum exactly, same zero gap.
+        //   - a server that omits total_tokens is untouched.
+        // Anything missing a field, or a total that fails to exceed the
+        // sum, keeps the old value byte for byte. The T24 cost estimate
+        // therefore tightens on Gemini rather than distorting anywhere:
+        // pricing the gap at the output rate is what Google actually
+        // charges for it.
+        let output_tokens = match (u.prompt_tokens, u.completion_tokens, u.total_tokens) {
+            (Some(prompt), Some(completion), Some(total)) => {
+                let gap = total.saturating_sub(prompt).saturating_sub(completion);
+                Some(completion.saturating_add(gap))
+            }
+            _ => u.completion_tokens,
+        };
         neutral::Usage {
             input_tokens: u.prompt_tokens,
-            output_tokens: u.completion_tokens,
+            output_tokens,
             // No such concept on this wire; stays "not reported".
             cache_creation_input_tokens: None,
             cache_read_input_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),

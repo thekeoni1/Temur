@@ -387,9 +387,81 @@ fn streams_text_and_maps_final_chunk_usage() {
     assert_eq!(msg.model, "gpt-4o-mini");
     // usage from the include_usage final chunk, best-effort mapped
     assert_eq!(msg.usage.input_tokens, Some(25));
+    // 25 + 20 == the reported total of 45, so the T25 F11 gap fold is a
+    // no-op here and the count is the raw completion_tokens, as always.
     assert_eq!(msg.usage.output_tokens, Some(20));
     assert_eq!(msg.usage.cache_read_input_tokens, Some(10));
     assert_eq!(msg.usage.cache_creation_input_tokens, None);
+}
+
+// ------------------------------------------------ T25 F11: total_tokens gap
+//
+// Gemini bills thinking tokens and counts them in total_tokens but reports
+// them in NEITHER named field, so completion_tokens alone understates a
+// thinking turn by most of what it cost. The gap folds into the output
+// count. Everywhere else the fold is a no-op, which is what these pin.
+
+/// Parse a wire usage object and convert it the way the stream path does.
+fn wire_usage(json: &str) -> Usage {
+    serde_json::from_str::<temur::provider::openai_compat::types::Usage>(json)
+        .unwrap()
+        .into()
+}
+
+#[test]
+fn gemini_thinking_gap_folds_into_output_tokens() {
+    // VERBATIM from the live capture of 2026-08-05 kept at
+    // t13-live/evidence/f12-nostream.txt (gemini-3.6-flash, non-streaming):
+    // 48 + 19 is 67, but the server says 103. The missing 36 is thinking.
+    let u = wire_usage(r#"{"completion_tokens":19,"prompt_tokens":48,"total_tokens":103}"#);
+    assert_eq!(u.input_tokens, Some(48));
+    assert_eq!(u.output_tokens, Some(55), "19 reported + 36 unreported");
+    // The gap is an output-side spend only; nothing else is invented.
+    assert_eq!(u.cache_read_input_tokens, None);
+    assert_eq!(u.cache_creation_input_tokens, None);
+}
+
+#[test]
+fn zero_gap_usage_is_untouched() {
+    // OpenAI counts reasoning INSIDE completion_tokens, so its total is
+    // exactly the sum and the fold must change nothing.
+    let u = wire_usage(r#"{"prompt_tokens":25,"completion_tokens":20,"total_tokens":45}"#);
+    assert_eq!(u.input_tokens, Some(25));
+    assert_eq!(u.output_tokens, Some(20));
+}
+
+#[test]
+fn absent_total_tokens_is_untouched() {
+    // A server that never reports a total keeps the old behavior exactly.
+    let u = wire_usage(r#"{"prompt_tokens":25,"completion_tokens":20}"#);
+    assert_eq!(u.output_tokens, Some(20));
+    // So does one whose total FAILS to exceed the sum: an under-reported
+    // total is a server quirk, not a negative thinking spend.
+    let u = wire_usage(r#"{"prompt_tokens":25,"completion_tokens":20,"total_tokens":30}"#);
+    assert_eq!(u.output_tokens, Some(20));
+    // And a total with no named counts to measure it against is ignored.
+    let u = wire_usage(r#"{"total_tokens":103}"#);
+    assert_eq!(u.input_tokens, None);
+    assert_eq!(u.output_tokens, None);
+}
+
+#[test]
+fn streaming_final_chunk_usage_carries_the_gap_through() {
+    // The include_usage path is what temur actually uses, so the fold has
+    // to survive the accumulator, not just the standalone conversion.
+    //
+    // PROVENANCE, stated plainly: the usage numbers are the verbatim live
+    // capture, but the STREAMING envelope around them is modeled on the
+    // captured gemini_stop_with_calls shape rather than captured itself.
+    // The live streaming curl omitted stream_options.include_usage (which
+    // temur always sends), so it produced no usage object at all. The
+    // operator leg in t13-live/CHECKLIST.md closes that gap.
+    let provider = provider_with(vec![Ok("gemini_thinking_gap")]);
+    let msg = provider
+        .stream(&sample_request(), &mut |_| {}, &CancelToken::new())
+        .unwrap();
+    assert_eq!(msg.usage.input_tokens, Some(48));
+    assert_eq!(msg.usage.output_tokens, Some(55));
 }
 
 #[test]
