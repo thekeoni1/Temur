@@ -3093,3 +3093,43 @@ recording. Also open and unchanged from the T13 record: the anthropic
 1M-context tiers were confirmed against the live models API but the
 hosted acceptance itself covered OpenAI and Gemini, so no live
 Anthropic agent-loop run rides this release.
+
+## v0.13.0 - close-out (release procedure delta)
+
+What ships: T24 alone (session cost visibility: the `/status` estimate
+line for keyed priced profiles, the pure `src/cost.rs` computation
+with Anthropic's cache multipliers, the per-model list rates baked
+into the anthropic template, and the docs that name both error
+directions). Fourth single-milestone release in a row.
+
+Procedure deltas vs v0.12.0:
+
+- **T24 pushed AS stage-1 step 1** under the planning session's
+  authorization (the standing shape): 78efab3..e4c99cf onto 78efab3
+  (three commits: P1+P2, P3, P4), on-push ci run 31231658836 green,
+  main == origin == e4c99cf verified before the prep commits. Job
+  timings recorded in the stage-1 report.
+- **T24 was gate-verified offline, by design.** No live smoke rides
+  this milestone: the estimate is computed locally from usage counts
+  the provider already reported, so it is offline-computable end to
+  end, and the one thing a live run would add is a keyed session
+  showing the line in situ. That check rides a future operator
+  session rather than blocking the release.
+- **The version bump used scripts/bump_version.sh** for the third
+  time, printed diff touching exactly the four-file map: Cargo.toml,
+  the temur line of Cargo.lock (the third-party untrusted crate stays
+  pinned at its own 0.9.0), scripts/install.sh VERSION, and the five
+  README tag-pin lines. The helper stays advisory; release.sh gate 3
+  remains the skew authority.
+- **One unreproduced test failure from the T24 build cycle stays on
+  watch.** A single `--lib` run failed once during the build session
+  and never again, and the failing test's name was not captured, so
+  there is nothing to reproduce against. Every gate run since has
+  been green. The standing instruction for this cycle and the next:
+  if any test fails even once, capture the exact test name and output
+  before anything else. A name is the thing we lack.
+- Stage 1 keeps the early stop: bump + dated CHANGELOG + records +
+  full check.sh gate only; tag, four-target build, SHA256SUMS,
+  private release, installer matrix, and the closing gate stay in
+  stage 2. No tag, no push of the prep commits, no release; the repo
+  stays PRIVATE.
