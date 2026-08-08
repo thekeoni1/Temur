@@ -211,7 +211,8 @@ with the caveats named rather than averaged away:
   `finish_reason` "stop" while attaching real tool calls, and it
   requires its opaque thought signatures echoed back or it rejects
   the next request). Token accounting understates spend here, because
-  thinking tokens are not reported separately.
+  thinking tokens are not reported separately, and the `/status` cost
+  estimate inherits that floor.
 - **xAI**: unverified. No key was available; the template is written
   to the published spec. Server setup for llama.cpp, Ollama, and LM Studio,
 plus recommended small models: [docs/OFFLINE.md](docs/OFFLINE.md).

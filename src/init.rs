@@ -932,7 +932,7 @@ pub fn run_add(
                 p.insert("model".to_string(), (*model_id).into());
                 p.insert("api_key_file".to_string(), k.clone().into());
                 p.insert("context_window".to_string(), (*window).into());
-                // T24: same invariant as context_window — what --add
+                // T24: same invariant as context_window: what --add
                 // writes and what the fresh render writes must agree.
                 p.insert("price_input_per_mtok".to_string(), (*pin).into());
                 p.insert("price_output_per_mtok".to_string(), (*pout).into());

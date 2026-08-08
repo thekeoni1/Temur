@@ -4,6 +4,23 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **`/status` estimates what the session has cost** when the active
+  profile is keyed and priced. Give a profile
+  `price_input_per_mtok` / `price_output_per_mtok` (per million tokens,
+  in the key's billing currency) and `/status` adds
+  `cost: ~$0.42 this session (estimate, configured list rates)`,
+  computed locally from the token counts the provider already reported.
+  It is an estimate for awareness, never a bill: nothing calls a
+  billing API, and no provider offers one to call. The line is absent
+  entirely, with no nag, for an unpriced profile, a keyless local
+  server, or a session that has not reported usage yet. The Anthropic
+  template bakes per-model list rates; no other template bakes any,
+  because a wrong price is worse than none. Both error directions are
+  documented: the estimate understates where a provider omits thinking
+  tokens from its usage (Gemini), and overstates a cache-heavy
+  OpenAI-compatible session, since only Anthropic reports cache tokens
+  as separate counts and only its cache multipliers are modeled.
+
 ## v0.12.0 - 2026-08-07
 
 Hosted-provider verification (T13): the openai-compat provider run

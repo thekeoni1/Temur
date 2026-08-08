@@ -308,7 +308,7 @@ pub fn run(cmd: Command, ctx: &mut CommandCtx) -> Vec<AgentEvent> {
 /// Session facts only — never key material, never key file contents.
 fn status(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
     let s = &*ctx.session;
-    // T24: the cost line is present only when it can say something true —
+    // T24: the cost line is present only when it can say something true:
     // keyed selection, configured list prices, usage actually reported.
     // See crate::cost for the gate; absent means absent, no placeholder.
     let cost_line = crate::cost::session_estimate_usd(ctx.active_resolved, &s.session_usage())

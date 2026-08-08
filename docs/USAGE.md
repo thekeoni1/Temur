@@ -77,7 +77,8 @@ message starting with `/` cannot be sent):
 
 - `/help` - list commands
 - `/status` - profile, provider, model, thinking, prompt profile,
-  context use, session file
+  context use, an estimated session cost when the active profile is
+  keyed and priced (see "Cost estimate"), session file
 - `/model` - list profiles, then two hint lines saying what a
   non-profile argument does · `/model <name>` - switch profiles
   mid-session · `/model <model-id>` - switch the model WITHIN the
@@ -368,7 +369,8 @@ are worth knowing before you hit them:
   if you want the advisory.
 - **`/status` understates spend on Gemini.** Its thinking tokens are
   not reported separately in the usage it returns, so the session
-  total is a floor, not a total.
+  total is a floor, not a total. The cost estimate is computed from
+  those same counts, so it is a floor too.
 
 Gemini needed two fixes before its tool calling worked at all, both
 shipped: its streaming responses report `finish_reason` "stop" while
@@ -444,15 +446,80 @@ fields: `provider` (`"anthropic"` or `"openai-compat"`), `model`
 endpoint), `api_key_file` (path to a key file: openai-compat profiles
 without one are keyless, anthropic profiles without one fall back to
 `APP_SECRET_FILE`), `max_tokens` (default: the global value),
-`context_window`, and `prompt_profile` (`"full"` or `"compact"` for
+`context_window`, `prompt_profile` (`"full"` or `"compact"` for
 THIS profile; default: the global `prompt_profile` - switching between
 profiles swaps the system prompt and tool descriptions accordingly, and
-an explicit `system_prompt` still wins in either profile). Every
+an explicit `system_prompt` still wins in either profile), and the
+price pair `price_input_per_mtok` / `price_output_per_mtok` (see "Cost
+estimate"). Every
 profile is validated at startup, so `/model` can
 only fail on a credential/IO problem, and a failed switch leaves the
 session untouched. History continues across a switch (it is stored
 provider-neutrally), and each save records whichever provider/model is
 active at that moment.
+
+### Cost estimate
+
+Give a profile a price pair and `/status` adds one line:
+
+```
+  [!] cost: ~$0.42 this session (estimate, configured list rates)
+```
+
+It is an estimate for awareness, not a bill. temur multiplies the token
+counts the provider already reported for this session by the list
+prices YOU configured, entirely offline; it never asks any provider what
+you owe, and no provider offers an API that would answer. Two decimals
+once there is a cent to show, four below that, so a small real spend
+never renders as `$0.00`.
+
+The two fields are per profile, in the key's billing currency (USD for
+the values `temur init` bakes), and per MILLION tokens:
+
+```json
+"opus": { "provider": "anthropic", "model": "claude-opus-5",
+          "api_key_file": "/home/you/.secrets/temur-anthropic-key",
+          "price_input_per_mtok": 5.0, "price_output_per_mtok": 25.0 }
+```
+
+At those rates, a session that reported 400k input and 30k output
+tokens estimates at 400000/1e6 * 5.0 + 30000/1e6 * 25.0 = $2.00 + $0.75
+= `~$2.75`. Set both or neither: half a pair would silently disable the
+estimate, so it is a startup error naming both fields, as is a negative
+rate.
+
+The line is absent, with no nag, whenever it could not be honest:
+
+- an unpriced profile (nothing to compute; add the two fields),
+- a keyless profile (a local server bills nobody; anthropic profiles
+  are always keyed, openai-compat ones only with an `api_key_file`),
+- a session that has not reported any usage yet.
+
+The anthropic template bakes prices for its four profiles; no other
+template bakes any, because no other provider's rates were verified,
+and a wrong price is worse than none. The base (non-profile)
+configuration has nowhere to carry a price pair, so the estimate is a
+profiles feature: put your hosted selection in a profile to get it.
+
+Both error directions, plainly:
+
+- **It can UNDERSTATE.** The estimate can only count tokens the
+  provider reported, and some providers do not report all of them.
+  Gemini omits thinking tokens from its usage, so its session total is
+  a floor and so is any figure derived from it (the same limit noted
+  under the hosted-template caveats above). A provider that reports
+  nothing at all shows no line, which is honest rather than free.
+- **It can OVERSTATE.** On the OpenAI-compatible wire, cached prompt
+  tokens are reported as a SUBSET of the prompt tokens already counted,
+  and the discount for them is not modeled, so a cache-heavy compat
+  session estimates a little high. That is the deliberate direction for
+  a spend-awareness number.
+
+Anthropic is the one wire that reports cache tokens as separate counts,
+so the estimate does model its published cache multipliers there: cache
+reads at 0.1x and cache writes at 1.25x the input rate (the 5-minute
+TTL temur uses). Those multipliers, like the baked prices, are
+knowledge as of 2026-08-07 and nothing re-checks them.
 
 ## Picking and keeping a model
 

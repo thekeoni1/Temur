@@ -162,7 +162,7 @@ pub struct ResolvedProfile {
     /// [`crate::tools::PromptProfile::Full`].
     pub prompt_profile: crate::tools::PromptProfile,
     /// Validated list prices per million tokens (T24), either both set or
-    /// both absent — see [`ProfileConfig::price_input_per_mtok`]. Only the
+    /// both absent (see [`ProfileConfig::price_input_per_mtok`]). Only the
     /// `/status` cost estimate reads them.
     pub price_input_per_mtok: Option<f64>,
     pub price_output_per_mtok: Option<f64>,

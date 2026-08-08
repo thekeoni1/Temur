@@ -66,7 +66,7 @@ pub fn estimate_usd(
 ///
 /// Three conditions, all required: the active selection is keyed (nobody
 /// is billed for a local server), both list prices are configured (an
-/// unpriced profile gets no nag — the docs point at the fields), and the
+/// unpriced profile gets no nag, the docs point at the fields), and the
 /// session has some reported usage (nothing to estimate before the first
 /// turn). Any one missing means silence, not a placeholder.
 pub fn session_estimate_usd(active: &ResolvedProfile, usage: &Usage) -> Option<f64> {
