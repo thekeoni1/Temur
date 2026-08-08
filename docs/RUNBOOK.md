@@ -3133,3 +3133,65 @@ Procedure deltas vs v0.12.0:
   private release, installer matrix, and the closing gate stay in
   stage 2. No tag, no push of the prep commits, no release; the repo
   stays PRIVATE.
+
+## v0.13.0 acceptance - recorded result (SHIPPED, private)
+
+2026-08-07, stage 2 all green, ships T24 alone (the session cost
+estimate). No pre-tag rider this cycle: the tag lands directly on the
+stage-1 prep head 2d389b5.
+
+- Push e4c99cf..2d389b5 (the three stage-1 prep commits: be2bf73
+  version bump, 7acbd0b CHANGELOG release cut, 2d389b5 docs
+  close-out); on-push ci run 31233011210 green (test 2m08s
+  01:35:35Z..01:37:43Z, release-gate 8m20s 01:35:35Z..01:43:55Z);
+  main == origin == 2d389b5 verified.
+- Annotated tag v0.13.0 at 2d389b5, message exactly "temur v0.13.0 -
+  session cost estimate (T24)" (one short line), verified verbatim via
+  git cat-file tag BEFORE the push: object line 2d389b5, message that
+  one line and nothing more, 43 bytes, ASCII hyphen, no trailing text.
+  Tag object 5c650abc7c4bafde3f3f72ee35b8075010b98d8c, pushed. Unsigned
+  as always. Not retagged.
+- Full release.sh, no SKIP_CHECK, green FIRST TRY: inner check.sh ALL
+  CHECKS PASSED, leak grep clean (operator patterns + generic shapes,
+  files + history), skew gate "OK: install.sh + README match version
+  0.13.0 and all targets", 4/4 targets gated and version-asserted
+  "temur 0.13.0" (i686 + x86_64 native, aarch64 + armv7 qemu),
+  SHA256SUMS self-verified (4/4 OK), staged at
+  /home/dev/dist/release/v0.13.0/.
+- **The full gate output was teed to a log file this cycle**, a new
+  procedure step, with no tail in the pipe, so that a single test
+  failure would keep its name. Nothing to catch: every "test result:"
+  line in the 281-line log reads "0 failed", across all three test
+  legs (host i686-gnu, container gnu-debug, container musl-release).
+  The unreproduced --lib failure from the T24 build cycle therefore
+  stays unnamed and unreproduced; it did not recur here. The capture
+  procedure is cheap and stays on for the next cycle.
+- **Rider 2's smoke fix held on its third independent exercise.** All
+  three TUI pty smokes (host, container gnu-debug, container musl)
+  passed on the first attempt, well inside the 180s bound. Second
+  consecutive cycle with zero kill-and-rerun; the bare busybox leg
+  printed "temur 0.13.0" and its mock REPL passed.
+- Staged sha256s: 6837e458ed6b... aarch64, 76c1f46d7534... armv7,
+  05114b34bb23... i686, b5dfa1d70b3c... x86_64; SHA256SUMS itself
+  79d0ba124453... (full sums in the release's SHA256SUMS asset).
+- Private release github.com/thekeoni1/Temur/releases/tag/v0.13.0
+  created with title per tag, notes = the CHANGELOG v0.13.0 section,
+  5 assets (4 binaries + SHA256SUMS), not draft; repo isPrivate true
+  confirmed via gh BEFORE creating the release and again after.
+- Closing gate, fresh files in a scratch dir: downloaded x86_64 sha
+  b5dfa1d70b3c33eb89edccfc1d3b2ca2e583aabeee97d9b363e3996c10724b48
+  equals the staged value and cmp against the staged binary is clean;
+  the downloaded SHA256SUMS is cmp-identical to the staged one.
+- Installer matrix 6/6 twice: once against the staged directory and
+  once against a fresh full download of all five published assets
+  (pass + corrupt + unlisted, GNU host and busybox container). That
+  fresh download also self-verified 4/4 against the published
+  SHA256SUMS.
+
+Honest residuals: none new this stage. T24 shipped without a live
+keyed session showing the estimate line in situ, by design (see the
+close-out); that check rides a future operator session. The ARM
+artifacts remain verified at build level under qemu only, hardware
+smoke pending hardware. Still queued behind the visibility flip: the
+PUBLIC one-liner gate, the hostname-blob-history decision, and the
+demo GIF recording.
