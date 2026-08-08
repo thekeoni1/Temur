@@ -109,12 +109,34 @@ const TEMPLATES: [Template; 5] = [
 /// authenticated call. The in-session `/models` command (T22 P3) and
 /// `doctor` live-check these against the wire, so later drift surfaces
 /// there rather than silently here.
-const ANTHROPIC_PROFILES: [(&str, &str, u64); 4] = [
-    ("fable", "claude-fable-5", 1_000_000),
-    ("haiku", "claude-haiku-4-5", 200_000),
-    ("opus", "claude-opus-5", 1_000_000),
-    ("sonnet", "claude-sonnet-5", 1_000_000),
+///
+/// The fourth and fifth fields are the profile's baked
+/// `price_input_per_mtok` / `price_output_per_mtok` (T24), USD per
+/// million tokens at Anthropic's STANDARD list rate,
+/// knowledge-of-record 2026-08-07. They feed the `/status` cost estimate
+/// and nothing else. Sonnet carries a temporary introductory rate
+/// (2.0/10.0 through 2026-08-31); the standard 3.0/15.0 is baked
+/// deliberately, because a promotional rate goes silently stale the day
+/// it lapses and an estimate that reads low is worse than one that reads
+/// slightly high. Anyone on the intro rate can say so in their config.
+/// Same knowledge-of-that-date caveat as the windows above: list prices
+/// change, and nothing here re-checks them.
+const ANTHROPIC_PROFILES: [(&str, &str, u64, f64, f64); 4] = [
+    ("fable", "claude-fable-5", 1_000_000, 10.0, 50.0),
+    ("haiku", "claude-haiku-4-5", 200_000, 1.0, 5.0),
+    ("opus", "claude-opus-5", 1_000_000, 5.0, 25.0),
+    ("sonnet", "claude-sonnet-5", 1_000_000, 3.0, 15.0),
 ];
+
+/// A baked price as JSON. serde_json is the authority for the number's
+/// spelling (the `--add` path writes through it), so the wizard's
+/// hand-rolled render routes through the same formatter and the two
+/// paths stay byte-identical, the same invariant `context_window` has.
+fn price_json(v: f64) -> String {
+    serde_json::Number::from_f64(v)
+        .expect("baked prices are finite")
+        .to_string()
+}
 
 /// The startup profile the anthropic template defaults to. Keeps the
 /// pre-T16 default model (claude-sonnet-5): no default flip.
@@ -213,11 +235,12 @@ fn render_config(
             let k = serde_json::to_string(key_file.expect("anthropic is keyed"))
                 .expect("string serializes");
             let mut s = String::from("{\n  \"profiles\": {\n");
-            for (i, (name, model_id, window)) in ANTHROPIC_PROFILES.iter().enumerate() {
+            for (i, (name, model_id, window, pin, pout)) in ANTHROPIC_PROFILES.iter().enumerate() {
                 let comma = if i + 1 == ANTHROPIC_PROFILES.len() { "" } else { "," };
                 let label = format!("\"{name}\":");
+                let (pin, pout) = (price_json(*pin), price_json(*pout));
                 s.push_str(&format!(
-                    "    {label:<9} {{ \"provider\": \"anthropic\", \"model\": \"{model_id}\",\n                \"api_key_file\": {k},\n                \"context_window\": {window} }}{comma}\n"
+                    "    {label:<9} {{ \"provider\": \"anthropic\", \"model\": \"{model_id}\",\n                \"api_key_file\": {k},\n                \"context_window\": {window},\n                \"price_input_per_mtok\": {pin}, \"price_output_per_mtok\": {pout} }}{comma}\n"
                 ));
             }
             s.push_str(&format!("  }},\n  \"profile\": {m}\n}}\n"));
@@ -639,7 +662,7 @@ fn pick_startup_profile(
     out: &mut dyn Write,
 ) -> Result<&'static str, crate::error::Error> {
     writeln!(out, "Profiles this template writes:")?;
-    for (i, (name, model_id, _)) in ANTHROPIC_PROFILES.iter().enumerate() {
+    for (i, (name, model_id, ..)) in ANTHROPIC_PROFILES.iter().enumerate() {
         writeln!(out, "  {}) {name:<7} {model_id}", i + 1)?;
     }
     loop {
@@ -655,8 +678,8 @@ fn pick_startup_profile(
                     return Ok(ANTHROPIC_PROFILES[n - 1].0);
                 }
             }
-        } else if let Some((name, _, _)) =
-            ANTHROPIC_PROFILES.iter().find(|(name, _, _)| *name == answer)
+        } else if let Some((name, ..)) =
+            ANTHROPIC_PROFILES.iter().find(|(name, ..)| *name == answer)
         {
             return Ok(name);
         }
@@ -839,7 +862,7 @@ pub fn run_add(
     // Collisions are checked BEFORE any question runs, so a doomed merge
     // never wastes the user's answers.
     let adding: Vec<&'static str> = if template.name == "anthropic" {
-        ANTHROPIC_PROFILES.iter().map(|(n, _, _)| *n).collect()
+        ANTHROPIC_PROFILES.iter().map(|(n, ..)| *n).collect()
     } else {
         vec![template.name]
     };
@@ -903,12 +926,16 @@ pub fn run_add(
         "anthropic" => {
             let key = ask_key_file("anthropic", home, input, out, term.is_tty())?;
             let k = key.display().to_string();
-            for (name, model_id, window) in &ANTHROPIC_PROFILES {
+            for (name, model_id, window, pin, pout) in &ANTHROPIC_PROFILES {
                 let mut p = serde_json::Map::new();
                 p.insert("provider".to_string(), "anthropic".into());
                 p.insert("model".to_string(), (*model_id).into());
                 p.insert("api_key_file".to_string(), k.clone().into());
                 p.insert("context_window".to_string(), (*window).into());
+                // T24: same invariant as context_window — what --add
+                // writes and what the fresh render writes must agree.
+                p.insert("price_input_per_mtok".to_string(), (*pin).into());
+                p.insert("price_output_per_mtok".to_string(), (*pout).into());
                 new_profiles.push(((*name).to_string(), p.into()));
             }
             key_file = Some(key);
@@ -1334,7 +1361,7 @@ mod tests {
         let t = &TEMPLATES[1]; // anthropic
         let rendered =
             render_config(t, "sonnet", Some("/home/u/.secrets/temur-anthropic-key"), None, None);
-        let expect = "{\n  \"profiles\": {\n    \"fable\":  { \"provider\": \"anthropic\", \"model\": \"claude-fable-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 1000000 },\n    \"haiku\":  { \"provider\": \"anthropic\", \"model\": \"claude-haiku-4-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 200000 },\n    \"opus\":   { \"provider\": \"anthropic\", \"model\": \"claude-opus-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 1000000 },\n    \"sonnet\": { \"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 1000000 }\n  },\n  \"profile\": \"sonnet\"\n}\n";
+        let expect = "{\n  \"profiles\": {\n    \"fable\":  { \"provider\": \"anthropic\", \"model\": \"claude-fable-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 1000000,\n                \"price_input_per_mtok\": 10.0, \"price_output_per_mtok\": 50.0 },\n    \"haiku\":  { \"provider\": \"anthropic\", \"model\": \"claude-haiku-4-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 200000,\n                \"price_input_per_mtok\": 1.0, \"price_output_per_mtok\": 5.0 },\n    \"opus\":   { \"provider\": \"anthropic\", \"model\": \"claude-opus-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 1000000,\n                \"price_input_per_mtok\": 5.0, \"price_output_per_mtok\": 25.0 },\n    \"sonnet\": { \"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 1000000,\n                \"price_input_per_mtok\": 3.0, \"price_output_per_mtok\": 15.0 }\n  },\n  \"profile\": \"sonnet\"\n}\n";
         assert_eq!(rendered, expect);
     }
 
@@ -1349,7 +1376,7 @@ mod tests {
             vec!["fable", "haiku", "opus", "sonnet"],
             "name order"
         );
-        for ((name, model_id, window), (key, resolved)) in
+        for ((name, model_id, window, pin, pout), (key, resolved)) in
             ANTHROPIC_PROFILES.iter().zip(&profiles)
         {
             assert_eq!(key.as_str(), *name);
@@ -1361,13 +1388,26 @@ mod tests {
                 Some(*window),
                 "T13 P2.5: the baked hosted window, per model"
             );
+            assert_eq!(
+                (resolved.price_input_per_mtok, resolved.price_output_per_mtok),
+                (Some(*pin), Some(*pout)),
+                "T24: the baked list prices, per model"
+            );
         }
         // T13 P2.5: the per-model values are the point, so pin that they
         // are not all equal. A blanket constant would pass the loop above.
         assert_eq!(
-            ANTHROPIC_PROFILES.map(|(_, _, w)| w),
+            ANTHROPIC_PROFILES.map(|(_, _, w, ..)| w),
             [1_000_000, 200_000, 1_000_000, 1_000_000],
             "live 2026-08-04: haiku is the odd one out"
+        );
+        // T24, same reasoning: per-model USD-per-Mtok list rates,
+        // knowledge-of-record 2026-08-07, sonnet at the STANDARD rate and
+        // not its introductory one.
+        assert_eq!(
+            ANTHROPIC_PROFILES.map(|(_, _, _, pin, pout)| (pin, pout)),
+            [(10.0, 50.0), (1.0, 5.0), (5.0, 25.0), (3.0, 15.0)],
+            "fable / haiku / opus / sonnet"
         );
         let (active, resolved) = cfg.startup_selection(&profiles).expect("selection resolves");
         assert_eq!(active.as_deref(), Some("opus"));
@@ -1471,7 +1511,7 @@ mod tests {
         result.unwrap();
         let k = key.display();
         let expect = format!(
-            "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{\n    \"model\": \"qwen3-1.7b\",\n    \"context_window\": 8192\n  }},\n  \"profiles\": {{\n    \"fable\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-fable-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 1000000\n    }},\n    \"haiku\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-haiku-4-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 200000\n    }},\n    \"opus\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-opus-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 1000000\n    }},\n    \"sonnet\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-sonnet-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 1000000\n    }}\n  }}\n}}\n"
+            "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{\n    \"model\": \"qwen3-1.7b\",\n    \"context_window\": 8192\n  }},\n  \"profiles\": {{\n    \"fable\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-fable-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 1000000,\n      \"price_input_per_mtok\": 10.0,\n      \"price_output_per_mtok\": 50.0\n    }},\n    \"haiku\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-haiku-4-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 200000,\n      \"price_input_per_mtok\": 1.0,\n      \"price_output_per_mtok\": 5.0\n    }},\n    \"opus\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-opus-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 1000000,\n      \"price_input_per_mtok\": 5.0,\n      \"price_output_per_mtok\": 25.0\n    }},\n    \"sonnet\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-sonnet-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 1000000,\n      \"price_input_per_mtok\": 3.0,\n      \"price_output_per_mtok\": 15.0\n    }}\n  }}\n}}\n"
         );
         assert_eq!(cfg, expect, "golden merge: only a profiles key appended");
         // The startup "profile" key was NOT invented: the base selection

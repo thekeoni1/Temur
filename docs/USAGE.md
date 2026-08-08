@@ -294,16 +294,20 @@ effective default model):
   "profiles": {
     "fable":  { "provider": "anthropic", "model": "claude-fable-5",
                 "api_key_file": "/home/you/.secrets/temur-anthropic-key",
-                "context_window": 1000000 },
+                "context_window": 1000000,
+                "price_input_per_mtok": 10.0, "price_output_per_mtok": 50.0 },
     "haiku":  { "provider": "anthropic", "model": "claude-haiku-4-5",
                 "api_key_file": "/home/you/.secrets/temur-anthropic-key",
-                "context_window": 200000 },
+                "context_window": 200000,
+                "price_input_per_mtok": 1.0, "price_output_per_mtok": 5.0 },
     "opus":   { "provider": "anthropic", "model": "claude-opus-5",
                 "api_key_file": "/home/you/.secrets/temur-anthropic-key",
-                "context_window": 1000000 },
+                "context_window": 1000000,
+                "price_input_per_mtok": 5.0, "price_output_per_mtok": 25.0 },
     "sonnet": { "provider": "anthropic", "model": "claude-sonnet-5",
                 "api_key_file": "/home/you/.secrets/temur-anthropic-key",
-                "context_window": 1000000 }
+                "context_window": 1000000,
+                "price_input_per_mtok": 3.0, "price_output_per_mtok": 15.0 }
   },
   "profile": "sonnet"
 }
@@ -318,6 +322,16 @@ if a tier's real limit moves you will see it there. A config written by
 an older version keeps whatever it was written with; nothing rewrites an
 existing profile, so re-run `temur init` into a scratch config (or edit
 the numbers by hand) if you want the current values.
+
+The baked prices are per model too, USD per million tokens at
+Anthropic's standard list rate, knowledge as of 2026-08-07. They feed
+the `/status` cost estimate and nothing else; see "Cost estimate" below.
+Sonnet has a temporary introductory rate (2.0/10.0 through 2026-08-31)
+and the standard rate is baked deliberately, since a promotional number
+goes stale the day it lapses and an estimate that reads low is worse
+than one that reads a little high. Nothing re-checks list prices against
+the wire, so treat them the same way as the windows: edit them if they
+move, and only the anthropic template bakes any at all.
 
 The hosted OpenAI-compatible templates share one shape and differ only
 in endpoint and default model; the xAI one, for instance (OpenAI:
