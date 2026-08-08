@@ -1880,6 +1880,8 @@ fn two_profiles() -> BTreeMap<String, ResolvedProfile> {
             max_tokens: 111,
             context_window: None,
             prompt_profile: PromptProfile::Full,
+            price_input_per_mtok: None,
+            price_output_per_mtok: None,
         },
     );
     m.insert(
@@ -1892,6 +1894,8 @@ fn two_profiles() -> BTreeMap<String, ResolvedProfile> {
             max_tokens: 222,
             context_window: Some(4_096),
             prompt_profile: PromptProfile::Full,
+            price_input_per_mtok: None,
+            price_output_per_mtok: None,
         },
     );
     m
@@ -1950,6 +1954,8 @@ fn base_resolved() -> ResolvedProfile {
         max_tokens: 32_000,
         context_window: None,
         prompt_profile: PromptProfile::Full,
+        price_input_per_mtok: None,
+        price_output_per_mtok: None,
     }
 }
 
@@ -2447,6 +2453,123 @@ fn status_before_any_turn_renders_placeholders_and_no_key_material() {
         !ns.iter().any(|n| n.contains("key")),
         "no key-related output at all: {ns:?}"
     );
+}
+
+// ------------------------------------------- T24: /status cost estimate
+
+/// A session seeded with real token totals, the only state the cost
+/// estimate reads. 1M input + 200k output, no cache fields reported.
+fn session_with_usage(dir: &std::path::Path) -> Session {
+    let (mut session, _) = session_with(dir, vec![]);
+    let file = SessionFile {
+        version: FORMAT_VERSION,
+        provider: "anthropic".into(),
+        model: "claude-sonnet-5".into(),
+        cwd: "/work".into(),
+        history: vec![],
+        session_usage: Usage {
+            input_tokens: Some(1_000_000),
+            output_tokens: Some(200_000),
+            ..Default::default()
+        },
+        todos: vec![],
+        last_context_used: Some(1200),
+        name: None,
+    };
+    let (seed, _) = store::prepare_seed(file);
+    session.load_seed(seed);
+    session
+}
+
+#[test]
+fn status_shows_the_cost_estimate_when_keyed_priced_and_used() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = session_with_usage(dir.path());
+    let mut h = CmdHarness::new();
+    // Anthropic list rates for the sonnet tier, per million tokens.
+    h.active_resolved.price_input_per_mtok = Some(3.0);
+    h.active_resolved.price_output_per_mtok = Some(15.0);
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!()
+    };
+    let events = commands::run(commands::parse("/status"), &mut h.ctx(&mut session, &build));
+    let ns = notices(&events);
+    // 1M in at $3 + 200k out at $15 = $3.00 + $3.00.
+    assert!(
+        ns.iter()
+            .any(|n| n == "cost: ~$6.00 this session (estimate, configured list rates)"),
+        "{ns:?}"
+    );
+    // Between the context line and the session-file line.
+    let cost = ns.iter().position(|n| n.starts_with("cost:")).unwrap();
+    let context = ns.iter().position(|n| n.starts_with("context:")).unwrap();
+    let file = ns.iter().position(|n| n.starts_with("session file:")).unwrap();
+    assert!(context < cost && cost < file, "{ns:?}");
+}
+
+#[test]
+fn status_cost_estimate_shows_four_decimals_below_a_cent() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let file = SessionFile {
+        version: FORMAT_VERSION,
+        provider: "anthropic".into(),
+        model: "claude-sonnet-5".into(),
+        cwd: "/work".into(),
+        history: vec![],
+        session_usage: Usage { input_tokens: Some(1_000), ..Default::default() },
+        todos: vec![],
+        last_context_used: Some(1_000),
+        name: None,
+    };
+    let (seed, _) = store::prepare_seed(file);
+    session.load_seed(seed);
+    let mut h = CmdHarness::new();
+    h.active_resolved.price_input_per_mtok = Some(3.0);
+    h.active_resolved.price_output_per_mtok = Some(15.0);
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!()
+    };
+    let events = commands::run(commands::parse("/status"), &mut h.ctx(&mut session, &build));
+    let ns = notices(&events);
+    assert!(
+        ns.iter()
+            .any(|n| n == "cost: ~$0.0030 this session (estimate, configured list rates)"),
+        "{ns:?}"
+    );
+}
+
+#[test]
+fn status_omits_the_cost_estimate_when_keyless_unpriced_or_unused() {
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!()
+    };
+    let has_cost = |ns: &[String]| ns.iter().any(|n| n.starts_with("cost:"));
+
+    // Keyless openai-compat, fully priced and used: never billed, so no line.
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = session_with_usage(dir.path());
+    let mut h = CmdHarness::new();
+    h.active_resolved.provider = "openai-compat".into();
+    h.active_resolved.api_key_file = None;
+    h.active_resolved.price_input_per_mtok = Some(3.0);
+    h.active_resolved.price_output_per_mtok = Some(15.0);
+    let events = commands::run(commands::parse("/status"), &mut h.ctx(&mut session, &build));
+    assert!(!has_cost(&notices(&events)), "keyless: {:?}", notices(&events));
+
+    // Keyed and used but unpriced: no nag, the docs point at the fields.
+    let mut session = session_with_usage(dir.path());
+    let mut h = CmdHarness::new();
+    let events = commands::run(commands::parse("/status"), &mut h.ctx(&mut session, &build));
+    assert!(!has_cost(&notices(&events)), "unpriced: {:?}", notices(&events));
+
+    // Keyed and priced but nothing reported yet: nothing to estimate.
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    h.active_resolved.price_input_per_mtok = Some(3.0);
+    h.active_resolved.price_output_per_mtok = Some(15.0);
+    let events = commands::run(commands::parse("/status"), &mut h.ctx(&mut session, &build));
+    assert!(!has_cost(&notices(&events)), "no usage: {:?}", notices(&events));
 }
 
 #[test]
@@ -3167,6 +3290,8 @@ fn hop_harness() -> CmdHarness {
             max_tokens: 333,
             context_window: None,
             prompt_profile: PromptProfile::Compact,
+            price_input_per_mtok: None,
+            price_output_per_mtok: None,
         },
     );
     h.active = Some("b".into());

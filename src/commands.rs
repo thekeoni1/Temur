@@ -308,7 +308,17 @@ pub fn run(cmd: Command, ctx: &mut CommandCtx) -> Vec<AgentEvent> {
 /// Session facts only — never key material, never key file contents.
 fn status(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
     let s = &*ctx.session;
-    vec![
+    // T24: the cost line is present only when it can say something true —
+    // keyed selection, configured list prices, usage actually reported.
+    // See crate::cost for the gate; absent means absent, no placeholder.
+    let cost_line = crate::cost::session_estimate_usd(ctx.active_resolved, &s.session_usage())
+        .map(|usd| {
+            notice(format!(
+                "cost: ~${} this session (estimate, configured list rates)",
+                crate::cost::format_usd(usd)
+            ))
+        });
+    let mut out = vec![
         notice(format!(
             "profile: {}",
             ctx.active_profile.as_deref().unwrap_or("(none — base config)")
@@ -328,15 +338,17 @@ fn status(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
             (None, Some(u)) => format!("context: ~{u} tokens used (window size unknown)"),
             _ => "context: no usage reported yet".into(),
         }),
-        notice(match ctx.persist_path.as_deref() {
-            Some(p) => format!(
-                "session file: {} · session: {}",
-                p.display(),
-                ctx.session_name.as_deref().unwrap_or("(default)")
-            ),
-            None => "session file: persistence disabled (--mock)".into(),
-        }),
-    ]
+    ];
+    out.extend(cost_line);
+    out.push(notice(match ctx.persist_path.as_deref() {
+        Some(p) => format!(
+            "session file: {} · session: {}",
+            p.display(),
+            ctx.session_name.as_deref().unwrap_or("(default)")
+        ),
+        None => "session file: persistence disabled (--mock)".into(),
+    }));
+    out
 }
 
 fn clear(ctx: &mut CommandCtx) -> Vec<AgentEvent> {

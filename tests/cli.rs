@@ -986,6 +986,24 @@ fn existing_broken_config_error_is_unchanged() {
     assert!(!stderr.contains("no config file found"), "{stderr}");
 }
 
+#[test]
+fn half_a_price_pair_is_a_startup_error_naming_both_fields() {
+    // T24: a profile that looks priced but silently shows no estimate is
+    // worse than one that refuses to start, so the pair is validated
+    // eagerly like every other profile field.
+    let sb = sandbox();
+    sb.write_config(
+        r#"{"profiles":{"p":{"provider":"openai-compat","model":"m",
+            "price_input_per_mtok":3.0}},"profile":"p"}"#,
+    );
+    let (code, stdout, stderr) = run(sb.cmd(), "");
+    assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("profile \"p\": price_input_per_mtok and price_output_per_mtok must be set together"),
+        "{stderr}"
+    );
+}
+
 // ------------------------------------------------- T21: bash approval (e2e)
 //
 // The Ask arm needs a probe-FAIL, forced deterministically via the one-way

@@ -130,6 +130,17 @@ pub struct ProfileConfig {
     /// Same explicit-only contract as the global field — never inferred
     /// from context_window; any other value is a startup error.
     pub prompt_profile: Option<String>,
+    /// List price per MILLION input tokens, in the key's billing currency
+    /// (USD for the values `init` bakes). Feeds nothing but the `/status`
+    /// cost estimate (T24): an awareness figure computed locally from the
+    /// session's own token counts, never a bill. `None` = the estimate is
+    /// off for this profile, which is also what every unpriced profile
+    /// does. Must be set together with [`ProfileConfig::price_output_per_mtok`].
+    pub price_input_per_mtok: Option<f64>,
+    /// List price per MILLION output tokens; see
+    /// [`ProfileConfig::price_input_per_mtok`] for the contract. Must be
+    /// set together with it.
+    pub price_output_per_mtok: Option<f64>,
 }
 
 /// A fully resolved provider selection — every default already applied, so
@@ -150,6 +161,23 @@ pub struct ResolvedProfile {
     /// Already resolved: this profile's own setting, else the global, else
     /// [`crate::tools::PromptProfile::Full`].
     pub prompt_profile: crate::tools::PromptProfile,
+    /// Validated list prices per million tokens (T24), either both set or
+    /// both absent — see [`ProfileConfig::price_input_per_mtok`]. Only the
+    /// `/status` cost estimate reads them.
+    pub price_input_per_mtok: Option<f64>,
+    pub price_output_per_mtok: Option<f64>,
+}
+
+impl ResolvedProfile {
+    /// Whether this selection sends a credential. Anthropic always does
+    /// (profile key file, else `APP_SECRET_FILE`); openai-compat does only
+    /// when a key file is configured, since keyless local servers are the
+    /// point of that provider. Mirrors the split in
+    /// [`crate::provider::build_live_with_key`], and gates the `/status`
+    /// cost estimate: an unkeyed endpoint is nobody's metered spend.
+    pub fn is_keyed(&self) -> bool {
+        self.provider == "anthropic" || self.api_key_file.is_some()
+    }
 }
 
 /// Per-provider settings for an OpenAI-compatible endpoint (llama.cpp,
@@ -296,6 +324,27 @@ impl Config {
                 )))
             }
         };
+        // T24 prices, validated as eagerly as everything above. A negative
+        // or non-finite rate is a typo, not a price; and exactly one of the
+        // pair is the silent-disable case worth naming, since a profile
+        // that looks priced but shows no estimate reads as a bug.
+        for (field, value) in [
+            ("price_input_per_mtok", p.price_input_per_mtok),
+            ("price_output_per_mtok", p.price_output_per_mtok),
+        ] {
+            if let Some(v) = value {
+                if !v.is_finite() || v < 0.0 {
+                    return Err(crate::error::Error::Config(format!(
+                        "profile {name:?}: {field} must be a finite non-negative number"
+                    )));
+                }
+            }
+        }
+        if p.price_input_per_mtok.is_some() != p.price_output_per_mtok.is_some() {
+            return Err(crate::error::Error::Config(format!(
+                "profile {name:?}: price_input_per_mtok and price_output_per_mtok must be set together"
+            )));
+        }
         let base_url = p.base_url.clone().unwrap_or_else(|| {
             if p.provider == "openai-compat" {
                 DEFAULT_OPENAI_COMPAT_BASE_URL.to_string()
@@ -311,6 +360,8 @@ impl Config {
             max_tokens: p.max_tokens.unwrap_or(self.max_tokens),
             context_window: p.context_window,
             prompt_profile,
+            price_input_per_mtok: p.price_input_per_mtok,
+            price_output_per_mtok: p.price_output_per_mtok,
         })
     }
 
@@ -327,6 +378,11 @@ impl Config {
                 max_tokens: self.max_tokens,
                 context_window: None,
                 prompt_profile: self.prompt_profile()?,
+                // T24: prices are a per-profile field, so the base
+                // selection has nowhere to carry them and the estimate
+                // stays off there.
+                price_input_per_mtok: None,
+                price_output_per_mtok: None,
             }),
             "openai-compat" => {
                 let oc = self.openai_compat.clone().unwrap_or_default();
@@ -343,6 +399,8 @@ impl Config {
                     max_tokens: self.max_tokens,
                     context_window: oc.context_window,
                     prompt_profile: self.prompt_profile()?,
+                    price_input_per_mtok: None,
+                    price_output_per_mtok: None,
                 })
             }
             other => Err(crate::error::Error::Config(format!(
@@ -711,6 +769,66 @@ mod tests {
         let p = &c.resolved_profiles().unwrap()["p"];
         assert_eq!(p.base_url, "http://10.0.0.2:9999/v1");
         assert_eq!(p.api_key_file.as_deref(), Some("/etc/keys/p"));
+    }
+
+    #[test]
+    fn profile_prices_resolve_and_gate_keyedness() {
+        let c: Config = serde_json::from_str(
+            r#"{"profiles": {
+                "priced": {"provider": "anthropic", "model": "m",
+                           "price_input_per_mtok": 3.0, "price_output_per_mtok": 15.0},
+                "plain":  {"provider": "openai-compat", "model": "m"}}}"#,
+        )
+        .unwrap();
+        let profiles = c.resolved_profiles().unwrap();
+        let priced = &profiles["priced"];
+        assert_eq!(priced.price_input_per_mtok, Some(3.0));
+        assert_eq!(priced.price_output_per_mtok, Some(15.0));
+        assert!(priced.is_keyed(), "anthropic is keyed with no key file of its own");
+        let plain = &profiles["plain"];
+        assert_eq!(plain.price_input_per_mtok, None);
+        assert!(!plain.is_keyed(), "keyless openai-compat");
+        // The base selection has nowhere to carry prices (T24).
+        assert_eq!(c.resolve_base().unwrap().price_input_per_mtok, None);
+    }
+
+    #[test]
+    fn invalid_prices_are_startup_errors_naming_the_field() {
+        let bad = |json: &str| -> String {
+            let c: Config = serde_json::from_str(json).unwrap();
+            c.resolved_profiles().unwrap_err().to_string()
+        };
+        assert_eq!(
+            bad(r#"{"profiles": {"p": {"provider": "anthropic", "model": "m",
+                    "price_input_per_mtok": -1.0, "price_output_per_mtok": 15.0}}}"#),
+            "config: profile \"p\": price_input_per_mtok must be a finite non-negative number"
+        );
+        // Non-finite cannot arrive through JSON (serde_json rejects an
+        // out-of-range literal at parse time), so drive the guard through
+        // the struct the way any other caller of the type would.
+        let c = Config {
+            profiles: Some(std::collections::BTreeMap::from([(
+                "p".to_string(),
+                ProfileConfig {
+                    provider: "anthropic".into(),
+                    model: "m".into(),
+                    price_input_per_mtok: Some(3.0),
+                    price_output_per_mtok: Some(f64::INFINITY),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        };
+        assert_eq!(
+            c.resolved_profiles().unwrap_err().to_string(),
+            "config: profile \"p\": price_output_per_mtok must be a finite non-negative number"
+        );
+        // Half a pair silently disables the estimate; name both.
+        assert_eq!(
+            bad(r#"{"profiles": {"p": {"provider": "anthropic", "model": "m",
+                    "price_input_per_mtok": 3.0}}}"#),
+            "config: profile \"p\": price_input_per_mtok and price_output_per_mtok must be set together"
+        );
     }
 
     #[test]
