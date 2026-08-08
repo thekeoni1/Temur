@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.13.0 - 2026-08-07
+
 - **`/status` estimates what the session has cost** when the active
   profile is keyed and priced. Give a profile
   `price_input_per_mtok` / `price_output_per_mtok` (per million tokens,
