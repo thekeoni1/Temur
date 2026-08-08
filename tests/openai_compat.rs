@@ -83,6 +83,7 @@ fn provider_with(outcomes: Vec<Result<&'static str, TransportError>>) -> OpenAiC
     OpenAiCompatProvider::new(
         "http://local.test/v1",
         Some("test-key-not-a-secret".into()),
+        MaxTokensParam::default(),
         Box::new(ScriptedTransport::new(outcomes)),
     )
 }
@@ -92,6 +93,15 @@ fn provider_with(outcomes: Vec<Result<&'static str, TransportError>>) -> OpenAiC
 fn provider_and_transport(
     outcomes: Vec<Result<&'static str, TransportError>>,
     api_key: Option<String>,
+) -> (OpenAiCompatProvider, &'static ScriptedTransport) {
+    provider_and_transport_with_param(outcomes, api_key, MaxTokensParam::default())
+}
+
+// Same, with the T25 F7 token-cap wire key pinned explicitly.
+fn provider_and_transport_with_param(
+    outcomes: Vec<Result<&'static str, TransportError>>,
+    api_key: Option<String>,
+    max_tokens_parameter: MaxTokensParam,
 ) -> (OpenAiCompatProvider, &'static ScriptedTransport) {
     let transport: &'static ScriptedTransport =
         Box::leak(Box::new(ScriptedTransport::new(outcomes)));
@@ -106,8 +116,12 @@ fn provider_and_transport(
             self.0.post_stream(url, api_key, body)
         }
     }
-    let provider =
-        OpenAiCompatProvider::new("http://local.test/v1", api_key, Box::new(Borrowed(transport)));
+    let provider = OpenAiCompatProvider::new(
+        "http://local.test/v1",
+        api_key,
+        max_tokens_parameter,
+        Box::new(Borrowed(transport)),
+    );
     (provider, transport)
 }
 
@@ -126,8 +140,10 @@ fn request_body_shape() {
     let body: serde_json::Value = serde_json::from_str(&transport.bodies.borrow()[0]).unwrap();
     assert_eq!(body["model"], "qwen2.5-coder-7b");
     // The classic wire name — the compat universe never learned
-    // max_completion_tokens.
+    // max_completion_tokens. Still the DEFAULT after T25 F7 made the key
+    // configurable, so an unconfigured profile sends what it always sent.
     assert_eq!(body["max_tokens"], 8_000);
+    assert!(body.get("max_completion_tokens").is_none());
     assert_eq!(body["stream"], true);
     assert_eq!(body["stream_options"]["include_usage"], true);
     // system prompt is a plain leading system message (no cache_control —
@@ -147,6 +163,63 @@ fn request_body_shape() {
     assert!(body.get("thinking").is_none());
     // the key must never leak into the body
     assert!(!transport.bodies.borrow()[0].contains("test-key-not-a-secret"));
+}
+
+// ------------------------------------------- T25 F7: max_tokens_parameter
+//
+// OpenAI-proper's gpt-5 era ids reject `max_tokens` and want
+// `max_completion_tokens` (T13 acceptance, 2026-08-05). The profile picks
+// the key name; the value and everything else about the body is identical.
+
+#[test]
+fn max_completion_tokens_replaces_the_classic_key_when_configured() {
+    let (provider, transport) = provider_and_transport_with_param(
+        vec![Ok("text_simple")],
+        None,
+        MaxTokensParam::MaxCompletionTokens,
+    );
+    provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
+
+    let raw = transport.bodies.borrow()[0].clone();
+    let body: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    // Exactly one of the two names, carrying the same u32: nothing
+    // downstream ever has to reconcile a pair.
+    assert_eq!(body["max_completion_tokens"], 8_000);
+    assert!(body.get("max_tokens").is_none());
+    // Everything else stays put.
+    assert_eq!(body["model"], "qwen2.5-coder-7b");
+    assert_eq!(body["stream"], true);
+    assert_eq!(body["stream_options"]["include_usage"], true);
+    assert_eq!(body["messages"][0]["role"], "system");
+    assert_eq!(body["tools"][0]["function"]["name"], "read");
+    // T20 sorted-json contract holds for the alternate name too: the
+    // renamed key sorts into place rather than riding wherever it was
+    // inserted (max_completion_tokens sorts BEFORE messages/model, where
+    // max_tokens sorted after).
+    let keys: Vec<&str> = body.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+    let mut sorted = keys.clone();
+    sorted.sort();
+    assert_eq!(keys, sorted, "body keys must be sorted: {raw}");
+}
+
+#[test]
+fn the_two_bodies_differ_only_in_the_token_cap_key() {
+    let (classic, ct) =
+        provider_and_transport_with_param(vec![Ok("text_simple")], None, MaxTokensParam::MaxTokens);
+    classic.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
+    let (alternate, at) = provider_and_transport_with_param(
+        vec![Ok("text_simple")],
+        None,
+        MaxTokensParam::MaxCompletionTokens,
+    );
+    alternate.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap();
+
+    let mut a: serde_json::Value = serde_json::from_str(&ct.bodies.borrow()[0]).unwrap();
+    let mut b: serde_json::Value = serde_json::from_str(&at.bodies.borrow()[0]).unwrap();
+    let av = a.as_object_mut().unwrap().remove("max_tokens").unwrap();
+    let bv = b.as_object_mut().unwrap().remove("max_completion_tokens").unwrap();
+    assert_eq!(av, bv, "same cap value under either name");
+    assert_eq!(a, b, "the key name is the ONLY difference");
 }
 
 #[test]
@@ -1025,6 +1098,7 @@ fn cancelling_provider(
     let provider = OpenAiCompatProvider::new(
         "http://local.test/v1",
         None,
+        MaxTokensParam::default(),
         Box::new(CancellingTransport {
             data,
             cancel_at,
@@ -1174,6 +1248,7 @@ fn cancel_racing_read_error_keeps_streamed_partial() {
     let provider = OpenAiCompatProvider::new(
         "http://127.0.0.1:8080/v1",
         None,
+        MaxTokensParam::default(),
         Box::new(PartialThenErrorTransport {
             prefix: full[..cut].into(),
             set_on_error: cancel.clone(),
@@ -1202,6 +1277,7 @@ fn read_error_without_cancel_is_still_an_error() {
     let provider = OpenAiCompatProvider::new(
         "http://127.0.0.1:8080/v1",
         None,
+        MaxTokensParam::default(),
         Box::new(PartialThenErrorTransport {
             prefix: full[..cut].into(),
             set_on_error: CancelToken::new(),

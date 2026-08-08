@@ -393,7 +393,12 @@ fn repl(
             }
             let replay = Box::new(ReplayTransport::new(files));
             if is_compat {
-                Box::new(OpenAiCompatProvider::new(resolved.base_url.clone(), None, replay))
+                Box::new(OpenAiCompatProvider::new(
+                    resolved.base_url.clone(),
+                    None,
+                    resolved.max_tokens_parameter,
+                    replay,
+                ))
             } else {
                 Box::new(AnthropicProvider::new(
                     "https://mock.invalid",
@@ -427,6 +432,7 @@ fn repl(
                         Box::new(OpenAiCompatProvider::new(
                             resolved.base_url.clone(),
                             key,
+                            resolved.max_tokens_parameter,
                             Box::new(temur::provider::transport::CaptureTransport::new(
                                 temur::provider::openai_compat::transport::HttpTransport::new(),
                                 std::path::PathBuf::from(base),

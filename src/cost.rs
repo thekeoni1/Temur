@@ -125,6 +125,7 @@ mod tests {
             prompt_profile: PromptProfile::Full,
             price_input_per_mtok: prices.map(|(i, _)| i),
             price_output_per_mtok: prices.map(|(_, o)| o),
+            max_tokens_parameter: Default::default(),
         }
     }
 

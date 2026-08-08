@@ -14,7 +14,9 @@ pub mod types;
 use crate::cancel::CancelToken;
 use crate::provider::sse::SseFrames;
 use crate::provider::transport::{Transport, TransportError};
-use crate::provider::{ChatRequest, Provider, ProviderError, ResponseMessage, StreamEvent};
+use crate::provider::{
+    ChatRequest, MaxTokensParam, Provider, ProviderError, ResponseMessage, StreamEvent,
+};
 use std::io::BufReader;
 use types::ChunkAccumulator;
 
@@ -22,6 +24,8 @@ pub struct OpenAiCompatProvider {
     base_url: String,
     /// Empty string = keyless (no auth header). Never logged.
     api_key: String,
+    /// Which wire key carries the token cap (T25 F7); validated upstream.
+    max_tokens_parameter: MaxTokensParam,
     transport: Box<dyn Transport>,
 }
 
@@ -29,20 +33,31 @@ impl OpenAiCompatProvider {
     pub fn new(
         base_url: impl Into<String>,
         api_key: Option<String>,
+        max_tokens_parameter: MaxTokensParam,
         transport: Box<dyn Transport>,
     ) -> Self {
         OpenAiCompatProvider {
             base_url: base_url.into(),
             api_key: api_key.unwrap_or_default(),
+            max_tokens_parameter,
             transport,
         }
     }
 
-    pub fn with_http(base_url: impl Into<String>, api_key: Option<String>) -> Self {
-        Self::new(base_url, api_key, Box::new(transport::HttpTransport::new()))
+    pub fn with_http(
+        base_url: impl Into<String>,
+        api_key: Option<String>,
+        max_tokens_parameter: MaxTokensParam,
+    ) -> Self {
+        Self::new(
+            base_url,
+            api_key,
+            max_tokens_parameter,
+            Box::new(transport::HttpTransport::new()),
+        )
     }
 
-    fn build_body(req: &ChatRequest) -> Result<String, ProviderError> {
+    fn build_body(&self, req: &ChatRequest) -> Result<String, ProviderError> {
         // Neutral history → wire messages, explicitly, at this boundary
         // only. The system prompt is a plain leading system message here
         // (no cache_control: prompt caching is Anthropic-specific wire
@@ -65,17 +80,21 @@ impl OpenAiCompatProvider {
         }
         let mut body = serde_json::json!({
             "model": req.model,
-            // The classic wire name, deliberately: OpenAI-proper deprecated
-            // it for max_completion_tokens, but llama.cpp/Ollama/OpenRouter/
-            // DeepSeek — the compat universe this provider targets — all
-            // speak max_tokens; several never learned the new name.
-            "max_tokens": req.max_tokens,
             "stream": true,
             // Opt in to final-chunk usage. Local servers that predate
             // stream_options ignore unknown fields; absent usage stays None.
             "stream_options": {"include_usage": true},
             "messages": messages,
         });
+        // T25 F7: the token cap under whichever of the two names this
+        // profile configured. The classic max_tokens stays the default and
+        // every existing config keeps sending a byte-identical body;
+        // max_completion_tokens exists because OpenAI-proper's gpt-5 era
+        // ids reject the classic name outright, while llama.cpp, Ollama,
+        // OpenRouter and DeepSeek only ever learned it. The value is the
+        // same u32 either way, and exactly one of the two keys is ever
+        // present, so nothing downstream has to reconcile a pair.
+        body[self.max_tokens_parameter.wire_key()] = serde_json::json!(req.max_tokens);
         if !req.tools.is_empty() {
             let tools: Vec<types::ToolDef> = req.tools.iter().map(Into::into).collect();
             body["tools"] = serde_json::to_value(&tools)
@@ -168,7 +187,7 @@ impl Provider for OpenAiCompatProvider {
         // base_url includes the version prefix by SDK convention
         // (https://api.openai.com/v1, http://127.0.0.1:8080/v1, …).
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let body = Self::build_body(req)?;
+        let body = self.build_body(req)?;
         match crate::provider::transport::post_stream_with_retries(
             self.transport.as_ref(),
             &url,

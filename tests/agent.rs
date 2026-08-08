@@ -1700,6 +1700,7 @@ fn switch_to_compat_hits_new_base_url_and_drops_thinking_blocks() {
     let compat = temur::provider::openai_compat::OpenAiCompatProvider::new(
         "http://switched.test/v1",
         None,
+        temur::provider::MaxTokensParam::default(),
         Box::new(RecordingTransport {
             fixture: "text_simple",
             urls: urls.clone(),
@@ -1882,6 +1883,7 @@ fn two_profiles() -> BTreeMap<String, ResolvedProfile> {
             prompt_profile: PromptProfile::Full,
             price_input_per_mtok: None,
             price_output_per_mtok: None,
+            max_tokens_parameter: Default::default(),
         },
     );
     m.insert(
@@ -1896,6 +1898,7 @@ fn two_profiles() -> BTreeMap<String, ResolvedProfile> {
             prompt_profile: PromptProfile::Full,
             price_input_per_mtok: None,
             price_output_per_mtok: None,
+            max_tokens_parameter: Default::default(),
         },
     );
     m
@@ -1956,6 +1959,7 @@ fn base_resolved() -> ResolvedProfile {
         prompt_profile: PromptProfile::Full,
         price_input_per_mtok: None,
         price_output_per_mtok: None,
+        max_tokens_parameter: Default::default(),
     }
 }
 
@@ -3292,6 +3296,7 @@ fn hop_harness() -> CmdHarness {
             prompt_profile: PromptProfile::Compact,
             price_input_per_mtok: None,
             price_output_per_mtok: None,
+            max_tokens_parameter: Default::default(),
         },
     );
     h.active = Some("b".into());

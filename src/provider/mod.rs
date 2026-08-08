@@ -26,14 +26,55 @@ pub struct ToolDef {
     pub input_schema: Value,
 }
 
+/// Which wire key carries [`ChatRequest::max_tokens`] on the
+/// OpenAI-compatible wire (T25 F7). Validated when the config is resolved,
+/// so holding one is proof the operator wrote one of the two names that
+/// wire actually accepts, and exactly one of them ever appears in a body.
+/// Anthropic's wire is not configurable here: it uses `max_tokens`
+/// natively and nothing in this type reaches it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MaxTokensParam {
+    /// The classic name, and the default: llama.cpp, Ollama, OpenRouter,
+    /// DeepSeek and friends all speak it, and several never learned
+    /// anything else.
+    #[default]
+    MaxTokens,
+    /// What OpenAI-proper's gpt-5 era ids require instead, rejecting
+    /// `max_tokens` outright (T13 acceptance run of 2026-08-05).
+    MaxCompletionTokens,
+}
+
+impl MaxTokensParam {
+    /// Config spelling to value; the accepted spellings are the wire keys
+    /// themselves. `None` = not one of the two, which callers turn into a
+    /// config error naming both.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "max_tokens" => Some(MaxTokensParam::MaxTokens),
+            "max_completion_tokens" => Some(MaxTokensParam::MaxCompletionTokens),
+            _ => None,
+        }
+    }
+
+    /// The request key name to emit.
+    pub fn wire_key(self) -> &'static str {
+        match self {
+            MaxTokensParam::MaxTokens => "max_tokens",
+            MaxTokensParam::MaxCompletionTokens => "max_completion_tokens",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatRequest {
     pub model: String,
     /// Response token cap. Neutral name — providers map it to their own
-    /// field. (Both current providers happen to call it `max_tokens` on the
-    /// wire: OpenAI-proper deprecated that name for `max_completion_tokens`,
-    /// but the compat universe this provider targets — llama.cpp, Ollama,
-    /// OpenRouter, DeepSeek, … — still speaks the classic name universally.)
+    /// field. Anthropic always calls it `max_tokens` on the wire. The
+    /// OpenAI-compatible provider defaults to that same classic name, which
+    /// the compat universe speaks universally, but emits
+    /// `max_completion_tokens` instead when the profile asks for it (T25
+    /// F7): OpenAI-proper's gpt-5 era ids reject the classic name. See
+    /// [`MaxTokensParam`]; the value carried is identical either way.
     pub max_tokens: u32,
     pub system: Option<String>,
     /// Adaptive thinking (off by default in v1).
@@ -106,6 +147,7 @@ pub fn build_live_with_key(
             Box::new(openai_compat::OpenAiCompatProvider::with_http(
                 p.base_url.clone(),
                 key.clone(),
+                p.max_tokens_parameter,
             )),
             key,
         ))

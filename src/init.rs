@@ -34,10 +34,13 @@ struct Template {
 ///   entirely (11 ids, all gpt-4o or gpt-5 family), so the template could
 ///   not make a call as shipped. `gpt-4o` is listed and answered a real
 ///   tool turn first try, with the completion limit below baked beside it.
-///   The gpt-5 era ids stay out of reach from a fresh profile for a
-///   different reason: they reject `max_tokens` outright and want
-///   `max_completion_tokens`, which is our request encoding rather than
-///   anything config can fix; queued on the roadmap.
+///   The gpt-5 era ids reject `max_tokens` outright and want
+///   `max_completion_tokens`; since T25 F7 that is one config field away
+///   (`"max_tokens_parameter": "max_completion_tokens"` on the profile),
+///   so those ids are reachable, just not from a template as shipped.
+///   Nothing here bakes the field on purpose: `gpt-4o` is the default and
+///   it wants the classic name, so a baked alternate would break the very
+///   id this template was fixed to.
 /// - gemini: `gemini-2.5-flash` is retired for new users, in Google's own
 ///   404 words. `gemini-3.6-flash` answered a real tool turn live.
 ///   Note that Gemini's listing prefixes every id with `models/`, so this

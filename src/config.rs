@@ -141,6 +141,13 @@ pub struct ProfileConfig {
     /// [`ProfileConfig::price_input_per_mtok`] for the contract. Must be
     /// set together with it.
     pub price_output_per_mtok: Option<f64>,
+    /// Which wire key carries the token cap on the OpenAI-compatible wire
+    /// (T25 F7): `"max_tokens"` or `"max_completion_tokens"`, anything else
+    /// a startup error. `None` = `"max_tokens"`, so an absent field sends
+    /// byte-identical requests to every config written before this existed.
+    /// openai-compat only: setting it on an anthropic profile is a startup
+    /// error rather than a silently ignored key.
+    pub max_tokens_parameter: Option<String>,
 }
 
 /// A fully resolved provider selection — every default already applied, so
@@ -166,6 +173,11 @@ pub struct ResolvedProfile {
     /// `/status` cost estimate reads them.
     pub price_input_per_mtok: Option<f64>,
     pub price_output_per_mtok: Option<f64>,
+    /// Validated token-cap wire key (T25 F7), already defaulted. Only the
+    /// OpenAI-compatible provider reads it; an anthropic selection carries
+    /// the default and ignores it, because that wire uses `max_tokens`
+    /// natively.
+    pub max_tokens_parameter: crate::provider::MaxTokensParam,
 }
 
 impl ResolvedProfile {
@@ -200,6 +212,11 @@ pub struct OpenAiCompatConfig {
     /// `None` = awareness off. Powers warnings only: no compaction, no
     /// trimming, no request-side enforcement.
     pub context_window: Option<u64>,
+    /// Which wire key carries the token cap (T25 F7). Same contract as
+    /// [`ProfileConfig::max_tokens_parameter`]: `"max_tokens"` (the
+    /// default when absent) or `"max_completion_tokens"`, anything else a
+    /// startup error.
+    pub max_tokens_parameter: Option<String>,
 }
 
 impl Default for OpenAiCompatConfig {
@@ -209,6 +226,7 @@ impl Default for OpenAiCompatConfig {
             model: String::new(),
             api_key_file: None,
             context_window: None,
+            max_tokens_parameter: None,
         }
     }
 }
@@ -345,6 +363,23 @@ impl Config {
                 "profile {name:?}: price_input_per_mtok and price_output_per_mtok must be set together"
             )));
         }
+        // T25 F7, validated as eagerly as everything above. The field names
+        // an OpenAI-compatible wire key, so setting it on an anthropic
+        // profile is a mistake worth naming rather than a silently ignored
+        // key: that wire uses max_tokens natively and has no alternative.
+        let max_tokens_parameter = match p.max_tokens_parameter.as_deref() {
+            None => crate::provider::MaxTokensParam::default(),
+            Some(_) if p.provider == "anthropic" => {
+                return Err(crate::error::Error::Config(format!(
+                    "profile {name:?}: max_tokens_parameter is openai-compat only (the anthropic wire uses \"max_tokens\" natively)"
+                )))
+            }
+            Some(other) => crate::provider::MaxTokensParam::parse(other).ok_or_else(|| {
+                crate::error::Error::Config(format!(
+                    "profile {name:?}: unknown max_tokens_parameter {other:?} (expected \"max_tokens\" or \"max_completion_tokens\")"
+                ))
+            })?,
+        };
         let base_url = p.base_url.clone().unwrap_or_else(|| {
             if p.provider == "openai-compat" {
                 DEFAULT_OPENAI_COMPAT_BASE_URL.to_string()
@@ -362,6 +397,7 @@ impl Config {
             prompt_profile,
             price_input_per_mtok: p.price_input_per_mtok,
             price_output_per_mtok: p.price_output_per_mtok,
+            max_tokens_parameter,
         })
     }
 
@@ -383,6 +419,10 @@ impl Config {
                 // stays off there.
                 price_input_per_mtok: None,
                 price_output_per_mtok: None,
+                // T25 F7: the anthropic wire uses max_tokens natively and
+                // the schema has no anthropic-side field to set, so the
+                // default is the only reachable value here.
+                max_tokens_parameter: crate::provider::MaxTokensParam::default(),
             }),
             "openai-compat" => {
                 let oc = self.openai_compat.clone().unwrap_or_default();
@@ -391,6 +431,14 @@ impl Config {
                         "provider \"openai-compat\" requires openai_compat.model".into(),
                     ));
                 }
+                let max_tokens_parameter = match oc.max_tokens_parameter.as_deref() {
+                    None => crate::provider::MaxTokensParam::default(),
+                    Some(other) => crate::provider::MaxTokensParam::parse(other).ok_or_else(|| {
+                        crate::error::Error::Config(format!(
+                            "unknown openai_compat.max_tokens_parameter {other:?} (expected \"max_tokens\" or \"max_completion_tokens\")"
+                        ))
+                    })?,
+                };
                 Ok(ResolvedProfile {
                     provider: self.provider.clone(),
                     model: oc.model,
@@ -401,6 +449,7 @@ impl Config {
                     prompt_profile: self.prompt_profile()?,
                     price_input_per_mtok: None,
                     price_output_per_mtok: None,
+                    max_tokens_parameter,
                 })
             }
             other => Err(crate::error::Error::Config(format!(

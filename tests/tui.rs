@@ -923,6 +923,7 @@ fn headless_command_flow_status_leaves_title_alone() {
             prompt_profile: temur::tools::PromptProfile::Full,
             price_input_per_mtok: None,
             price_output_per_mtok: None,
+            max_tokens_parameter: Default::default(),
         },
     );
     let mut active: Option<String> = None;
@@ -942,6 +943,7 @@ fn headless_command_flow_status_leaves_title_alone() {
         prompt_profile: temur::tools::PromptProfile::Full,
         price_input_per_mtok: None,
         price_output_per_mtok: None,
+        max_tokens_parameter: Default::default(),
     };
     let list = |_: &temur::config::ResolvedProfile| -> Result<
         Vec<temur::provider::ModelEntry>,
@@ -1060,6 +1062,7 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
             prompt_profile: temur::tools::PromptProfile::Full,
             price_input_per_mtok: None,
             price_output_per_mtok: None,
+            max_tokens_parameter: Default::default(),
         },
     );
     let mut active: Option<String> = None;
@@ -1079,6 +1082,7 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
         prompt_profile: temur::tools::PromptProfile::Full,
         price_input_per_mtok: None,
         price_output_per_mtok: None,
+        max_tokens_parameter: Default::default(),
     };
     let list = |_: &temur::config::ResolvedProfile| -> Result<
         Vec<temur::provider::ModelEntry>,
@@ -1592,6 +1596,7 @@ fn headless_tab_completion_submits_the_completed_command() {
         prompt_profile: temur::tools::PromptProfile::Full,
         price_input_per_mtok: None,
         price_output_per_mtok: None,
+        max_tokens_parameter: Default::default(),
     };
     let list = |_: &temur::config::ResolvedProfile| -> Result<
         Vec<temur::provider::ModelEntry>,

@@ -1004,6 +1004,60 @@ fn half_a_price_pair_is_a_startup_error_naming_both_fields() {
     );
 }
 
+#[test]
+fn unknown_max_tokens_parameter_is_a_startup_error_naming_both_values() {
+    // T25 F7: only the two wire keys the compat universe actually accepts,
+    // rejected eagerly like every other profile field rather than sent and
+    // refused by the server a turn later.
+    let sb = sandbox();
+    sb.write_config(
+        r#"{"profiles":{"p":{"provider":"openai-compat","model":"m",
+            "max_tokens_parameter":"maxTokens"}},"profile":"p"}"#,
+    );
+    let (code, stdout, stderr) = run(sb.cmd(), "");
+    assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("profile \"p\": unknown max_tokens_parameter \"maxTokens\""),
+        "{stderr}"
+    );
+    assert!(stderr.contains("\"max_tokens\""), "names the default: {stderr}");
+    assert!(
+        stderr.contains("\"max_completion_tokens\""),
+        "names the alternate: {stderr}"
+    );
+}
+
+#[test]
+fn max_tokens_parameter_on_an_anthropic_profile_is_a_startup_error() {
+    // The field names an openai-compat wire key. Anthropic's wire uses
+    // max_tokens natively, so accepting and ignoring it here would read as
+    // a setting that silently does nothing.
+    let sb = sandbox();
+    sb.write_config(
+        r#"{"profiles":{"p":{"provider":"anthropic","model":"claude-sonnet-5",
+            "max_tokens_parameter":"max_completion_tokens"}},"profile":"p"}"#,
+    );
+    let (code, stdout, stderr) = run(sb.cmd(), "");
+    assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("profile \"p\": max_tokens_parameter is openai-compat only"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn absent_max_tokens_parameter_starts_exactly_as_before() {
+    // The default is byte-identical behavior: a config written before the
+    // field existed must not change in any way.
+    let sb = sandbox();
+    sb.write_config(
+        r#"{"profiles":{"p":{"provider":"openai-compat","model":"m"}},"profile":"p"}"#,
+    );
+    let (code, stdout, stderr) = run(sb.cmd(), "/exit\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!stderr.contains("max_tokens_parameter"), "{stderr}");
+}
+
 // ------------------------------------------------- T21: bash approval (e2e)
 //
 // The Ask arm needs a probe-FAIL, forced deterministically via the one-way
