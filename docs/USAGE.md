@@ -355,22 +355,52 @@ anything larger, while temur's default is 32000. The others accept the
 default and bake nothing.
 
 The OpenAI, Gemini, and Anthropic paths were verified against the real
-endpoints on 2026-08-05; xAI was not, for want of a key. Three limits
+endpoints on 2026-08-05; xAI was not, for want of a key. Three things
 are worth knowing before you hit them:
 
-- **gpt-5 era model ids do not work from a fresh profile.** They
-  reject `max_tokens` and require `max_completion_tokens`, which is
-  how temur encodes the request, not something config can change. Use
-  `gpt-4o` until that lands.
+- **gpt-5 era model ids need one extra field.** They reject
+  `max_tokens` and require `max_completion_tokens`. Set
+  `max_tokens_parameter` on the profile and temur sends that name
+  instead, carrying the same value:
+
+  ```json
+  {
+    "profiles": {
+      "gpt5": {
+        "provider": "openai-compat",
+        "model": "gpt-5",
+        "base_url": "https://api.openai.com/v1",
+        "api_key_file": "~/.secrets/temur-openai-key",
+        "max_tokens_parameter": "max_completion_tokens"
+      }
+    }
+  }
+  ```
+
+  The field is openai-compat only, takes exactly `"max_tokens"` (the
+  default) or `"max_completion_tokens"`, and anything else is a
+  startup error. No template bakes it, because the OpenAI template
+  defaults to `gpt-4o`, which wants the classic name. Leaving it out
+  sends exactly the request temur has always sent. Offline-verified
+  against the request encoding; the live turn on a gpt-5 era id is
+  still pending.
 - **A hosted profile has no `context_window`,** so the context
   advisory and the context-scaled tool-output caps are off for it and
   `/status` says "window size unknown". `init` never makes an
   authenticated call, so it cannot detect one; set the value by hand
   if you want the advisory.
-- **`/status` understates spend on Gemini.** Its thinking tokens are
-  not reported separately in the usage it returns, so the session
-  total is a floor, not a total. The cost estimate is computed from
-  those same counts, so it is a floor too.
+- **`/status` still reads as a floor on wires that omit usage
+  entirely.** A server that reports no usage object contributes
+  nothing to the session total, and no amount of arithmetic recovers
+  it. Where a server DOES report a `total_tokens` larger than the
+  counts it names, temur now folds that difference into the output
+  count, which is where an unreported thinking spend belongs and how
+  it is priced. That is what closed the old Gemini undercount: it
+  bills thinking tokens and counts them in its total while naming
+  them nowhere. Servers whose total already equals the sum of its
+  parts, OpenAI and llama.cpp among them, are unaffected.
+  Offline-verified against the captured usage object; the live
+  streaming turn is still pending.
 
 Gemini needed two fixes before its tool calling worked at all, both
 shipped: its streaming responses report `finish_reason` "stop" while

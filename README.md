@@ -203,16 +203,20 @@ with the caveats named rather than averaged away:
   and per-model context windows read off the API.
 - **OpenAI**: live-verified on `gpt-4o`, which the template now
   defaults to and whose 16384 completion cap it bakes. The gpt-5 era
-  ids are not reachable from a fresh profile yet: they reject
-  `max_tokens` and want `max_completion_tokens`, which is a request
-  encoding temur does not speak.
+  ids reject `max_tokens` and want `max_completion_tokens`; set
+  `"max_tokens_parameter": "max_completion_tokens"` on the profile
+  and temur sends that name instead. Offline-verified so far, with
+  the live turn on one of those ids still pending.
 - **Gemini**: live-verified, tool calls included, after two fixes the
   verification itself found (its streaming responses report
   `finish_reason` "stop" while attaching real tool calls, and it
   requires its opaque thought signatures echoed back or it rejects
-  the next request). Token accounting understates spend here, because
-  thinking tokens are not reported separately, and the `/status` cost
-  estimate inherits that floor.
+  the next request). It also bills thinking tokens while naming them
+  in no usage field, which used to leave `/status` reading a floor;
+  temur now recovers them from the `total_tokens` it does report.
+  Offline-verified against the captured usage object, live streaming
+  turn still pending. A wire that omits usage altogether is still a
+  floor, since nothing can recover what was never sent.
 - **xAI**: unverified. No key was available; the template is written
   to the published spec. Server setup for llama.cpp, Ollama, and LM Studio,
 plus recommended small models: [docs/OFFLINE.md](docs/OFFLINE.md).

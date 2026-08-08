@@ -4,6 +4,27 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **gpt-5 era OpenAI model ids are reachable.** They reject
+  `max_tokens` and require `max_completion_tokens`. Set
+  `"max_tokens_parameter": "max_completion_tokens"` on an
+  openai-compat profile and temur sends that name, carrying the same
+  value. The field takes exactly one of the two names, anything else
+  is a startup error naming both, and setting it on an anthropic
+  profile is an error too, since that wire uses `max_tokens` natively.
+  Leaving it out sends byte-identical requests to every config written
+  before it existed, and no template bakes it: the OpenAI template
+  defaults to `gpt-4o`, which wants the classic name.
+- **Thinking tokens are counted where a server reports a total.**
+  Gemini bills thinking tokens and includes them in `total_tokens`
+  while naming them in no usage field, so a turn reporting 48 prompt
+  and 19 completion against a total of 103 was leaving 36 tokens of
+  real spend invisible to `/status` and to the cost estimate. That
+  difference now folds into the output count, where the spend belongs
+  and how it is priced. Servers whose total already equals the sum of
+  its parts, OpenAI and llama.cpp among them, are unaffected. The
+  understatement caveat narrows to wires that report no usage at all,
+  which nothing can recover.
+
 ## v0.13.0 - 2026-08-07
 
 - **`/status` estimates what the session has cost** when the active
