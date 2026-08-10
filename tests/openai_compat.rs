@@ -450,18 +450,28 @@ fn streaming_final_chunk_usage_carries_the_gap_through() {
     // The include_usage path is what temur actually uses, so the fold has
     // to survive the accumulator, not just the standalone conversion.
     //
-    // PROVENANCE, stated plainly: the usage numbers are the verbatim live
-    // capture, but the STREAMING envelope around them is modeled on the
-    // captured gemini_stop_with_calls shape rather than captured itself.
-    // The live streaming curl omitted stream_options.include_usage (which
-    // temur always sends), so it produced no usage object at all. The
-    // operator leg in t13-live/CHECKLIST.md closes that gap.
+    // PROVENANCE: envelope AND numbers are the live streaming capture of
+    // 2026-08-10 kept at t13-live/evidence/t25-gemini.0.sse
+    // (gemini-3.6-flash, --capture-sse), replacing the earlier modeled
+    // shape. Only the opaque thought_signature blob is shortened; nothing
+    // here reads it. 6498 + 1 is 6499, but the server says 6526, so 27
+    // tokens of thinking spend fold into the output count: 28, not 1.
+    //
+    // The capture also settled a wire question: Gemini sends usage on
+    // EVERY chunk, not just a final usage-only one, and its finish chunk
+    // carries a non-empty choices array. Both chunks below therefore
+    // repeat the identical usage object, which pins that assembly is
+    // last-wins and not additive. Summing would report 56.
     let provider = provider_with(vec![Ok("gemini_thinking_gap")]);
     let msg = provider
         .stream(&sample_request(), &mut |_| {}, &CancelToken::new())
         .unwrap();
-    assert_eq!(msg.usage.input_tokens, Some(48));
-    assert_eq!(msg.usage.output_tokens, Some(55));
+    assert_eq!(msg.usage.input_tokens, Some(6498), "repeated, not summed");
+    assert_eq!(
+        msg.usage.output_tokens,
+        Some(28),
+        "1 reported + 27 unreported, counted once"
+    );
 }
 
 #[test]

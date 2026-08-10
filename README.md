@@ -196,8 +196,9 @@ caveats, per provider: see below), named profiles, `temur init --add`,
 and the context lifecycle (`/compact`, the context advisory, prompt
 caching).
 
-Hosted providers, verified against the real endpoints on 2026-08-05,
-with the caveats named rather than averaged away:
+Hosted providers, verified against the real endpoints on 2026-08-05
+and again on 2026-08-10, with the caveats named rather than averaged
+away:
 
 - **Anthropic**: live-verified, including the four-profile template
   and per-model context windows read off the API.
@@ -205,8 +206,12 @@ with the caveats named rather than averaged away:
   defaults to and whose 16384 completion cap it bakes. The gpt-5 era
   ids reject `max_tokens` and want `max_completion_tokens`; set
   `"max_tokens_parameter": "max_completion_tokens"` on the profile
-  and temur sends that name instead. Offline-verified so far, with
-  the live turn on one of those ids still pending.
+  and temur sends that name instead. Live-verified on `gpt-5` on
+  2026-08-10, tool call included: without the field the turn fails
+  with an HTTP 400 saying `max_tokens` is not supported and naming
+  `max_completion_tokens` as the replacement; with it, the same
+  prompt completes, the server accepts the cap instead of silently
+  dropping it, and no other field is objected to.
 - **Gemini**: live-verified, tool calls included, after two fixes the
   verification itself found (its streaming responses report
   `finish_reason` "stop" while attaching real tool calls, and it
@@ -214,9 +219,11 @@ with the caveats named rather than averaged away:
   the next request). It also bills thinking tokens while naming them
   in no usage field, which used to leave `/status` reading a floor;
   temur now recovers them from the `total_tokens` it does report.
-  Offline-verified against the captured usage object, live streaming
-  turn still pending. A wire that omits usage altogether is still a
-  floor, since nothing can recover what was never sent.
+  Live-verified on the streaming path on 2026-08-10: a turn reporting
+  6498 prompt and 1 completion token against a total of 6526 recorded
+  28 output tokens, the 27-token gap folded in where it is billed. A
+  wire that omits usage altogether is still a floor, since nothing can
+  recover what was never sent.
 - **xAI**: unverified. No key was available; the template is written
   to the published spec. Server setup for llama.cpp, Ollama, and LM Studio,
 plus recommended small models: [docs/OFFLINE.md](docs/OFFLINE.md).

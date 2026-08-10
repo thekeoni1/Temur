@@ -209,8 +209,13 @@ pub struct Chunk {
     pub model: Option<String>,
     #[serde(default)]
     pub choices: Vec<Choice>,
-    /// Final-chunk-only, and only with `stream_options.include_usage`;
-    /// many local servers never send it.
+    /// Sent only with `stream_options.include_usage`, and many local
+    /// servers never send it at all. NOT final-chunk-only: Gemini repeats
+    /// an identical usage object on every chunk, including a chunk whose
+    /// `choices` array is non-empty (T25 F11, captured live 2026-08-10 at
+    /// t13-live/evidence/t25-gemini.0.sse). Assembly is last-wins rather
+    /// than additive, which is what makes the repetition harmless; summing
+    /// would have doubled that turn's count.
     #[serde(default)]
     pub usage: Option<Usage>,
 }

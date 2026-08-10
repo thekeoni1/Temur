@@ -3195,3 +3195,98 @@ artifacts remain verified at build level under qemu only, hardware
 smoke pending hardware. Still queued behind the visibility flip: the
 PUBLIC one-liner gate, the hostname-blob-history decision, and the
 demo GIF recording.
+
+## T25 acceptance - recorded result (no release)
+
+2026-08-10. Both T25 fixes taken to the real endpoints, one arm each,
+under the standing two-session protocol: the operator typed every live
+command in their own terminal, the build session never saw key
+material, and each transcript was skimmed before it was pasted back.
+Preserved evidence lives outside the repo at /home/dev/t13-live:
+evidence/f7-400-max-tokens.txt (the OpenAI 400) and
+evidence/t25-gemini.0.sse (the Gemini streaming capture, 858 bytes),
+with work/t25-gpt5.txt as the OpenAI arm's tool-turn artifact.
+
+**F7, the token cap under the gpt-5 wire name.** Profile gpt5scratch,
+model gpt-5, base https://api.openai.com/v1. WITHOUT
+max_tokens_parameter the first turn failed, and the 400 body that T13
+described in prose on 2026-08-05 but never captured is now on disk,
+rendered as:
+
+    provider error: api error (HTTP 400) invalid_request_error:
+    Unsupported parameter: 'max_tokens' is not supported with this
+    model. Use 'max_completion_tokens' instead.
+
+That is one line in the product's output; the evidence file wraps it
+across two, and the wrapped second line carries the TUI's gutter
+chrome, which is not part of the server message. With
+"max_tokens_parameter": "max_completion_tokens" set on the same
+profile, the same prompt completed normally and a tool turn wrote
+work/t25-gpt5.txt, 28 bytes, "max_completion_tokens works". The cap
+was not silently ignored, and no other field was objected to: the fix
+is exactly as wide as it needed to be.
+
+**F11, the thinking-token gap through include_usage.** One streaming
+turn captured with --capture-sse (gemini-3.6-flash). Wire usage:
+prompt_tokens 6498, completion_tokens 1, total_tokens 6526, so the gap
+is 27. The saved session recorded session_usage input_tokens 6498,
+output_tokens 28, both cache fields null, and last_context_used 6526.
+28 is 1 + 27, so the fold survives the accumulator on the path temur
+actually uses. Pre-fix, that turn would have reported 1 output token
+against a real 28.
+
+**New wire fact: usage repeats on every chunk.** Gemini sends usage on
+EVERY chunk, not only a final one. Both chunks in the capture carry
+identical usage objects, and the finish chunk has a NON-EMPTY choices
+array (it also carries a thought signature). temur reports 28 rather
+than 56 only because ChunkAccumulator::push assigns usage last-wins
+instead of accumulating (src/provider/openai_compat/types.rs:486). An
+additive assembly would have doubled the count on every Gemini turn,
+so this was right by construction rather than by intent. The
+Chunk::usage doc comment had said "Final-chunk-only", which the
+capture disproves; it is corrected in this rider, citing the capture
+date and file. The accumulator's own comment about a usage-only final
+chunk with an empty choices array is left alone: that shape is still
+real for OpenAI. tests/fixtures/openai/gemini_thinking_gap.sse, whose
+envelope T25 P2 had modeled rather than captured, is rebuilt from this
+capture (two chunks, identical usage on both, finish_reason "stop" and
+a non-empty choices array on the second, opaque signature blob
+shortened), and its test now pins that repeated usage is counted once
+rather than summed.
+
+**F12 bonus observation.** The thought signature arrived on a plain
+assistant delta (delta.extra_content.google.thought_signature) on a
+turn that made no tool call, where T13 F12 had only ever seen it
+attached to tool calls. temur's Delta type has no extra_content field,
+so the tolerance policy drops it silently. Nothing to fix here: the
+round-trip Gemini enforces is on tool calls, which the ToolCall path
+carries verbatim and which T13 verified live across four requests. It
+is worth knowing that the field is broader than the tool-call path
+implies, if a future 400 ever points at a text-only turn.
+
+Gate: full `scripts/check.sh` green first try under a pty, both paths,
+no env overrides and no reruns, ALL CHECKS PASSED with 30 suite
+results and zero failures (openai_compat 45 in both the gnu-debug and
+musl-release containers, unchanged in count since the rebuilt fixture
+replaced a modeled one rather than adding a case). Both container pty
+smokes and the host pty smoke were quiet: no hang, no kill, no rerun.
+Bare busybox container printed
+"temur 0.13.0"; the version is unchanged and this rider still rides
+Unreleased.
+
+Honest residuals:
+
+- gpt5scratch was a scratch profile in the operator's live tree
+  outside the repo. Nothing about gpt-5 is baked anywhere: the OpenAI
+  template still defaults to gpt-4o, which still wants the classic
+  parameter name.
+- Neither live profile configured prices, so T24's cost line was
+  correctly absent on both arms. The cost estimate is still
+  unexercised live, and that check continues to ride a future keyed
+  session.
+- One model per arm, gpt-5 for F7 and gemini-3.6-flash for F11, and
+  one turn each. Other gpt-5 era ids and other Gemini models are
+  inferred from the same wire behavior rather than tested. The F11
+  turn was a short text turn (1 reported completion token), so the
+  fold is verified on the streaming path rather than at scale.
+- xAI remains unverified, unchanged by this run.

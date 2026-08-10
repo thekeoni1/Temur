@@ -355,8 +355,9 @@ anything larger, while temur's default is 32000. The others accept the
 default and bake nothing.
 
 The OpenAI, Gemini, and Anthropic paths were verified against the real
-endpoints on 2026-08-05; xAI was not, for want of a key. Three things
-are worth knowing before you hit them:
+endpoints on 2026-08-05, with two follow-up legs on 2026-08-10; xAI
+was not, for want of a key. Three things are worth knowing before you
+hit them:
 
 - **gpt-5 era model ids need one extra field.** They reject
   `max_tokens` and require `max_completion_tokens`. Set
@@ -381,9 +382,21 @@ are worth knowing before you hit them:
   default) or `"max_completion_tokens"`, and anything else is a
   startup error. No template bakes it, because the OpenAI template
   defaults to `gpt-4o`, which wants the classic name. Leaving it out
-  sends exactly the request temur has always sent. Offline-verified
-  against the request encoding; the live turn on a gpt-5 era id is
-  still pending.
+  sends exactly the request temur has always sent.
+
+  Live-verified on `gpt-5` on 2026-08-10, including a tool call.
+  Without the field, the first turn fails and the symptom you will
+  see is the provider's own 400:
+
+  ```
+  provider error: api error (HTTP 400) invalid_request_error:
+  Unsupported parameter: 'max_tokens' is not supported with this
+  model. Use 'max_completion_tokens' instead.
+  ```
+
+  (wrapped for the page; temur prints it as one line.) With the field
+  set as above, the same prompt completes normally, and the server
+  raises no other objection.
 - **A hosted profile has no `context_window`,** so the context
   advisory and the context-scaled tool-output caps are off for it and
   `/status` says "window size unknown". `init` never makes an
@@ -399,8 +412,10 @@ are worth knowing before you hit them:
   bills thinking tokens and counts them in its total while naming
   them nowhere. Servers whose total already equals the sum of its
   parts, OpenAI and llama.cpp among them, are unaffected.
-  Offline-verified against the captured usage object; the live
-  streaming turn is still pending.
+  Live-verified on the streaming path on 2026-08-10: a Gemini turn
+  reporting 6498 prompt and 1 completion token against a total of
+  6526 was recorded as 28 output tokens, the 27-token gap folded in.
+  Before the fix the same turn would have counted 1.
 
 Gemini needed two fixes before its tool calling worked at all, both
 shipped: its streaming responses report `finish_reason` "stop" while
