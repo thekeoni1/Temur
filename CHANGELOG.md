@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased
+## v0.14.0 - 2026-08-10
 
 - **gpt-5 era OpenAI model ids are reachable.** They reject
   `max_tokens` and require `max_completion_tokens`. Set
