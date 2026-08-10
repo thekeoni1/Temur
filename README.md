@@ -210,8 +210,8 @@ away:
   2026-08-10, tool call included: without the field the turn fails
   with an HTTP 400 saying `max_tokens` is not supported and naming
   `max_completion_tokens` as the replacement; with it, the same
-  prompt completes, the server accepts the cap instead of silently
-  dropping it, and no other field is objected to.
+  prompt completes, the server accepts the parameter, and no other
+  field is objected to.
 - **Gemini**: live-verified, tool calls included, after two fixes the
   verification itself found (its streaming responses report
   `finish_reason` "stop" while attaching real tool calls, and it

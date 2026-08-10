@@ -3222,9 +3222,12 @@ across two, and the wrapped second line carries the TUI's gutter
 chrome, which is not part of the server message. With
 "max_tokens_parameter": "max_completion_tokens" set on the same
 profile, the same prompt completed normally and a tool turn wrote
-work/t25-gpt5.txt, 28 bytes, "max_completion_tokens works". The cap
-was not silently ignored, and no other field was objected to: the fix
-is exactly as wide as it needed to be.
+work/t25-gpt5.txt, 28 bytes, "max_completion_tokens works". The
+parameter was accepted, and no other field was objected to: the fix is
+exactly as wide as it needed to be. What the leg did NOT show is that
+the cap's VALUE is enforced. The turn answered in one token, which
+proves nothing about a 32000 ceiling, so the claim on both sides is
+acceptance of the parameter, not enforcement of the number.
 
 **F11, the thinking-token gap through include_usage.** One streaming
 turn captured with --capture-sse (gemini-3.6-flash). Wire usage:
@@ -3254,15 +3257,25 @@ a non-empty choices array on the second, opaque signature blob
 shortened), and its test now pins that repeated usage is counted once
 rather than summed.
 
-**F12 bonus observation.** The thought signature arrived on a plain
-assistant delta (delta.extra_content.google.thought_signature) on a
-turn that made no tool call, where T13 F12 had only ever seen it
-attached to tool calls. temur's Delta type has no extra_content field,
-so the tolerance policy drops it silently. Nothing to fix here: the
-round-trip Gemini enforces is on tool calls, which the ToolCall path
-carries verbatim and which T13 verified live across four requests. It
-is worth knowing that the field is broader than the tool-call path
-implies, if a future 400 ever points at a text-only turn.
+**F12 bonus observation, now verified rather than assumed.** The
+thought signature arrived on a plain assistant delta
+(delta.extra_content.google.thought_signature) on a turn that made no
+tool call, where T13 F12 had only ever seen it attached to tool calls.
+temur's Delta type has no extra_content field, so a plain-delta
+signature is parsed away by design. This paragraph originally said
+there was nothing to fix, which was an inference at the time it was
+written; the operator then went and tested it. On 2026-08-10 a
+tool-free Gemini session ran two consecutive thinking turns, captured
+at t13-live/evidence/t25-f14.0.sse and t25-f14.1.sse. Turn one answered
+"one" and carried a signature on its finish delta; turn two answered
+"two" with turn one already in history (prompt_tokens rose from 6498 to
+6511) and completed normally, with no signature echoed back and no
+rejection. So the echo requirement F12 found is tool-call-scoped: the
+ToolCall path carries those verbatim, which T13 verified live across
+four requests, and dropping a plain-delta signature is now known-safe
+rather than known-harmless-by-hope. It is still worth knowing that the
+field is broader than the tool-call path implies, if a future 400 ever
+points at a text-only turn.
 
 Gate: full `scripts/check.sh` green first try under a pty, both paths,
 no env overrides and no reruns, ALL CHECKS PASSED with 30 suite
@@ -3290,3 +3303,61 @@ Honest residuals:
   turn was a short text turn (1 reported completion token), so the
   fold is verified on the streaming path rather than at scale.
 - xAI remains unverified, unchanged by this run.
+
+## v0.14.0 - close-out (release procedure delta)
+
+What ships: T25 alone (the token cap under either wire name via
+`max_tokens_parameter`, and the `total_tokens` fold that recovers
+Gemini's unnamed thinking tokens into the output count), plus the
+operator live leg that turned both claims from offline-verified into
+live-verified and the acceptance record it produced. Fifth
+single-milestone release in a row.
+
+Procedure deltas vs v0.13.0:
+
+- **T25 pushed AS stage-1 step 1** under the planning session's
+  authorization (now the standing shape): 54d2c62..595aab1 onto
+  54d2c62, four commits (P1 the request-side fix, P2 the response-side
+  fix, P3 docs plus the staged live checklist, P5 the post-leg claim
+  finalization), on-push ci run 31441954564 on headSha 595aab1 green
+  in both jobs (test 1m27s, release-gate 4m38s). main == origin ==
+  595aab1 verified before the prep commits.
+- **A real operator live leg rode this milestone**, unlike v0.13.0.
+  Both arms ran against real hosted endpoints under the two-session
+  protocol, the build session never saw key material, and the leg
+  changed the shipped content rather than merely confirming it: it
+  captured a 400 body that had only ever been described in prose,
+  disproved a doc comment about final-chunk-only usage, and caused a
+  test fixture to be rebuilt from a real capture instead of a modeled
+  envelope. Evidence stays outside the repo at /home/dev/t13-live.
+- **The version bump used scripts/bump_version.sh** for the fourth
+  time, printed diff touching exactly the four-file map: Cargo.toml,
+  the temur line of Cargo.lock (the third-party untrusted crate stays
+  pinned at its own 0.9.0, and does not appear in the lock diff at
+  all), scripts/install.sh VERSION, and the five README tag-pin lines.
+  The helper stays advisory; release.sh gate 3 remains the skew
+  authority.
+- **Three doc riders were deliberately folded into this close-out
+  commit** rather than pushed as their own gate cycle. They are prose
+  only, no Rust, so riding an existing gate costs nothing and spends
+  one gate run instead of two. Two of them narrow claims the live leg
+  did not actually establish: the README bullet and the RUNBOOK T25
+  record both said the server accepted the cap instead of silently
+  dropping it, when what the leg showed was that the PARAMETER was
+  accepted. The turn answered in one token, which says nothing about
+  whether a 32000 ceiling is enforced. The third upgrades the F12
+  bonus observation from inference to evidence: the tool-free
+  two-turn Gemini captures at t13-live/evidence/t25-f14.0.sse and
+  t25-f14.1.sse show a plain-delta signature going un-echoed with no
+  rejection on the following turn, so the echo requirement is
+  confirmed tool-call-scoped.
+- **The unreproduced test failure from the T24 build cycle stays on
+  watch.** It has not recurred in any gate run since. The standing
+  instruction carries into this cycle unchanged: if any test fails
+  even once, capture the exact test name and full output before
+  anything else. A name is still the thing we lack.
+- Stage 1 keeps the early stop: bump + dated CHANGELOG + records +
+  full check.sh gate only; tag, four-target build, SHA256SUMS,
+  private release, installer matrix, and the closing gate stay in
+  stage 2. No tag, no push of the prep commits, no release; the repo
+  stays PRIVATE.
