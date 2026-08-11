@@ -566,6 +566,47 @@ reads at 0.1x and cache writes at 1.25x the input rate (the 5-minute
 TTL temur uses). Those multipliers, like the baked prices, are
 knowledge as of 2026-08-07 and nothing re-checks them.
 
+### The mid-session advisory
+
+`/status` only answers when you think to ask, and the spend worth
+knowing about is the spend you did not think to check. So the same
+estimate also speaks up on its own, every `$5` it crosses:
+
+```
+  [!] cost: this session has crossed $5.00 (estimate: ~$6.12 at configured list rates); set cost_advisory_step_usd to change the step or 0 to disable
+```
+
+One turn can be hundreds of provider round-trips, so the check runs
+after EVERY response inside a turn, not once per prompt. A jump that
+clears several steps at once says so once, at the highest step crossed,
+rather than printing a line per step it flew past.
+
+The step is one global field, beside `max_tokens` and the rest:
+
+```json
+"cost_advisory_step_usd": 5.0
+```
+
+Absent means $5.00. `0` disables the advisory entirely. Negative or
+non-finite is a startup error naming the field. It is deliberately not
+a per-profile setting: a price is a property of the provider, but a
+budget is a property of you, and it should not reset because a `/model`
+switch landed on a profile that forgot to repeat it.
+
+The advisory rides the estimate's own gate, so it appears exactly where
+the `/status` line appears and nowhere else: a keyless, unpriced, or
+local selection never sees it, whatever the step says. It is a notice
+like any other, which means in `temur -p` it goes to stderr with the
+rest of the chrome and never touches the prose on stdout.
+
+Money already spent never fires. The session starts latched at
+whatever its usage already comes to, and re-latches whenever that
+number is no longer new news: on `--continue` / `--resume` / `/resume`,
+on `/clear` (which zeroes usage, so the next `$5` is new money again),
+and on a `/model` switch (rates changed, so past spend is re-measured
+against the new ones). Resuming a session that already spent $40 is
+silent until it spends its way past $45.
+
 ## Picking and keeping a model
 
 Two conveniences (T15) remove the "type a model id blind, keep it by

@@ -2,6 +2,26 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
+## Unreleased
+
+- **The session says what it has cost, without being asked.** Every $5
+  of estimated spend it crosses, temur prints
+  `cost: this session has crossed $5.00 (estimate: ~$6.12 at configured
+  list rates); set cost_advisory_step_usd to change the step or 0 to
+  disable`. The check runs after every response inside a turn, not once
+  per prompt, because a single agentic turn can be hundreds of
+  round-trips: that is exactly the shape of the run this was written
+  for, which reached roughly $26 before anyone looked. A jump that
+  clears several steps at once advises once, at the highest crossed.
+  The new global `cost_advisory_step_usd` sets the step, `0` disables
+  it, and a negative or non-finite value is a startup error naming the
+  field. It rides the `/status` estimate's own gate, so it appears
+  exactly where that line appears and nowhere else: keyless, unpriced,
+  and local selections never see it. Money already spent never fires,
+  including across `--continue` / `--resume`, `/clear`, and a `/model`
+  switch onto different rates. In `temur -p` it is stderr chrome like
+  every other notice, and stdout stays exactly the answer.
+
 ## v0.14.0 - 2026-08-10
 
 - **gpt-5 era OpenAI model ids are reachable.** They reject
