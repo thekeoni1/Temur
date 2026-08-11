@@ -225,6 +225,16 @@ milestone. Roughly in the order they would pay off:
   pty smokes, so a hang fails in minutes with a diagnosis instead of
   sitting for hours. Part (b) is what has cost real time across the
   v0.10.0, v0.11.0, and T13 cycles; part (a) is why it happens.
+- **`switch_provider` should take the `ResolvedProfile` (noted during
+  T26).** It now has six positional parameters, four of which are
+  fields the caller reads off a `ResolvedProfile` it already holds at
+  both production call sites, and every milestone that adds a
+  selection-scoped setting adds a seventh, an eighth, and touches
+  every test call site to pass it. Passing the profile plus the
+  `max_tokens_source` would shrink the signature, make the "a switch
+  replaces the whole selection" rule structural instead of
+  conventional, and make the next such field free. Mechanical, wide,
+  and best done when nothing else is in flight.
 
 **Session cost visibility** for keyed users is built and now closed on
 both halves: T24 gave `/status` the estimate, and T26 gave it a voice

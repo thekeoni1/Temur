@@ -691,7 +691,7 @@ impl Session {
                 ui(AgentEvent::Notice(advisory));
             }
             // T26: the spend advisory sits beside the context one, and for
-            // the same reason — an agentic turn is many round-trips, and a
+            // the same reason: an agentic turn is many round-trips, and a
             // per-USER-turn check would report the $26 only once it was
             // already spent.
             if let Some(advisory) = self.cost_advisory() {

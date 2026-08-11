@@ -3428,3 +3428,62 @@ verified at build level under qemu only, hardware smoke pending
 hardware. Still queued behind the visibility flip: the PUBLIC
 one-liner gate, the hostname-blob-history decision, and the demo GIF
 recording.
+
+## v0.15.0 - close-out (release procedure delta)
+
+What ships: T26 alone, the mid-session cost advisory. It is the
+escalated half of the dogfood cost item, whose other half shipped as
+T24 in v0.13.0: `/status` could already answer "what has this cost",
+but only to someone who thought to ask, and the run that motivated the
+whole item reached roughly $26 inside ONE agentic `-p` turn and was
+found afterward by pricing the usage line by hand. Sixth
+single-milestone release in a row.
+
+Procedure deltas vs v0.14.0:
+
+- **T26 pushed AS stage-1 step 1**, the standing shape for the third
+  cycle: 46e2c9f..05188f9 onto 46e2c9f, three commits (P1 the pure
+  crossing arithmetic plus the config knob, P2 the session plumbing,
+  P3 docs), on-push ci run 31523491975 on headSha 05188f9 green in
+  both jobs (test 1m14s, release-gate 5m26s). main == origin ==
+  05188f9 verified before the prep commits.
+- **No live leg, by design and stated in advance.** The feature is
+  offline-computable end to end: the estimate is arithmetic over token
+  counts the provider already reported, and the trigger is arithmetic
+  over the estimate. The mock provider drives spend across a threshold
+  mid-turn, across two thresholds in one response, and across a
+  resume, which is every behavior the milestone claims. T24's keyed
+  live check still rides a future operator session, and T26 inherits
+  that residual rather than adding one.
+- **The version bump used scripts/bump_version.sh** for the fifth
+  time, printed diff touching exactly the four-file map: Cargo.toml,
+  the temur line of Cargo.lock (the third-party untrusted crate stays
+  pinned at its own 0.9.0 and does not appear in the lock diff at
+  all), scripts/install.sh VERSION, and the five README tag-pin lines.
+- **One code rider rode this close-out**, a single-character fix to
+  punctuation the build session had introduced two commits earlier: an
+  em-dash in the T26 turn-loop comment in src/agent/mod.rs, replaced
+  with a colon. It is recorded because the standing rule is BOTH no
+  em-dashes in new prose AND no introduce-then-sweep, and this cycle
+  broke the first and then used the second to repair it. The rider is
+  the honest way to close that, not evidence the rule works.
+- **The em-dash sweep's real scope, stated plainly.** The
+  user-facing prose files are at zero and stay there: README.md,
+  CHANGELOG.md, and ROADMAP.md have no em-dash at all. The character
+  remains common in src/, tests/, scripts/, and docs/, roughly 450
+  hits, all predating this milestone: product UI strings the tests pin
+  verbatim, Rust doc and line comments, and quoted live transcripts in
+  the records. The check that matters per cycle is therefore
+  differential, not absolute: no line ADDED since the previous
+  release head may contain one, which is what was verified here after
+  the rider.
+- **The unreproduced test failure from the T24 build cycle stays on
+  watch.** Three full gate runs this build cycle plus the stage-1 gate,
+  all green first try, and it has still never recurred. The standing
+  instruction is unchanged: if any test fails even once, capture the
+  exact test name and full output before anything else.
+- Stage 1 keeps the early stop: bump + dated CHANGELOG + records +
+  full check.sh gate only; tag, four-target build, SHA256SUMS,
+  private release, installer matrix, and the closing gate stay in
+  stage 2. No tag, no push of the prep commits, no release; the repo
+  stays PRIVATE.
