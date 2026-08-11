@@ -99,6 +99,8 @@ fn session_with_prose(
         context_window: None,
         max_tokens_source: None,
         prose_tool_calls,
+        cost_rates: None,
+        cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
     };
     (
         Session::new(Box::new(provider), Registry::standard(), cfg),

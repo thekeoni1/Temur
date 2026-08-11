@@ -62,22 +62,54 @@ pub fn estimate_usd(
     total
 }
 
+/// The estimate inputs of a selection that CAN be estimated: the provider
+/// (which decides the cache terms) plus the pair of configured list rates.
+///
+/// Constructing one is the SELECTION half of the estimate gate, so holding a
+/// `CostRates` is proof that a keyed, priced selection is active. The session
+/// carries one (T26) instead of a `ResolvedProfile` it has no other use for,
+/// and both consumers, `/status` and the mid-session advisory, reach the
+/// estimate through this same type: the gate exists once.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CostRates {
+    pub provider: String,
+    pub input_per_mtok: f64,
+    pub output_per_mtok: f64,
+}
+
+impl CostRates {
+    /// The rates for `active`, or `None` when no estimate may be shown for
+    /// it: keyless (nobody is billed for a local server) or unpriced (an
+    /// unpriced profile gets no nag; the docs point at the fields).
+    pub fn for_profile(active: &ResolvedProfile) -> Option<CostRates> {
+        match (active.price_input_per_mtok, active.price_output_per_mtok) {
+            (Some(i), Some(o)) if active.is_keyed() => Some(CostRates {
+                provider: active.provider.clone(),
+                input_per_mtok: i,
+                output_per_mtok: o,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The estimate for `usage`, or `None` when the session has reported no
+    /// usage at all (nothing to estimate before the first response). The
+    /// USAGE half of the gate.
+    pub fn estimate(&self, usage: &Usage) -> Option<f64> {
+        reported_anything(usage)
+            .then(|| estimate_usd(&self.provider, usage, self.input_per_mtok, self.output_per_mtok))
+    }
+}
+
 /// The `/status` estimate, or `None` when the line must be ABSENT.
 ///
-/// Three conditions, all required: the active selection is keyed (nobody
-/// is billed for a local server), both list prices are configured (an
-/// unpriced profile gets no nag, the docs point at the fields), and the
-/// session has some reported usage (nothing to estimate before the first
-/// turn). Any one missing means silence, not a placeholder.
+/// Three conditions, all required: the active selection is keyed, both list
+/// prices are configured, and the session has some reported usage. Any one
+/// missing means silence, not a placeholder. Both halves come from
+/// [`CostRates`], so the mid-session advisory (T26) cannot drift from the
+/// line `/status` shows.
 pub fn session_estimate_usd(active: &ResolvedProfile, usage: &Usage) -> Option<f64> {
-    let (pin, pout) = match (active.price_input_per_mtok, active.price_output_per_mtok) {
-        (Some(i), Some(o)) => (i, o),
-        _ => return None,
-    };
-    if !active.is_keyed() || !reported_anything(usage) {
-        return None;
-    }
-    Some(estimate_usd(&active.provider, usage, pin, pout))
+    CostRates::for_profile(active)?.estimate(usage)
 }
 
 /// Whether the session has any token count at all. `None` everywhere is

@@ -392,7 +392,14 @@ fn compact(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
     if ctx.replay_mode {
         return vec![notice("/compact is unavailable in replay/capture mode")];
     }
-    match ctx.session.compact() {
+    let outcome = ctx.session.compact();
+    // T26: the summary call is real spend on every arm that reached the
+    // provider (success and cancellation both record their usage), and the
+    // agent core has no UI sink of its own here. This is the emit point that
+    // covers `/compact`'s accrual; the latch makes it idempotent with the
+    // turn-loop check.
+    let cost = ctx.session.cost_advisory().map(notice);
+    let mut events = match outcome {
         CompactOutcome::Nothing => vec![notice("nothing to compact: the conversation is empty")],
         CompactOutcome::Cancelled => vec![notice("compact cancelled; history unchanged")],
         CompactOutcome::Failed(reason) => {
@@ -428,7 +435,9 @@ fn compact(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
             }
             out
         }
-    }
+    };
+    events.extend(cost);
+    events
 }
 
 fn thinking_set(ctx: &mut CommandCtx, on: bool) -> Vec<AgentEvent> {
@@ -528,6 +537,9 @@ fn activate_profile(ctx: &mut CommandCtx, name: &str) -> Result<(), AgentEvent> 
         profile.max_tokens,
         profile.context_window,
         Some(name.to_string()),
+        // T26: rates follow the selection, and the advisory latch is
+        // re-measured against them inside switch_provider.
+        crate::cost::CostRates::for_profile(profile),
     );
     if profile.prompt_profile != *ctx.prompt_profile {
         let system = (ctx.rebuild_system)(profile.prompt_profile);
@@ -687,6 +699,10 @@ fn raw_override(ctx: &mut CommandCtx, id: &str) -> Result<(), AgentEvent> {
         // The raw switch keeps the profile's settings, so the limit's
         // source stays whatever is active.
         ctx.active_profile.clone(),
+        // Same rule for the rates: a raw model override keeps the active
+        // profile's prices (they are all the session has), and a switch is
+        // still where the latch is re-measured.
+        crate::cost::CostRates::for_profile(&target),
     );
     *ctx.model = id.to_string();
     *ctx.active_resolved = target;

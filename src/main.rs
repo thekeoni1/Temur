@@ -495,6 +495,12 @@ fn repl(
     // Advisory context awareness: the window is a property of the served
     // model, so it comes from the selection that knows the server.
     session_cfg.context_window = resolved.context_window;
+    // T26: the same rates `/status` estimates at, from the same gate, so the
+    // mid-session advisory can only fire where the estimate is real. The
+    // step is validated HERE, at startup, so a nonsense value is an error
+    // before the first prompt rather than an advisory that never fires.
+    session_cfg.cost_rates = temur::cost::CostRates::for_profile(&resolved);
+    session_cfg.cost_advisory_step_usd = cfg.cost_advisory_step_usd()?;
     session_cfg.system = Some(system);
     let registry =
         Registry::standard_with_skills(skill_dirs).with_profile(current_prompt_profile);

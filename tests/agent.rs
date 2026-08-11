@@ -76,6 +76,8 @@ fn session_with(
         context_window: None,
         max_tokens_source: None,
         prose_tool_calls: true,
+        cost_rates: None,
+        cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
     };
     (
         Session::new(Box::new(provider), Registry::standard(), cfg),
@@ -337,6 +339,8 @@ fn iteration_limit_stops_runaway_turns() {
         context_window: None,
         max_tokens_source: None,
         prose_tool_calls: true,
+        cost_rates: None,
+        cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
     let mut events = vec![];
@@ -406,6 +410,8 @@ fn session_with_window(
         context_window,
         max_tokens_source: None,
         prose_tool_calls: true,
+        cost_rates: None,
+        cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
     };
     Session::new(Box::new(provider), Registry::standard(), cfg)
 }
@@ -527,6 +533,8 @@ fn resumed_with_window(
         context_window,
         max_tokens_source: None,
         prose_tool_calls: true,
+        cost_rates: None,
+        cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
     };
     let mut file = saved(
         vec![user_msg("old prompt"), assistant_msg(vec![text("old answer")])],
@@ -686,6 +694,7 @@ fn max_tokens_notice_names_the_profile_after_a_switch() {
         1024,
         None,
         Some("local".into()),
+        None,
     );
     let events = collect_events(&mut session, "hi");
     assert!(notices(&events)
@@ -797,6 +806,8 @@ fn resumed_with(
         context_window: None,
         max_tokens_source: None,
         prose_tool_calls: true,
+        cost_rates: None,
+        cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
     };
     let (seed, notices) = store::prepare_seed(file);
     (
@@ -1045,6 +1056,8 @@ fn interrupt_session(
         context_window: None,
         max_tokens_source: None,
         prose_tool_calls: true,
+        cost_rates: None,
+        cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
     };
     Session::new(
         Box::new(InterruptingProvider {
@@ -1653,7 +1666,7 @@ fn switch_provider_next_turn_hits_new_provider_with_full_history() {
         responses: RefCell::new(vec![msg(vec![text("second answer")], StopReason::EndTurn)]),
         requests: requests_b.clone(),
     };
-    session.switch_provider(Box::new(provider_b), "model-b".into(), 512, Some(9_999), None);
+    session.switch_provider(Box::new(provider_b), "model-b".into(), 512, Some(9_999), None, None);
     assert_eq!(session.model(), "model-b");
     assert_eq!(session.max_tokens(), 512);
     assert_eq!(session.context_window(), Some(9_999));
@@ -1707,7 +1720,7 @@ fn switch_to_compat_hits_new_base_url_and_drops_thinking_blocks() {
             bodies: bodies.clone(),
         }),
     );
-    session.switch_provider(Box::new(compat), "qwen-sw".into(), 1024, None, None);
+    session.switch_provider(Box::new(compat), "qwen-sw".into(), 1024, None, None, None);
     collect_events(&mut session, "second question");
 
     assert_eq!(urls.borrow().len(), 1);
@@ -2320,6 +2333,7 @@ fn compact_provider_error_is_fail_closed() {
         Box::new(FailingProvider),
         "claude-sonnet-5".into(),
         32_000,
+        None,
         None,
         None,
     );
@@ -3889,4 +3903,246 @@ fn help_derives_from_the_command_table() {
     }
     assert!(ns.iter().any(|l| l.starts_with("/models ")), "{ns:?}");
     assert_eq!(ns.last().unwrap(), "exit or quit — leave");
+}
+
+// --- T26 mid-session cost advisory -----------------------------------------
+
+/// A session on a PRICED, keyed anthropic selection: $3 per Mtok in, $15 per
+/// Mtok out, so 1M input tokens is exactly $3 and every assertion below reads
+/// straight off the usage numbers. `step` is the advisory step in dollars.
+fn priced_session(
+    dir: &std::path::Path,
+    responses: Vec<ResponseMessage>,
+    step: f64,
+    seed: Option<temur::session_store::SessionSeed>,
+) -> Session {
+    let provider = MockProvider {
+        responses: RefCell::new(responses),
+        requests: Rc::new(RefCell::new(vec![])),
+    };
+    let cfg = SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens: 32_000,
+        system: None,
+        thinking: false,
+        cwd: dir.to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+        max_tokens_source: None,
+        prose_tool_calls: true,
+        cost_rates: Some(temur::cost::CostRates {
+            provider: "anthropic".into(),
+            input_per_mtok: 3.0,
+            output_per_mtok: 15.0,
+        }),
+        cost_advisory_step_usd: step,
+    };
+    match seed {
+        Some(s) => Session::resume(Box::new(provider), Registry::standard(), cfg, s),
+        None => Session::new(Box::new(provider), Registry::standard(), cfg),
+    }
+}
+
+/// Input-token-only usage, so a dollar figure is `input / 1M * $3`.
+fn usage_in(input: u64) -> serde_json::Value {
+    serde_json::json!({"input_tokens": input, "output_tokens": 0})
+}
+
+fn cost_notices(events: &[AgentEvent]) -> Vec<String> {
+    notices(events)
+        .into_iter()
+        .filter(|n| n.starts_with("cost:"))
+        .collect()
+}
+
+#[test]
+fn the_cost_advisory_fires_inside_a_turn_not_after_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("note.txt");
+    // Round-trip one costs $6 and calls a tool, so the turn continues after
+    // the advisory: this is the $26-turn shape, caught while it is running.
+    let mut session = priced_session(
+        dir.path(),
+        vec![
+            msg_with_usage(
+                vec![tool_use(
+                    "tu_1",
+                    "write",
+                    serde_json::json!({"filePath": file.to_str().unwrap(), "content": "x"}),
+                )],
+                StopReason::ToolUse,
+                usage_in(2_000_000),
+            ),
+            msg_with_usage(vec![text("done")], StopReason::EndTurn, usage_in(1_000)),
+        ],
+        5.0,
+        None,
+    );
+    let events = collect_events(&mut session, "go");
+    let cost = cost_notices(&events);
+    assert_eq!(cost.len(), 1, "exactly one advisory: {cost:?}");
+    assert_eq!(
+        cost[0],
+        "cost: this session has crossed $5.00 (estimate: ~$6.00 at configured list rates); set cost_advisory_step_usd to change the step or 0 to disable"
+    );
+    // Mid-turn, not at the end: the tool still ran after the advisory landed.
+    let advisory_at = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::Notice(n) if n.starts_with("cost:")))
+        .unwrap();
+    let tool_at = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::ToolEnd { .. }))
+        .unwrap();
+    assert!(advisory_at < tool_at, "advisory came after the tool: {events:?}");
+}
+
+#[test]
+fn one_response_clearing_two_steps_advises_once_at_the_highest() {
+    let dir = tempfile::tempdir().unwrap();
+    // $12 in a single response: crosses $5 AND $10, and says $10 once.
+    let mut session = priced_session(
+        dir.path(),
+        vec![msg_with_usage(
+            vec![text("a")],
+            StopReason::EndTurn,
+            usage_in(4_000_000),
+        )],
+        5.0,
+        None,
+    );
+    let cost = cost_notices(&collect_events(&mut session, "go"));
+    assert_eq!(cost.len(), 1, "never a burst: {cost:?}");
+    assert!(cost[0].contains("crossed $10.00"), "{cost:?}");
+    assert!(cost[0].contains("~$12.00"), "{cost:?}");
+}
+
+#[test]
+fn resuming_an_expensive_session_never_advises_for_money_already_spent() {
+    let dir = tempfile::tempdir().unwrap();
+    // The seed already spent $6 (latched at one step). The next response
+    // adds $0.003: real spend, but nothing new crossed.
+    let seed = temur::session_store::SessionSeed {
+        history: vec![],
+        session_usage: Usage {
+            input_tokens: Some(2_000_000),
+            ..Usage::default()
+        },
+        todos: vec![],
+        last_context_used: None,
+    };
+    let mut session = priced_session(
+        dir.path(),
+        vec![
+            msg_with_usage(vec![text("a")], StopReason::EndTurn, usage_in(1_000)),
+            msg_with_usage(vec![text("b")], StopReason::EndTurn, usage_in(2_000_000)),
+        ],
+        5.0,
+        Some(seed),
+    );
+    assert!(
+        cost_notices(&collect_events(&mut session, "one")).is_empty(),
+        "resumed spend must not re-advise"
+    );
+    // New spend that crosses the NEXT multiple still fires: $6.003 -> $12.
+    let cost = cost_notices(&collect_events(&mut session, "two"));
+    assert_eq!(cost.len(), 1, "{cost:?}");
+    assert!(cost[0].contains("crossed $10.00"), "{cost:?}");
+}
+
+#[test]
+fn clearing_the_session_rearms_the_advisory() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = priced_session(
+        dir.path(),
+        vec![
+            msg_with_usage(vec![text("a")], StopReason::EndTurn, usage_in(2_000_000)),
+            msg_with_usage(vec![text("b")], StopReason::EndTurn, usage_in(2_000_000)),
+        ],
+        5.0,
+        None,
+    );
+    assert_eq!(cost_notices(&collect_events(&mut session, "one")).len(), 1);
+    // /clear zeroes the usage totals, so the next $5 is new money again.
+    session.clear_history();
+    let cost = cost_notices(&collect_events(&mut session, "two"));
+    assert_eq!(cost.len(), 1, "{cost:?}");
+    assert!(cost[0].contains("crossed $5.00"), "{cost:?}");
+}
+
+#[test]
+fn a_switch_relatches_against_the_new_rates() {
+    let dir = tempfile::tempdir().unwrap();
+    // $6 spent at the old rates, advisory already fired at $5.
+    let mut session = priced_session(
+        dir.path(),
+        vec![msg_with_usage(
+            vec![text("a")],
+            StopReason::EndTurn,
+            usage_in(2_000_000),
+        )],
+        5.0,
+        None,
+    );
+    assert_eq!(cost_notices(&collect_events(&mut session, "one")).len(), 1);
+    // Switch onto a 10x pricier selection: the SAME 2M tokens now estimate
+    // at $60. That is not new spend, so it must not advise; only spend past
+    // the new latch does.
+    let next = MockProvider {
+        responses: RefCell::new(vec![
+            msg_with_usage(vec![text("b")], StopReason::EndTurn, usage_in(1_000)),
+            msg_with_usage(vec![text("c")], StopReason::EndTurn, usage_in(1_000_000)),
+        ]),
+        requests: Rc::new(RefCell::new(vec![])),
+    };
+    session.switch_provider(
+        Box::new(next),
+        "claude-opus-5".into(),
+        32_000,
+        None,
+        None,
+        Some(temur::cost::CostRates {
+            provider: "anthropic".into(),
+            input_per_mtok: 30.0,
+            output_per_mtok: 150.0,
+        }),
+    );
+    assert!(
+        cost_notices(&collect_events(&mut session, "two")).is_empty(),
+        "past spend must not fire under new rates"
+    );
+    // $60.03 + $30 = $90.03: one advisory, at $90.
+    let cost = cost_notices(&collect_events(&mut session, "three"));
+    assert_eq!(cost.len(), 1, "{cost:?}");
+    assert!(cost[0].contains("crossed $90.00"), "{cost:?}");
+}
+
+#[test]
+fn the_advisory_is_off_without_rates_and_at_step_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    // Step 0 is the documented disable, at any spend.
+    let mut session = priced_session(
+        dir.path(),
+        vec![msg_with_usage(
+            vec![text("a")],
+            StopReason::EndTurn,
+            usage_in(100_000_000),
+        )],
+        0.0,
+        None,
+    );
+    assert!(cost_notices(&collect_events(&mut session, "go")).is_empty());
+    // And an unpriced or keyless selection carries no rates at all, so it
+    // never sees the advisory whatever the step says.
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![msg_with_usage(
+            vec![text("a")],
+            StopReason::EndTurn,
+            usage_in(100_000_000),
+        )],
+    );
+    assert!(cost_notices(&collect_events(&mut session, "go")).is_empty());
 }

@@ -57,6 +57,15 @@ pub struct SessionConfig {
     /// policy): execute an UNAMBIGUOUS tool call written as plain text.
     /// `false` restores detect+nudge exactly.
     pub prose_tool_calls: bool,
+    /// T26: the list rates the mid-session cost advisory computes at, or
+    /// `None` when this selection can show no estimate at all (keyless or
+    /// unpriced). A property of the SELECTION, not of temur, so it travels
+    /// exactly like `context_window`: main.rs sets it at startup from the
+    /// resolved profile, and [`Session::switch_provider`] replaces it.
+    pub cost_rates: Option<crate::cost::CostRates>,
+    /// T26: dollar step between mid-session cost advisories; `0` disables
+    /// them. Already validated (see `Config::cost_advisory_step_usd`).
+    pub cost_advisory_step_usd: f64,
 }
 
 impl SessionConfig {
@@ -75,6 +84,14 @@ impl SessionConfig {
             context_window: None,
             max_tokens_source: None,
             prose_tool_calls: cfg.prose_tool_calls,
+            // A property of the SELECTION, like context_window above:
+            // main.rs sets it from the resolved profile.
+            cost_rates: None,
+            // The default step, so a session built straight from a Config
+            // still has the advisory armed. main.rs overwrites this with the
+            // VALIDATED value, which is where a bad step becomes a startup
+            // error instead of a silent fallback.
+            cost_advisory_step_usd: crate::config::DEFAULT_COST_ADVISORY_STEP_USD,
         }
     }
 }
@@ -92,9 +109,28 @@ pub struct Session {
     last_context_used: Option<u64>,
     /// The context pre-warning fires once per session, not per turn.
     context_warned: bool,
+    /// T26: the highest cost-advisory step multiple already accounted for.
+    /// Reset (recomputed from the current estimate, never to a bare 0) at
+    /// every point where the money already spent must stop being new news:
+    /// session creation, seed load, `/clear`, and a provider switch. NOT
+    /// persisted, and deliberately so: it is a pure function of the usage
+    /// totals and the rates, both of which the session already has, so the
+    /// session file format is untouched.
+    cost_latch: u64,
     /// T6 cooperative interruption. The UI holds a clone (via
     /// [`Session::cancel_token`]) and sets it; the provider stack polls it.
     cancel: CancelToken,
+}
+
+/// The cost-advisory latch value for a session holding `usage` under `cfg`:
+/// the whole steps that spend already covers, and `0` when no estimate can
+/// be computed (unpriced, keyless, or nothing reported yet). A free function
+/// because [`Session::build`] needs it before a `Session` exists.
+fn cost_latch_for(cfg: &SessionConfig, usage: &Usage) -> u64 {
+    match cfg.cost_rates.as_ref().and_then(|r| r.estimate(usage)) {
+        Some(estimate) => crate::cost::step_multiple(estimate, cfg.cost_advisory_step_usd),
+        None => 0,
+    }
 }
 
 /// Everything a session persists, borrowed. ONE method
@@ -191,6 +227,10 @@ impl Session {
             None => (Vec::new(), Usage::default(), Vec::new(), None),
         };
         tool_ctx.todos = todos;
+        // T26: a resumed session starts latched at whatever it already
+        // spent, so only NEW spend can advise. A fresh session's usage is
+        // zero, which lands the same call on 0.
+        let cost_latch = cost_latch_for(&cfg, &session_usage);
         Session {
             provider,
             registry,
@@ -200,6 +240,7 @@ impl Session {
             session_usage,
             last_context_used,
             context_warned: false,
+            cost_latch,
             cancel,
         }
     }
@@ -277,13 +318,20 @@ impl Session {
         max_tokens: u32,
         context_window: Option<u64>,
         max_tokens_source: Option<String>,
+        cost_rates: Option<crate::cost::CostRates>,
     ) {
         self.provider = provider;
         self.cfg.model = model;
         self.cfg.max_tokens = max_tokens;
         self.cfg.context_window = context_window;
         self.cfg.max_tokens_source = max_tokens_source;
+        self.cfg.cost_rates = cost_rates;
         self.context_warned = false;
+        // T26: the rates just changed, so the money already spent must be
+        // re-measured against them before anything new can advise. Without
+        // this, switching onto a pricier profile would advise about spend
+        // that happened at the old rates.
+        self.reset_cost_latch();
         // T19: the output cap follows the new window (see `build`).
         self.registry.set_context_window(context_window);
     }
@@ -312,6 +360,9 @@ impl Session {
         self.tool_ctx.todos = seed.todos;
         self.last_context_used = seed.last_context_used;
         self.context_warned = false;
+        // T26: the restored totals are spend that already happened; resuming
+        // an expensive session must not replay its advisories.
+        self.reset_cost_latch();
     }
 
     /// Wipe the conversation (`/clear`): history, usage totals, context
@@ -321,6 +372,9 @@ impl Session {
         self.session_usage = Usage::default();
         self.last_context_used = None;
         self.context_warned = false;
+        // T26: usage went to zero here, so the latch follows it back to zero
+        // and the next $5 of a cleared session advises again.
+        self.reset_cost_latch();
         self.tool_ctx.todos.clear();
     }
 
@@ -378,7 +432,7 @@ impl Session {
             // Interrupted like a turn. A partial that did arrive still cost
             // real tokens, so its usage is recorded; history stays put.
             if let Ok(msg) = &result {
-                self.session_usage.add(&msg.usage);
+                self.accrue_usage(&msg.usage);
             }
             return CompactOutcome::Cancelled;
         }
@@ -386,7 +440,7 @@ impl Session {
             Ok(m) => m,
             Err(e) => return CompactOutcome::Failed(e.to_string()),
         };
-        self.session_usage.add(&msg.usage);
+        self.accrue_usage(&msg.usage);
         // Concatenated Text blocks only; Thinking blocks are ignored.
         let summary = msg
             .content
@@ -444,6 +498,48 @@ impl Session {
         Some(format!(
             "context: ~{used} of {window} tokens used; /compact frees the window by summarizing the conversation, or start a new session"
         ))
+    }
+
+    /// The mid-session cost advisory (T26). Fires when the session estimate
+    /// crosses a NEW multiple of `cost_advisory_step_usd` ($5, $10, $15, ...
+    /// at the default step), and moves the latch to that multiple. `None`
+    /// below the next multiple, when the step is `0` (disabled), and
+    /// whenever no estimate can be computed at all: an unpriced, keyless, or
+    /// local selection never sees this, because it has no `cost_rates`.
+    ///
+    /// The estimate itself is the same number `/status` shows, through the
+    /// same [`crate::cost::CostRates`] gate; this method only decides when
+    /// to say it unprompted. A jump that clears several multiples at once
+    /// advises ONCE at the highest (the motivating incident was a single
+    /// agentic turn that ran to roughly $26 unnoticed, and five lines in a
+    /// row would have been worse than one).
+    ///
+    /// Because the latch only ever moves forward, calling this more than
+    /// once for the same spend is harmless. That is what lets every point
+    /// where usage accrues be covered without coordinating them: the turn
+    /// loop after each response, the interrupted-turn landing, and the
+    /// command layer after `/compact`'s own summary call.
+    pub fn cost_advisory(&mut self) -> Option<String> {
+        let step = self.cfg.cost_advisory_step_usd;
+        let estimate = self.cfg.cost_rates.as_ref()?.estimate(&self.session_usage)?;
+        let crossed = crate::cost::advisory_crossing(estimate, step, self.cost_latch)?;
+        self.cost_latch = crossed;
+        Some(crate::cost::advisory_message(crossed, step, estimate))
+    }
+
+    /// Re-latch to the spend already on the books, so nothing already spent
+    /// can advise. The between-turns seams call this wherever the usage
+    /// totals or the rates change under the session (see `cost_latch`).
+    fn reset_cost_latch(&mut self) {
+        self.cost_latch = cost_latch_for(&self.cfg, &self.session_usage);
+    }
+
+    /// Record provider-reported spend. THE accrual point: every response
+    /// that costs money lands here, so the cost advisory's coverage argument
+    /// is one grep, not four. Emitting the advisory is the caller's job,
+    /// because only the caller knows whether it has a UI sink to emit into.
+    fn accrue_usage(&mut self, usage: &Usage) {
+        self.session_usage.add(usage);
     }
 
     /// The "response truncated" notice. Shared by the plain MaxTokens stop
@@ -580,7 +676,7 @@ impl Session {
             let msg = result?;
 
             turn_usage.add(&msg.usage);
-            self.session_usage.add(&msg.usage);
+            self.accrue_usage(&msg.usage);
 
             // Advisory context estimate (T3): the most recent response's
             // input+output IS the occupancy after this round-trip. One
@@ -592,6 +688,13 @@ impl Session {
                 );
             }
             if let Some(advisory) = self.context_advisory() {
+                ui(AgentEvent::Notice(advisory));
+            }
+            // T26: the spend advisory sits beside the context one, and for
+            // the same reason — an agentic turn is many round-trips, and a
+            // per-USER-turn check would report the $26 only once it was
+            // already spent.
+            if let Some(advisory) = self.cost_advisory() {
                 ui(AgentEvent::Notice(advisory));
             }
 
@@ -979,7 +1082,7 @@ impl Session {
         };
         if let Ok(msg) = result {
             turn_usage.add(&msg.usage);
-            self.session_usage.add(&msg.usage);
+            self.accrue_usage(&msg.usage);
             // One pass in stream order: keep-or-drop each block, close every
             // tool cell the stream opened — kept AND dropped — preserving
             // the FIFO ToolStart/ToolEnd pairing (docs/TUI.md), and answer
@@ -1038,6 +1141,13 @@ impl Session {
             }
         }
         ui(AgentEvent::Notice(notice));
+        // T26: a partial response that arrived before the Esc still cost
+        // money, and this path leaves the turn loop without reaching its
+        // advisory check. Emitted after the interruption notice so the
+        // reason the turn ended is read first.
+        if let Some(advisory) = self.cost_advisory() {
+            ui(AgentEvent::Notice(advisory));
+        }
     }
 }
 

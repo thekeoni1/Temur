@@ -1214,3 +1214,65 @@ fn approval_working_sandbox_pty_never_prompts() {
         "sandboxed bash still writes ordinary files"
     );
 }
+
+#[test]
+fn oneshot_cost_advisory_is_stderr_chrome_never_stdout_prose() {
+    // T26: the $26-turn scenario is a one-shot -p run, so the advisory has
+    // to reach the operator there. Absurd list rates make the fixture's 45
+    // tokens cost $45, which crosses the $5 step.
+    let sb = sandbox();
+    sb.write_config(
+        r#"{"profile":"priced","cost_advisory_step_usd":5,
+            "profiles":{"priced":{"provider":"anthropic","model":"claude-sonnet-5",
+            "price_input_per_mtok":1000000,"price_output_per_mtok":1000000}}}"#,
+    );
+    let mut c = sb.cmd();
+    c.args(["--mock", &fixture("text_simple.sse"), "-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    // Stdout stays exactly the answer: an advisory must never contaminate
+    // the prose a script is piping.
+    assert_eq!(stdout, "Hello, world!\n", "stdout: {stdout:?}");
+    // Stderr carries it as ordinary notice chrome, once, at the highest
+    // multiple crossed.
+    let advisories: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.contains("cost: this session has crossed"))
+        .collect();
+    assert_eq!(advisories.len(), 1, "stderr: {stderr}");
+    assert_eq!(
+        advisories[0],
+        "  [!] cost: this session has crossed $45.00 (estimate: ~$45.00 at configured list rates); set cost_advisory_step_usd to change the step or 0 to disable"
+    );
+}
+
+#[test]
+fn oneshot_cost_advisory_is_silent_when_the_step_is_zero() {
+    // Same run, advisory disabled: byte-identical to a run without prices.
+    let sb = sandbox();
+    sb.write_config(
+        r#"{"profile":"priced","cost_advisory_step_usd":0,
+            "profiles":{"priced":{"provider":"anthropic","model":"claude-sonnet-5",
+            "price_input_per_mtok":1000000,"price_output_per_mtok":1000000}}}"#,
+    );
+    let mut c = sb.cmd();
+    c.args(["--mock", &fixture("text_simple.sse"), "-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(stdout, "Hello, world!\n", "stdout: {stdout:?}");
+    assert!(!stderr.contains("cost:"), "stderr: {stderr}");
+}
+
+#[test]
+fn a_bad_cost_advisory_step_is_a_startup_error_naming_the_field() {
+    let sb = sandbox();
+    sb.write_config(r#"{"cost_advisory_step_usd":-1}"#);
+    let mut c = sb.cmd();
+    c.args(["--mock", &fixture("text_simple.sse"), "-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("cost_advisory_step_usd must be a finite non-negative number"),
+        "stderr: {stderr}"
+    );
+}
