@@ -24,6 +24,12 @@ pub const MIN_SESSION_MAX_BYTES: u64 = 64 * 1024;
 /// Default for [`Config::key_rotate_warn_days`] (T17): doctor WARNs about a
 /// key file whose mtime is at least this many days old.
 pub const DEFAULT_KEY_ROTATE_WARN_DAYS: u64 = 90;
+/// Default for [`Config::cost_advisory_step_usd`] (T26): the mid-session cost
+/// advisory fires every $5 of estimated spend. Operator decision 2026-08-11,
+/// taken after a single agentic `-p` turn ran to roughly $26 unnoticed: on by
+/// default wherever an estimate can be computed at all, because an opt-in
+/// spend alarm is off exactly when it is needed. 0 in config disables it.
+pub const DEFAULT_COST_ADVISORY_STEP_USD: f64 = 5.0;
 
 /// Loaded from ~/.config/temur/config.json (or $XDG_CONFIG_HOME).
 /// Unknown fields are tolerated so old binaries accept newer configs.
@@ -98,6 +104,17 @@ pub struct Config {
     /// losslessly parsed, registered tool, object arguments. Default true;
     /// false restores the pre-T19 detect+nudge behavior exactly.
     pub prose_tool_calls: bool,
+    /// Dollar step between mid-session cost advisories (T26). Absent =
+    /// [`DEFAULT_COST_ADVISORY_STEP_USD`]; `0` disables the advisory
+    /// entirely; any other positive finite value is the step. Negative or
+    /// non-finite is a startup config error.
+    ///
+    /// Deliberately GLOBAL rather than per-profile: a price is a property of
+    /// the provider, but a budget is a property of the person, and it should
+    /// not reset because a `/model` switch landed on a profile that forgot to
+    /// repeat it. It rides the same gate as the `/status` estimate, so an
+    /// unpriced, keyless, or local selection never sees it whatever the value.
+    pub cost_advisory_step_usd: Option<f64>,
 }
 
 /// One named profile: a nickname bundling provider + model + endpoint +
@@ -253,6 +270,7 @@ impl Default for Config {
             key_rotate_warn_days: DEFAULT_KEY_ROTATE_WARN_DAYS,
             allow_bash_without_key_sandbox: false,
             prose_tool_calls: true,
+            cost_advisory_step_usd: None,
         }
     }
 }
@@ -293,6 +311,21 @@ impl Config {
             Some(v) => Err(crate::error::Error::Config(format!(
                 "session_max_bytes {v} is below the {MIN_SESSION_MAX_BYTES}-byte minimum"
             ))),
+        }
+    }
+
+    /// Resolve the mid-session cost advisory step (T26), rejecting a value
+    /// nobody could have meant at startup rather than silently never firing
+    /// (same validated-accessor shape as [`Config::session_max_bytes`]).
+    /// `0.0` comes back as `0.0` and means disabled: that is a real setting,
+    /// not an error.
+    pub fn cost_advisory_step_usd(&self) -> Result<f64, crate::error::Error> {
+        match self.cost_advisory_step_usd {
+            None => Ok(DEFAULT_COST_ADVISORY_STEP_USD),
+            Some(v) if v.is_finite() && v >= 0.0 => Ok(v),
+            Some(_) => Err(crate::error::Error::Config(
+                "cost_advisory_step_usd must be a finite non-negative number (0 disables the advisory)".into(),
+            )),
         }
     }
 
@@ -694,6 +727,41 @@ mod tests {
         assert!(c.sessions_dir.is_none());
         assert!(c.session_max_bytes.is_none());
         assert_eq!(c.session_max_bytes().unwrap(), DEFAULT_SESSION_MAX_BYTES);
+        assert!(c.cost_advisory_step_usd.is_none());
+        assert_eq!(
+            c.cost_advisory_step_usd().unwrap(),
+            DEFAULT_COST_ADVISORY_STEP_USD
+        );
+    }
+
+    #[test]
+    fn the_cost_advisory_step_parses_and_validates() {
+        let c: Config = serde_json::from_str(r#"{"cost_advisory_step_usd":25}"#).unwrap();
+        assert_eq!(c.cost_advisory_step_usd().unwrap(), 25.0);
+        // 0 is the documented disable, not an error.
+        let c: Config = serde_json::from_str(r#"{"cost_advisory_step_usd":0}"#).unwrap();
+        assert_eq!(c.cost_advisory_step_usd().unwrap(), 0.0);
+        // Absent = the default step.
+        let c: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            c.cost_advisory_step_usd().unwrap(),
+            DEFAULT_COST_ADVISORY_STEP_USD
+        );
+        // Negative and non-finite are typos, named by field at startup.
+        let c: Config = serde_json::from_str(r#"{"cost_advisory_step_usd":-5}"#).unwrap();
+        assert_eq!(
+            c.cost_advisory_step_usd().unwrap_err().to_string(),
+            "config: cost_advisory_step_usd must be a finite non-negative number (0 disables the advisory)"
+        );
+        let c = Config {
+            cost_advisory_step_usd: Some(f64::NAN),
+            ..Config::default()
+        };
+        assert!(c
+            .cost_advisory_step_usd()
+            .unwrap_err()
+            .to_string()
+            .contains("cost_advisory_step_usd"));
     }
 
     #[test]

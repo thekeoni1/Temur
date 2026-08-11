@@ -100,6 +100,55 @@ pub fn format_usd(value: f64) -> String {
     }
 }
 
+// ------------------------------------------------- T26 mid-session advisory
+
+/// How many whole steps an estimate covers: the step multiple `floor(estimate
+/// / step)`. This is BOTH the latch's initial value and the value a crossing
+/// moves it to, so "already accounted for" means the same arithmetic
+/// everywhere.
+///
+/// Zero for a disabled (`0`) step, and for anything non-finite or negative
+/// that reached here despite config validation: a number nobody can act on
+/// must never produce an advisory.
+pub fn step_multiple(estimate_usd: f64, step_usd: f64) -> u64 {
+    if !step_usd.is_finite() || step_usd <= 0.0 || !estimate_usd.is_finite() || estimate_usd < 0.0 {
+        return 0;
+    }
+    // Saturating `as` cast: a step multiple past u64 is unreachable spend,
+    // and clamping there is still monotonic, so the latch cannot go backward.
+    (estimate_usd / step_usd).floor() as u64
+}
+
+/// The step multiple to advise at, or `None` for silence.
+///
+/// `latch` is the highest multiple already accounted for. A jump that clears
+/// several multiples at once returns only the HIGHEST: one advisory naming
+/// where the session actually is, never a burst of one line per step it flew
+/// past. The caller stores the returned value as the new latch.
+///
+/// Pure by design (no session, no config, no clock): the whole trigger
+/// decision is these three numbers, and it is unit-tested as such.
+pub fn advisory_crossing(estimate_usd: f64, step_usd: f64, latch: u64) -> Option<u64> {
+    let reached = step_multiple(estimate_usd, step_usd);
+    (reached > latch).then_some(reached)
+}
+
+/// The advisory line for a crossing of `multiple` steps of `step_usd`, at a
+/// current estimate of `estimate_usd`.
+///
+/// Says "estimate" (this is an awareness figure computed from list rates, not
+/// a bill), names the threshold crossed AND where the session now stands (so
+/// a jump well past the threshold reads as the jump it was), and names the
+/// field that tunes or silences it. One line, no em-dashes.
+pub fn advisory_message(multiple: u64, step_usd: f64, estimate_usd: f64) -> String {
+    let crossed = multiple as f64 * step_usd;
+    format!(
+        "cost: this session has crossed ${} (estimate: ~${} at configured list rates); set cost_advisory_step_usd to change the step or 0 to disable",
+        format_usd(crossed),
+        format_usd(estimate_usd)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +230,65 @@ mod tests {
         // Priced but nothing reported yet: nothing to estimate.
         let p = profile("openai-compat", true, Some((3.0, 15.0)));
         assert_eq!(session_estimate_usd(&p, &unused), None);
+    }
+
+    #[test]
+    fn no_crossing_below_the_next_multiple() {
+        // Latched at $5, sitting at $9.99: the next multiple is not reached.
+        assert_eq!(advisory_crossing(9.99, 5.0, 1), None);
+        // And nothing at all before the first step.
+        assert_eq!(advisory_crossing(4.99, 5.0, 0), None);
+    }
+
+    #[test]
+    fn the_exact_boundary_crosses() {
+        // $5.00 exactly IS the first multiple, not one cent short of it.
+        assert_eq!(advisory_crossing(5.0, 5.0, 0), Some(1));
+        assert_eq!(advisory_crossing(10.0, 5.0, 1), Some(2));
+    }
+
+    #[test]
+    fn a_multi_step_jump_advises_once_at_the_highest() {
+        // The $26 turn: one response takes the session from under $5 to $26.
+        // ONE advisory, naming $25, not five lines.
+        assert_eq!(advisory_crossing(26.0, 5.0, 0), Some(5));
+        // And the new latch suppresses everything up to the next multiple.
+        assert_eq!(advisory_crossing(29.99, 5.0, 5), None);
+        assert_eq!(advisory_crossing(30.0, 5.0, 5), Some(6));
+    }
+
+    #[test]
+    fn step_zero_never_fires() {
+        // 0 is the documented disable, at any spend and any latch.
+        assert_eq!(advisory_crossing(1_000.0, 0.0, 0), None);
+        assert_eq!(step_multiple(1_000.0, 0.0), 0);
+        // Values config validation rejects can never advise either.
+        assert_eq!(advisory_crossing(1_000.0, -5.0, 0), None);
+        assert_eq!(advisory_crossing(f64::NAN, 5.0, 0), None);
+        assert_eq!(advisory_crossing(f64::INFINITY, 5.0, 0), None);
+    }
+
+    #[test]
+    fn the_latch_initializes_to_the_floor_of_current_spend() {
+        // Resuming a session that already spent $26 starts latched at 5, so
+        // the money already spent cannot fire.
+        assert_eq!(step_multiple(26.0, 5.0), 5);
+        assert_eq!(advisory_crossing(26.0, 5.0, step_multiple(26.0, 5.0)), None);
+        // Fresh session, nothing spent.
+        assert_eq!(step_multiple(0.0, 5.0), 0);
+        // Fractional steps floor the same way.
+        assert_eq!(step_multiple(1.0, 0.25), 4);
+    }
+
+    #[test]
+    fn the_advisory_line_names_the_threshold_the_estimate_and_the_field() {
+        let line = advisory_message(5, 5.0, 26.4213);
+        assert_eq!(
+            line,
+            "cost: this session has crossed $25.00 (estimate: ~$26.42 at configured list rates); set cost_advisory_step_usd to change the step or 0 to disable"
+        );
+        assert!(!line.contains('\n'), "one line only: {line}");
+        assert!(!line.contains('\u{2014}'), "no em-dashes: {line}");
     }
 
     #[test]
