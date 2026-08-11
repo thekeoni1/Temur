@@ -3361,3 +3361,70 @@ Procedure deltas vs v0.13.0:
   private release, installer matrix, and the closing gate stay in
   stage 2. No tag, no push of the prep commits, no release; the repo
   stays PRIVATE.
+
+## v0.14.0 acceptance - recorded result (SHIPPED, private)
+
+2026-08-11, stage 2 all green, ships T25 alone (the token cap under
+either wire name, and the thinking-token fold). No pre-tag rider this
+cycle: the tag lands directly on the stage-1 prep head 0db4ccf.
+
+- Push 595aab1..0db4ccf (the three stage-1 prep commits: 32992fe
+  version bump, 3faf21a CHANGELOG release cut, 0db4ccf docs
+  close-out); on-push ci run 31516204323 green (test 2m04s
+  17:10:25Z..17:12:29Z, release-gate 9m33s 17:10:25Z..17:19:58Z);
+  main == origin == 0db4ccf verified.
+- Annotated tag v0.14.0 at 0db4ccf, message exactly "temur v0.14.0 -
+  wire fixes (T25)" (one short line), verified verbatim via git
+  cat-file tag BEFORE the push: object line 0db4ccf, message that one
+  line and nothing more, 33 bytes, hexdumped to confirm the separator
+  is an ASCII hyphen 0x2d and the only other control byte is the
+  closing 0x0a, cmp-identical to the intended string. Tag object
+  6d63d92223fc4ac54c723fd17119ecc8633fd5e5, pushed. Unsigned as
+  always. Not retagged.
+- Full release.sh, no SKIP_CHECK, green FIRST TRY: inner check.sh ALL
+  CHECKS PASSED, leak grep clean (operator patterns + generic shapes,
+  files + history), skew gate "OK: install.sh + README match version
+  0.14.0 and all targets", 4/4 targets gated and version-asserted
+  "temur 0.14.0" (i686 + x86_64 native, aarch64 + armv7 qemu),
+  SHA256SUMS self-verified (4/4 OK), staged at
+  /home/dev/dist/release/v0.14.0/.
+- The teed-log procedure stays on, second cycle. All 48 "test result:"
+  lines in the 279-line log read "0 failed", zero panics, across all
+  three test legs (host i686-gnu, container gnu-debug, container
+  musl-release). The unreproduced --lib failure from the T24 build
+  cycle did not recur here either, so it stays unnamed and
+  unreproduced across two full ship cycles now. The capture procedure
+  is cheap and stays on.
+- **The pty smoke fix held on its fourth independent exercise.** All
+  three TUI pty smokes (host, container gnu-debug, container musl)
+  passed on the first attempt, inside the 180s bound, in both the
+  stage-1 gate and this release.sh run. Third consecutive cycle with
+  zero kill-and-rerun; the bare busybox leg printed "temur 0.14.0" and
+  its mock REPL passed.
+- Staged sha256s: 162ac2c9d218... aarch64, 60431f598eb4... armv7,
+  bc965146dfb1... i686, 177e6a49d113... x86_64; SHA256SUMS itself
+  f3e5038d9342... (full sums in the release's SHA256SUMS asset).
+- Private release github.com/thekeoni1/Temur/releases/tag/v0.14.0
+  created with title per tag, notes = the CHANGELOG v0.14.0 section,
+  5 assets (4 binaries + SHA256SUMS), not draft; repo isPrivate true
+  confirmed via gh BEFORE creating the release and again after.
+- Closing gate, fresh files in a scratch dir: downloaded x86_64 sha
+  177e6a49d1138c714012bf27b57433fa50ca1cfcf2a7de8462cd6e7fc917526a
+  equals the staged value and cmp against the staged binary is clean;
+  the downloaded SHA256SUMS is cmp-identical to the staged one.
+- Installer matrix 6/6 twice: once against the staged directory and
+  once against a fresh full download of all five published assets
+  (pass + corrupt + unlisted, GNU host and busybox container). That
+  fresh download also self-verified 4/4 against the published
+  SHA256SUMS.
+
+Honest residuals: none new this stage. The two claim narrowings and
+the F12-to-evidence upgrade landed in the stage-1 close-out rather
+than here, so the shipped docs already say only what the live leg
+showed: the gpt-5 arm proves the PARAMETER is accepted, not that the
+cap's value is enforced. T24's cost line is still unexercised live and
+continues to ride a future keyed session. The ARM artifacts remain
+verified at build level under qemu only, hardware smoke pending
+hardware. Still queued behind the visibility flip: the PUBLIC
+one-liner gate, the hostname-blob-history decision, and the demo GIF
+recording.
