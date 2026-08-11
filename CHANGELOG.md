@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased
+## v0.15.0 - 2026-08-11
 
 - **The session says what it has cost, without being asked.** Every $5
   of estimated spend it crosses, temur prints
