@@ -3487,3 +3487,80 @@ Procedure deltas vs v0.14.0:
   private release, installer matrix, and the closing gate stay in
   stage 2. No tag, no push of the prep commits, no release; the repo
   stays PRIVATE.
+
+## v0.15.0 acceptance - recorded result (SHIPPED, private)
+
+2026-08-11, stage 2 all green, ships T26 alone (the mid-session cost
+advisory). No pre-tag rider this cycle: the tag lands directly on the
+stage-1 prep head 32a458d.
+
+- Push 05188f9..32a458d (the three stage-1 prep commits: 81dba18
+  version bump, 217a937 CHANGELOG release cut, 32a458d docs
+  close-out); on-push ci run 31526177340 on headSha 32a458d green in
+  both jobs (test 13m13s 19:06:32Z..19:19:45Z, release-gate 8m27s
+  19:06:33Z..19:15:00Z); main == origin == 32a458d verified.
+- **The test job's 13 minutes were runner infrastructure, not this
+  repo.** Roughly the first 12 were spent inside step 3, "Install
+  32-bit build and run packages", before the build step started; the
+  suite itself ran in its usual time once it reached it. Worth
+  recording so the next cycle reads a slow apt mirror as what it is
+  rather than as a regression, and so a genuinely slow TEST step is
+  still distinguishable.
+- Annotated tag v0.15.0 at 32a458d, message exactly "temur v0.15.0 -
+  mid-session cost advisory (T26)" (one short line), verified verbatim
+  via git cat-file tag BEFORE the push: object line 32a458d, message
+  that one line and nothing more, 48 bytes, hexdumped to confirm the
+  separator is an ASCII hyphen 0x2d at offset 0x0e and the only other
+  control byte is the closing 0x0a, cmp-identical to the intended
+  string, no byte outside printable ASCII. Tag object
+  4a6e906700e768bd66a0a5dada7fde30c6851934, pushed. Unsigned as
+  always. Not retagged.
+- Full release.sh, no SKIP_CHECK, green FIRST TRY: inner check.sh ALL
+  CHECKS PASSED, leak grep clean (operator patterns + generic shapes,
+  files + history), skew gate "OK: install.sh + README match version
+  0.15.0 and all targets", 4/4 targets gated and version-asserted
+  "temur 0.15.0" (i686 + x86_64 native, aarch64 + armv7 qemu),
+  SHA256SUMS self-verified (4/4 OK), staged at
+  /home/dev/dist/release/v0.15.0/.
+- The teed-log procedure stays on, third cycle. All 48 "test result:"
+  lines in the 278-line log read "0 failed", zero panics, across all
+  three test legs (host i686-gnu, container gnu-debug, container
+  musl-release). The unreproduced --lib failure from the T24 build
+  cycle did not recur, so it stays unnamed and unreproduced across
+  three full ship cycles now, plus this cycle's four build-side gate
+  runs. The capture procedure is cheap and stays on.
+- **The pty smoke fix held on its fifth independent exercise.** All
+  three TUI pty smokes (host, container gnu-debug, container musl)
+  passed on the first attempt, inside the 180s bound, in both the
+  stage-1 gate and this release.sh run. Fourth consecutive cycle with
+  zero kill-and-rerun; the bare busybox leg printed "temur 0.15.0" and
+  its mock REPL passed.
+- Staged sha256s: 2491a2a44028... aarch64, 501d8005ee0b... armv7,
+  d651725bfcd4... i686, 9003343c4d85... x86_64; SHA256SUMS itself
+  36c494df9949... (full sums in the release's SHA256SUMS asset).
+- Private release github.com/thekeoni1/Temur/releases/tag/v0.15.0
+  created with title per tag, notes = the CHANGELOG v0.15.0 section,
+  5 assets (4 binaries + SHA256SUMS), not draft, not prerelease; repo
+  isPrivate true confirmed via gh BEFORE creating the release and
+  again after.
+- Closing gate, fresh files in a scratch dir: downloaded x86_64 sha
+  9003343c4d85c668b60fd2b3b4d68f4b4715009f3c9ebd53988beea510e2fafc
+  equals the staged value and cmp against the staged binary is clean;
+  the downloaded SHA256SUMS is cmp-identical to the staged one.
+- Installer matrix 6/6 twice: once against the staged directory and
+  once against a fresh full download of all five published assets
+  (pass + corrupt + unlisted, GNU host and busybox container). That
+  fresh download also self-verified 4/4 against the published
+  SHA256SUMS.
+
+Honest residuals: no live leg rode this milestone, by design, and the
+cost advisory has therefore never fired against a real metered
+endpoint; it is offline-computable end to end and every behavior it
+claims is covered by mock-driven tests, but T24's keyed live check
+still rides a future operator session and now carries T26 with it. The
+one code rider this cycle (the em-dash the build session introduced
+and then swept) is recorded in the stage-1 close-out, not here. The
+ARM artifacts remain verified at build level under qemu only, hardware
+smoke pending hardware. Still queued behind the visibility flip: the
+PUBLIC one-liner gate, the hostname-blob-history decision, and the
+demo GIF recording.
