@@ -3816,3 +3816,86 @@ section number of its own, so reconstruction by section covers
 everything after the first heading only; and clippy is not installed
 on this toolchain, so the usual lint pass did not run this cycle
 (cargo build is warning-free).
+
+## v0.17.0 acceptance - recorded result (SHIPPED, private)
+
+2026-08-12, stage 2 all green, ships T28 alone (skill compacting: the
+section index). No pre-tag rider this cycle: the tag lands directly on
+the stage-1 prep head 89313fe. Second release in one day, after
+v0.16.0 shipped the same morning.
+
+- Push fe36ac4..89313fe (the three stage-1 prep commits: f4625a4
+  version bump, 76b9895 CHANGELOG release cut, 89313fe docs
+  close-out); on-push ci run 31628664653 on headSha 89313fe green in
+  both jobs (test 2m21s 18:38:42Z..18:41:03Z, release-gate 8m11s
+  18:38:34Z..18:46:45Z); main == origin == 89313fe verified.
+- Annotated tag v0.17.0 at 89313fe, message exactly "temur v0.17.0 -
+  skill section index (T28)" (one short line), verified against the
+  RAW tag object via git cat-file tag BEFORE the push, not via git
+  tag -l (which appends its own newline and cannot answer this
+  question). The hexdump shows the object line 89313fec..., the
+  blank-line separator 0a 0a at offset 0x98, then exactly 41 message
+  bytes at 0x9a..0xc2: 40 printable ASCII plus the single closing
+  0x0a, with the separator an ASCII hyphen 0x2d and no byte sequence
+  e2 80 94 anywhere. Tag object
+  50ff35a5390f8108bc7b688f63435fa57cf26d8f, pushed after
+  verification; remote tag object and its ^{} commit both confirmed
+  to match. Unsigned as always. Not retagged.
+- Full release.sh, no SKIP_CHECK, green FIRST TRY: inner check.sh ALL
+  CHECKS PASSED, leak grep clean (operator patterns + generic shapes,
+  files + history), skew gate "OK: install.sh + README match version
+  0.17.0 and all targets", 4/4 targets gated and version-asserted
+  "temur 0.17.0" (i686 + x86_64 native, aarch64 + armv7 qemu),
+  SHA256SUMS self-verified (4/4 OK), staged at
+  /home/dev/dist/release/v0.17.0/.
+- The teed-log procedure stays on, fifth cycle. All 48 "test result:"
+  lines in the 278-line log read "0 failed", zero panics, across all
+  three test legs (host i686-gnu, container gnu-debug, container
+  musl-release). The unnamed --lib failure from the T24 build cycle
+  did not recur, so it stays unnamed and unreproduced across five
+  full ship cycles now, plus this cycle's four build-side gate runs
+  and the stage-1 gate. The capture procedure is cheap and stays on.
+- **The pty smoke fix held on its seventh independent exercise.** All
+  three TUI pty smokes (host, container gnu-debug, container musl)
+  passed on the first attempt, inside the 180s bound, in both the
+  stage-1 gate and this release.sh run. Sixth consecutive cycle with
+  zero kill-and-rerun; the bare busybox leg printed "temur 0.17.0"
+  and its mock REPL passed.
+- Staged sha256s: 91153a532537... aarch64, bc2299fdb432... armv7,
+  60ae61720c9f... i686, 64406d9a46bb... x86_64; SHA256SUMS itself
+  7e8746bfd8e4... (full sums in the release's SHA256SUMS asset).
+- Private release github.com/thekeoni1/Temur/releases/tag/v0.17.0
+  created with title per tag, notes = the CHANGELOG v0.17.0 section,
+  5 assets (4 binaries + SHA256SUMS), not draft, not prerelease; repo
+  isPrivate true confirmed via gh BEFORE creating the release and
+  again after. Asset sizes match the staged bytes exactly.
+- Closing gate, fresh files in a scratch dir: downloaded x86_64 sha
+  64406d9a46bb09ab845e3def04b547e4bc3196080b5f45552c4239a5243e9971
+  equals the staged value and cmp against the staged binary is clean;
+  the downloaded SHA256SUMS is cmp-identical to the staged one.
+- Installer matrix 6/6 twice: once against the staged directory and
+  once against a fresh full download of all five published assets
+  (pass + corrupt + unlisted, GNU host and busybox container). That
+  fresh download also self-verified 4/4 against the published
+  SHA256SUMS, and all FOUR downloaded binaries were cmp-identical to
+  their staged bytes, the wider check adopted in v0.16.0 rather than
+  the x86_64 spot check alone.
+
+Honest residuals: no live leg rode this milestone, by design, so no
+model has yet chosen a skill section for itself outside a scripted
+test; the feature is offline-computable end to end and every behavior
+it claims is covered by mock-driven tests, including an agent-loop run
+that indexes, fetches a numbered section, and answers. A skill's intro
+text ships whole inside the index but has no section number of its
+own, so reconstruction BY SECTION covers everything after the first
+heading only. clippy is not installed on this toolchain, so the usual
+lint pass did not run this cycle, though cargo build is warning-free.
+The two build-side process facts (a fabricated USAGE transcript caught
+and replaced with labeled verbatim output, and a docs claim measured
+rather than assumed, coming back at 0.0% instead of the expected
+single-digit percent) are recorded in the stage-1 close-out, not here.
+T13's hosted verification and T24's keyed live check both still ride a
+future operator session. The ARM artifacts remain verified at build
+level under qemu only, hardware smoke pending hardware. Still queued
+behind the visibility flip: the PUBLIC one-liner gate, the
+hostname-blob-history decision, and the demo GIF recording.
