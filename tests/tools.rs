@@ -1366,3 +1366,66 @@ fn redaction_ignores_short_keys_and_cleared_state() {
     .unwrap();
     assert!(out.output.contains("placeholder-not-a-real-key-1234"), "{}", out.output);
 }
+
+// --------------------------------------------------------------- T28 (P1)
+
+/// A tool that overrides the truncation advice, plus one that does not, so
+/// the marker's variable half is provably per-tool while its fixed half
+/// stays byte-identical (the pins above still hold unchanged).
+struct HintedTool;
+impl Tool for HintedTool {
+    fn name(&self) -> &'static str { "hinted" }
+    fn description(&self) -> &'static str { "emits too much" }
+    fn truncation_hint(&self) -> &'static str { "ask for one piece at a time" }
+    fn input_schema(&self) -> serde_json::Value { json!({"type":"object","properties":{}}) }
+    fn execute(&self, _i: serde_json::Value, _c: &mut ToolCtx) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput { title: "hinted".into(), output: "z".repeat(40_000) })
+    }
+}
+
+#[test]
+fn truncation_marker_carries_the_tools_own_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::with_tools(vec![Box::new(HintedTool)]);
+    let mut ctx = ctx_in(dir.path());
+    let out = run(&reg, &mut ctx, "hinted", json!({})).unwrap();
+    assert!(
+        out.output.contains(
+            "(output truncated: showing the first 15000 and last 15000 of 40000 chars; \
+             ask for one piece at a time)"
+        ),
+        "{}",
+        out.output
+    );
+    assert!(
+        !out.output.contains("grep or head/tail"),
+        "the default advice must not survive an override: {}",
+        out.output
+    );
+}
+
+/// The dispatch-time cap a tool reads to decide its own shape (T28) is the
+/// registry's context-scaled cap, not the ceiling.
+struct CapEchoTool;
+impl Tool for CapEchoTool {
+    fn name(&self) -> &'static str { "capecho" }
+    fn description(&self) -> &'static str { "reports the cap it was given" }
+    fn input_schema(&self) -> serde_json::Value { json!({"type":"object","properties":{}}) }
+    fn execute(&self, _i: serde_json::Value, c: &mut ToolCtx) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput { title: "cap".into(), output: c.output_cap.to_string() })
+    }
+}
+
+#[test]
+fn execute_hands_the_tool_the_context_scaled_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut reg = Registry::with_tools(vec![Box::new(CapEchoTool)]);
+    let mut ctx = ctx_in(dir.path());
+    // Default: the ceiling, exactly what a bare ToolCtx already carries.
+    assert_eq!(run(&reg, &mut ctx, "capecho", json!({})).unwrap().output, "30000");
+    reg.set_context_window(Some(8_000));
+    assert_eq!(run(&reg, &mut ctx, "capecho", json!({})).unwrap().output, "8000");
+    // And the T19 floor still applies on the way down.
+    reg.set_context_window(Some(100));
+    assert_eq!(run(&reg, &mut ctx, "capecho", json!({})).unwrap().output, "4000");
+}

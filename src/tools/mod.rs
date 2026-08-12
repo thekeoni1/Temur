@@ -58,6 +58,14 @@ pub struct ToolCtx {
     /// default everywhere) means no UI can ask, so that arm refuses
     /// instead: every non-interactive construction site is untouched.
     pub bash_approver: Option<Box<dyn FnMut(&str) -> bool>>,
+    /// T28: the per-result output cap in force for THIS dispatch, which
+    /// [`Registry::execute`] sets from its own (context-scaled, T19) cap
+    /// before calling the tool. A tool that can produce a smaller answer
+    /// instead of being cut in half reads it and decides for itself; every
+    /// other tool ignores it and is truncated centrally as before. The
+    /// default here is the ceiling, so a `ToolCtx` built outside a session
+    /// behaves exactly as it did before this field existed.
+    pub output_cap: usize,
     /// T19 read-first enforcement: canonicalized paths whose content this
     /// session has seen (read tool, edit reads its file, a successful write
     /// knows what it wrote). `write` refuses to overwrite an EXISTING file
@@ -77,6 +85,7 @@ impl ToolCtx {
             guard: KeyGuard::empty(),
             allow_unsandboxed_bash: false,
             bash_approver: None,
+            output_cap: MAX_OUTPUT_CHARS,
             read_paths: std::collections::HashSet::new(),
         }
     }
@@ -140,6 +149,13 @@ pub trait Tool {
     /// changes.
     fn description_compact(&self) -> &'static str {
         self.description()
+    }
+    /// The advice the central truncation marker gives when THIS tool's
+    /// output is cut (T28). The default is grep/head-tail narrowing, which
+    /// is right for a command or a file read and nonsense for a tool whose
+    /// output is one indivisible document: those override it.
+    fn truncation_hint(&self) -> &'static str {
+        "narrow the command, e.g. grep or head/tail, to see the elided middle"
     }
     fn input_schema(&self) -> Value;
     fn execute(&self, input: Value, ctx: &mut ToolCtx) -> Result<ToolOutput, ToolError>;
@@ -271,6 +287,8 @@ impl Registry {
             .iter()
             .find(|t| t.name() == name)
             .ok_or_else(|| ToolError::InvalidInput(format!("unknown tool: {name}")))?;
+        // T28: tell the tool what it has to fit in, before it runs.
+        ctx.output_cap = self.cap_chars;
         let mut out = tool.execute(input, ctx).map_err(|e| match e {
             ToolError::InvalidInput(s) => ToolError::InvalidInput(self.redact(s)),
             ToolError::Failed(s) => ToolError::Failed(self.redact(s)),
@@ -286,8 +304,9 @@ impl Registry {
             let tail_n = self.cap_chars - head_n;
             let head: String = out.output.chars().take(head_n).collect();
             let tail: String = out.output.chars().skip(total - tail_n).collect();
+            let hint = tool.truncation_hint();
             out.output = format!(
-                "{head}\n\n(output truncated: showing the first {head_n} and last {tail_n} of {total} chars; narrow the command, e.g. grep or head/tail, to see the elided middle)\n\n{tail}"
+                "{head}\n\n(output truncated: showing the first {head_n} and last {tail_n} of {total} chars; {hint})\n\n{tail}"
             );
         }
         Ok(out)
