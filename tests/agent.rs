@@ -690,11 +690,8 @@ fn max_tokens_notice_names_the_profile_after_a_switch() {
     };
     session.switch_provider(
         Box::new(truncated),
-        "qwen3-1.7b".into(),
-        1024,
-        None,
+        &selection("qwen3-1.7b", 1024, None),
         Some("local".into()),
-        None,
     );
     let events = collect_events(&mut session, "hi");
     assert!(notices(&events)
@@ -1666,7 +1663,7 @@ fn switch_provider_next_turn_hits_new_provider_with_full_history() {
         responses: RefCell::new(vec![msg(vec![text("second answer")], StopReason::EndTurn)]),
         requests: requests_b.clone(),
     };
-    session.switch_provider(Box::new(provider_b), "model-b".into(), 512, Some(9_999), None, None);
+    session.switch_provider(Box::new(provider_b), &selection("model-b", 512, Some(9_999)), None);
     assert_eq!(session.model(), "model-b");
     assert_eq!(session.max_tokens(), 512);
     assert_eq!(session.context_window(), Some(9_999));
@@ -1720,7 +1717,7 @@ fn switch_to_compat_hits_new_base_url_and_drops_thinking_blocks() {
             bodies: bodies.clone(),
         }),
     );
-    session.switch_provider(Box::new(compat), "qwen-sw".into(), 1024, None, None, None);
+    session.switch_provider(Box::new(compat), &selection("qwen-sw", 1024, None), None);
     collect_events(&mut session, "second question");
 
     assert_eq!(urls.borrow().len(), 1);
@@ -1973,6 +1970,18 @@ fn base_resolved() -> ResolvedProfile {
         price_input_per_mtok: None,
         price_output_per_mtok: None,
         max_tokens_parameter: Default::default(),
+    }
+}
+
+/// A selection carrying only what `switch_provider` reads: the model and
+/// its limits, on the unpriced anthropic base. The tests that switch for
+/// a reason other than cost build theirs from this.
+fn selection(model: &str, max_tokens: u32, context_window: Option<u64>) -> ResolvedProfile {
+    ResolvedProfile {
+        model: model.into(),
+        max_tokens,
+        context_window,
+        ..base_resolved()
     }
 }
 
@@ -2331,10 +2340,7 @@ fn compact_provider_error_is_fail_closed() {
     let before = session.history().to_vec();
     session.switch_provider(
         Box::new(FailingProvider),
-        "claude-sonnet-5".into(),
-        32_000,
-        None,
-        None,
+        &selection("claude-sonnet-5", 32_000, None),
         None,
     );
 
@@ -4099,15 +4105,14 @@ fn a_switch_relatches_against_the_new_rates() {
     };
     session.switch_provider(
         Box::new(next),
-        "claude-opus-5".into(),
-        32_000,
+        &ResolvedProfile {
+            // Keyed and priced, so the selection itself carries the rates.
+            api_key_file: Some("/tmp/k".into()),
+            price_input_per_mtok: Some(30.0),
+            price_output_per_mtok: Some(150.0),
+            ..selection("claude-opus-5", 32_000, None)
+        },
         None,
-        None,
-        Some(temur::cost::CostRates {
-            provider: "anthropic".into(),
-            input_per_mtok: 30.0,
-            output_per_mtok: 150.0,
-        }),
     );
     assert!(
         cost_notices(&collect_events(&mut session, "two")).is_empty(),

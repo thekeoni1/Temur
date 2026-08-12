@@ -311,21 +311,29 @@ impl Session {
     /// todos survive — switching models continues the same conversation.
     /// `context_warned` re-arms because the once-per-session warning was
     /// about the OLD window.
+    ///
+    /// `selection` is the whole profile being switched onto, not a handful
+    /// of its fields: a switch replaces the ENTIRE selection, so passing the
+    /// struct makes that rule structural, and the next selection-scoped
+    /// setting costs no signature change here or at any call site. Both
+    /// production callers already hold the exact value.
+    ///
+    /// `max_tokens_source` stays separate because it is not a profile field:
+    /// it is the NAME under which the selection is active, which the caller
+    /// alone knows (a profile activation passes the profile name, a raw
+    /// model override keeps whatever name was already active).
     pub fn switch_provider(
         &mut self,
         provider: Box<dyn Provider>,
-        model: String,
-        max_tokens: u32,
-        context_window: Option<u64>,
+        selection: &crate::config::ResolvedProfile,
         max_tokens_source: Option<String>,
-        cost_rates: Option<crate::cost::CostRates>,
     ) {
         self.provider = provider;
-        self.cfg.model = model;
-        self.cfg.max_tokens = max_tokens;
-        self.cfg.context_window = context_window;
+        self.cfg.model = selection.model.clone();
+        self.cfg.max_tokens = selection.max_tokens;
+        self.cfg.context_window = selection.context_window;
         self.cfg.max_tokens_source = max_tokens_source;
-        self.cfg.cost_rates = cost_rates;
+        self.cfg.cost_rates = crate::cost::CostRates::for_profile(selection);
         self.context_warned = false;
         // T26: the rates just changed, so the money already spent must be
         // re-measured against them before anything new can advise. Without
@@ -333,7 +341,7 @@ impl Session {
         // that happened at the old rates.
         self.reset_cost_latch();
         // T19: the output cap follows the new window (see `build`).
-        self.registry.set_context_window(context_window);
+        self.registry.set_context_window(selection.context_window);
     }
 
     /// Swap the system prompt and tool-prompt profile in place (T9: a
