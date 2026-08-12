@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.17.0 - 2026-08-12
+
 - **A skill too large for one tool result comes back as a section
   index instead of being cut in half.** Loading one used to middle-
   elide it like any other oversized output and then advise the model
