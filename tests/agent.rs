@@ -3010,7 +3010,7 @@ fn models_warns_when_configured_context_window_exceeds_the_reported_one() {
 }
 
 #[test]
-fn models_stays_silent_when_equal_smaller_unknown_or_not_anthropic() {
+fn models_stays_silent_when_equal_unknown_or_not_anthropic() {
     let dir = tempfile::tempdir().unwrap();
     let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
         unreachable!("/models builds no provider")
@@ -3031,19 +3031,35 @@ fn models_stays_silent_when_equal_smaller_unknown_or_not_anthropic() {
     h.active_resolved.context_window = Some(200_000);
     h.list = Box::new(|_| Ok(vec![wentry("claude-sonnet-5", 200_000)]));
     quiet(&mut h);
-    // Smaller than reported: safe, silence.
-    let mut h = CmdHarness::new();
-    h.active_resolved.context_window = Some(100_000);
-    h.list = Box::new(|_| Ok(vec![wentry("claude-sonnet-5", 200_000)]));
-    quiet(&mut h);
     // Window unknown on the wire (0 or absent parses to None): silence
     // even with context_window unset.
     let mut h = CmdHarness::new();
     h.list = Box::new(|_| Ok(entries(&["claude-sonnet-5"])));
     quiet(&mut h);
-    // Active model not in the listing: silence.
+    // Active model not in the listing, and no dated alias of it either:
+    // silence.
     let mut h = CmdHarness::new();
     h.list = Box::new(|_| Ok(vec![wentry("some-other-model", 200_000)]));
+    quiet(&mut h);
+    // A dated entry for a DIFFERENT model must not be read as this one's.
+    let mut h = CmdHarness::new();
+    h.list = Box::new(|_| Ok(vec![wentry("claude-opus-5-20251001", 200_000)]));
+    quiet(&mut h);
+    // Suffix present but not eight digits: not a dated id.
+    let mut h = CmdHarness::new();
+    h.list = Box::new(|_| Ok(vec![wentry("claude-sonnet-5-preview", 200_000)]));
+    quiet(&mut h);
+    // Dated entries that DISAGREE about the window: the inference is not
+    // unambiguous, so it is not made.
+    let mut h = CmdHarness::new();
+    h.model = "claude-haiku-4-5".into();
+    h.active_resolved.model = "claude-haiku-4-5".into();
+    h.list = Box::new(|_| {
+        Ok(vec![
+            wentry("claude-haiku-4-5-20251001", 200_000),
+            wentry("claude-haiku-4-5-20260210", 400_000),
+        ])
+    });
     quiet(&mut h);
     // Not the anthropic provider: silence even if a proxy reports windows.
     let mut h = CmdHarness::new();
@@ -3053,6 +3069,80 @@ fn models_stays_silent_when_equal_smaller_unknown_or_not_anthropic() {
     h.active_resolved = h.profiles["b"].clone(); // context_window 4096
     h.list = Box::new(|_| Ok(vec![wentry("model-b", 1_000)]));
     quiet(&mut h);
+}
+
+/// T13: under-configuring is safe, but silence about it was not helpful.
+#[test]
+fn models_hints_when_the_configured_window_is_under_the_reported_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!("/models builds no provider")
+    };
+    let mut h = CmdHarness::new();
+    h.active_resolved.context_window = Some(100_000);
+    h.list = Box::new(|_| Ok(vec![wentry("claude-sonnet-5", 200_000)]));
+    let events = commands::run(commands::parse("/models"), &mut h.ctx(&mut session, &build));
+    let ns = notices(&events);
+    assert_eq!(ns.len(), 1, "{events:?}");
+    assert_eq!(
+        ns[0],
+        "hint: configured context_window 100000 is smaller than the max_input_tokens 200000 the API reports for claude-sonnet-5: safe, but the context advisory fires earlier than it needs to; raise context_window to 200000 to use the whole window",
+        "{ns:?}"
+    );
+}
+
+/// T13: the bare `claude-haiku-4-5` alias is absent from /v1/models, which
+/// lists dated ids only, so /models could never judge a haiku profile. It
+/// judges it through the dated entry now, and says so.
+#[test]
+fn models_judges_a_bare_alias_through_its_dated_listing_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!("/models builds no provider")
+    };
+    // Unset window: the hint names the dated entry and the alias it came
+    // from, and still spells the exact config line.
+    let mut h = CmdHarness::new();
+    h.model = "claude-haiku-4-5".into();
+    h.active_resolved.model = "claude-haiku-4-5".into();
+    h.list = Box::new(|_| {
+        Ok(vec![
+            wentry("claude-sonnet-5", 1_000_000),
+            wentry("claude-haiku-4-5-20251001", 200_000),
+        ])
+    });
+    let events = commands::run(commands::parse("/models"), &mut h.ctx(&mut session, &build));
+    let ns = notices(&events);
+    assert_eq!(
+        ns,
+        vec![
+            "hint: the API reports max_input_tokens 200000 for claude-haiku-4-5-20251001 (matched from claude-haiku-4-5); add \"context_window\": 200000 to the profile to enable the context advisory"
+        ],
+        "{events:?}"
+    );
+
+    // Several dated entries that AGREE: still unambiguous, and the newest
+    // date is the one named.
+    let mut h = CmdHarness::new();
+    h.model = "claude-haiku-4-5".into();
+    h.active_resolved.model = "claude-haiku-4-5".into();
+    h.active_resolved.context_window = Some(500_000);
+    h.list = Box::new(|_| {
+        Ok(vec![
+            wentry("claude-haiku-4-5-20260210", 200_000),
+            wentry("claude-haiku-4-5-20251001", 200_000),
+        ])
+    });
+    let events = commands::run(commands::parse("/models"), &mut h.ctx(&mut session, &build));
+    let ns = notices(&events);
+    assert_eq!(ns.len(), 1, "{events:?}");
+    assert!(
+        ns[0].starts_with("warning: configured context_window 500000 is larger than the max_input_tokens 200000")
+            && ns[0].contains("for claude-haiku-4-5-20260210 (matched from claude-haiku-4-5)"),
+        "{ns:?}"
+    );
 }
 
 #[test]

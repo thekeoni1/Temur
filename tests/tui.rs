@@ -2040,3 +2040,34 @@ fn headless_approval_no_denies_and_the_session_continues() {
         "the turn continues after a denial:\n{body}"
     );
 }
+
+/// T13 queued item: "/models listing renders two ids on one line in some
+/// widths", observed once in the operator's terminal. T27 could not
+/// reproduce it offline. This is the reproduction attempt kept as a pin,
+/// not a fix: each id is one repeated letter, so a row carrying two
+/// distinct letters proves content from two ids merged, fragments
+/// included. The plain REPL cannot merge either, structurally: it prints
+/// one line per id (src/ui/repl.rs).
+#[test]
+fn models_listing_never_puts_two_ids_on_one_row() {
+    // Uppercase: none of these appear in the count line's own text.
+    let letters = ["A", "B", "C", "D", "E", "F", "G"];
+    // Realistic anthropic id lengths (22-28 columns).
+    let ids: Vec<String> = letters
+        .iter()
+        .enumerate()
+        .map(|(i, l)| l.repeat(22 + i))
+        .collect();
+    for w in 4u16..=200 {
+        let mut a = app();
+        a.fold(&AgentEvent::ModelsListed(ids.clone()));
+        let rows = render(&mut a, w, 200);
+        for (y, row) in rows.iter().enumerate() {
+            let seen: std::collections::BTreeSet<char> = row
+                .chars()
+                .filter(|c| letters.contains(&c.to_string().as_str()))
+                .collect();
+            assert!(seen.len() < 2, "two ids merged at width={w}, row {y}: {row:?}");
+        }
+    }
+}

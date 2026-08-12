@@ -796,8 +796,12 @@ fn models_list(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
 /// proxy's exotic listing fields never trigger this), compare it to the
 /// configured context_window. Configured larger than reported: warning
 /// (the T20 advisory fires too late and requests can fail at the real
-/// limit). Unset: hint naming the exact config line. Equal or smaller,
-/// or no known window: silence. Never a network call of its own.
+/// limit). Configured smaller: hint (T13, safe but the advisory fires
+/// earlier than it needs to). Unset: hint naming the exact config line.
+/// Equal, or no known window: silence. Never a network call of its own.
+///
+/// When the active id is absent from the listing entirely, the dated-alias
+/// fallback below gets one more chance to judge it.
 fn context_window_notice(
     ctx: &CommandCtx,
     entries: &[crate::provider::ModelEntry],
@@ -805,21 +809,60 @@ fn context_window_notice(
     if ctx.active_resolved.provider != "anthropic" {
         return None;
     }
-    let reported = entries
-        .iter()
-        .find(|e| e.id == *ctx.model)?
-        .context_window?;
+    // An exact hit is authoritative: if it reports no window, that is the
+    // answer, and no inference may override it.
+    let (reported, subject) = match entries.iter().find(|e| e.id == *ctx.model) {
+        Some(e) => (e.context_window?, ctx.model.clone()),
+        None => {
+            let (window, dated) = dated_alias_window(&ctx.model, entries)?;
+            // Name what was matched, so the operator can see the inference
+            // rather than wonder where a window for an unlisted id came from.
+            (window, format!("{dated} (matched from {})", ctx.model))
+        }
+    };
     match ctx.active_resolved.context_window {
         Some(c) if c > reported => Some(format!(
-            "warning: configured context_window {c} is larger than the max_input_tokens {reported} the API reports for {}; the context advisory fires too late, and requests can fail at the real limit",
-            ctx.model
+            "warning: configured context_window {c} is larger than the max_input_tokens {reported} the API reports for {subject}; the context advisory fires too late, and requests can fail at the real limit"
+        )),
+        Some(c) if c < reported => Some(format!(
+            "hint: configured context_window {c} is smaller than the max_input_tokens {reported} the API reports for {subject}: safe, but the context advisory fires earlier than it needs to; raise context_window to {reported} to use the whole window"
         )),
         None => Some(format!(
-            "hint: the API reports max_input_tokens {reported} for {}; add \"context_window\": {reported} to the profile to enable the context advisory",
-            ctx.model
+            "hint: the API reports max_input_tokens {reported} for {subject}; add \"context_window\": {reported} to the profile to enable the context advisory"
         )),
         _ => None,
     }
+}
+
+/// The T13 haiku blind spot: a bare anthropic alias like
+/// `claude-haiku-4-5` is absent from `/v1/models`, which lists only dated
+/// ids (`claude-haiku-4-5-20251001`), so `/models` could never judge such
+/// a profile at all. Match the alias against listing entries that are the
+/// alias plus a `-` and exactly eight ASCII digits, and return the window
+/// only when the inference is UNAMBIGUOUS: one candidate, or several that
+/// all report the same window. Disagreement, an unknown window among them,
+/// or no candidate at all stays silent, because a guess about the context
+/// limit is worse here than the silence this replaces.
+fn dated_alias_window(
+    model: &str,
+    entries: &[crate::provider::ModelEntry],
+) -> Option<(u64, String)> {
+    let dated: Vec<&crate::provider::ModelEntry> = entries
+        .iter()
+        .filter(|e| {
+            e.id.strip_prefix(model)
+                .and_then(|rest| rest.strip_prefix('-'))
+                .is_some_and(|d| d.len() == 8 && d.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .collect();
+    // Named entry: the newest date. The candidates share the alias prefix
+    // and end in eight digits, so lexicographic order IS date order.
+    let newest = dated.iter().max_by_key(|e| &e.id)?;
+    let window = newest.context_window?;
+    if dated.iter().any(|e| e.context_window != Some(window)) {
+        return None;
+    }
+    Some((window, newest.id.clone()))
 }
 
 /// `/sessions` (T10): list every saved session, all projects. Read-only
