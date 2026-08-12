@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.16.0 - 2026-08-12
+
 - **Turn footers no longer relabel themselves after a `/model`
   switch.** Each `▣ temur · <model> · ...` line records the model the
   turn actually ran on, captured when the turn ends. Before, the whole
