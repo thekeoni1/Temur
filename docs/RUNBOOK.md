@@ -3730,3 +3730,89 @@ ARM artifacts remain verified at build level under qemu only, hardware
 smoke pending hardware. Still queued behind the visibility flip: the
 PUBLIC one-liner gate, the hostname-blob-history decision, and the
 demo GIF recording.
+
+## v0.17.0 - close-out (release procedure delta)
+
+What ships: T28 alone, skill compacting. Back to a single milestone
+after T27's eight-item bundle. The tag lands directly on the stage-1
+prep head; no pre-tag rider this cycle.
+
+Procedure deltas vs v0.16.0:
+
+- **T28 pushed AS stage-1 step 1**, the standing shape for the fifth
+  cycle: 38ee7af..fe36ac4 onto 38ee7af, four commits (P1 the pure
+  minify/scan layer plus plumbing, P2 the three tool modes and both
+  prompts, P3 the agent-loop and beneficiary pins, P4 docs), on-push
+  ci run 31627218432 on headSha fe36ac4 green in both jobs (test
+  1m34s 18:21:27Z..18:23:01Z, release-gate 4m36s 18:21:28Z..18:26:04Z);
+  main == origin == fe36ac4 verified before the prep commits.
+- **The build session caught itself fabricating a transcript, and the
+  catch is the record.** Its first draft of the USAGE section invented
+  a `<skill_index>` example with made-up character counts and fake REPL
+  chrome, inside a document whose capture note states that every
+  transcript in it is from a real run. It was replaced before any gate
+  with the tool's VERBATIM output, produced by running the real code
+  over a generated fixture, and labeled in the text as
+  fixture-generated rather than captured from a live model session, so
+  it does not borrow the credibility of the real transcripts around
+  it. Recorded because this was the first new USAGE section that
+  needed an example no live session could supply, and the rule that
+  document lives by only means something if it binds new prose too.
+  The standing instruction: an illustrative example is fine, an
+  illustrative example dressed as a capture is not, and the label is
+  what separates them.
+- **A docs claim was measured before it was written, and the
+  measurement was unflattering.** The build prompt expected the
+  minifier to save "single-digit percent". Measured: 0.0% on this
+  repo's own markdown, because tidy files have nothing to remove;
+  2.2% on a SKILL.md with frontmatter and loose spacing; 62 characters
+  on the 48,427-char example. The docs and CHANGELOG publish those
+  numbers and say plainly that minification is a rounding error kept
+  only because it is free and lossless, while the section index is the
+  mechanism (48,427 chars to an 846-char index, 1.7%). Precedent
+  worth keeping: measure a quantitative claim before shipping it, and
+  publish the number that comes back rather than the number that was
+  expected.
+- **One design ruling was added that the plan had not enumerated**,
+  and it surfaced through a wrong test rather than review: a skill
+  over the cap whose prose BEFORE the first heading already exceeds
+  the cap falls back to full mode plus central truncation, because an
+  index that does not itself fit is not an improvement. That is the
+  same ruling the plan gave for a heading-less skill, which is
+  effectively what such a file is. The build session's own at-cap test
+  failed first because it used a skill so small that an index was
+  LARGER than the content; the code was right and the test premise was
+  wrong, so the test was fixed and the fallback pinned in its own
+  test.
+- **Measurement scaffolding was added and removed within the phase.**
+  The savings numbers came from throwaway tests appended to
+  tests/skills.rs and reverted from a backup before committing; P4
+  went in docs-only, verified by diff stat against src/ and tests/
+  showing no changes. Recorded so the numbers in the docs are
+  traceable to a method rather than to an assertion.
+- **The version bump used scripts/bump_version.sh** for the seventh
+  time, printed diff touching exactly the four-file map: Cargo.toml,
+  the temur line of Cargo.lock (the third-party untrusted crate stays
+  pinned at its own 0.9.0 and does not appear in the lock diff at
+  all), scripts/install.sh VERSION, and the five README tag-pin lines.
+  No stale pin surfaced, so this close-out is RUNBOOK-only.
+- **Five green gates, every one first try**, four build-phase runs
+  plus the stage-1 gate, with all three TUI pty smokes quiet in each.
+  The unnamed `--lib` failure from the T24 build cycle has still never
+  recurred. Suite growth this milestone: skills 7 to 21, lib skills
+  unit tests 5 to 23, tools 44 to 46, agent 111 to 113, and the T19
+  truncation-marker pins passed UNCHANGED, which was the compatibility
+  condition on the new per-tool hint.
+- Stage 1 keeps the early stop: bump + dated CHANGELOG + records +
+  full check.sh gate only; tag, four-target build, SHA256SUMS,
+  private release, installer matrix, and the closing gate stay in
+  stage 2. No tag, no push of the prep commits, no release; the repo
+  stays PRIVATE.
+
+Residuals carried into the ship: no live leg, by design, so no model
+has yet chosen a section for itself outside a scripted test; the
+intro text of a skill is shipped whole inside the index but has no
+section number of its own, so reconstruction by section covers
+everything after the first heading only; and clippy is not installed
+on this toolchain, so the usual lint pass did not run this cycle
+(cargo build is warning-free).
