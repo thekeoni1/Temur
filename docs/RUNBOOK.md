@@ -3644,3 +3644,89 @@ Procedure deltas vs v0.15.0:
   private release, installer matrix, and the closing gate stay in
   stage 2. No tag, no push of the prep commits, no release; the repo
   stays PRIVATE.
+
+## v0.16.0 acceptance - recorded result (SHIPPED, private)
+
+2026-08-12, stage 2 all green, ships T27 alone (the small-items
+bundle: the whole "Queued from T13 acceptance" list). No pre-tag rider
+this cycle: the tag lands directly on the stage-1 prep head 266f6b3.
+
+- Push 4dbadd0..266f6b3 (the three stage-1 prep commits: b3154ba
+  version bump, d339663 CHANGELOG release cut, 266f6b3 docs
+  close-out); on-push ci run 31616823243 on headSha 266f6b3 green in
+  both jobs (test 2m20s 16:17:25Z..16:19:45Z, release-gate 6m55s
+  16:17:25Z..16:24:20Z); main == origin == 266f6b3 verified. Normal
+  runner timings this cycle, in contrast to v0.15.0's 13-minute test
+  job, which was a slow apt mirror rather than this repo.
+- **Stage 2 ran one cycle late, and that is the notable process fact.**
+  The T28 build prompt arrived asserting "the v0.16.0 ship completed"
+  when stage 2 had never run: the three prep commits were still local
+  and unpushed, no tag and no release existed, and the only reason
+  Cargo.toml read 0.16.0 was the local bump commit. The build session
+  stopped on its own precondition check and reported instead of
+  building. Recorded because the precondition earned its place: the
+  stale premise was in the prompt, not in the repo, and the failure
+  mode it prevented was a T28 CHANGELOG entry riding an Unreleased
+  section above a v0.16.0 heading with no tag or release behind it.
+- Annotated tag v0.16.0 at 266f6b3, message exactly "temur v0.16.0 -
+  small fixes bundle (T27)" (one short line), verified against the RAW
+  tag object via git cat-file tag BEFORE the push, not via git tag -l
+  (which appends its own newline and cannot answer this question). The
+  hexdump shows the object line 266f6b3a..., the blank-line separator
+  0a 0a at offset 0x98, then exactly 40 message bytes at 0x9a..0xc1:
+  39 printable ASCII plus the single closing 0x0a, with the separator
+  an ASCII hyphen 0x2d and no byte sequence e2 80 94 anywhere. Tag
+  object 149c82faabf26a56ee6c8847f3fca0510a0af0eb, pushed after
+  verification; remote tag object and its ^{} commit both confirmed to
+  match. Unsigned as always. Not retagged.
+- Full release.sh, no SKIP_CHECK, green FIRST TRY: inner check.sh ALL
+  CHECKS PASSED, leak grep clean (operator patterns + generic shapes,
+  files + history), skew gate "OK: install.sh + README match version
+  0.16.0 and all targets", 4/4 targets gated and version-asserted
+  "temur 0.16.0" (i686 + x86_64 native, aarch64 + armv7 qemu),
+  SHA256SUMS self-verified (4/4 OK), staged at
+  /home/dev/dist/release/v0.16.0/.
+- The teed-log procedure stays on, fourth cycle. All 48 "test result:"
+  lines in the 278-line log read "0 failed", zero panics, across all
+  three test legs (host i686-gnu, container gnu-debug, container
+  musl-release). The unreproduced --lib failure from the T24 build
+  cycle did not recur, so it stays unnamed and unreproduced across
+  four full ship cycles now, plus this cycle's five build-side and
+  stage-1 gate runs. The capture procedure is cheap and stays on.
+- **The pty smoke fix held on its sixth independent exercise.** All
+  three TUI pty smokes (host, container gnu-debug, container musl)
+  passed on the first attempt, inside the 180s bound, in both the
+  stage-1 gate and this release.sh run. Fifth consecutive cycle with
+  zero kill-and-rerun; the bare busybox leg printed "temur 0.16.0" and
+  its mock REPL passed.
+- Staged sha256s: 88f591b98ab7... aarch64, 9a5ffdd8253f... armv7,
+  4c51fd32d780... i686, e638525887bb... x86_64; SHA256SUMS itself
+  440480cff8d7... (full sums in the release's SHA256SUMS asset).
+- Private release github.com/thekeoni1/Temur/releases/tag/v0.16.0
+  created with title per tag, notes = the CHANGELOG v0.16.0 section,
+  5 assets (4 binaries + SHA256SUMS), not draft, not prerelease; repo
+  isPrivate true confirmed via gh BEFORE creating the release and
+  again after. Asset sizes match the staged bytes exactly.
+- Closing gate, fresh files in a scratch dir: downloaded x86_64 sha
+  e638525887bb00f261bf09dbdf8790cfac1fbfd21e44b240705e40946b32df20
+  equals the staged value and cmp against the staged binary is clean;
+  the downloaded SHA256SUMS is cmp-identical to the staged one.
+- Installer matrix 6/6 twice: once against the staged directory and
+  once against a fresh full download of all five published assets
+  (pass + corrupt + unlisted, GNU host and busybox container). That
+  fresh download also self-verified 4/4 against the published
+  SHA256SUMS, and all FOUR downloaded binaries were cmp-identical to
+  their staged bytes, not just the x86_64 spot check.
+
+Honest residuals: no live leg rode this milestone, by design. All
+eight items are offline-verifiable, and the one that could not be
+verified at all, the "/models renders two ids on one line" report, was
+closed as NOT REPRODUCED rather than fixed blind, with the probe kept
+as a regression pin and the roadmap entry saying so; reopening it
+needs specifics from a live terminal. T13's hosted verification and
+T24's keyed live check both still ride a future operator session, and
+this milestone inherits those residuals rather than adding one. The
+ARM artifacts remain verified at build level under qemu only, hardware
+smoke pending hardware. Still queued behind the visibility flip: the
+PUBLIC one-liner gate, the hostname-blob-history decision, and the
+demo GIF recording.
