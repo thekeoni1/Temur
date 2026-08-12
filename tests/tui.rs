@@ -164,7 +164,7 @@ fn turn_complete_updates_usage_and_appends_tail() {
     assert!(!a.busy);
     assert_eq!(a.session_usage.input_tokens, Some(110));
     assert!(
-        matches!(a.cells.last(), Some(Cell::TurnTail { secs: 3, usage: u }) if u.output_tokens == Some(20))
+        matches!(a.cells.last(), Some(Cell::TurnTail { secs: 3, usage: u, .. }) if u.output_tokens == Some(20))
     );
 }
 
@@ -359,6 +359,38 @@ fn frame_notice_and_turn_tail_and_footer_totals() {
     assert!(body.contains("▌ [!] response truncated"), "notice block:\n{body}");
     assert!(body.contains("▣ temur · claude-sonnet-5 · 2s · 12 in / 34 out"), "tail:\n{body}");
     assert!(rows[13].contains("session 120 in / 340 out"), "footer: {}", rows[13]);
+}
+
+#[test]
+fn turn_tails_keep_the_model_they_ran_on_across_a_switch() {
+    // T13 finding 2: the footer used to be formatted from the CURRENT model
+    // at draw time, so a /model hop relabeled every past turn in the
+    // scrollback. Each tail describes the turn that produced it.
+    let mut a = app();
+    a.now_ms = 0;
+    a.submit("first");
+    a.fold(&AgentEvent::TurnComplete {
+        turn_usage: usage(12, 34),
+        session_usage: usage(12, 34),
+    });
+    a.fold(&AgentEvent::ModelSwitched {
+        model: "claude-opus-5".into(),
+        provider: "anthropic".into(),
+    });
+    a.submit("second");
+    a.fold(&AgentEvent::TurnComplete {
+        turn_usage: usage(56, 78),
+        session_usage: usage(68, 112),
+    });
+    let body = render(&mut a, 80, 20).join("\n");
+    assert!(
+        body.contains("▣ temur · claude-sonnet-5 · 0s · 12 in / 34 out"),
+        "the first tail still names the model it ran on:\n{body}"
+    );
+    assert!(
+        body.contains("▣ temur · claude-opus-5 · 0s · 56 in / 78 out"),
+        "the second tail names the switched-to model:\n{body}"
+    );
 }
 
 #[test]

@@ -736,6 +736,26 @@ impl Session {
 
             match stop {
                 Some(StopReason::Refusal) => {
+                    // T13: close every tool cell the stream opened before the
+                    // refusal landed, preserving the FIFO ToolStart/ToolEnd
+                    // pairing (docs/TUI.md) exactly as the interrupt path
+                    // does. Unlike an interrupt, nothing is synthesized into
+                    // history: the refused output is discarded below, so
+                    // these calls never ran and never will. A ToolStart only
+                    // fires once a tool_use block has a name, so an unnamed
+                    // quirk-server block never opened a cell and gets no
+                    // ToolEnd (same rule as land_interrupted).
+                    for b in &content {
+                        if let ContentBlock::ToolUse { name, .. } = b {
+                            if !name.is_empty() {
+                                ui(AgentEvent::ToolEnd {
+                                    name: name.clone(),
+                                    title: name.clone(),
+                                    is_error: true,
+                                });
+                            }
+                        }
+                    }
                     // Discard the (partial or empty) refused output entirely;
                     // never auto-retry the same prompt.
                     let mut notice = String::from("the model refused this request");

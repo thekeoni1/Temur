@@ -182,14 +182,14 @@ fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                     }
                 }
             }
-            Cell::TurnTail { secs, usage } => {
+            Cell::TurnTail { secs, usage, model } => {
                 out.push(Line::from(vec![
                     Span::raw("   "),
                     Span::styled("▣ ", Style::default().fg(Color::Cyan)),
                     Span::styled(
                         format!(
                             "temur · {} · {}s · {} in / {} out · cache r{} w{}",
-                            app.model,
+                            model,
                             secs,
                             crate::ui::fmt_tokens(usage.input_tokens),
                             crate::ui::fmt_tokens(usage.output_tokens),

@@ -329,6 +329,26 @@ fn oneshot_interrupted_by_sigint_exits_130() {
     assert!(out.contains("Sleeping now."), "{out}");
 }
 
+/// T13 F13(a): --tui against a pipe used to render a prompt it could never
+/// read and busy-loop on redraws. It refuses instead, pointing at both ways
+/// to run without a terminal. The suite always pipes, so reaching this at
+/// all is the point.
+#[test]
+fn tui_refuses_a_non_terminal_with_both_escape_hatches() {
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.args(["--tui", "--mock", &fixture("text_simple.sse")]);
+    let (code, _stdout, stderr) = run(c, "hi\n");
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(
+        stderr.contains("usage:")
+            && stderr.contains("the TUI needs a terminal on stdin and stdout")
+            && stderr.contains("-p")
+            && stderr.contains("--plain"),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn oneshot_flag_conflicts_are_usage_errors() {
     let sb = sandbox();

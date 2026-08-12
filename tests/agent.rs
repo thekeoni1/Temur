@@ -253,6 +253,117 @@ fn refusal_discards_output_and_notifies() {
     assert!(notice.contains("cyber"));
 }
 
+/// A provider that replays scripted stream EVENTS before returning its
+/// scripted response. MockProvider ignores the event callback, so this is
+/// what the cell-pairing seam (ToolStart from the stream, ToolEnd from the
+/// loop) has to be tested through.
+struct StreamingProvider {
+    events: RefCell<Vec<StreamEvent>>,
+    responses: RefCell<Vec<ResponseMessage>>,
+}
+
+impl Provider for StreamingProvider {
+    fn stream(
+        &self,
+        _req: &ChatRequest,
+        on_event: &mut dyn FnMut(StreamEvent),
+        _cancel: &CancelToken,
+    ) -> Result<ResponseMessage, ProviderError> {
+        for ev in self.events.borrow_mut().drain(..) {
+            on_event(ev);
+        }
+        Ok(self.responses.borrow_mut().remove(0))
+    }
+}
+
+/// T13: a refusal that lands after the stream already announced a tool call
+/// must close that cell, or the TUI shows a spinner forever. The call itself
+/// never runs and nothing is synthesized into history: the refused output is
+/// discarded whole, which is what separates this from the interrupt path.
+#[test]
+fn refusal_closes_the_tool_cells_it_opened() {
+    let dir = tempfile::tempdir().unwrap();
+    let side_effect = dir.path().join("never-written.txt");
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let refusal = msg(
+        vec![
+            text("sure, writing that"),
+            tool_use(
+                "tu_1",
+                "write",
+                serde_json::json!({
+                    "filePath": side_effect.to_str().unwrap(),
+                    "content": "boom"
+                }),
+            ),
+        ],
+        StopReason::Refusal,
+    );
+    session.switch_provider(
+        Box::new(StreamingProvider {
+            events: RefCell::new(vec![StreamEvent::ToolUseStarted {
+                name: "write".into(),
+            }]),
+            responses: RefCell::new(vec![refusal]),
+        }),
+        &selection("claude-sonnet-5", 32_000, None),
+        None,
+    );
+    let events = collect_events(&mut session, "do the thing");
+
+    let start = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::ToolStart { name } if name == "write"))
+        .expect("the stream opened a write cell");
+    let end = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::ToolEnd { name, is_error: true, .. } if name == "write"))
+        .expect("the refusal closed it");
+    let notice = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::Notice(n) if n.contains("refused")))
+        .expect("refusal notice");
+    assert!(start < end && end < notice, "cell closes before the notice: {events:?}");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::ToolEnd { .. }))
+            .count(),
+        1,
+        "exactly one close for the one open cell"
+    );
+    assert!(!side_effect.exists(), "the refused call must never execute");
+    assert_eq!(session.history().len(), 1, "only the user message remains");
+}
+
+/// The same path with a nameless tool_use block: no cell was ever opened
+/// (ToolStart needs a name), so closing one would break the FIFO pairing.
+#[test]
+fn refusal_does_not_close_a_cell_an_unnamed_block_never_opened() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let refusal = msg(
+        vec![tool_use("tu_1", "", serde_json::json!({}))],
+        StopReason::Refusal,
+    );
+    session.switch_provider(
+        Box::new(StreamingProvider {
+            events: RefCell::new(vec![]),
+            responses: RefCell::new(vec![refusal]),
+        }),
+        &selection("claude-sonnet-5", 32_000, None),
+        None,
+    );
+    let events = collect_events(&mut session, "do the thing");
+    assert!(
+        !events.iter().any(|e| matches!(e, AgentEvent::ToolEnd { .. })),
+        "no cell was opened, so none may be closed: {events:?}"
+    );
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Notice(n) if n.contains("refused"))));
+}
+
 #[test]
 fn doom_loop_guard_stops_identical_calls() {
     let dir = tempfile::tempdir().unwrap();

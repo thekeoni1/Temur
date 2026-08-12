@@ -33,7 +33,14 @@ pub enum Cell {
     /// A submitted `/command` line (T8): echoed dim, never a prompt.
     Command(String),
     /// Per-response tail, OpenCode's `▣ mode · model · duration` line.
-    TurnTail { secs: u64, usage: Usage },
+    /// The model is captured HERE, at push time, not read from the app at
+    /// draw time (T13 finding 2): a footer describes the turn that just
+    /// finished, so a later `/model` hop must not relabel it retroactively.
+    TurnTail {
+        secs: u64,
+        usage: Usage,
+        model: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -308,6 +315,7 @@ impl App {
                 self.cells.push(Cell::TurnTail {
                     secs: (self.now_ms.saturating_sub(self.turn_started_ms)) / 1000,
                     usage: *turn_usage,
+                    model: self.model.clone(),
                 });
             }
         }

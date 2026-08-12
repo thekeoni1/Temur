@@ -147,6 +147,16 @@ fn run() -> Result<ExitCode, error::Error> {
     } else {
         std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
     };
+    // T13 F13(a). Reachable only through --tui, since auto-select above
+    // already requires both terminals. The TUI's event source needs a real
+    // terminal on both ends; given a pipe it draws a prompt it can never
+    // read from and spins on redraws indefinitely. Refuse up front, naming
+    // the two ways to get work done without a terminal.
+    if use_tui && !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        return Err(error::Error::Usage(
+            "the TUI needs a terminal on stdin and stdout: use -p \"...\" for piped one-shot input, or --plain for the line REPL".into(),
+        ));
+    }
 
     match cmd.as_deref() {
         Some("init") => {
