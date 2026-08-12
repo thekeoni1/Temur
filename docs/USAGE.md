@@ -889,6 +889,79 @@ CHANGELOG.md on its own, which is a fair reminder that instructions in
 a skill shape but do not fence a turn: state what you do NOT want in
 the prompt or the skill.
 
+### Skills too large for one tool result
+
+A tool result is capped (see "The weak-model floor" below: 30,000
+characters, or less when `context_window` is set). A skill bigger than
+that used to be middle-elided like any other oversized output, which
+loses the middle of a document the model asked for by name and then
+advises it to "narrow the command, e.g. grep or head/tail", which is
+advice about a shell pipeline.
+
+Such a skill now comes back as a section index instead. This is the
+tool's verbatim output for a 48,427-character SKILL.md, produced by
+running the tool over a generated fixture rather than captured from a
+live model session (unlike the transcripts elsewhere in this guide,
+which are real runs):
+
+```
+<skill_index name="widget-cli">
+Base directory for this skill: /tmp/.tmpbu4YtQ/.temur/skills/widget-cli
+
+This skill is 48365 chars, over this session's 30000-char tool output limit, so it is returned as a section index instead of being cut off in the middle. Nothing is summarized and nothing is omitted: every section listed below is available in full. Fetch one with {"name": "widget-cli", "section": "<number or heading>"}, using either the number or the heading text.
+
+Drive the widget CLI with these instructions.
+
+Sections:
+1. ## Authentication (16597 chars)
+2. ### Token file layout (8294 chars)
+3. ### Rotating a token (8233 chars)
+4. ## Deploying (15611 chars)
+5. ### Staging (7684 chars)
+6. ### Production (7867 chars)
+7. ## Troubleshooting (16110 chars)
+8. ### Common errors (8050 chars)
+9. ### Getting logs (7988 chars)
+</skill_index>
+```
+
+That index is 846 characters, 1.7% of the file it describes. A
+follow-up call with `{"name": "widget-cli", "section": 5}` returns
+Staging's 7,684 characters in full. Numbers and heading text both work,
+matching
+ignores case, surrounding whitespace, and a leading `#` run, and
+section extents are hierarchical: asking for `## Deploying` brings its
+`### Staging` and `### Production` subsections with it, so a fetch
+never ends mid-thought. When two sections share a heading, the first is
+returned along with the numbers that reach the others.
+
+**Nothing is cached, and the index cannot go stale.** The index is a
+pure function of the file's bytes, recomputed on every call. Edit a
+SKILL.md and the next call describes the edited file, because nothing
+from the previous call was kept: there is no stored index, no
+invalidation rule, and therefore no way for the two to disagree. This
+is why the feature adds no config keys and no session state.
+
+**What actually does the work.** The tool also minifies a SKILL.md
+before returning it: a frontmatter block holding only `name:` and
+`description:` is dropped (the model already has both from
+`<available_skills>`), trailing whitespace goes, and blank runs
+collapse, all of it outside fenced code, which is copied byte for byte
+because whitespace is semantic in a heredoc or in Python. Be clear
+about the scale of that: measured on this repo's own markdown it saves
+**0.0%**, because tidy files have nothing to remove; on a SKILL.md with
+frontmatter and loose spacing it saved 2.2%; on the 48k skill above it
+removed 62 characters, 0.1%. Minification is a rounding error, and it
+is kept only because it is free and lossless. The section index is the
+mechanism: 48,427 characters become an 846-character index plus exactly
+the sections the task asks for.
+
+Two cases deliberately keep the old behavior, because an index would
+not help: a skill with no headings at all, and one whose prose before
+the first heading already exceeds the cap. Both are returned whole and
+truncated centrally, now with advice to fetch a section rather than to
+run grep.
+
 ## The weak-model floor (T19)
 
 Three behaviors keep small local models productive; all of them are

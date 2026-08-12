@@ -4,6 +4,47 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **A skill too large for one tool result comes back as a section
+  index instead of being cut in half.** Loading one used to middle-
+  elide it like any other oversized output and then advise the model
+  to "narrow the command, e.g. grep or head/tail", which is advice
+  about a shell pipeline given to a model that asked for a document by
+  name. Now the tool returns `<skill_index>`: the skill's opening text
+  verbatim, then every heading numbered with its level and size, plus
+  a sentence saying how big the skill is, that it exceeds this
+  session's limit, and that nothing is summarized or omitted. A
+  48,427-character skill produces an 846-character index, 1.7% of the
+  file. The new optional `section` argument then fetches any part in
+  full, by number or by heading text; matching ignores case,
+  whitespace, and a leading `#` run, because the model is copying a
+  title out of a listing it was just shown. Section extents are
+  hierarchical, so asking for a chapter brings its subsections and
+  never ends mid-thought, and when two sections share a heading the
+  first is returned along with the numbers that reach the others.
+  Errors carry their own fix: an unmatched section re-lists the
+  sections, and asking for a section of a heading-less skill says so
+  and spells the call that loads it whole (T28 P1, P2).
+- **Nothing about this is cached, so an index cannot go stale.** It is
+  a pure function of the file's bytes, recomputed per call: edit a
+  SKILL.md and the next call describes the edited file, because
+  nothing from the previous one was kept. No new config keys, no
+  session state, no persisted index, and no invalidation rule that
+  could disagree with the file (T28 P1).
+- **This is aimed at small-context models, and engages by
+  configuration alone.** The threshold is the same context-scaled
+  tool-output cap the rest of the tools respect, so a skill that fits
+  whole for a 200k model is indexed for one with an 8k window, with no
+  separate code path for either. Skill loading also now drops a
+  frontmatter block holding only `name:` and `description:`, which the
+  model already has from `<available_skills>`, and trims trailing
+  whitespace and blank runs outside fenced code, which is copied byte
+  for byte. Honest about scale: that minification saves 0.0% on tidy
+  markdown and 2.2% on a sloppy one. The index is what does the work
+  (T28 P2, P3).
+- Both skill prompts, including the compact one, now tell the model
+  not to reload a skill or re-fetch a section it already has in the
+  conversation (T28 P2).
+
 ## v0.16.0 - 2026-08-12
 
 - **Turn footers no longer relabel themselves after a `/model`
