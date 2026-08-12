@@ -4352,3 +4352,160 @@ fn the_advisory_is_off_without_rates_and_at_step_zero() {
     );
     assert!(cost_notices(&collect_events(&mut session, "go")).is_empty());
 }
+
+// -------------------------------------------- T28: skill index in the loop
+
+/// A session whose registry carries the skill tool, over a throwaway skill
+/// tree. `window` reaches the tool as the context-scaled output cap.
+fn skill_session(
+    cwd: &std::path::Path,
+    skill_root: &std::path::Path,
+    window: Option<u64>,
+    responses: Vec<ResponseMessage>,
+) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
+    let requests = Rc::new(RefCell::new(vec![]));
+    let provider = MockProvider {
+        responses: RefCell::new(responses),
+        requests: requests.clone(),
+    };
+    let cfg = SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens: 32_000,
+        system: Some("test system".into()),
+        thinking: false,
+        cwd: cwd.to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: window,
+        max_tokens_source: None,
+        prose_tool_calls: true,
+        cost_rates: None,
+        cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+    };
+    let registry =
+        Registry::standard_with_skills(vec![skill_root.join(".temur/skills")]);
+    (
+        Session::new(Box::new(provider), registry, cfg),
+        requests,
+    )
+}
+
+fn write_big_skill(root: &std::path::Path, name: &str, chapters: usize) -> String {
+    let dir = root.join(".temur/skills").join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut body = String::from("---\nname: demo\ndescription: A demo skill.\n---\n\n");
+    body.push_str("Drive the widget CLI with these instructions.\n\n");
+    for i in 1..=chapters {
+        body.push_str(&format!("## Chapter {i}\n\n"));
+        for k in 0..40 {
+            body.push_str(&format!(
+                "Step {k} of chapter {i}: run the widget command and check its output.\n"
+            ));
+        }
+        body.push('\n');
+    }
+    std::fs::write(dir.join("SKILL.md"), &body).unwrap();
+    body
+}
+
+fn tool_results(history: &[RequestMessage]) -> Vec<String> {
+    history
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The whole feature, driven through the agent loop the way a model would
+/// use it: load an oversized skill, get an index back, fetch one numbered
+/// section, then answer. What comes back for the section must be that
+/// section's bytes, not a paraphrase and not a fragment.
+#[test]
+fn oversized_skill_indexes_then_serves_a_section_through_the_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw = write_big_skill(dir.path(), "demo", 12);
+    let body = temur::skills::minify(&raw);
+    let sections = temur::skills::scan_sections(&body);
+    // Section 3 is "## Chapter 3" (sections are 1-based in the index).
+    let expected = sections[2].text(&body);
+
+    let (mut session, requests) = skill_session(
+        dir.path(),
+        dir.path(),
+        None,
+        vec![
+            msg(vec![tool_use("t1", "skill", serde_json::json!({"name": "demo"}))], StopReason::ToolUse),
+            msg(
+                vec![tool_use("t2", "skill", serde_json::json!({"name": "demo", "section": 3}))],
+                StopReason::ToolUse,
+            ),
+            msg(vec![text("Chapter 3 says to run the widget command.")], StopReason::EndTurn),
+        ],
+    );
+    collect_events(&mut session, "use the demo skill");
+
+    let results = tool_results(session.history());
+    assert_eq!(results.len(), 2, "two tool results: the index and the section");
+    assert!(results[0].starts_with("<skill_index name=\"demo\">"), "{}", results[0]);
+    assert!(results[0].contains("3. ## Chapter 3 ("), "{}", results[0]);
+    assert!(
+        !results[0].contains("Step 39 of chapter 12"),
+        "the index lists sections, it does not carry them"
+    );
+
+    // The section result carries that section's exact bytes.
+    assert!(results[1].starts_with("<skill_section name=\"demo\" number=\"3\""), "{}", results[1]);
+    let start = results[1].find("\n\n").unwrap() + 2;
+    assert_eq!(
+        &results[1][start..start + expected.len()],
+        expected,
+        "section payload must be the minified body's own bytes"
+    );
+
+    // Three round trips, and every one of them extends the previous
+    // messages rather than editing them: the prompt-cache prefix holds.
+    let reqs = requests.borrow();
+    assert_eq!(reqs.len(), 3);
+    for pair in reqs.windows(2) {
+        let (prev, next) = (&pair[0], &pair[1]);
+        assert!(prev.messages.len() < next.messages.len(), "history only grows");
+        assert_eq!(
+            prev.messages[..],
+            next.messages[..prev.messages.len()],
+            "an earlier message was rewritten; the cache prefix is broken"
+        );
+    }
+}
+
+/// The beneficiary claim, pinned: the same skill that fits whole for a
+/// big-context model gets indexed for a small-context one. This is the
+/// case the feature was built for, and it engages through configuration
+/// alone, with no code path of its own.
+#[test]
+fn a_small_context_window_is_what_turns_a_full_skill_into_an_index() {
+    let dir = tempfile::tempdir().unwrap();
+    write_big_skill(dir.path(), "demo", 3); // mid-size: ~9k chars
+
+    let load = vec![
+        msg(vec![tool_use("t1", "skill", serde_json::json!({"name": "demo"}))], StopReason::ToolUse),
+        msg(vec![text("ok")], StopReason::EndTurn),
+    ];
+    // No window configured: the 30,000-char ceiling, and it fits whole.
+    let (mut big, _) = skill_session(dir.path(), dir.path(), None, load.clone());
+    collect_events(&mut big, "load it");
+    let full = tool_results(big.history()).remove(0);
+    assert!(full.starts_with("<skill_content"), "{}", &full[..60]);
+
+    // A local model with an 8k window: the same file, same bytes on disk,
+    // now indexed instead of cut off.
+    let (mut small, _) = skill_session(dir.path(), dir.path(), Some(8_000), load);
+    collect_events(&mut small, "load it");
+    let indexed = tool_results(small.history()).remove(0);
+    assert!(indexed.starts_with("<skill_index"), "{}", &indexed[..60]);
+    assert!(indexed.chars().count() <= 8_000, "the index fits the scaled cap");
+    assert!(indexed.contains("over this session's 8000-char tool output limit"), "{indexed}");
+}

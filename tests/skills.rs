@@ -440,3 +440,29 @@ fn an_oversized_single_section_is_truncated_with_the_skill_hint() {
     // No recursive sub-index: what comes back is the section, cut centrally.
     assert!(!out.output.contains("<skill_index"), "{}", out.output);
 }
+
+#[test]
+fn the_compact_profile_serves_the_compact_skill_prompt() {
+    use temur::tools::{PromptProfile, Registry};
+    let a = tempfile::tempdir().unwrap();
+    let dirs = vec![a.path().join(".temur/skills")];
+    let full = Registry::standard_with_skills(dirs.clone());
+    let compact = Registry::standard_with_skills(dirs).with_profile(PromptProfile::Compact);
+    let desc = |r: &Registry| {
+        r.definitions()
+            .into_iter()
+            .find(|d| d.name == "skill")
+            .expect("skill tool registered")
+            .description
+    };
+    assert_eq!(desc(&full), include_str!("../src/tools/prompts/skill.txt"));
+    assert_eq!(
+        desc(&compact),
+        include_str!("../src/tools/prompts/compact/skill.txt")
+    );
+    assert_ne!(desc(&full), desc(&compact));
+    // Both describe the index path, so a compact-profile model is not left
+    // guessing what <skill_index> is when it sees one.
+    assert!(desc(&compact).contains("<skill_index>"), "{}", desc(&compact));
+    assert!(desc(&compact).contains("section"), "{}", desc(&compact));
+}
