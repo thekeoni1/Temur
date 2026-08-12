@@ -3564,3 +3564,83 @@ ARM artifacts remain verified at build level under qemu only, hardware
 smoke pending hardware. Still queued behind the visibility flip: the
 PUBLIC one-liner gate, the hostname-blob-history decision, and the
 demo GIF recording.
+
+## v0.16.0 - close-out (release procedure delta)
+
+What ships: T27 alone, the small-items bundle. It is the first
+MULTI-ITEM release after six consecutive single-milestone ones: the
+whole "Queued from T13 acceptance" list, eight items across four
+phases, none of them large enough to justify a milestone alone and all
+of them cheap to do together while nothing else was in flight.
+
+Procedure deltas vs v0.15.0:
+
+- **T27 pushed AS stage-1 step 1**, the standing shape for the fourth
+  cycle: ec96476..4dbadd0 onto ec96476, four commits (P1 the
+  switch_provider refactor alone, P2 the TUI trio, P3 the /models
+  trio, P4 doctor plus docs), on-push ci run 31610259255 on headSha
+  4dbadd0 green in both jobs (test 1m29s, release-gate 4m56s). main ==
+  origin == 4dbadd0 verified before the prep commits.
+- **The build prompt's stated base was one commit stale**, and the
+  build session flagged it instead of forcing it. The plan named
+  32a458d, but the v0.15.0 ship record ec96476 had landed on top after
+  the plan was written, so main == origin/main == ec96476. Built on
+  ec96476, reported in the first line of the build report. Worth
+  keeping as the pattern: a stale base in a prompt is a discrepancy to
+  surface, never something to reconcile by resetting.
+- **One queued item closed as NOT REPRODUCED**, which is a disposition
+  this project had not used before. The report that `/models` renders
+  two ids on one line was probed at every width from 4 to 200 columns
+  with ids built so that even a FRAGMENT of one landing beside another
+  would be caught, and no row ever mixed two; the plain REPL prints one
+  line per id and cannot merge either. The instruction was explicit
+  that a failed reproduction must not become a blind fix, so nothing
+  was changed, the probe is kept as a regression pin
+  (`models_listing_never_puts_two_ids_on_one_row`), and the roadmap
+  entry stays with wording saying it survives because it could not be
+  reproduced rather than because it was deprioritized, naming what
+  reopening needs: emulator, exact width, and the id list. The item
+  was neither fixed nor quietly dropped, and the record says which.
+- **The em-dash rule needed no rider this cycle.** v0.15.0 closed with
+  a single-character repair and a statement that the per-cycle check is
+  differential, not absolute. Verified here against that statement: 0
+  em-dashes in lines added across all four T27 commits and 0 in the
+  commit messages, with README.md, CHANGELOG.md, and ROADMAP.md still
+  at zero absolute. The roughly 450 hits in code comments, pinned UI
+  strings, and quoted transcripts were not touched, which is the point:
+  stating the rule differentially is what made it satisfiable without
+  an introduce-then-sweep.
+- **A new doctor check that deliberately does not execute anything.**
+  The install-skew check compares the first `temur` on PATH against the
+  running binary by metadata and bytes only. Running a binary found by
+  searching PATH is exactly what a diagnostic tool must not do, so the
+  other copy's identity is inferred from its contents and it is never
+  asked for its version. Never a FAIL either, because a second copy is
+  a legitimate setup. Both inputs (current_exe and the PATH string) are
+  injected, extending the run_with_sandbox_probe pattern, so the tests
+  stage a fake install in a temp dir instead of depending on the host,
+  and every doctor test predating the check runs with nothing to
+  compare.
+- **No live leg, by design and stated in advance.** All eight items are
+  offline-verifiable: a refactor with byte-identical behavior, three
+  TUI behaviors driven headlessly, two `/models` notices driven by
+  fixtures, a doctor check over a staged temp dir, and one
+  non-reproduction. T13's hosted verification and T24's keyed live
+  check still ride a future operator session; this milestone inherits
+  those residuals rather than adding one.
+- **The version bump used scripts/bump_version.sh** for the sixth
+  time, printed diff touching exactly the four-file map: Cargo.toml,
+  the temur line of Cargo.lock (the third-party untrusted crate stays
+  pinned at its own 0.9.0 and does not appear in the lock diff at
+  all), scripts/install.sh VERSION, and the five README tag-pin lines.
+- **Five green gates, every one first try.** Four build-phase runs plus
+  the stage-1 gate, with all three TUI pty smokes (host, gnu container,
+  musl container) quiet in each. The unnamed `--lib` failure from the
+  T24 build cycle has still never recurred; the standing instruction is
+  unchanged, and a single failure means capturing the exact suite name
+  and full output before anything else.
+- Stage 1 keeps the early stop: bump + dated CHANGELOG + records +
+  full check.sh gate only; tag, four-target build, SHA256SUMS,
+  private release, installer matrix, and the closing gate stay in
+  stage 2. No tag, no push of the prep commits, no release; the repo
+  stays PRIVATE.
