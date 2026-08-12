@@ -21,6 +21,11 @@ Start temur with no arguments. On a terminal you get the TUI (markdown
 rendering, Tab completion, a status row; see [TUI.md](TUI.md)); when
 stdin or stdout is piped you get the plain line REPL shown here. Both
 render the same underlying events, so everything below applies to both.
+`--tui` and `--plain` force the choice, with one limit: the TUI needs a
+real terminal on both stdin and stdout, so `--tui` against a pipe is a
+usage error naming the two alternatives rather than a window that can
+never read your input. Use `-p "..."` for piped one-shot input, or
+`--plain` for the line REPL.
 
 A small real task, followed by `/status`:
 
@@ -244,8 +249,15 @@ silent, and doctor NOTEs any profile with no `context_window` at all.
 On an anthropic profile the truth is the per-model `max_input_tokens`
 the models API reports, and the `/models` command already receives it:
 after a listing, a configured window larger than the reported value
-draws a warning, and a missing one draws a hint naming the exact config
-line. Doctor never calls the authenticated models API; the hosted check
+draws a warning, a smaller one draws a hint (safe, but the advisory
+fires earlier than it needs to), and a missing one draws a hint naming
+the exact config line. Equal is silent. The listing carries dated ids
+only, so a profile on a bare alias like `claude-haiku-4-5` is matched
+against listing entries that are the alias plus a date suffix, and the
+notice names the dated id it matched so the inference is visible. That
+match is made only when it is unambiguous: if several dated entries
+disagree about the window, temur says nothing rather than guess.
+Doctor never calls the authenticated models API; the hosted check
 rides only the `/models` request you make yourself.
 
 `/compact` makes ONE model call (the session's own model and system
@@ -435,13 +447,28 @@ minimum 64 KiB).
 PASS/WARN/FAIL line per check: config parse and the same validation as
 startup, key files by metadata only (present, non-empty by size, mode
 600, WARN on group/other bits, a rotation reminder once a key file is
-older than `key_rotate_warn_days`), sessions dir writability, one
+older than `key_rotate_warn_days`), whether the `temur` on your PATH is
+the binary that is running, sessions dir writability, one
 TCP-connect/TLS-handshake reachability probe per endpoint, and, for
 keyless local endpoints only, whether each configured model and
 `context_window` matches what the server itself reports (unauthenticated
 GETs; mismatches are WARNs, since servers alias ids). `--no-network`
 skips the probes and those checks. Running `temur` with no config at
 all prints quickstart pointers instead of a raw credential error.
+
+The install check answers a question that costs real debugging time
+after a rebuild: is the `temur` your shell runs the one you just built?
+Doctor compares the first `temur` on your PATH against the binary
+running the check, by metadata and bytes only. The same file, or a
+byte-identical copy at another path, PASSes. A different build WARNs,
+naming both paths, when each was last modified, and which is newer, so
+you know whether to reinstall (`scripts/install.sh` installs to
+`~/.local/bin`) or to rebuild. It is never a FAIL, because keeping a
+second copy is a legitimate setup, and it runs offline like the checks
+above. Nothing found on PATH is ever executed: a diagnostic tool that
+runs a binary it found by searching directories would be a worse
+problem than the one it reports, so the comparison is contents-only,
+and doctor never asks the other copy for its version.
 
 ### Adding a provider
 

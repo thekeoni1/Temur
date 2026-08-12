@@ -183,11 +183,15 @@ key is read from a file path at startup, never from env or argv.
 init` fills it from a running llama.cpp server's real allocation,
 `temur doctor` compares a configured value against the same source,
 and `/models` on an anthropic profile compares it against the limit
-the API itself reports. That last check is one-directional on purpose
-and worth knowing exactly: it warns when your value is larger than the
-API reports, hints the exact config line when you have set none, and
-stays silent when your value is smaller, since under-configuring only
-makes the advisory fire early.
+the API itself reports. That last check says something in every
+direction that differs: it warns when your value is larger than the
+API reports, since the advisory then fires too late and requests can
+fail at the real limit; hints when it is smaller, which is safe but
+makes the advisory fire earlier than it needs to; hints the exact
+config line when you have set none; and stays silent when the two
+agree. The API lists dated model ids only, so a profile on a bare
+alias is matched against dated entries of that alias, and only when
+they agree on one window.
 
 The rest of the configuration surface is in
 [docs/USAGE.md](docs/USAGE.md): the Anthropic multi-profile recipe,

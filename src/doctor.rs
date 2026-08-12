@@ -47,16 +47,39 @@ pub fn run(
 ) -> std::io::Result<bool> {
     // The real sandbox probe (T18): local process spawns only, no network,
     // no writes; still read-only in every sense that matters here.
-    run_with_sandbox_probe(cfg_path, no_network, out, &crate::tools::sandbox_available)
+    let current_exe = std::env::current_exe().ok();
+    let path_var = std::env::var_os("PATH");
+    run_with_sandbox_probe(
+        cfg_path,
+        no_network,
+        out,
+        &crate::tools::sandbox_available,
+        &InstallProbe {
+            current_exe: current_exe.as_deref(),
+            path_var: path_var.as_deref(),
+        },
+    )
 }
 
-/// [`run`] with the bash-sandbox availability probe injected, so tests can
-/// exercise the unavailable arm on hosts where the real probe passes.
+/// What the T13 F4 install check compares: the running binary's own path
+/// and the PATH it searches for an installed `temur`. Injected rather than
+/// read from the environment inside the check, so tests can stage both
+/// sides in a temp dir instead of depending on where the host happens to
+/// keep its binaries. Either field absent means "nothing to compare".
+struct InstallProbe<'a> {
+    current_exe: Option<&'a Path>,
+    path_var: Option<&'a std::ffi::OsStr>,
+}
+
+/// [`run`] with the bash-sandbox availability probe and the install-skew
+/// inputs injected, so tests can exercise the unavailable arm on hosts
+/// where the real probe passes, and stage a fake install on a fake PATH.
 fn run_with_sandbox_probe(
     cfg_path: &Path,
     no_network: bool,
     out: &mut dyn Write,
     sandbox_probe: &dyn Fn() -> bool,
+    install: &InstallProbe<'_>,
 ) -> std::io::Result<bool> {
     let mut r = Report {
         out,
@@ -166,6 +189,11 @@ fn run_with_sandbox_probe(
             )?;
         }
     }
+
+    // Install skew (T13 F4). Offline and metadata/bytes only, so it sits
+    // here with the other local checks, before anything that can touch a
+    // network.
+    install_check(&mut r, install)?;
 
     // Sessions dir: writable if present, creatable if not. access(2) only,
     // nothing is created.
@@ -460,6 +488,94 @@ fn key_rotation_check(
         ))?;
     }
     Ok(())
+}
+
+/// Install skew (T13 F4): is the `temur` on PATH the binary that is
+/// running? A stale install is a real source of confusion, since the
+/// operator rebuilds, then runs a months-old copy from `~/.local/bin` and
+/// sees bugs that were already fixed.
+///
+/// Metadata and BYTES only. This check never executes what it finds:
+/// running a binary discovered on PATH is precisely what a diagnostic
+/// tool must not do, so the version on the other side is inferred from
+/// its contents, never asked for. Never a FAIL (a second copy is a
+/// legitimate setup), and independent of `--no-network`.
+///
+/// Silence when there is nothing to compare: no `temur` on PATH, no
+/// readable `current_exe`, or files that cannot be read.
+fn install_check(r: &mut Report<'_>, probe: &InstallProbe<'_>) -> std::io::Result<()> {
+    let (Some(current), Some(path_var)) = (probe.current_exe, probe.path_var) else {
+        return Ok(());
+    };
+    // First hit wins: that is the one the shell would run.
+    let Some(found) = std::env::split_paths(path_var)
+        .map(|dir| dir.join("temur"))
+        .find(|c| c.is_file())
+    else {
+        return Ok(());
+    };
+    let version = env!("CARGO_PKG_VERSION");
+    // The same file reached by two spellings (symlink, ., relative path)
+    // is not skew.
+    if let (Ok(a), Ok(b)) = (
+        std::fs::canonicalize(&found),
+        std::fs::canonicalize(current),
+    ) {
+        if a == b {
+            return r.pass(&format!(
+                "install: the temur on PATH ({}) is this running binary (temur {version})",
+                found.display()
+            ));
+        }
+    }
+    match same_bytes(&found, current) {
+        None => Ok(()),
+        Some(true) => r.pass(&format!(
+            "install: the temur on PATH ({}) is a byte-identical copy of this running binary (temur {version})",
+            found.display()
+        )),
+        Some(false) => {
+            let (fm, cm) = (mtime_of(&found), mtime_of(current));
+            let advice = match (fm, cm) {
+                (Some(f), Some(c)) if c > f => "the PATH copy is the older one, so \"temur\" in a shell is a stale install: reinstall it with scripts/install.sh (which installs to ~/.local/bin)",
+                (Some(f), Some(c)) if f > c => "the PATH copy is the newer one, so this session is running an older build: rebuild, or run the copy on PATH",
+                _ => "reinstall with scripts/install.sh (which installs to ~/.local/bin), or rebuild, so the two agree",
+            };
+            r.warn(&format!(
+                "install: the temur on PATH ({}) is a DIFFERENT build from the one running ({}); PATH copy modified {}, running binary modified {}: {advice}",
+                found.display(),
+                current.display(),
+                age_phrase(fm),
+                age_phrase(cm)
+            ))
+        }
+    }
+}
+
+/// Whether two files hold identical bytes. Sizes are compared first, so
+/// the common answer costs two stats and no read. `None` means one of
+/// them could not be read, which is not a finding about either.
+fn same_bytes(a: &Path, b: &Path) -> Option<bool> {
+    let (ma, mb) = (std::fs::metadata(a).ok()?, std::fs::metadata(b).ok()?);
+    // u64 deliberately (these are file sizes, not in-memory extents).
+    let (la, lb): (u64, u64) = (ma.len(), mb.len());
+    if la != lb {
+        return Some(false);
+    }
+    Some(std::fs::read(a).ok()? == std::fs::read(b).ok()?)
+}
+
+fn mtime_of(p: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(p).ok()?.modified().ok()
+}
+
+/// Age in whole days, matching how the key-rotation reminder speaks. A
+/// future or unreadable mtime is said plainly rather than guessed at.
+fn age_phrase(t: Option<std::time::SystemTime>) -> String {
+    match t.and_then(|t| std::time::SystemTime::now().duration_since(t).ok()) {
+        Some(d) => format!("{} day(s) ago", d.as_secs() / 86_400),
+        None => "at an unknown time".to_string(),
+    }
 }
 
 fn sessions_dir_check(r: &mut Report<'_>, dir: &Path) -> std::io::Result<()> {
@@ -1049,7 +1165,8 @@ mod tests {
         std::fs::write(&cfg_path, config).unwrap();
         let mut out: Vec<u8> = Vec::new();
         let healthy =
-            run_with_sandbox_probe(&cfg_path, true, &mut out, &move || probe_ok).unwrap();
+            run_with_sandbox_probe(&cfg_path, true, &mut out, &move || probe_ok, &no_install())
+                .unwrap();
         (healthy, String::from_utf8(out).unwrap())
     }
 
@@ -1152,4 +1269,151 @@ mod tests {
             "{out}"
         );
     }
+
+    // ---------------------------- T13 F4: stale-install (version skew)
+
+    /// The probe that says "nothing to compare", which is what every test
+    /// predating this check wants: their output must not depend on what
+    /// the host happens to have on its PATH.
+    fn no_install() -> InstallProbe<'static> {
+        InstallProbe { current_exe: None, path_var: None }
+    }
+
+    /// Doctor over a minimal keyless config, offline, with the install
+    /// probe injected: the install line is the only thing that varies.
+    fn doctor_install(current_exe: Option<&Path>, path_dirs: &[&Path]) -> String {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.json");
+        std::fs::write(&cfg_path, keyless_config("http://127.0.0.1:1/v1", "m")).unwrap();
+        let joined = std::env::join_paths(path_dirs.iter()).unwrap();
+        let mut out: Vec<u8> = Vec::new();
+        run_with_sandbox_probe(
+            &cfg_path,
+            true,
+            &mut out,
+            &|| true,
+            &InstallProbe {
+                current_exe,
+                path_var: Some(joined.as_os_str()),
+            },
+        )
+        .unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    fn fake_binary(dir: &Path, bytes: &[u8]) -> std::path::PathBuf {
+        let p = dir.join("temur");
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    #[test]
+    fn install_passes_when_path_holds_this_very_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = fake_binary(tmp.path(), b"ELF-ish\n");
+        let out = doctor_install(Some(&bin), &[tmp.path()]);
+        assert!(
+            out.contains(&format!(
+                "PASS: install: the temur on PATH ({}) is this running binary (temur {})",
+                bin.display(),
+                env!("CARGO_PKG_VERSION")
+            )),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn install_passes_on_a_byte_identical_copy_at_another_path() {
+        let installed = tempfile::tempdir().unwrap();
+        let built = tempfile::tempdir().unwrap();
+        let on_path = fake_binary(installed.path(), b"same bytes\n");
+        let running = fake_binary(built.path(), b"same bytes\n");
+        let out = doctor_install(Some(&running), &[installed.path()]);
+        assert!(
+            out.contains(&format!(
+                "PASS: install: the temur on PATH ({}) is a byte-identical copy of this running binary (temur {})",
+                on_path.display(),
+                env!("CARGO_PKG_VERSION")
+            )),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn install_warns_on_a_stale_path_copy_and_names_the_direction() {
+        let installed = tempfile::tempdir().unwrap();
+        let built = tempfile::tempdir().unwrap();
+        let on_path = fake_binary(installed.path(), b"old build\n");
+        let running = fake_binary(built.path(), b"a different, newer build\n");
+        let now = std::time::SystemTime::now();
+        touch_at(&on_path, now - std::time::Duration::from_secs(30 * 86_400));
+        touch_at(&running, now - std::time::Duration::from_secs(86_400));
+        let out = doctor_install(Some(&running), &[installed.path()]);
+        assert!(
+            out.contains(&format!(
+                "WARN: install: the temur on PATH ({}) is a DIFFERENT build from the one running ({})",
+                on_path.display(),
+                running.display()
+            )),
+            "{out}"
+        );
+        assert!(
+            out.contains("PATH copy modified 30 day(s) ago, running binary modified 1 day(s) ago"),
+            "{out}"
+        );
+        assert!(
+            out.contains("the PATH copy is the older one")
+                && out.contains("scripts/install.sh")
+                && out.contains("~/.local/bin"),
+            "{out}"
+        );
+        // Never a FAIL: a second copy is a legitimate setup.
+        assert!(!out.contains("FAIL: install:"), "{out}");
+    }
+
+    #[test]
+    fn install_warns_the_other_direction_when_the_path_copy_is_newer() {
+        let installed = tempfile::tempdir().unwrap();
+        let built = tempfile::tempdir().unwrap();
+        let on_path = fake_binary(installed.path(), b"newer build\n");
+        let running = fake_binary(built.path(), b"an older, different build\n");
+        let now = std::time::SystemTime::now();
+        touch_at(&on_path, now - std::time::Duration::from_secs(86_400));
+        touch_at(&running, now - std::time::Duration::from_secs(30 * 86_400));
+        let out = doctor_install(Some(&running), &[installed.path()]);
+        assert!(
+            out.contains("the PATH copy is the newer one, so this session is running an older build"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn install_is_silent_with_nothing_to_compare() {
+        // Nothing named temur anywhere on PATH.
+        let empty = tempfile::tempdir().unwrap();
+        let built = tempfile::tempdir().unwrap();
+        let running = fake_binary(built.path(), b"build\n");
+        let out = doctor_install(Some(&running), &[empty.path()]);
+        assert!(!out.contains("install:"), "{out}");
+        // No current_exe: same silence, and this is the arm every other
+        // doctor test runs under.
+        let installed = tempfile::tempdir().unwrap();
+        fake_binary(installed.path(), b"build\n");
+        let out = doctor_install(None, &[installed.path()]);
+        assert!(!out.contains("install:"), "{out}");
+    }
+
+    #[test]
+    fn install_takes_the_first_temur_on_path_the_one_a_shell_would_run() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let built = tempfile::tempdir().unwrap();
+        let winner = fake_binary(first.path(), b"first on PATH\n");
+        let loser = fake_binary(second.path(), b"never reached\n");
+        let running = fake_binary(built.path(), b"first on PATH\n");
+        let out = doctor_install(Some(&running), &[first.path(), second.path()]);
+        assert!(out.contains(&format!("{}", winner.display())), "{out}");
+        assert!(!out.contains(&format!("{}", loser.display())), "{out}");
+    }
+
 }

@@ -2,6 +2,65 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
+## Unreleased
+
+- **Turn footers no longer relabel themselves after a `/model`
+  switch.** Each `▣ temur · <model> · ...` line records the model the
+  turn actually ran on, captured when the turn ends. Before, the whole
+  scrollback was drawn from whichever model was active now, so
+  switching models rewrote the history of the session in place, which
+  is exactly backwards for the one thing that backscroll is for
+  (T27 P2).
+- **A refused turn no longer leaves a tool spinner running forever.**
+  When the model refuses after it has already streamed a tool call,
+  that call's cell is closed as an error before the refusal notice.
+  The call itself never ran and never will: unlike an interrupt,
+  nothing is written into history, because the refused response is
+  discarded whole (T27 P2).
+- **`--tui` against a pipe says so instead of spinning.** It needed a
+  terminal on stdin and stdout all along; without one it drew a prompt
+  it could never read and burned roughly 1.6 KB/s of redraw output and
+  7% CPU indefinitely. It is now a usage error naming both ways to
+  work without a terminal, `-p "..."` for piped one-shot input and
+  `--plain` for the line REPL. Automatic mode selection already
+  required both terminals, so nothing that worked before changes
+  (T27 P2).
+- **`/models` can finally judge a profile on a bare model alias.** The
+  Anthropic API lists dated ids (`claude-haiku-4-5-20251001`) and not
+  the aliases people configure (`claude-haiku-4-5`), so a haiku
+  profile got no context-window check at all. The alias is now matched
+  against dated entries of itself, and the notice names the dated id it
+  matched, so you can see the inference rather than wonder where the
+  number came from. It is made only when unambiguous: one such entry,
+  or several agreeing on one window. Disagreement stays silent, because
+  a guess about a context limit is worse than no answer (T27 P3).
+- **`/models` now says something when your `context_window` is smaller
+  than the API reports.** Under-configuring is safe, which is why it
+  was silent, but it makes the context advisory fire earlier than it
+  needs to and there was no way to notice. The hint names both numbers
+  and the value to raise it to. Equal stays silent (T27 P3).
+- **`temur doctor` checks whether the `temur` on your PATH is the one
+  that is running.** After a rebuild it is easy to keep running a
+  months-old copy from `~/.local/bin` and see bugs that were already
+  fixed. Same file or byte-identical copy: PASS. A different build:
+  WARN naming both paths, when each was last modified, and which is
+  newer, so you know whether to reinstall or rebuild. Never a FAIL,
+  since a second copy is a legitimate setup, and offline like the
+  other local checks. Nothing found on PATH is ever executed: the
+  comparison is bytes only, and doctor never asks the other copy for
+  its version (T27 P4).
+- **`Session::switch_provider` takes the resolved profile.** Internal:
+  six positional parameters become three, and the rule that a switch
+  replaces the whole selection is now structural instead of
+  conventional. Behavior is byte-identical (T27 P1).
+- Not fixed, and honestly so: the report that `/models` renders two ids
+  on one line in some widths could not be reproduced. Rendering was
+  probed at every width from 4 to 200 columns with ids built so that
+  even a fragment of one landing beside another would be caught, and
+  no row ever mixed two; the plain REPL prints one line per id and
+  cannot merge either. The probe is kept as a regression pin rather
+  than a fix applied blind (T27 P3).
+
 ## v0.15.0 - 2026-08-11
 
 - **The session says what it has cost, without being asked.** Every $5
