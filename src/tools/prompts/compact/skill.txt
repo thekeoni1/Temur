@@ -1,0 +1,8 @@
+Load a skill's instructions.
+
+- name: the skill name from <available_skills>.
+- section: optional. One section, by number or heading text.
+
+A skill too big for one result comes back as <skill_index>: its opening text plus a numbered section list. Nothing is dropped. Call again with a section number to read that part in full.
+
+Do not reload a skill you already loaded in this conversation.

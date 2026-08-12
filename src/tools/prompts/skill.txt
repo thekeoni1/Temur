@@ -4,5 +4,10 @@ Skills are reusable instruction sets and workflows for specific tasks (for examp
 
 Parameters:
 - name: the skill's name (its directory name), exactly as listed in <available_skills>.
+- section: optional. One section to return instead of the whole skill, given either as a number from a <skill_index> listing or as the heading text itself.
 
 The tool returns the skill's instructions along with its base directory. Read any playbooks or asset files the skill references relative to that base directory.
+
+A skill too large to return in one tool result comes back as <skill_index> instead: its opening text, then a numbered list of its sections with their sizes. Nothing is summarized or omitted when this happens. Call the tool again with the same name plus a section number or heading to read any part in full, and repeat for as many sections as the task needs.
+
+A skill you have already loaded in this conversation stays in it. Do not reload the same skill, or re-fetch a section you already have, just to refer back to it; scroll up and read what is already there instead.
