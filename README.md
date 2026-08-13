@@ -173,7 +173,7 @@ local llama.cpp server (`base_url` defaults to
 {
   "provider": "openai-compat",
   "max_tokens": 4096,
-  "openai_compat": { "model": "qwen3-1.7b", "context_window": 8192 }
+  "openai_compat": { "model": "qwen3-4b", "context_window": 8192 }
 }
 ```
 

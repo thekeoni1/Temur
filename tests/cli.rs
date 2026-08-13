@@ -418,7 +418,7 @@ fn init_local_template_writes_exact_config_and_no_key_file() {
     assert_eq!(
         written,
         format!(
-            "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{ \"base_url\": \"{base}\",\n                     \"model\": \"qwen3-1.7b\", \"context_window\": 8192 }}\n}}\n"
+            "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{ \"base_url\": \"{base}\",\n                     \"model\": \"qwen3-4b\", \"context_window\": 8192 }}\n}}\n"
         )
     );
     assert!(stdout.contains("could not list models from"), "{stdout}");
@@ -703,7 +703,7 @@ fn init_add_each_single_profile_template_through_the_binary() {
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
     let written = std::fs::read_to_string(sb.config_path()).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&written).unwrap();
-    assert_eq!(parsed["profiles"]["local"]["model"], "qwen3-1.7b", "{written}");
+    assert_eq!(parsed["profiles"]["local"]["model"], "qwen3-4b", "{written}");
     assert!(!sb.home.join(".secrets").exists(), "keyless template made a key dir");
 }
 

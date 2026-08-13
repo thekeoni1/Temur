@@ -171,7 +171,7 @@ header:
 {
   "provider": "openai-compat",
   "max_tokens": 4096,
-  "openai_compat": { "model": "qwen3-1.7b", "context_window": 8192 }
+  "openai_compat": { "model": "qwen3-4b", "context_window": 8192 }
 }
 ```
 
@@ -183,7 +183,7 @@ header:
   "max_tokens": 4096,
   "openai_compat": {
     "base_url": "http://192.168.1.10:8080/v1",
-    "model": "qwen3-1.7b",
+    "model": "qwen3-4b",
     "context_window": 8192
   }
 }
@@ -286,10 +286,10 @@ keyless endpoints only.
 
 | Model | Quant | File size | Est. RAM at 8k ctx | Tool calls | Indirect selection | Status |
 |---|---|---|---|---|---|---|
-| Qwen3-4B-Instruct-2507 | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | verified 2026-08-12 (eval 9/9) |
+| **Qwen3-4B-Instruct-2507** (primary) | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | verified 2026-08-12 (eval 9/9) |
 | Qwen2.5-Coder-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | via prose recovery | yes | verified 2026-08-12 (eval 8/9) |
 | Qwen2.5-Coder-1.5B-Instruct | Q4_K_M | ~0.9 GB | ~1.9 GB | intermittent | yes | verified 2026-08-12 (eval 7/9) |
-| **Qwen3-1.7B** (primary) | Q4_K_M | ~1.1 GB | ~2.1 GB | yes | yes | verified 2026-08-12 (eval 6/9) |
+| Qwen3-1.7B (low-RAM floor) | Q4_K_M | ~1.1 GB | ~2.1 GB | yes | yes | verified 2026-08-12 (eval 6/9) |
 | Qwen3-0.6B | Q4_K_M | ~0.4 GB | ~1.4 GB | degraded | no | verified 2026-08-12 (eval 4/9) |
 | Llama-3.2-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | unreliable | no | verified 2026-08-12 (eval 1/9) |
 | Gemma-3-4B-it | Q4_K_M | ~2.3 GB | ~3.3 GB | no (tools not delivered) | n/a | verified 2026-08-12 (eval 0/9) |
@@ -342,11 +342,13 @@ lower score: that model writes the identical JSON behind a sentence of
 preamble, which the recovery deliberately does not accept, so those
 calls neither run nor prompt a retry.
 
-Qwen3-1.7B stays the baked default that `temur init` writes, and it
-remains a reasonable floor at 1.1 GB. It is no longer the highest
-scorer: Qwen3-4B-Instruct-2507 swept 9/9 and was also several times
-faster per task, and both Qwen2.5-Coder rows now measure above the
-1.7B. Prefer the 4B whenever the serving machine has the RAM.
+Qwen3-4B-Instruct-2507 is the primary recommendation and the baked
+default that `temur init` writes, because it swept 9/9, was several
+times faster per task than the 1.7B, and both Qwen2.5-Coder rows also
+measure above the 1.7B. Qwen3-1.7B is the low-RAM choice and remains a
+reasonable floor at 1.1 GB, 1.3 GB less resident than the 4B; take it
+when the serving machine cannot hold the larger model, and prefer the
+4B whenever it can.
 Qwen3-0.6B fits almost anywhere and degrades as advertised: it passes
 the single-call tasks and fails every multi-step one, including the
 indirect-selection probe, where it named the correct `bash` command

@@ -57,7 +57,7 @@ const TEMPLATES: [Template; 5] = [
         number: "1",
         name: "local",
         describe: "llama.cpp / Ollama / LM Studio (openai-compat, keyless)",
-        default_model: "qwen3-1.7b",
+        default_model: "qwen3-4b",
         key_slug: None,
     },
     Template {
@@ -190,13 +190,18 @@ const MODEL_LIST_CAP: usize = 20;
 /// Baked model shortlist (T15 P4), printed ONLY when the local template's
 /// picker could not run (no server to ask). A hand-kept SUMMARY of
 /// docs/OFFLINE.md, section "Recommended small models", which stays
-/// canonical: update that table first and mirror the top rows here.
+/// canonical: update that table first and mirror it here.
 /// When the picker works, the server's real listing wins and this never
 /// prints.
+///
+/// The two entries are the table's primary row and its low-RAM floor, not
+/// simply its top two rows (T30, the T29 finding 7 flip): a fallback
+/// shortlist has to answer "what should I run" and "what if this machine
+/// is small", and the second-highest scorer answers neither.
 const MODEL_SHORTLIST: &[&str] = &[
     "Known-good small models:",
-    "  Qwen3-1.7B Q4_K_M (~2.1 GB RAM at 8k context; the primary recommendation)",
-    "  Qwen3-4B-Instruct-2507 Q4_K_M (~3.4 GB RAM)",
+    "  Qwen3-4B-Instruct-2507 Q4_K_M (~3.4 GB RAM at 8k context; the primary recommendation)",
+    "  Qwen3-1.7B Q4_K_M (~2.1 GB RAM; the low-RAM choice)",
     "Larger is better when RAM allows; 7B+ is qualitatively different.",
     "See docs/OFFLINE.md, section \"Recommended small models\".",
 ];
@@ -1104,13 +1109,13 @@ mod tests {
     #[test]
     fn local_render_default_base_url_is_byte_identical_to_the_readme_recipe() {
         let t = &TEMPLATES[0]; // local
-        let expect = "{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": { \"model\": \"qwen3-1.7b\", \"context_window\": 8192 }\n}\n";
+        let expect = "{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": { \"model\": \"qwen3-4b\", \"context_window\": 8192 }\n}\n";
         // Both the no-answer path and an answered default render the recipe.
-        assert_eq!(render_config(t, "qwen3-1.7b", None, None, None), expect);
+        assert_eq!(render_config(t, "qwen3-4b", None, None, None), expect);
         assert_eq!(
             render_config(
                 t,
-                "qwen3-1.7b",
+                "qwen3-4b",
                 None,
                 Some(crate::config::DEFAULT_OPENAI_COMPAT_BASE_URL),
                 None
@@ -1118,7 +1123,7 @@ mod tests {
             expect
         );
         // A detected n_ctx equal to the baked value renders the same bytes.
-        assert_eq!(render_config(t, "qwen3-1.7b", None, None, Some(8192)), expect);
+        assert_eq!(render_config(t, "qwen3-4b", None, None, Some(8192)), expect);
     }
 
     #[test]
@@ -1200,10 +1205,10 @@ mod tests {
     #[test]
     fn picker_default_is_template_default_when_listed_else_first() {
         // Template default present in the listing: empty answer picks it.
-        let list = |_: &str| Ok(ids(&["other", "qwen3-1.7b"]));
+        let list = |_: &str| Ok(ids(&["other", "qwen3-4b"]));
         let (cfg, out) = run_wizard("\n\n\n", &list).unwrap();
-        assert!(cfg.contains("\"model\": \"qwen3-1.7b\""), "{cfg}");
-        assert!(out.contains("[qwen3-1.7b]"), "default shown: {out}");
+        assert!(cfg.contains("\"model\": \"qwen3-4b\""), "{cfg}");
+        assert!(out.contains("[qwen3-4b]"), "default shown: {out}");
         // Absent: the first listed id becomes the default.
         let list = |_: &str| Ok(ids(&["first-served", "second"]));
         let (cfg, out) = run_wizard("\n\n\n", &list).unwrap();
@@ -1238,7 +1243,7 @@ mod tests {
         assert!(out.contains("could not list models from"), "{out}");
         assert!(out.contains("connection refused"), "{out}");
         assert!(out.contains("Model id"), "free-text question asked: {out}");
-        assert!(cfg.contains("\"model\": \"qwen3-1.7b\""), "{cfg}");
+        assert!(cfg.contains("\"model\": \"qwen3-4b\""), "{cfg}");
 
         let list = |_: &str| Ok(Vec::<String>::new());
         let (_cfg, out) = run_wizard("\n\ncustom\n", &list).unwrap();
