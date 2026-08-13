@@ -4338,3 +4338,128 @@ Residuals carried out of this cycle, none blocking:
   record: Llama-3.2-3B's argument-level errors uncaptured, the T28
   observation being one task across three models, and the baked
   default model left alone despite no longer being the top scorer.
+
+## T30 acceptance - recorded result (no release)
+
+Model floor, round two: four items off the T29 queue, built one phase
+at a time with a full `scripts/check.sh` gate per phase. Offline
+throughout, no live provider call of any kind, and no re-measurement
+(see "Deliberate non-change" below).
+
+### What shipped
+
+- **F1, the silent shape.** `detect_text_tool_call` now also scans for
+  FENCED blocks anywhere in a message, strips each fence, and applies
+  the checks it already applied to a whole-message body: parses as JSON
+  (or as its first balanced object), names a REGISTERED tool under
+  `"name"`/`"tool"`, carries an arguments-like key. First fenced hit
+  wins. A bare JSON object mid-prose WITHOUT a fence stays undetected
+  on purpose, and the pin for that case is kept: prose quoting a call
+  shape while discussing a plan is common, and the fence is the only
+  cheap evidence of intent.
+
+  **The execution predicate is byte-identical.** `extract_prose_tool_
+  call` was not touched, so preamble plus a fence still never runs; the
+  change converts silence into a retry, not into a wider set of things
+  that execute. Pinned both directions with the exact Qwen2.5-Coder-1.5B
+  eval-task-8 shape: the unit table asserts detection true AND
+  extraction `None`, and a loop-level test asserts that the file on
+  disk came from the structured retry, that the nudge notice fired, and
+  that no `prose-call recovery` notice did. NUDGE_LIMIT bounds the
+  widened path exactly as it bounds the old one, pinned separately.
+
+- **F8, the base-directory line.** `Base directory for this skill:
+  <path>` is now conditional in all three modes (content, index,
+  section): emitted only when the skill's directory holds at least one
+  entry besides `SKILL.md`. One `read_dir` at render time, nothing
+  cached; a directory that cannot be listed counts as bare, since
+  visible assets are the whole justification for the line. Output for a
+  skill that ships assets is byte-identical to v0.18.0. The T28
+  reconstruction invariant, the index, and section selection are
+  untouched.
+
+- **F6, the write note.** A successful `write` over a non-empty file
+  appends `, replaced <N> bytes of prior content` to its result.
+  Always when the prior file was non-empty, with no smallness
+  threshold, and never for a new or previously empty file. Sizes as
+  `u64`. The read-first guard is UNCHANGED and was never the defect:
+  in eval task 5 it permitted the destruction correctly, because the
+  model had read that file moments earlier. What was missing was the
+  trace.
+
+- **F7, the default flip** (operator-approved, since flipping a default
+  is not a build-session call). `temur init`'s local template bakes
+  `qwen3-4b`; the fallback shortlist leads with Qwen3-4B-Instruct-2507
+  as the primary recommendation and keeps Qwen3-1.7B second as the
+  low-RAM choice; OFFLINE.md moves "(primary)" to the 4B row and marks
+  the 1.7B the low-RAM floor. Every golden that baked the old default
+  moved in the same commit: init's README-recipe render, the picker's
+  template-default and listing-failure fallbacks, and two `tests/cli.rs`
+  pins that drive the local template through the binary.
+
+### Planning-session rulings carried in
+
+Two judgment calls were raised in the build report and ruled on rather
+than decided here:
+
+- The `/model` "no profiles defined" help notice in `src/commands.rs`
+  KEEPS `qwen3-1.7b`, as one of the mechanism-snippet trio (with the
+  multi-profile examples in OFFLINE.md and USAGE.md). Those snippets
+  illustrate the profiles MECHANISM; the id in them is payload, not a
+  recommendation, and churning them would spread a default flip into
+  text that makes no claim about defaults.
+- The two index-size figures in USAGE.md were DERIVED arithmetically
+  rather than re-captured: the transcript was a verbatim capture over
+  an asset-free fixture, so removing the base-directory line removes
+  exactly 73 characters, 846 -> 773, and 1.7% -> 1.6%. Accepted as
+  arithmetic on a capture. It is recorded here because the doc reads
+  as a verbatim run and this one figure is not one.
+
+### Deliberate non-change
+
+The matrix was NOT re-run. Every score in OFFLINE.md keeps its
+2026-08-12 date and describes the binary as it was measured, before
+any of the above existed. F1 is EXPECTED to raise Qwen2.5-Coder-1.5B,
+whose lost calls are precisely what it addresses, and that expectation
+is an unverified prediction until the next matrix pass measures it.
+Nothing in the docs claims otherwise.
+
+### Gate outcomes
+
+Four phases, four full `check.sh` runs, every one ending
+`== ALL CHECKS PASSED ==` with exit 0 across both paths (gnu-debug and
+the musl-release acceptance path). All three TUI pty smokes (host, gnu,
+musl) reported OK in all four runs; the 180s bound was never
+approached and the hang signature never appeared. Staticness clean
+each time (no INTERP, no NEEDED), forbidden-deps clean, bare busybox
+container printing the version. The final gate ran 30 test-result
+lines, 890 passing assertions, zero failures.
+
+Standing deviation, unchanged from prior cycles: the gate runs were
+launched detached under `script(1)` rather than in a literal
+foreground shell, because a full gate exceeds the build session's
+foreground command cap. Every run was pty-backed, fully teed to a log,
+and watched for the 180s pty-smoke signature.
+
+### Phase commits
+
+```
+c245ee0  P1  fenced-call nudge widening (detection only)
+b8841f9  P2  conditional base-directory line + write replaced-bytes note
+a46880f  P3  baked local default -> qwen3-4b
+5417fea  P4  docs and close-out
+```
+
+### Residuals
+
+- The F1 improvement for Qwen2.5-Coder-1.5B is predicted, not
+  measured (above).
+- The five surviving T29 queue items (2, 3, 4, 5, 9) keep their
+  original numbers, because this record and the T29 record cross-
+  reference them by number. Items 2 through 5 are eval-HARNESS items
+  that each change what a published score means, so they belong to a
+  milestone that re-runs the matrix and can restate the numbers in the
+  same breath; item 9 needs a live model to reproduce at all.
+- The duplicate-heading note in a `<skill_section>` lost one blank
+  line as a side effect of the header rework. No pin covered the
+  spacing; recorded so it is not read later as an accident.
