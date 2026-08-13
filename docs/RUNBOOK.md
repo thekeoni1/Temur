@@ -4267,3 +4267,74 @@ was a bare NUMBER.
 - The eval gate ran the scratchpad harness copy described above, not
   `scripts/weak_model_eval.sh` byte for byte. The committed script is
   unchanged.
+
+## v0.18.0 acceptance - recorded result (SHIPPED, private)
+
+What shipped: T29 alone, the local-model coverage matrix. A
+measurement milestone, so the artifact is byte-for-byte the v0.17.0
+code with a version bump; what changed is the docs' claims and the
+ROADMAP's queue.
+
+Stage 1 (verified before stage 2 began):
+
+- T29 pushed as step 1, 2ba2d85 onto b407fd3, one commit (docs,
+  ROADMAP, CHANGELOG; no Rust). On-push ci run 31654745872 on headSha
+  2ba2d85 green in both jobs (test 1m07s 00:32:15Z..00:33:22Z,
+  release-gate 4m51s 00:32:16Z..00:37:07Z).
+- Three local prep commits: 9973af3 bump (four files, Cargo.lock's
+  temur entry only, untrusted still 0.9.0, five README tag pins, no
+  v0.17.0 left), 878d813 CHANGELOG cut to "## v0.18.0 - 2026-08-12"
+  with a fresh empty Unreleased, 4c06a00 close-out carrying the T29
+  acceptance record above.
+- Full check.sh green at 0.18.0, first try, bare container reporting
+  "temur 0.18.0"; all three TUI pty smokes quiet.
+
+Stage 2:
+
+- Prep pushed 2ba2d85..4c06a00; ci run 31655622617 on headSha 4c06a00
+  green in both jobs (test 2m02s 00:47:44Z..00:49:46Z, release-gate
+  7m52s 00:47:44Z..00:55:36Z).
+- Annotated tag v0.18.0 AT 4c06a00, tag object
+  d679daf785bff7fdaaa80fe6b65ee9ac45fac3b8. The message was verified
+  against the RAW object before the tag was pushed, not through
+  `git tag -l --format` (which appends its own newline): the object's
+  message region was extracted and `cmp`-compared against the intended
+  bytes, identical, exactly one line, zero em-dash bytes in the whole
+  object. Remote ref resolves to the same object hash.
+- scripts/release.sh with NO SKIP_CHECK: green first try, 4/4
+  artifacts gated and staged, all three pty smokes quiet for the
+  second run of the cycle.
+
+Staged sha256 (and the same values inside SHA256SUMS):
+
+```
+c7efc963  temur-v0.18.0-aarch64-unknown-linux-musl
+f8bfed01  temur-v0.18.0-armv7-unknown-linux-musleabihf
+6df88e9b  temur-v0.18.0-i686-unknown-linux-musl
+cb258419  temur-v0.18.0-x86_64-unknown-linux-musl
+ab96ecc1  SHA256SUMS itself
+```
+
+- Private release created with 5 assets, not draft, not prerelease,
+  notes = the CHANGELOG v0.18.0 section verbatim. Repo isPrivate
+  confirmed true BEFORE creating it and again AFTER.
+- Closing gate: the x86_64 asset and SHA256SUMS were re-downloaded and
+  both `cmp`-identical to staged, re-hashed to cb258419 and ab96ecc1.
+  Then a fresh FULL download of all five assets, every one
+  `cmp`-identical to staged. Installer matrix 6/6 twice, once against
+  the staged dir and once against that fresh download
+  (pass + corrupt + unlisted, on the GNU host and in busybox).
+
+Residuals carried out of this cycle, none blocking:
+
+- The gate and release runs were launched detached under script(1)
+  rather than in a literal foreground shell, the standing deviation:
+  both exceed the build session's foreground time cap. Both were
+  pty-backed, fully teed, and watched for the 180s pty-smoke bound.
+- Three of the nine measured models were already on this machine, and
+  their source repo was not recorded when they were fetched in July,
+  so the T29 record hashes their bytes but does not assert a repo.
+- The substantive T29 residuals are unchanged and listed in the T29
+  record: Llama-3.2-3B's argument-level errors uncaptured, the T28
+  observation being one task across three models, and the baked
+  default model left alone despite no longer being the top scorer.
