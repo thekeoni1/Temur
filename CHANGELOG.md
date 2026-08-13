@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.18.0 - 2026-08-12
+
 - **The recommended-models table is now nine models measured on one
   day, instead of two seven-task records and two lines of hearsay.**
   Every row ran the same nine-task eval under identical conditions on
