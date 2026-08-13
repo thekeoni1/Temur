@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.19.0 - 2026-08-13
+
 - **A model that narrates before it calls no longer ends its turn in
   silence.** A tool call written as plain text is executed only when the
   whole message IS the call, which is deliberate and unchanged. The
