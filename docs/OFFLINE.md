@@ -274,8 +274,8 @@ reliability, smallest-first is NOT best-first. "Tool calls" means the
 model reliably emits structured tool calls when told which tool to use;
 "indirect selection" means it picks the right tool on its own when the
 task does not name one (the weak-model eval's task 7). "Verified" rows
-ran the full eval harness on the stated date; "reported" rows carry
-earlier observations not re-run through the current harness.
+ran the full eval harness on the stated date. Every row below is a
+measurement; nothing here is carried over from earlier observation.
 
 Since T15, temur can also read a running server's own model listing:
 `temur init`'s local template offers the served models as a numbered
@@ -286,35 +286,77 @@ keyless endpoints only.
 
 | Model | Quant | File size | Est. RAM at 8k ctx | Tool calls | Indirect selection | Status |
 |---|---|---|---|---|---|---|
-| **Qwen3-1.7B** (primary) | Q4_K_M | ~1.1 GB | ~2.1 GB | yes | yes | verified 2026-07-26 (eval 7/7) |
-| Qwen3-4B-Instruct-2507 | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | verified 2026-07-26 (eval 7/7) |
-| Qwen2.5-Coder-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | no (prose-only) | n/a | verified 2026-07-26 (eval 0/7) |
-| Qwen2.5-Coder-1.5B-Instruct | Q4_K_M | ~1.0 GB | ~2.0 GB | yes | untested | reported (pre-T11) |
-| Qwen3-0.6B | Q4_K_M | ~0.5 GB | ~1.5 GB | degraded | untested | reported (pre-T11) |
+| Qwen3-4B-Instruct-2507 | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | verified 2026-08-12 (eval 9/9) |
+| Qwen2.5-Coder-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | via prose recovery | yes | verified 2026-08-12 (eval 8/9) |
+| Qwen2.5-Coder-1.5B-Instruct | Q4_K_M | ~0.9 GB | ~1.9 GB | intermittent | yes | verified 2026-08-12 (eval 7/9) |
+| **Qwen3-1.7B** (primary) | Q4_K_M | ~1.1 GB | ~2.1 GB | yes | yes | verified 2026-08-12 (eval 6/9) |
+| Qwen3-0.6B | Q4_K_M | ~0.4 GB | ~1.4 GB | degraded | no | verified 2026-08-12 (eval 4/9) |
+| Llama-3.2-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | unreliable | no | verified 2026-08-12 (eval 1/9) |
+| Gemma-3-4B-it | Q4_K_M | ~2.3 GB | ~3.3 GB | no (tools not delivered) | n/a | verified 2026-08-12 (eval 0/9) |
+| Phi-4-mini-instruct | Q4_K_M | ~2.3 GB | ~3.3 GB | no (tools not delivered) | n/a | verified 2026-08-12 (eval 0/9) |
+| SmolLM2-1.7B-Instruct | Q4_K_M | ~1.0 GB | ~2.0 GB | no (tools not delivered) | n/a | verified 2026-08-12 (eval 0/9) |
 
 Est. RAM uses the serve.sh warning's own arithmetic: file size plus
 128 KiB per context token of KV and compute allowance at 8192 ctx
-(about 1.0 GB). Verified rows ran the full eval as it stood on the
-stated date (compact profile, llama.cpp `server-b10068`, ctx 8192,
-`--jinja`); the eval has since grown to nine tasks (T19 added the gzip
-binary nudge and the large-output tail), so the dated `eval 7/7` rows
-are historical records against the seven-task harness.
-The Qwen2.5-Coder-3B result deserves its honest detail: it
-consistently picked the RIGHT tool, including bash with `rm` on the
-indirect probe, but emitted every call as a fenced JSON block instead
-of a structured tool call on this stack, so temur's prose-tool-call
-detection asked for the tool interface, the model repeated the prose,
-and all seven tasks failed on wire format, not on reasoning. Notes
-carried from earlier observation: Qwen3-1.7B has the best tool-calling
-reliability per byte of the small trio and is the default
-recommendation; Qwen2.5-Coder-1.5B is a code-tuned alternative with
-strong edits but slightly weaker tool discipline; Qwen3-0.6B fits
-almost anywhere but degrades to single-tool tasks.
+(about 1.0 GB). Every row ran the same nine-task eval on 2026-08-12
+under identical conditions (compact profile, llama.cpp
+`server-b10068`, ctx 8192, `--jinja`, defaults for every knob).
 
-Download source: the Q4_K_M quants above are published in the community
-`unsloth/…-GGUF` repositories on Hugging Face (e.g.
-`unsloth/Qwen3-1.7B-GGUF`); the official `Qwen/Qwen3-1.7B-GGUF` repo
-publishes Q8_0 only (1.83 GB), a fine larger-footprint alternative.
+Read a score as one sample, not a constant. Qwen3-1.7B was run twice
+and scored 6/9 both times, but failed a DIFFERENT task in each run, so
+a single number carries about a task of noise either way. Two of the
+nine tasks also phrase their target as a placeholder ("a line like
+`token: SOMEVALUE`"), and three of the models copied the placeholder
+instead of the value, so those two tasks partly measure literal
+instruction-following alongside the capability they name.
+
+Three families score 0/9 for a reason that is not about the models:
+llama.cpp `--jinja` silently drops the TOOLS array for gemma-3,
+Phi-4-mini and SmolLM2, because their bundled chat templates have no
+tool-call support. Measured by sending one request three ways and
+comparing prompt tokens: with a system message plus one tool schema,
+with the system message alone, and with neither. For those three the
+first two are byte-identical in token count (gemma-3 28/28,
+Phi-4-mini 22/22, SmolLM2 35/35), while Qwen3-1.7B goes 207/30 and
+Llama-3.2-3B 240/52. The system message arrives in every case; only
+the tools vanish, the server returns HTTP 200, and nothing warns. Those
+models are never told tools exist, and they answer accordingly, so they
+invent shapes like `{"tool": "file_delete", "path": "obsolete.tmp"}`.
+A different chat template would be needed, and the eval harness has no
+knob for one.
+
+Llama-3.2-3B is not in that category and its 1/9 is its own story: it
+receives the full tool array, and llama.cpp's own tool-call grammar
+then rejects the model's output server-side with `The model produced
+output that does not match the expected peg-native format`, upstream of
+anything temur parses.
+
+Qwen2.5-Coder-3B is the row that changed most, from `0/7` to 8/9, and
+the reason is a temur change rather than a model one. It always picked
+the right tool and always wrote the call as plain text; T19's
+prose-call recovery now EXECUTES such a call when the message is a bare
+JSON object or a bare fenced block, and the transcripts show the notice
+each time (`prose-call recovery: executed the bash tool call the model
+wrote as plain text`). The same feature explains its 1.5B sibling's
+lower score: that model writes the identical JSON behind a sentence of
+preamble, which the recovery deliberately does not accept, so those
+calls neither run nor prompt a retry.
+
+Qwen3-1.7B stays the baked default that `temur init` writes, and it
+remains a reasonable floor at 1.1 GB. It is no longer the highest
+scorer: Qwen3-4B-Instruct-2507 swept 9/9 and was also several times
+faster per task, and both Qwen2.5-Coder rows now measure above the
+1.7B. Prefer the 4B whenever the serving machine has the RAM.
+Qwen3-0.6B fits almost anywhere and degrades as advertised: it passes
+the single-call tasks and fails every multi-step one, including the
+indirect-selection probe, where it named the correct `bash` command
+and then declined to run it.
+
+Download source: every Q4_K_M quant measured above came from the
+community `unsloth/…-GGUF` repositories on Hugging Face (e.g.
+`unsloth/Qwen3-1.7B-GGUF`, `unsloth/gemma-3-4b-it-GGUF`); the official
+`Qwen/Qwen3-1.7B-GGUF` repo publishes Q8_0 only (1.83 GB), a fine
+larger-footprint alternative.
 
 Larger is better whenever the serving machine allows it; anything in the
 7B+ class changes the experience qualitatively.

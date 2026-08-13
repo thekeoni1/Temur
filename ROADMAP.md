@@ -199,6 +199,7 @@ payload.
 | T26 | Mid-session cost advisory | As built 2026-08-11, the escalated half of dogfood item 9: T24 made session cost visible in `/status`, but only to a user who thinks to ask, and the motivating incident was a single agentic `-p` turn that reached roughly $26 across about 200 loop iterations (40M cache-read tokens, reads 73% of the bill) and was discovered only afterward by pricing the usage line by hand. The advisory fires DURING such a turn: `src/cost.rs` gains the crossing arithmetic as small pure functions (step_multiple = floor(estimate/step), used for both the latch's initial value and every crossing, so "already accounted for" is one piece of arithmetic; advisory_crossing returns only the HIGHEST multiple a jump cleared, never a burst; advisory_message pins the wording), and the new global `cost_advisory_step_usd` sets the step (absent = 5.0 by operator decision of 2026-08-11, 0 disables, negative or non-finite a startup error naming the field). Global rather than per-profile on purpose: a price is a provider property, a budget is a user preference, and it must not reset because a `/model` switch landed on a profile that forgot to repeat it (P1). Wiring reuses rather than duplicates the T24 gate: the new `CostRates` type IS the selection half of that gate, so constructing one proves a keyed priced selection is active and `/status` and the advisory read the same estimate through the same path. The session carries the rates (main.rs at startup from the resolved profile, replaced by `switch_provider`, exactly the way `context_window` travels) plus the validated step and the latch; the latch is recomputed, never zeroed, at all four points where past spend must stop being news (construction, seed load, `/clear`, provider switch) and is NOT persisted, being a pure function of usage and rates the session already holds, so the session file format is untouched. Accrual funnels through one `Session::accrue_usage`, and the advisory is polled at every point that both follows accrual and has a UI sink: the turn loop after each response (beside `context_advisory`, which is what makes it mid-turn), the interrupted-turn landing, and the command layer after `/compact`'s own summary call; the latch only moves forward, so overlapping polls are idempotent by construction. On by default WHEN PRICED was the explicit operator choice, since an opt-in spend alarm is off exactly when it is needed, and unpriced, keyless, and local configs can never see it (P2). No new surface: the TUI renders Notice already, and `-p` renders it as stderr `[!]` chrome, which is precisely the $26 scenario, with tests pinning that stdout stays exactly the answer. Docs, CHANGELOG, and this row; no live gate, the feature is offline-computable and T24's keyed live check still rides a future operator session (P3). Ships as v0.15.0 |
 | T27 | Small-items bundle | As built 2026-08-12, the queued T13-acceptance list cleared in one pass, offline throughout. `Session::switch_provider` takes the `ResolvedProfile` instead of four of its fields plus derived cost rates: six positional parameters become three, the "a switch replaces the whole selection" rule becomes structural rather than conventional, and the next selection-scoped setting costs no signature change at any call site; `max_tokens_source` stays separate because it is the NAME the selection is active under, which only the caller knows. Byte-identical behavior, proven by the existing switch tests (P1). TUI trio: `Cell::TurnTail` carries the model captured at push time, so a `/model` hop no longer relabels every past turn in the scrollback (finding 2); the Refusal arm closes the tool cells its own stream opened, mirroring the interrupt path's FIFO pairing including the unnamed-block exemption but synthesizing nothing into history, since the refused output is discarded whole; and `--tui` against a pipe is a usage error naming `-p` and `--plain` instead of drawing a prompt it can never read and spinning at roughly 1.6 KB/s of redraw output (finding 13a; part (b), the check.sh readiness gate, shipped in v0.12.0) (P2). `/models` trio: the anthropic context enrichment falls back to dated listing entries when the active id is a bare alias absent from the listing (`claude-haiku-4-5` judged through `claude-haiku-4-5-20251001`), used only when unambiguous (one candidate, or several agreeing on one window) and always naming the dated id it matched so the inference is visible; a configured window SMALLER than the reported one gains a hint instead of silence, direction wording mirroring doctor's server-allocation check; and the "two ids on one line" report was NOT reproduced, deliberately not fixed blind, and the reproduction attempt is kept as a regression pin (P3). `temur doctor` gains an install-skew check: the first `temur` on PATH against the running binary, metadata and bytes only, PASS on the same file or a byte-identical copy, WARN naming both paths, both mtimes, and which is newer, never a FAIL and never executing what it finds, since running a binary discovered by searching PATH is exactly what a diagnostic must not do; plus docs and the CHANGELOG entries (P4). No live leg: every item is offline-verifiable. Ships as v0.16.0 |
 | T28 | Skill compacting (section index) | As built 2026-08-12: a loaded SKILL.md is re-sent on every subsequent request forever, and one larger than the context-scaled tool-output cap (4,000..30,000 chars) was SILENTLY lossy, middle-elided by the central truncation with advice to "narrow the command, e.g. grep or head/tail" that is meaningless for a document the model asked for by name. src/skills.rs gains two pure functions over the file's bytes: minify() drops a frontmatter block holding only name:/description: (already relayed via <available_skills>), trims trailing whitespace, and collapses blank runs, all outside fenced code, which is copied byte for byte because whitespace is semantic in a heredoc or in Python, with "never grows" and "idempotent" pinned over a corpus; and scan_sections(), a hand-rolled fence-aware ATX scanner with HIERARCHICAL extents (a section carries its subsections) whose reconstruction invariant is pinned: intro plus every top-level section, concatenated in order, equals the minified document byte for byte, which is what licenses the "nothing is summarized or omitted" claim. Setext headings are deliberately not indexed, --- being ambiguous with a frontmatter delimiter and a thematic break (P1). ToolCtx gains output_cap, set by Registry::execute from its own T19 cap before dispatch, and Tool gains truncation_hint(), defaulting to today's advice byte-identically so the existing marker pins pass untouched (P1). The skill tool then has three modes: at or under the cap, today's <skill_content> with minified content; over it, <skill_index> with the intro verbatim plus every heading numbered with level and size (a 48,427-char skill yields an 846-char index, 1.7%); and an optional "section" argument fetching one part by number or heading text, matched case- and whitespace-insensitively against the scanned list ONLY, so it never reaches the filesystem and "../../etc/passwd" is an ordinary miss. Edge rulings all pinned: at-cap is full mode (an index is never itself truncated); a heading-less skill, or one whose prose before the first heading already exceeds the cap, stays full and is centrally truncated with the new section-oriented hint, because an index that does not fit is not an improvement; sectioning works on small skills too; an oversized single section is returned and truncated, never re-indexed (P2). Proven through the agent loop with a scripted provider (index, then a numbered section whose bytes are asserted identical to that section's slice of the minified body, then an answer), with prefix stability asserted across all three round trips, plus the beneficiary pin: one mid-size skill returns FULL with no context_window and INDEX at 8k, configuration alone (P3). DELIBERATE NON-CHANGES, each a design decision rather than an omission: NO persisted index or cache, because a pure function recomputed per call cannot be stale and needs no invalidation machinery; NO session-state dedup of repeat loads, which would be a layering violation (the tool would have to read conversation state) and would fight resume semantics, where a restored session legitimately re-reads what it needs; NO /compact integration, because post-compact re-fetching a section through the index is cheap and history stays append-only; and history STAYS APPEND-ONLY, which is what keeps the prompt-cache prefix valid and is pinned rather than asserted. Docs state the honest scale: minification saves 0.0% on tidy markdown and 2.2% on a sloppy SKILL.md, so the index, not the minifier, is the mechanism (P4). No live leg: every claim is offline-verifiable. Ships as v0.17.0 |
+| T29 | Local-model coverage matrix | As run 2026-08-12, measurement only: no Rust changed, every finding recorded rather than fixed. Nine models through the nine-task eval on one day under identical conditions (compact profile, llama.cpp `server-b10068`, ctx 8192, `--jinja`, stock knobs, i686 musl-static binary in the i386 container), replacing a table whose two "verified" rows were seven-task records from 2026-07-26 and whose other two were undated "reported" hearsay. Scores: Qwen3-4B-Instruct-2507 9/9, Qwen2.5-Coder-3B-Instruct 8/9, Qwen2.5-Coder-1.5B-Instruct 7/9, Qwen3-1.7B 6/9, Qwen3-0.6B 4/9, Llama-3.2-3B-Instruct 1/9, Gemma-3-4B-it 0/9, Phi-4-mini-instruct 0/9, SmolLM2-1.7B-Instruct 0/9. Three of those zeros are not about the models: a three-way differential (system+tools, system only, user only) shows llama.cpp `--jinja` silently dropping the TOOLS array for gemma-3, Phi-4-mini and SmolLM2, whose bundled templates have no tool support, at HTTP 200 with no warning (28/28, 22/22, 35/35 prompt tokens against a Qwen3-1.7B control at 207/30), so those models are never told tools exist and invent shapes like `{"tool": "file_delete"}`. Llama-3.2-3B does receive the tools and fails differently, on llama.cpp's own grammar rejecting its output server-side. The largest movement was Qwen2.5-Coder-3B, 0/7 to 8/9, caused by a temur change and not a model one: T19's prose-call recovery now executes the plain-text calls that made it score zero, and the same feature's leading-token rule is why its 1.5B sibling still loses calls. P4 took the first live observation of T28's skill index, three models against an 11,674-char skill under an 8,192-char cap: Qwen3-1.7B walked the index to `section: "5"` and answered correctly with no hint, Qwen3-4B ignored the affordance and grepped the filesystem instead, and Qwen2.5-Coder-1.5B reached for `section` before ever seeing an index. The eval's own limits were measured too and are queued below rather than patched mid-matrix. Ships as v0.18.0 |
 
 ### Queued from T13 acceptance (2026-08-05)
 
@@ -223,6 +224,94 @@ of its own every $5 crossed, which was the escalated arm that dogfood
 item (predating this list) had left open. The next milestone is the
 planning session's call; the standing gates are T13's hosted
 verification (parked on keys) and the public flip.
+
+### Queued from T29 (2026-08-12)
+
+Found while measuring the model matrix. NOTHING here was fixed in T29 by
+design: the milestone recorded findings so a later one can act on them
+with the numbers already in hand. Ordered by how much evidence there is,
+not by size.
+
+1. **A sentence of preamble before a fenced tool call means no execution
+   AND no nudge, silently.** T19's prose-call recovery requires the whole
+   trimmed message to start with a fence or a brace, which is deliberate
+   and documented. The T4 detect-and-nudge fallback shares that exact
+   gate (`detect_text_tool_call` returns false when the body does not
+   start with `{`), so a model that narrates before it calls gets no
+   execution, no retry prompt, and no notice. Qwen2.5-Coder-1.5B lost
+   eval tasks 2 and 8 and the entire T28 observation this way; its task 8
+   turn was one sentence, then a fenced object containing
+   `"command": "echo eval-gz-99 | gzip > notes.txt.gz"`, which would have
+   passed. The same feature's success case is Qwen2.5-Coder-3B at 8/9.
+   Widening the NUDGE side alone (leaving execution as strict as it is)
+   would already turn silence into a retry.
+
+2. **Two of the nine eval tasks are partly measuring placeholder
+   literalism.** Tasks 2 and 9 phrase the target as "a line like
+   `token: SOMEVALUE`" and "looks like `FINAL-LINE: SOMEVALUE`". Three
+   models wrote the placeholder instead of the value: Qwen3-1.7B's
+   token.txt contained exactly `SOMEVALUE` in both runs, Qwen3-0.6B's
+   tail.txt contained `FINAL-LINE: SOMEVALUE`, and Qwen2.5-Coder-1.5B
+   emitted `"content": "SOMEVALUE"`. Every score in the table carries
+   this. Rewording the two prompts changes what the numbers mean, so it
+   is a decision, not a typo fix.
+
+3. **`max_tokens` 2048 is a binding limit on some tasks, not headroom.**
+   The harness sets it to give thinking models room. Qwen3-1.7B's task 9
+   spent the entire budget on prose and emitted zero tool calls
+   (`response truncated: max_tokens (2048, from config) reached`, turn
+   2764 in / 2048 out), so that FAIL measures the knob. Either raise it
+   or state in the docs that the score includes it.
+
+4. **A single run is worth about a task of noise.** Qwen3-1.7B scored
+   6/9 twice while failing DIFFERENT tasks (2/5/8, then 2/5/9). The
+   harness has no repeat-and-aggregate knob, so every published score is
+   one sample presented as a fact.
+
+5. **The harness deletes each task's work dir on teardown, so failures
+   cannot be diagnosed after the fact.** `rm -rf "$EVAL_ROOT"` runs after
+   scoring, which means the files the assertions ran against are gone by
+   the time anyone reads the score. Findings 2 and 6 here were only
+   diagnosable because T29 ran a copy with that one line changed.
+   Teardown happens after all scoring, so keeping the dirs (or keeping
+   them only for failed tasks) cannot affect a result.
+
+6. **A weak model destroyed a source file with the write tool and
+   reported success.** Qwen3-1.7B, eval task 5: it grepped correctly,
+   read all three files, then wrote to `/work/beta.txt`, replacing the
+   30-byte seeded needle file with the 8 bytes `beta.txt`, and never
+   created the `found.txt` it claimed to have created. The read-then-
+   write guard permitted it because the model had just read that file.
+   Nothing here is a defect in the guard as specified; it is a blast
+   radius worth stating in the docs, and possibly worth a distinct
+   "wrote a file whose entire prior content is gone" signal.
+
+7. **The primary recommendation no longer matches the measurements.**
+   `src/init.rs` bakes `default_model: "qwen3-1.7b"` and OFFLINE.md
+   labels that row "(primary)". Measured 2026-08-12: Qwen3-4B 9/9,
+   Qwen2.5-Coder-3B 8/9, Qwen2.5-Coder-1.5B 7/9, Qwen3-1.7B 6/9. T29
+   left both the baked default and the label alone, because flipping a
+   default is the planning session's call and this milestone changed no
+   Rust. The docs now say plainly that the 4B scores highest.
+
+8. **The T28 index's "Base directory" line pulls models toward the
+   filesystem.** Both `<skill_index>` and `<skill_section>` open with
+   `Base directory for this skill: <path>`. Qwen3-4B treated it as
+   somewhere to grep instead of calling `skill` again with a section,
+   and gave up; Qwen3-1.7B, having answered correctly from section 5,
+   wrote its answer INTO that directory rather than the cwd. Two of
+   three observed models, two different mistakes, same line. The line
+   is genuinely useful for skills that ship playbooks and assets, so
+   this is a trade-off to weigh, not an obvious removal.
+
+9. **Llama-3.2-3B's argument-level failures were never captured.** Eval
+   tasks 3 and 4 showed `x edit: edit` and `x bash: bash` repeated into
+   the doom-loop guard, meaning the call arrived structured and the tool
+   rejected the arguments, but `--plain` prints only tool name and
+   title. A single-task probe with the session store mounted reproduced
+   the OTHER failure (llama.cpp's `peg-native format` rejection)
+   instead, so the exact arguments remain uncaptured. Recorded as
+   unresolved rather than guessed at.
 
 ### T0 - Identity + honest gate
 - Rename `opencode-rust` → `temur`: package name, `--version`, binary name,

@@ -4,6 +4,41 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **The recommended-models table is now nine models measured on one
+  day, instead of two seven-task records and two lines of hearsay.**
+  Every row ran the same nine-task eval under identical conditions on
+  2026-08-12, so the scores are comparable to each other: Qwen3-4B-
+  Instruct-2507 9/9, Qwen2.5-Coder-3B-Instruct 8/9, Qwen2.5-Coder-1.5B-
+  Instruct 7/9, Qwen3-1.7B 6/9, Qwen3-0.6B 4/9, Llama-3.2-3B-Instruct
+  1/9, and Gemma-3-4B-it, Phi-4-mini-instruct and SmolLM2-1.7B-Instruct
+  0/9. The two "reported (pre-T11)" rows became measurements, and the
+  caveat that the table mixed seven-task and nine-task scores is gone
+  because there are no seven-task rows left.
+- **Three families score zero because llama.cpp never gives them the
+  tools, not because they cannot use them.** Sending one request three
+  ways and comparing prompt tokens (system plus a tool schema, system
+  alone, neither) shows `--jinja` silently dropping the tools array for
+  gemma-3, Phi-4-mini and SmolLM2, whose bundled chat templates have no
+  tool-call support: those three count identical tokens with and
+  without the schema, against a Qwen3-1.7B control that gains 177. The
+  server answers HTTP 200 and warns about nothing, so the models invent
+  calls like `{"tool": "file_delete", "path": "obsolete.tmp"}` for
+  tools they were never shown. Llama-3.2-3B does receive them and fails
+  for its own reason, llama.cpp's tool-call grammar rejecting its
+  output server-side.
+- **Qwen2.5-Coder-3B went from 0/7 to 8/9 without changing.** temur
+  changed. The row had recorded a model that picked the right tool
+  every time and wrote every call as plain text; T19's prose-call
+  recovery now executes exactly that shape, and the transcripts carry
+  the notice each time. Its 1.5B sibling writes the same JSON behind a
+  sentence of preamble, which the recovery does not accept, which is
+  why it still loses calls.
+- The docs also now say what a score does not mean: one run carries
+  about a task of noise (Qwen3-1.7B scored 6/9 twice while failing
+  different tasks), and two of the nine tasks partly measure whether a
+  model copies a placeholder such as `SOMEVALUE` literally, which three
+  of them did.
+
 ## v0.17.0 - 2026-08-12
 
 - **A skill too large for one tool result comes back as a section
