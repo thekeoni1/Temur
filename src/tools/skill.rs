@@ -54,6 +54,50 @@ fn section_ref(v: &Value) -> Result<String, ToolError> {
     }
 }
 
+/// The `Base directory for this skill: <path>` line, or nothing at all.
+///
+/// T30 (T29 queue finding 8, measured 2026-08-12): that line was
+/// unconditional, and two of the three models observed against an over-cap
+/// skill were pulled off the index by it. Qwen3-4B went to grep the
+/// directory instead of asking for a section and gave up; Qwen3-1.7B
+/// answered correctly from section 5 and then wrote its answer INTO that
+/// directory rather than the cwd. The line is genuinely useful for a skill
+/// that ships playbooks and assets, so it is kept where it points at
+/// something and dropped where it does not: a skill that is only a
+/// SKILL.md now names no path, and nothing invites a filesystem detour.
+///
+/// One `read_dir` at render time, like everything else here recomputed per
+/// call rather than cached. A directory that cannot be listed is treated as
+/// having nothing besides the skill file: the line's whole justification is
+/// assets we can see.
+fn base_dir_line(dir: &std::path::Path) -> String {
+    let has_more = match std::fs::read_dir(dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name() != std::ffi::OsStr::new(skills::SKILL_FILE)),
+        Err(_) => false,
+    };
+    if has_more {
+        format!("Base directory for this skill: {}\n", dir.display())
+    } else {
+        String::new()
+    }
+}
+
+/// The header block every mode opens with: the base-directory line when it
+/// earns its place, then `note` (already newline-terminated, or empty),
+/// then the blank line separating the header from the body. Empty when
+/// there is nothing to say, so a bare skill's wrapper sits directly against
+/// its content.
+fn header(dir: &std::path::Path, note: &str) -> String {
+    let mut h = base_dir_line(dir);
+    h.push_str(note);
+    if !h.is_empty() {
+        h.push('\n');
+    }
+    h
+}
+
 fn list_sections(body: &str, sections: &[skills::Section]) -> String {
     let lines = skills::render_index_lines(body, sections);
     let shown = lines.len().min(ERROR_LIST_CAP);
@@ -128,8 +172,8 @@ impl Tool for SkillTool {
         }
 
         let full = format!(
-            "<skill_content name=\"{name}\">\nBase directory for this skill: {}\n\n{body}\n</skill_content>",
-            dir.display()
+            "<skill_content name=\"{name}\">\n{}{body}\n</skill_content>",
+            header(&dir, "")
         );
         // At or under the cap: today's behavior exactly, minified. The
         // comparison is over the WRAPPED output because that is what the cap
@@ -170,10 +214,7 @@ impl SkillTool {
         sections: &[skills::Section],
         cap: usize,
     ) -> String {
-        let mut s = format!(
-            "<skill_index name=\"{name}\">\nBase directory for this skill: {}\n\n",
-            dir.display()
-        );
+        let mut s = format!("<skill_index name=\"{name}\">\n{}", header(dir, ""));
         s.push_str(&format!(
             "This skill is {} chars, over this session's {cap}-char tool output limit, so it is returned as a section index instead of being cut off in the middle. Nothing is summarized and nothing is omitted: every section listed below is available in full. Fetch one with {{\"name\": \"{name}\", \"section\": \"<number or heading>\"}}, using either the number or the heading text.\n\n",
             body.chars().count()
@@ -229,7 +270,7 @@ impl SkillTool {
         // the others rather than left guessing which one it got.
         let dup = if by_number.is_none() && matches.len() > 1 {
             format!(
-                "\nNote: {} sections share this heading; this is the first (number {}). Use a section number to select another: {}.\n",
+                "Note: {} sections share this heading; this is the first (number {}). Use a section number to select another: {}.\n",
                 matches.len(),
                 idx + 1,
                 matches
@@ -246,10 +287,10 @@ impl SkillTool {
         Ok(ToolOutput {
             title,
             output: format!(
-                "<skill_section name=\"{name}\" number=\"{}\" title=\"{}\">\nBase directory for this skill: {}{dup}\n\n{text}{sep}</skill_section>",
+                "<skill_section name=\"{name}\" number=\"{}\" title=\"{}\">\n{}{text}{sep}</skill_section>",
                 idx + 1,
                 sec.title,
-                dir.display()
+                header(dir, &dup)
             ),
         })
     }

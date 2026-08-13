@@ -102,6 +102,9 @@ fn unquote(s: &str) -> String {
     }
 }
 
+/// The one file that makes a directory a skill.
+pub const SKILL_FILE: &str = "SKILL.md";
+
 /// Enumerate installed skills across `dirs`. For each `<dir>/<name>/SKILL.md`,
 /// parse `name`/`description` from frontmatter (falling back to the directory
 /// name when `name:` is absent). Dedup by name, first-dir-wins (same
@@ -120,7 +123,7 @@ pub fn enumerate(dirs: &[PathBuf]) -> Vec<SkillInfo> {
             .collect();
         subdirs.sort(); // deterministic order within a directory
         for sub in subdirs {
-            let md = sub.join("SKILL.md");
+            let md = sub.join(SKILL_FILE);
             let content = match std::fs::read_to_string(&md) {
                 Ok(c) => c,
                 Err(_) => continue, // no SKILL.md here — not a skill dir
@@ -162,7 +165,7 @@ pub fn enumerate(dirs: &[PathBuf]) -> Vec<SkillInfo> {
 pub fn load(dirs: &[PathBuf], name: &str) -> Option<(PathBuf, String)> {
     for dir in dirs {
         let sub = dir.join(name);
-        let md = sub.join("SKILL.md");
+        let md = sub.join(SKILL_FILE);
         if let Ok(content) = std::fs::read_to_string(&md) {
             return Some((sub, content));
         }

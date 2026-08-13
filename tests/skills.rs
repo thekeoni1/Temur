@@ -18,6 +18,14 @@ fn write_skill_in(root: &Path, subdir: &str, name: &str, frontmatter: &str, body
     std::fs::write(dir.join("SKILL.md"), format!("{frontmatter}{body}")).unwrap();
 }
 
+/// Drop a file beside a skill's SKILL.md, making it a skill that ships
+/// assets (T30: what earns the base-directory line).
+fn write_asset(root: &Path, name: &str, file: &str, content: &str) {
+    let path = root.join(".temur/skills").join(name).join(file);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, content).unwrap();
+}
+
 #[test]
 fn enumerate_parses_and_dedups() {
     let a = tempfile::tempdir().unwrap();
@@ -91,7 +99,10 @@ fn skill_tool_loads_content_wrapped() {
 
     let out = tool.execute(json!({"name": "demo"}), &mut ctx).unwrap();
     assert!(out.output.contains("<skill_content name=\"demo\">"));
-    assert!(out.output.contains("Base directory for this skill:"));
+    // T30: this skill is only a SKILL.md, so there is no base directory
+    // line to send the model wandering (see base_dir_line_only_when_the_
+    // skill_ships_assets).
+    assert!(!out.output.contains("Base directory for this skill:"));
     assert!(out.output.contains("Do the thing."));
     assert!(out.output.contains("</skill_content>"));
 }
@@ -280,10 +291,65 @@ fn section_text_is_the_exact_slice_of_the_minified_body() {
     let tool = tool_over(a.path());
     let mut ctx = ToolCtx::new(a.path().to_path_buf());
     let out = tool.execute(json!({"name": "demo", "section": "A"}), &mut ctx).unwrap();
-    // Hierarchical: A carries A1 with it, and stops before B.
-    let payload_start = out.output.find("\n\n").unwrap() + 2;
-    let expected = "## A\naaa\n### A1\nnested\n";
-    assert_eq!(&out.output[payload_start..payload_start + expected.len()], expected);
+    // Hierarchical: A carries A1 with it, and stops before B. Pinned as the
+    // whole wrapper, which a bare skill (T30: no assets, so no base
+    // directory line) makes exact to the byte.
+    assert_eq!(
+        out.output,
+        "<skill_section name=\"demo\" number=\"2\" title=\"A\">\n## A\naaa\n### A1\nnested\n</skill_section>"
+    );
+}
+
+// ------------------------------------------------------------- T30 (P2)
+
+/// T29 queue finding 8, measured 2026-08-12: the unconditional
+/// `Base directory for this skill:` line pulled two of three observed
+/// models onto the filesystem instead of onto the index. It now appears
+/// only where it points at something: a skill directory holding more than
+/// its SKILL.md. Both branches, all three modes.
+#[test]
+fn base_dir_line_only_when_the_skill_ships_assets() {
+    const LINE: &str = "Base directory for this skill:";
+
+    // A skill that is only a SKILL.md: no line, in any mode.
+    let bare = tempfile::tempdir().unwrap();
+    write_skill(bare.path(), "demo", FM, &format!("## One\n1\n{}", big_body(40_000)));
+    let tool = tool_over(bare.path());
+    let mut ctx = ToolCtx::new(bare.path().to_path_buf());
+    let index = tool.execute(json!({"name": "demo"}), &mut ctx).unwrap();
+    assert!(index.output.starts_with("<skill_index"), "{}", &index.output[..40]);
+    assert!(!index.output.contains(LINE), "{}", index.output);
+    let section = tool.execute(json!({"name": "demo", "section": "1"}), &mut ctx).unwrap();
+    assert!(!section.output.contains(LINE), "{}", section.output);
+    let small = tempfile::tempdir().unwrap();
+    write_skill(small.path(), "demo", FM, "## One\n1\n");
+    let mut small_ctx = ToolCtx::new(small.path().to_path_buf());
+    let full = tool_over(small.path())
+        .execute(json!({"name": "demo"}), &mut small_ctx)
+        .unwrap();
+    assert!(full.output.starts_with("<skill_content"), "{}", full.output);
+    assert!(!full.output.contains(LINE), "{}", full.output);
+
+    // The same skills with one asset beside SKILL.md: the line is back,
+    // naming the directory, in all three modes.
+    write_asset(bare.path(), "demo", "playbooks/release.md", "steps\n");
+    let dir_str = bare.path().join(".temur/skills/demo").display().to_string();
+    let index = tool.execute(json!({"name": "demo"}), &mut ctx).unwrap();
+    assert!(index.output.contains(&format!("{LINE} {dir_str}\n\n")), "{}", index.output);
+    let section = tool.execute(json!({"name": "demo", "section": "1"}), &mut ctx).unwrap();
+    assert!(section.output.contains(&format!("{LINE} {dir_str}\n\n")), "{}", section.output);
+    write_asset(small.path(), "demo", "template.txt", "x\n");
+    let full = tool_over(small.path())
+        .execute(json!({"name": "demo"}), &mut small_ctx)
+        .unwrap();
+    assert!(
+        full.output.starts_with(&format!(
+            "<skill_content name=\"demo\">\n{LINE} {}\n\n",
+            small.path().join(".temur/skills/demo").display()
+        )),
+        "{}",
+        full.output
+    );
 }
 
 #[test]

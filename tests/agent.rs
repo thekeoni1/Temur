@@ -4459,7 +4459,9 @@ fn oversized_skill_indexes_then_serves_a_section_through_the_loop() {
 
     // The section result carries that section's exact bytes.
     assert!(results[1].starts_with("<skill_section name=\"demo\" number=\"3\""), "{}", results[1]);
-    let start = results[1].find("\n\n").unwrap() + 2;
+    // The payload begins on the line after the opening tag: this skill
+    // ships no assets, so T30 emits no base-directory line before it.
+    let start = results[1].find('\n').unwrap() + 1;
     assert_eq!(
         &results[1][start..start + expected.len()],
         expected,

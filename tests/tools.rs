@@ -170,6 +170,62 @@ fn write_creates_nested_paths() {
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello");
 }
 
+/// T30 (T29 queue finding 6, measured 2026-08-12): an overwrite that
+/// destroyed content says how much. The guard is untouched; this is the
+/// missing trace, since the model that did it read the file first and was
+/// allowed through correctly.
+#[test]
+fn write_over_existing_content_reports_the_bytes_it_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+
+    // The eval-task-5 shape: a 30-byte needle file overwritten with 8.
+    let needle = dir.path().join("beta.txt");
+    std::fs::write(&needle, "the needle lives on line two\n\n").unwrap();
+    assert_eq!(std::fs::metadata(&needle).unwrap().len(), 30);
+    run(&reg, &mut ctx, "read", json!({"filePath": needle.to_str().unwrap()})).unwrap();
+    let out = run(
+        &reg,
+        &mut ctx,
+        "write",
+        json!({"filePath": needle.to_str().unwrap(), "content": "beta.txt"}),
+    )
+    .unwrap();
+    assert!(
+        out.output.contains("(8 bytes, replaced 30 bytes of prior content)"),
+        "{}",
+        out.output
+    );
+
+    // A new file destroys nothing, and says nothing.
+    let fresh = dir.path().join("fresh.txt");
+    let out = run(
+        &reg,
+        &mut ctx,
+        "write",
+        json!({"filePath": fresh.to_str().unwrap(), "content": "hello"}),
+    )
+    .unwrap();
+    assert!(out.output.starts_with("Created "), "{}", out.output);
+    assert!(out.output.contains("(5 bytes)"), "{}", out.output);
+    assert!(!out.output.contains("replaced"), "{}", out.output);
+
+    // Neither does replacing an EMPTY file: there was no prior content.
+    let empty = dir.path().join("empty.txt");
+    std::fs::write(&empty, "").unwrap();
+    run(&reg, &mut ctx, "read", json!({"filePath": empty.to_str().unwrap()})).unwrap();
+    let out = run(
+        &reg,
+        &mut ctx,
+        "write",
+        json!({"filePath": empty.to_str().unwrap(), "content": "now it has content"}),
+    )
+    .unwrap();
+    assert!(out.output.starts_with("Overwrote "), "{}", out.output);
+    assert!(!out.output.contains("replaced"), "{}", out.output);
+}
+
 // --------------------------------------------------------- T19 (P2)
 // write's read-first rule: the prompt has always promised "this tool will
 // fail if you did not read the file first"; now it does.

@@ -46,6 +46,21 @@ impl Tool for WriteTool {
                 path.display()
             )));
         }
+        // T30 (T29 queue finding 6, measured 2026-08-12): a weak model
+        // grepped, read three files, then wrote 8 bytes over the 30-byte
+        // file holding the answer and reported success. The read-first
+        // guard permitted it correctly (the model HAD just read it), so
+        // nothing here is a guard defect; what was missing is any trace
+        // that content was destroyed. The successful result now says so
+        // whenever there was content to lose, with no smallness threshold:
+        // deciding which overwrites are worth mentioning is a judgment the
+        // tool has no standing to make. u64 because a file length is a file
+        // length, not a pointer width.
+        let prior_bytes: u64 = if existed {
+            std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+        } else {
+            0
+        };
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| ToolError::failed(e.to_string()))?;
         }
@@ -53,13 +68,18 @@ impl Tool for WriteTool {
         // A successful write knows the file's content: overwrites of its own
         // output (e.g. iterating on a generated file) need no re-read.
         ctx.record_read(&path);
+        let replaced = if prior_bytes > 0 {
+            format!(", replaced {prior_bytes} bytes of prior content")
+        } else {
+            String::new()
+        };
         Ok(ToolOutput {
             title: p.file_path,
             output: format!(
-                "{} {} ({} bytes)",
+                "{} {} ({} bytes{replaced})",
                 if existed { "Overwrote" } else { "Created" },
                 path.display(),
-                p.content.len()
+                p.content.len() as u64
             ),
         })
     }
