@@ -4,6 +4,47 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **A model that narrates before it calls no longer ends its turn in
+  silence.** A tool call written as plain text is executed only when the
+  whole message IS the call, which is deliberate and unchanged. The
+  detect-and-nudge fallback happened to share that same gate, so one
+  sentence of preamble followed by a fenced call got no execution, no
+  retry prompt, and no notice at all. Detection now also looks for a
+  fenced block anywhere in the message and applies the same checks it
+  always applied: real JSON, a registered tool name, an arguments key.
+  Nothing new EXECUTES; what was silence is now a retry. Qwen2.5-Coder-
+  1.5B lost eval tasks this way, including one whose call would have
+  passed. A bare JSON object mid-prose without a fence stays silent on
+  purpose, since prose that quotes a call shape while discussing a plan
+  is common.
+- **A skill only names its base directory when it has assets to name it
+  for.** `Base directory for this skill: <path>` opened every skill
+  result. Watched against an over-cap skill, two of three local models
+  were pulled off the section index by it: one went to grep the
+  directory instead of asking for a section and gave up, the other
+  answered correctly from section 5 and then wrote its answer into the
+  skill directory instead of the working directory. The line now appears
+  only when the skill's directory holds something besides its SKILL.md,
+  which is when it points at anything (a `playbooks/` directory, a
+  template, a script). Skills that ship assets see byte-identical output.
+- **A write that destroys content says how much.** Overwriting a
+  non-empty file now reports `Overwrote <path> (8 bytes, replaced 30
+  bytes of prior content)`. Always, with no smallness threshold, and
+  never for a new or previously empty file. The read-first guard is
+  unchanged and was never the problem: the model that replaced a 30-byte
+  file holding the answer with an 8-byte one, and then reported success,
+  had read that file a moment earlier and was allowed through correctly.
+  What was missing was any trace in the result.
+- **`temur init`'s local template now defaults to
+  Qwen3-4B-Instruct-2507, not Qwen3-1.7B.** The measurements of
+  2026-08-12 put the 4B at 9/9 and the 1.7B at 6/9, with the 4B also
+  several times faster per task, so the shipped default and the
+  "(primary)" label in the offline guide had stopped matching the
+  evidence. The 1.7B is now presented as the low-RAM choice, still
+  recommended and still measured, at 1.3 GB less resident. The fallback
+  shortlist, printed when no server answers the model picker, leads with
+  the 4B.
+
 ## v0.18.0 - 2026-08-12
 
 - **The recommended-models table is now nine models measured on one

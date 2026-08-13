@@ -906,8 +906,6 @@ which are real runs):
 
 ```
 <skill_index name="widget-cli">
-Base directory for this skill: /tmp/.tmpbu4YtQ/.temur/skills/widget-cli
-
 This skill is 48365 chars, over this session's 30000-char tool output limit, so it is returned as a section index instead of being cut off in the middle. Nothing is summarized and nothing is omitted: every section listed below is available in full. Fetch one with {"name": "widget-cli", "section": "<number or heading>"}, using either the number or the heading text.
 
 Drive the widget CLI with these instructions.
@@ -925,7 +923,7 @@ Sections:
 </skill_index>
 ```
 
-That index is 846 characters, 1.7% of the file it describes. A
+That index is 773 characters, 1.6% of the file it describes. A
 follow-up call with `{"name": "widget-cli", "section": 5}` returns
 Staging's 7,684 characters in full. Numbers and heading text both work,
 matching
@@ -953,8 +951,19 @@ about the scale of that: measured on this repo's own markdown it saves
 frontmatter and loose spacing it saved 2.2%; on the 48k skill above it
 removed 62 characters, 0.1%. Minification is a rounding error, and it
 is kept only because it is free and lossless. The section index is the
-mechanism: 48,427 characters become an 846-character index plus exactly
+mechanism: 48,427 characters become a 773-character index plus exactly
 the sections the task asks for.
+
+**A skill names its directory only when it has one worth naming.**
+Every mode used to open with `Base directory for this skill: <path>`.
+Watching three local models work an over-cap skill showed that line
+doing harm: one went to grep the directory instead of asking for a
+section and gave up, and another answered correctly from section 5 and
+then wrote its answer into the skill directory rather than the working
+directory. It is now emitted only when the skill's directory holds at
+least one entry besides its SKILL.md, which is exactly when the path
+points at something (a `playbooks/` directory, a template, a script).
+The fixture above is a lone SKILL.md, which is why it names no path.
 
 Two cases deliberately keep the old behavior, because an index would
 not help: a skill with no headings at all, and one whose prose before
@@ -994,6 +1003,22 @@ earlier in the session all count as "seen". New files are unaffected.
 set: the file may have changed on disk while temur was away, so a
 resumed session must re-read before overwriting.
 
+**A write that destroys content says so.** The guard above is about
+files the session has not seen; it says nothing about a file the model
+read a moment ago and then overwrote with something shorter, which is
+a real thing weak models do (one read three files, then replaced the
+30-byte file holding the answer with an 8-byte one and reported
+success). Any successful write over a non-empty file now names what is
+gone:
+
+```
+Overwrote /work/beta.txt (8 bytes, replaced 30 bytes of prior content)
+```
+
+Always, with no smallness threshold, and never for a new or previously
+empty file. It is a fact in the result the model has to read past, not
+a permission check: `write` still replaces exactly what it is told to.
+
 **Prose tool calls are recovered.** When a model writes its tool call
 as plain text instead of using the tool interface, and that text is
 one unambiguous call (a single `<tool_call>` block or the whole
@@ -1008,6 +1033,18 @@ it with a notice:
 Ambiguous or truncated shapes are never executed; they get the
 corrective nudge instead. Set `"prose_tool_calls": false` in
 config.json to turn recovery off and restore nudge-only behavior.
+
+A sentence of preamble before a fenced call is one of those shapes:
+`I'll create the file now.` followed by a fenced JSON object is not
+executed, deliberately, because "the whole message is the call" is
+what makes a prose call unambiguous. It used to get nothing at all,
+neither execution nor nudge, so the turn simply ended in silence; a
+model that narrates before it calls (Qwen2.5-Coder-1.5B does) lost
+those calls without a trace. The nudge now fires there, so the model
+gets a retry prompt and one more chance at the tool interface. A bare
+JSON object mid-prose with no fence around it stays silent on purpose:
+prose that quotes a call shape while discussing a plan is common, and
+the fence is the only cheap evidence the model meant it as a call.
 
 ## Key isolation
 
