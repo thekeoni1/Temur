@@ -160,6 +160,19 @@ fn complete_truncation(s: &str) -> Option<String> {
 /// tool interface: known literal markers, or a fenced/leading-brace JSON
 /// object that names a REGISTERED tool (the registered-name requirement is
 /// the false-positive killer) alongside an arguments-like key.
+///
+/// T30 (T29 queue finding 1, measured 2026-08-12): the fenced form is also
+/// looked for ANYWHERE in the message, not only as the whole trimmed body.
+/// Qwen2.5-Coder-1.5B writes one sentence of preamble and then a fenced
+/// call, which used to be neither executed nor nudged, so the turn ended in
+/// silence. Only DETECTION widened; [`extract_prose_tool_call`], the
+/// execution predicate, is unchanged, so this turns silence into a retry
+/// rather than widening what runs.
+///
+/// A bare JSON object mid-prose WITHOUT a fence stays undetected on
+/// purpose: prose that quotes a `{"name": ...}` shape while discussing a
+/// plan is common, and a fence is the only cheap evidence that the model
+/// meant the object as a call rather than as an illustration.
 pub fn detect_text_tool_call(text: &str, tool_names: &[String]) -> bool {
     const MARKERS: [&str; 5] = [
         "<tool_call>",
@@ -172,16 +185,28 @@ pub fn detect_text_tool_call(text: &str, tool_names: &[String]) -> bool {
         return true;
     }
     let t = text.trim();
-    let body = if t.starts_with("```") {
+    let whole = if t.starts_with("```") {
         strip_fences(t)
     } else {
         t.to_string()
     };
+    if names_registered_tool_with_args(&whole, tool_names) {
+        return true;
+    }
+    // First fenced hit wins; the same inner checks apply to each block.
+    fenced_blocks(text)
+        .iter()
+        .any(|b| names_registered_tool_with_args(b, tool_names))
+}
+
+/// The inner test both detection paths share: a leading-brace JSON object
+/// (whole, or its first balanced prefix if prose follows) naming a
+/// REGISTERED tool alongside an arguments-like key.
+fn names_registered_tool_with_args(body: &str, tool_names: &[String]) -> bool {
     let body = body.trim();
     if !body.starts_with('{') {
         return false;
     }
-    // Parse the whole body, or the first balanced object if prose follows.
     let obj = serde_json::from_str::<Value>(body)
         .ok()
         .or_else(|| {
@@ -200,6 +225,33 @@ pub fn detect_text_tool_call(text: &str, tool_names: &[String]) -> bool {
         || obj.get("input").is_some()
         || obj.get("parameters").is_some();
     named && has_args
+}
+
+/// The inner text of every fenced block, in order. A fence opens on a line
+/// whose first non-space run is ``` (any info string is dropped with that
+/// line) and closes on the next such line; an unclosed final fence yields
+/// the rest of the message, since a truncated call is still a call the
+/// model meant to make.
+fn fenced_blocks(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let mut open: Option<String> = None;
+    for line in s.lines() {
+        if line.trim_start().starts_with("```") {
+            match open.take() {
+                Some(body) => out.push(body),
+                None => open = Some(String::new()),
+            }
+            continue;
+        }
+        if let Some(body) = open.as_mut() {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    if let Some(body) = open {
+        out.push(body);
+    }
+    out
 }
 
 /// A prose tool call extracted for execution (T19 P3, the recorded
@@ -400,11 +452,49 @@ mod tests {
             ("{\"name\": \"read\"}", false),
             // Prose mentioning a tool, no JSON: not a call.
             ("You should use the read tool on a.txt.", false),
-            // JSON not at the start (mid-prose): not a call shape we nudge.
+            // JSON not at the start (mid-prose) and UNFENCED: still not a
+            // call shape we nudge, deliberately (T30).
             ("Here is the plan: {\"name\": \"read\", \"arguments\": {}}", false),
             // Plain answer.
             ("The answer is 4.", false),
             ("", false),
+            // T30 (queue finding 1, measured 2026-08-12): preamble then a
+            // fenced call. The exact Qwen2.5-Coder-1.5B eval-task-8 shape.
+            (
+                "I'll create the compressed file now.\n\n```json\n{\"name\": \"bash\", \"arguments\": {\"command\": \"echo eval-gz-99 | gzip > notes.txt.gz\"}}\n```",
+                true,
+            ),
+            // Preamble AND trailing prose, plain fence, "tool"+"input".
+            (
+                "Let me look.\n```\n{\"tool\": \"read\", \"input\": {\"filePath\": \"a\"}}\n```\nThat should do it.",
+                true,
+            ),
+            // The second fenced block is the call; first hit wins is about
+            // which one is inspected, not about giving up after one miss.
+            (
+                "Config:\n```json\n{\"debug\": true}\n```\nNow:\n```json\n{\"name\": \"write\", \"parameters\": {}}\n```",
+                true,
+            ),
+            // Fenced JSON that is not a tool call at all.
+            (
+                "Here is the config file:\n```json\n{\"name\": \"my-project\", \"version\": \"1.0\"}\n```",
+                false,
+            ),
+            // Fenced call naming an UNREGISTERED tool: the false-positive
+            // killer applies to the widened path unchanged.
+            (
+                "I'll compile it.\n```json\n{\"name\": \"compile\", \"arguments\": {\"target\": \"x\"}}\n```",
+                false,
+            ),
+            // Fenced, registered, but no arguments-like key.
+            ("Doing it:\n```json\n{\"name\": \"read\"}\n```", false),
+            // Fenced non-JSON: a shell snippet is not a call.
+            ("Run this:\n```sh\nread a.txt\n```", false),
+            // Unclosed fence: a truncated call still nudges.
+            (
+                "I'll read it.\n```json\n{\"name\": \"read\", \"arguments\": {\"filePath\": \"a\"}}",
+                true,
+            ),
         ];
         for (text, expected) in cases {
             assert_eq!(
@@ -472,6 +562,13 @@ mod tests {
             // Leading-brace object with trailing prose: detect nudges this
             // shape, but execution demands the WHOLE message.
             ("{\"name\": \"read\", \"arguments\": {}} Let me know how it goes.", None),
+            // T30: a sentence of preamble before a fenced call now NUDGES
+            // (see the detect table), and still never executes. The
+            // execution predicate is byte-identical to before.
+            (
+                "I'll create the compressed file now.\n\n```json\n{\"name\": \"bash\", \"arguments\": {\"command\": \"echo eval-gz-99 | gzip > notes.txt.gz\"}}\n```",
+                None,
+            ),
             // Marker opened but never closed.
             ("<tool_call>{\"name\": \"read\", \"arguments\": {}}", None),
             // Empty.

@@ -533,6 +533,78 @@ fn ambiguous_or_lossy_prose_still_nudges_never_executes() {
     drop(events);
 }
 
+// ------------------------------------- T30: preamble before a fenced call
+
+/// T29 queue finding 1, measured 2026-08-12: Qwen2.5-Coder-1.5B narrates a
+/// sentence and THEN writes a fenced call. That used to be neither executed
+/// (the T19 predicate demands the whole trimmed message) nor nudged (the T4
+/// detector shared the same gate), so the turn ended in silence. Detection
+/// widened; execution did not.
+#[test]
+fn preamble_then_fenced_call_nudges_and_never_executes() {
+    let dir = tempfile::tempdir().unwrap();
+    let preamble = "I'll create the file now.\n\n```json\n{\"name\": \"write\", \"arguments\": \
+                    {\"filePath\": \"preamble.txt\", \"content\": \"x\"}}\n```";
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(vec![text(preamble)], StopReason::EndTurn),
+            msg(
+                vec![tool_use(
+                    "tu_1",
+                    "write",
+                    serde_json::json!({"filePath": "preamble.txt", "content": "structured"}),
+                )],
+                StopReason::ToolUse,
+            ),
+            msg(vec![text("done")], StopReason::EndTurn),
+        ],
+    );
+    let events = collect_events(&mut session, "write the file");
+
+    assert_eq!(requests.borrow().len(), 3);
+    // The fenced call behind preamble was NOT executed: what landed is the
+    // structured retry the nudge asked for.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("preamble.txt")).unwrap(),
+        "structured"
+    );
+    assert!(
+        notices(&events).iter().any(|n| n.contains("plain text")),
+        "the nudge must fire: {:?}",
+        notices(&events)
+    );
+    assert!(
+        !notices(&events).iter().any(|n| n.contains("prose-call recovery")),
+        "execution must NOT widen: {:?}",
+        notices(&events)
+    );
+}
+
+/// The widened path is bounded by the same cap as the old one.
+#[test]
+fn preamble_fenced_nudges_are_capped_at_two_as_well() {
+    let dir = tempfile::tempdir().unwrap();
+    let preamble = || {
+        msg(
+            vec![text(
+                "Let me look at it.\n```json\n{\"name\": \"read\", \"arguments\": {}}\n```",
+            )],
+            StopReason::EndTurn,
+        )
+    };
+    let (mut session, requests) =
+        session_with(dir.path(), vec![preamble(), preamble(), preamble()]);
+    let events = collect_events(&mut session, "go");
+
+    assert_eq!(requests.borrow().len(), 3);
+    let nudge_notices = notices(&events)
+        .iter()
+        .filter(|n| n.contains("plain text"))
+        .count();
+    assert_eq!(nudge_notices, 2, "exactly two nudges per turn");
+}
+
 #[test]
 fn nudges_capped_at_exactly_two() {
     let dir = tempfile::tempdir().unwrap();
