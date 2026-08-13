@@ -4463,3 +4463,78 @@ a46880f  P3  baked local default -> qwen3-4b
 - The duplicate-heading note in a `<skill_section>` lost one blank
   line as a side effect of the header rework. No pin covered the
   spacing; recorded so it is not read later as an accident.
+
+## v0.19.0 acceptance - recorded result (SHIPPED, private)
+
+What shipped: T30 alone, model floor round two. Four items off the T29
+queue, all offline-verifiable; the T30 acceptance record above carries
+the per-finding detail, the planning-session rulings, and the
+deliberate non-change (the matrix was NOT re-run).
+
+Stage 1:
+
+- Four T30 commits pushed a749a9d..5417fea (P1 fenced-call nudge
+  widening, P2 conditional base-directory line + write replaced-bytes
+  note, P3 baked local default to qwen3-4b, P4 docs and close-out).
+  On-push ci run 31702070953 on headSha 5417fea green in both jobs
+  (test 1m17s 12:51:55Z..12:53:12Z, release-gate 4m21s
+  12:51:56Z..12:56:17Z).
+- Three local prep commits: f3dc5da bump (four files, Cargo.lock's
+  temur entry only, untrusted still 0.9.0, five README tag pins, no
+  v0.18.0 left outside history), 68b6bee CHANGELOG cut to
+  "## v0.19.0 - 2026-08-13" with a fresh empty Unreleased, c20a128
+  close-out carrying the T30 acceptance record above.
+- Full check.sh green at 0.19.0, first try, bare container reporting
+  "temur 0.19.0"; all three TUI pty smokes quiet.
+
+Stage 2:
+
+- Prep pushed 5417fea..c20a128; ci run 31706292904 on headSha c20a128
+  green in both jobs (test 2m14s 13:42:32Z..13:44:46Z, release-gate
+  8m29s 13:42:33Z..13:51:02Z).
+- Annotated tag v0.19.0 AT c20a128, tag object
+  c902af8a26c50d0bdba1cc1c7b88c2b9bc431ca8. The message was verified
+  against the RAW object before the tag was pushed, not through
+  `git tag -l --format` (which appends its own newline): the object's
+  message region was extracted and `cmp`-compared against the intended
+  bytes, identical, `od -c` showing it ends in exactly one \n, one
+  line, zero em-dash bytes in the whole object. The remote ref
+  resolves to the same object hash.
+- scripts/release.sh with NO SKIP_CHECK: green first try, 4/4
+  artifacts gated and staged, leak grep clean, install.sh/README skew
+  gate clean, all three pty smokes quiet for the second run of the
+  cycle.
+
+Staged sha256 (and the same values inside SHA256SUMS):
+
+```
+d0724dbc  temur-v0.19.0-aarch64-unknown-linux-musl
+63118695  temur-v0.19.0-armv7-unknown-linux-musleabihf
+622e7e69  temur-v0.19.0-i686-unknown-linux-musl
+ce70d46e  temur-v0.19.0-x86_64-unknown-linux-musl
+02c7180f  SHA256SUMS itself
+```
+
+- Private release created with 5 assets, not draft, not prerelease,
+  notes = the CHANGELOG v0.19.0 section verbatim. Repo isPrivate
+  confirmed true BEFORE creating it and again AFTER uploading.
+- Closing gate: the x86_64 asset and SHA256SUMS were re-downloaded and
+  both `cmp`-identical to staged, re-hashing to ce70d46e and 02c7180f,
+  with `sha256sum -c` OK inside the download dir. Then a fresh FULL
+  download of all five assets, every one `cmp`-identical to staged.
+  Installer matrix 6/6 twice, once against the staged dir and once
+  against that fresh download (pass + corrupt + unlisted, on the GNU
+  host and in busybox).
+
+Residuals carried out of this cycle, none blocking:
+
+- The gate, release and installer runs were launched detached under
+  script(1) rather than in a literal foreground shell, the standing
+  deviation: they exceed the build session's foreground time cap. All
+  were pty-backed, fully teed, and watched for the 180s pty-smoke
+  bound, which was never approached.
+- The substantive T30 residuals are unchanged and listed in the T30
+  record: F1's effect on Qwen2.5-Coder-1.5B is a prediction until the
+  next matrix pass measures it, the five surviving T29 queue items
+  keep their original numbers, and the USAGE index-size figures are
+  arithmetic on an earlier capture rather than a fresh one.
