@@ -3899,3 +3899,371 @@ future operator session. The ARM artifacts remain verified at build
 level under qemu only, hardware smoke pending hardware. Still queued
 behind the visibility flip: the PUBLIC one-liner gate, the
 hostname-blob-history decision, and the demo GIF recording.
+
+## T29 acceptance - recorded result (no release)
+
+Measurement milestone: nine local models through the nine-task
+weak-model eval, plus the first live observation of T28's skill index.
+NO Rust changed. Every finding below was RECORDED and left unfixed by
+design, so a later milestone can act on them with the numbers already
+in hand.
+
+### Conditions (identical for every row)
+
+`scripts/weak_model_eval.sh` at its defaults: compact prompt profile,
+llama.cpp `server-b10068` (self-reported `version: 10068 (571d0d540)`),
+ctx 8192 with `--jinja`, `EVAL_TASK_TIMEOUT` 300s, `EVAL_MIN` 0, the
+i686 musl-static release binary (`temur 0.17.0`) mounted read-only into
+`docker.io/i386/debian:stable`, each task in a fresh work dir with a
+fresh process, inside a `--network none` pod. Host: 7.8 GB RAM,
+16 cores, 909 GB free. Nothing was pulled; all three images were
+already local.
+
+One deviation from the committed harness, used for every run: a
+scratchpad copy differing by exactly ONE line, `rm -rf "$EVAL_ROOT"`
+in teardown replaced by `echo "KEEPING EVAL_ROOT=$EVAL_ROOT"`. Teardown
+runs after all scoring, so it cannot affect a score; without it,
+findings 2 and 6 below could not have been diagnosed at all (see F5).
+
+### Scores, all /9, measured 2026-08-12
+
+```
+model                          score  failed tasks
+Qwen3-4B-Instruct-2507          9/9   none
+Qwen2.5-Coder-3B-Instruct       8/9   2
+Qwen2.5-Coder-1.5B-Instruct     7/9   2, 8
+Qwen3-1.7B                      6/9   2, 5, 9   (first run: 2, 5, 8)
+Qwen3-0.6B                      4/9   2, 5, 7, 8, 9
+Llama-3.2-3B-Instruct           1/9   2, 3, 4, 5, 6, 7, 8, 9
+Gemma-3-4B-it                   0/9   all
+Phi-4-mini-instruct             0/9   all
+SmolLM2-1.7B-Instruct           0/9   all
+```
+
+Qwen3-1.7B was run twice (the first run overlapped the model downloads;
+the second was uncontended). Both scored 6/9, failing different tasks,
+which is F4. Qwen2.5-Coder-3B was re-run beyond the milestone's stated
+model list, because P5's "the eval has since grown to nine tasks"
+caveat could only be retired honestly once no `/7` row survived.
+
+### Download provenance
+
+Six models were fetched for this milestone, all Q4_K_M, all from the
+`unsloth` org on Hugging Face (the source `docs/OFFLINE.md` already
+names for these quants), into `/home/dev/models`:
+
+```
+unsloth/Qwen2.5-Coder-1.5B-Instruct-GGUF  Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf   986048032
+  sha256 5ecd6f45e137154099741291848db7415b5effa1ae69228f20dacea31dbf5ce4
+unsloth/Qwen3-0.6B-GGUF                   Qwen3-0.6B-Q4_K_M.gguf                    396705472
+  sha256 ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a
+unsloth/Llama-3.2-3B-Instruct-GGUF        Llama-3.2-3B-Instruct-Q4_K_M.gguf        2019377600
+  sha256 6c99cc00ae910f6a532a80022cb4bc1939094527a089c29294b841c0bd87f74d
+unsloth/gemma-3-4b-it-GGUF                gemma-3-4b-it-Q4_K_M.gguf                2489894016
+  sha256 04a43a22e8d2003deda5acc262f68ec1005fa76c735a9962a8c77042a74a7d19
+unsloth/Phi-4-mini-instruct-GGUF          Phi-4-mini-instruct-Q4_K_M.gguf          2491874272
+  sha256 88c00229914083cd112853aab84ed51b87bdf6b9ce42f532d8c85c7c63b1730a
+unsloth/SmolLM2-1.7B-Instruct-GGUF        SmolLM2-1.7B-Instruct-Q4_K_M.gguf        1055609504
+  sha256 61b6f90dd515fd3bffbd0f6ba716e87555dde77d9b0573a562c2c5e62afc4909
+```
+
+Three were already on this machine from earlier milestones. Their
+bytes are hashed here for the record, but the source repo was NOT
+recorded at fetch time, so it is not asserted (OFFLINE.md names the
+`unsloth/...-GGUF` repositories for these quants):
+
+```
+(repo not recorded)  Qwen3-1.7B-Q4_K_M.gguf                 1107409472  fetched 2026-07-19
+  sha256 b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897
+(repo not recorded)  Qwen3-4B-Instruct-2507-Q4_K_M.gguf     2497281120  fetched 2026-07-26
+  sha256 3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597
+(repo not recorded)  Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf  1929902496  fetched 2026-07-26
+  sha256 32f0014400ca1c1f81e7fb5befa9b9af476ba967dcbf92bad27409228c57c5b4
+```
+
+### Findings, all 17
+
+Nine are queued in ROADMAP.md, "Queued from T29 (2026-08-12)", with
+their evidence quoted inline there; they appear here as one-line
+cross-references. The other eight land here in full, because nothing
+else in the tree carries them.
+
+Cross-references to the ROADMAP queue:
+
+- F1 / F9, placeholder literalism: ROADMAP queue item 2.
+- F2, a weak model destroying a source file it had read: queue item 6.
+- F3, `max_tokens` 2048 binding before any tool call: queue item 3.
+- F4, a single run carrying about a task of noise: queue item 4.
+- F5, the harness deleting failed tasks' work dirs: queue item 5.
+- F7, preamble before a fenced call defeating execution AND nudge:
+  queue item 1.
+- F8, Qwen2.5-Coder-1.5B outscoring the baked default: queue item 7.
+- F11(b), Llama-3.2-3B's argument errors never captured: queue item 9.
+- F15, the skill index's "Base directory" line pulling models to the
+  filesystem: queue item 8.
+
+#### F6. Qwen3-1.7B no longer reproduces its "verified 2026-07-26 (eval 7/7)" row
+
+Current tasks 1 through 7 are the same seven that row was measured on.
+Qwen3-1.7B now scores 6/7 on that subset in the uncontended run and 5/7
+in the contended one, against a recorded 7/7. The harness prompts are
+unchanged; the binary is not (T19 truncation, T22 context detection,
+T24 and T26 advisories, T28 skill index). Recorded as real drift in the
+anchor rather than a re-scoring, and it is why the table now dates
+every row to a single day.
+
+#### F10. Qwen3-0.6B reproduces the T11 dogfood gap verbatim
+
+Task 7 (indirect-delete), the whole turn:
+
+```
+The tool 'delete' is not available in the provided functions. I can't
+delete the file 'obsolete.tmp' directly. Using the `bash` tool with
+the command `rm -f obsolete.tmp` would accomplish this, but I must
+note that this is not allowed for file deletion here.
+```
+
+It names the correct path and then forbids itself from taking it. That
+is the T11 dogfood observation ("qwen3-1.7b claimed it had no delete
+tool") that task 7 was written to probe, reproduced exactly, on a
+different model, four milestones later. The probe still earns its slot.
+
+#### F11. Llama-3.2-3B-Instruct: 1/9, two distinct wire failures
+
+Only task 1 passed, and it doom-looped after passing. Two modes:
+
+(a) Server-side format rejection. Task 7, the whole turn:
+
+```
+[!] provider error: api error (HTTP 200) server_error: The model
+produced output that does not match the expected peg-native format
+```
+
+llama.cpp's own tool-call grammar rejecting the model's output, before
+temur sees anything. A single-task probe reproduced this same mode,
+with the model's visible output beginning `` ```json ``.
+
+(b) Argument-level rejection into the doom-loop guard. Tasks 3 and 4:
+
+```
+  -> edit          -> bash
+  x edit: edit     x bash: bash
+  (three times, then)
+  [!] stopped: the same tool call was repeated 3 times in a row
+```
+
+The call arrived structured (temur dispatched it) and the tool errored;
+the `--plain` UI prints only tool name and title, so the argument error
+text is not recoverable from the transcript. The probe built to capture
+it reproduced mode (a) instead, so (b) remains uncaptured: queue item 9.
+
+#### F12. Superseded hypothesis, kept because it was wrong in a useful way
+
+On seeing gemma-3 answer with 82 input tokens where Qwen3-0.6B saw
+5467 on the identical task, this record's first draft concluded that
+"the bundled template delivers neither system nor tools". That was
+half wrong, and it was recorded as a hypothesis pending verification
+rather than as a result. F14 is the measurement, and it shows the
+system message arrives in every case. Kept here as the standing
+reminder that the usage counter tells you SOMETHING is missing, not
+WHAT.
+
+#### F13. Phi-4-mini-instruct: 0/9, same signature as gemma-3
+
+Every task 2 to 18 seconds, 76 in / 34 out on task 1 against 5467 in
+for Qwen3-0.6B on the same task. Task 1 output, verbatim:
+
+```
+{
+  "command": "write",
+  "arguments": {
+    "file": "hello.txt",
+    "text": "hello-eval"
+  }
+}
+```
+
+Task 4 output, verbatim and complete, with no call structure at all:
+
+```
+mkdir -p build && echo "done" > build/marker.txt
+```
+
+Worth separating from the template question: task 1 DOES clear the
+leading-brace gate and DOES carry a proper `arguments` object. It
+fails only because the tool name sits under `"command"`, and
+`recover.rs` accepts `"name"` or `"tool"` (lines 249-251 and 194-198).
+
+#### F14. VERIFIED: llama.cpp `--jinja` silently drops the TOOLS array for three families
+
+The measurement behind the three zero rows, and the correction to F12.
+Three requests per model, identical but for what they carry, comparing
+`prompt_tokens`: A = system + one tool schema, B = system only,
+C = user only.
+
+```
+model                A(sys+tools)  B(sys)  C(user)   tools delivered
+qwen3-1.7b CONTROL       207         30      11      yes  (+177)
+llama-3.2-3b             240         52      38      yes  (+188)
+gemma-3-4b                28         28      13      NO   (+0)
+phi-4-mini                22         22       6      NO   (+0)
+smollm2-1.7b              35         35      34      NO   (+0)
+```
+
+A equals B exactly for the three zero-score families: the tools array
+contributes nothing to the rendered prompt. B exceeds C for every
+model, so the system message is delivered in all cases; SmolLM2's C is
+high because its template injects a default system prompt when none is
+given, and it answered the marker directly ("You are correct. You are
+a test harness."). The server returns HTTP 200 and warns about
+nothing, so temur cannot see this: it sends a correct OpenAI-shaped
+request with a tools array and gets back a well-formed answer that
+ignores them. Those models are never told tools exist and invent
+shapes accordingly, gemma-3 task 7 being the clearest:
+`{"tool": "file_delete", "path": "obsolete.tmp"}`, naming a tool that
+does not exist in the registry.
+
+Consequence: those three cannot drive temur's tools on this stack at
+all, and the cause is upstream template support, not model ability and
+not a temur defect. The harness has no `--chat-template` knob, so it
+cannot even try an alternative; that limitation is now stated in the
+docs rather than worked around.
+
+#### F16. Sample size, stated honestly
+
+The T28 observation is three models, one task, one run each. It shows
+the mechanism CAN carry a small model to a correct answer with no
+hints, and CAN be ignored by a stronger one. It supports no rate.
+Any claim about how often models use the index needs a multi-task,
+multi-run design that this milestone did not build.
+
+#### F17. Qwen2.5-Coder-3B went from 0/7 to 8/9, and temur is why
+
+The table's most pessimistic row no longer describes the current
+binary. Re-run 2026-08-12: 8/9, only task 2 failing (the F9
+placeholder). The mechanism is VERIFIED from the transcripts, not
+inferred; temur prints a notice each time:
+
+```
+{"name": "write", "arguments": {"content": "hello-eval\n", "filePath": "/work/hello.txt"}}
+  [!] prose-call recovery: executed the write tool call the model
+      wrote as plain text
+```
+
+and on task 4, the same notice for a fenced block:
+
+```
+```json
+{"name": "bash", "arguments": {"command": "mkdir build && echo 'done' > build/marker.txt"}}
+```
+  [!] prose-call recovery: executed the bash tool call the model
+      wrote as plain text
+```
+
+The 2026-07-26 measurement predates T19 P3 (shipped 2026-07-30 in
+v0.8.0), which added execution of prose tool calls. The old OFFLINE.md
+narrative for this row was accurate then and stale now: the reasoning
+was always fine, and once wire format stopped mattering the model
+scores 8/9.
+
+This is the milestone's sharpest result when paired with F7, because
+the SAME feature decides both outcomes on the SAME family. Coder-3B
+emits a bare object or a bare fenced block and is recovered, 8/9.
+Coder-1.5B emits the identical JSON behind one sentence of preamble,
+is neither recovered nor nudged, silently, and it cost that model eval
+tasks 2 and 8 plus the whole T28 observation. One token position is
+the entire difference.
+
+### P4: first live observation of the T28 skill index
+
+Fixture: a purpose-built `atlas-deploy/SKILL.md`, 11,674 chars
+minified, 12 sections, against the 8,192-char cap that ctx 8192
+implies. The answer (`/var/lock/atlas-rollback.pid`) appears ONLY in
+section 5, "Rollback and recovery". The task named neither a section
+nor the index:
+
+```
+Using the atlas-deploy skill, find the exact filesystem path of the
+Atlas rollback lock file, then use the write tool to create answer.txt
+containing just that path.
+```
+
+The mechanism worked every time it was reached: an 11,674-char skill
+returned a 978-char index (8.4%) carrying the intro, all 12 numbered
+headings, and the fetch instruction.
+
+Qwen3-1.7B (6/9, run beyond the ">= 7" rule and the run that produced
+the best evidence of the milestone). Essential lines from the saved
+session:
+
+```
+TOOL_USE    skill {"name": "atlas-deploy"}
+TOOL_RESULT <skill_index ...> (978 chars)
+TOOL_USE    skill {"name": "atlas-deploy", "section": "5"}
+TOOL_RESULT <skill_section name="atlas-deploy" number="5"
+             title="Rollback and recovery"> (1197 chars)
+TOOL_USE    write {"content": "/var/lock/atlas-rollback.pid", ...}
+```
+
+Argument form: the NUMBER, passed as a JSON STRING (`"5"`, not `5`);
+the schema accepts both. It mapped "rollback lock file" onto the
+heading "Rollback and recovery" from the heading list alone and
+answered correctly, with no prompting beyond the task. Separate model
+error, not a T28 problem: it wrote to
+`/work/.temur/skills/atlas-deploy/answer.txt`, inside the skill
+directory, rather than the cwd. Content was correct.
+
+Qwen3-4B (9/9): received the index and ignored the affordance.
+
+```
+TOOL_USE    skill {"name": "atlas-deploy"}
+TOOL_RESULT <skill_index ...> (978 chars)
+TOOL_USE    grep {"pattern": "rollback lock file",
+                  "path": "/work/.temur/skills/atlas-deploy"}
+TOOL_RESULT "No matches found"
+TOOL_USE    glob {"pattern": "rollback.lock", "path": "/work"}
+TOOL_RESULT "No files found"
+TEXT        "The rollback lock file path could not be found ... I
+             cannot determine the exact filesystem path"
+```
+
+It never called `skill` with a section, going to the filesystem
+instead and grepping for a literal phrase the document does not
+contain. The strongest model in the matrix failed the task the 6/9
+model passed.
+
+Qwen2.5-Coder-1.5B (7/9): reached for the affordance and lost it to
+F7. Its whole turn was preamble plus a fenced block, so nothing ran:
+
+```
+Here's how you can achieve this using the provided tools:
+
+```json
+{
+  "name": "skill",
+  "arguments": {"name": "atlas-deploy", "section": 2}
+}
+```
+```
+
+Notable on its own: it asked for `section` on its FIRST call, having
+never seen an index, guessing 2 (the answer is in 5). The affordance
+is discoverable from the tool description alone. Argument form here
+was a bare NUMBER.
+
+### Residuals
+
+- Llama-3.2-3B's argument-level errors remain uncaptured (F11b, queue
+  item 9); the probe reproduced the other failure mode.
+- The T28 observation is one task on three models (F16); no rate is
+  claimed anywhere in the docs.
+- The baked default model (`src/init.rs`, `qwen3-1.7b`) and the
+  "(primary)" label in OFFLINE.md were both deliberately left alone:
+  flipping a default is the planning session's call and this milestone
+  changed no Rust. The docs now say plainly that the 4B scores highest
+  (queue item 7).
+- Two of the nine tasks partly measure placeholder literalism (queue
+  item 2), so every score in the table carries that; the docs say so.
+- The eval gate ran the scratchpad harness copy described above, not
+  `scripts/weak_model_eval.sh` byte for byte. The committed script is
+  unchanged.
