@@ -456,6 +456,25 @@ GETs; mismatches are WARNs, since servers alias ids). `--no-network`
 skips the probes and those checks. Running `temur` with no config at
 all prints quickstart pointers instead of a raw credential error.
 
+For the active selection, again on a keyless local endpoint only,
+doctor also checks whether the server actually renders your tool
+definitions. llama.cpp's `--jinja` mode drops the tools array outright
+when the model's chat template has no tool support: HTTP 200, nothing
+in the log, nothing in the response, and an agent whose tools simply
+never fire. Doctor sends the same one-token completion twice, once
+bare and once carrying a single probe tool, and compares the reported
+prompt tokens:
+
+```
+WARN: the server at http://127.0.0.1:8080/v1 appears to drop tool definitions for "gemma-3-4b" (prompt_tokens 10 with and without tools): the chat template has no tool support, so tool calls can silently never happen
+```
+
+Identical counts mean the array went nowhere. Differing counts PASS,
+naming both. A server that reports no usable token counts is a NOTE,
+never a FAIL. The two extra requests are capped at one generated token
+each, go to a local keyless endpoint, and are skipped entirely under
+`--no-network`. See OFFLINE.md for which models this hits.
+
 The install check answers a question that costs real debugging time
 after a rebuild: is the `temur` your shell runs the one you just built?
 Doctor compares the first `temur` on your PATH against the binary
@@ -1045,6 +1064,52 @@ gets a retry prompt and one more chance at the tool interface. A bare
 JSON object mid-prose with no fence around it stays silent on purpose:
 prose that quotes a call shape while discussing a plan is common, and
 the fence is the only cheap evidence the model meant it as a call.
+
+**A prose call is executed once, not once per resend.** Recovery
+executes a call the model wrote as text, and a model can write the
+same call again, and again. One of them wrote a single fenced `write`
+about sixty consecutive times; each resend was a fresh successful
+execution, so nothing stopped it and the turn ran until the context
+window overflowed. A resend that is byte-identical to the call just
+dispatched is now answered instead of run:
+
+```
+  [!] prose-call recovery: the write call repeated verbatim; not executed again
+```
+
+The model is told the call was already made and its result is above.
+Any change of tool name or argument resets this, so a model making
+progress never notices it, and the answers are capped like every other
+nudge, so a model that will not move on ends its turn. Structured tool
+calls have had their own doom-loop guard since M2 and are unaffected.
+
+**A call to a tool that does not exist gets named.** A fenced call to,
+say, `delete` used to match nothing, because both the executor and the
+nudge require a REGISTERED tool name, and the turn ended in silence
+three seconds in. temur now says which tool does not exist and lists
+the ones that do, from the live registry:
+
+```
+  [!] the model called a tool that does not exist ("delete"); listed the available tools
+```
+
+It never executes anything, it is capped like the other nudges, and it
+requires both a fence and an arguments key, so a `{"name": ...}`
+package.json fragment in a code block still says nothing.
+
+**An empty `workdir` means "not specified".** A model that filled
+bash's optional `workdir` in with `""` used to get `failed to spawn
+shell: No such file or directory (os error 2)`, and then parroted that
+error text back into its next call's arguments. Empty or whitespace
+now falls back to the working directory; a workdir that names a real
+but missing path still fails, loudly.
+
+**Binary refusals suggest the right tool.** `read` refuses binary
+files, and now points at a remedy per type instead of one generic
+hint: `pdftotext` for a PDF, `unzip -l` for an archive, `zcat` for a
+gzip, and "ask the user to describe it" for an image, since temur
+cannot see images. Unknown binary types keep the general suggestion to
+inspect with `file`, `unzip -l` or `strings`.
 
 ## Key isolation
 

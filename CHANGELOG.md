@@ -4,6 +4,60 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **A tool call written as plain text is executed once, not once per
+  resend.** Prose-call recovery executes a call the model wrote as text.
+  A model can write the same call again, and again: one wrote a single
+  fenced `write` about sixty consecutive times, each resend a fresh
+  successful execution, until the context window overflowed. There was
+  no bound, because the nudge cap counts nudges and FAILED executions
+  only. A resend byte-identical to the call just dispatched is now
+  answered rather than run, telling the model the call was already made
+  and its result is above; any change of tool name or argument resets
+  the guard, and the answers are capped like every other nudge, so a
+  model that will not move on ends its turn. Structured tool calls keep
+  their existing doom-loop guard and are unaffected.
+- **A call to a tool that does not exist gets named instead of
+  ignored.** A fenced `{"name": "delete", ...}` matched nothing, because
+  both the executor and the nudge require a REGISTERED tool name, so the
+  turn ended in total silence three seconds in with 31 output tokens.
+  temur now names the tool that does not exist and lists the ones that
+  do, from the live registry. It never executes, it is capped like the
+  other nudges, and it requires both a fence and an arguments key, so a
+  `{"name": ...}` package.json fragment in a code block stays silent.
+- **`temur doctor` detects a server that silently drops your tool
+  definitions.** llama.cpp `--jinja` drops the tools array when the
+  model's chat template has no tool support: HTTP 200, nothing logged,
+  nothing in the response, and an agent whose tools never fire, which
+  reads as a model that cannot follow instructions. Doctor sends the
+  same one-token completion twice, bare and with one probe tool, and
+  compares the reported prompt tokens; identical counts WARN naming
+  both numbers, differing counts PASS, no usable counts is a NOTE and
+  never a FAIL. Active selection only, keyless local endpoints only,
+  skipped under `--no-network`. Confirmed on `b10423-a94d563ed` and
+  reported upstream 2026-08-14.
+- **An empty `workdir` no longer breaks the bash tool.** A model that
+  filled the optional field in with `""` got `failed to spawn shell: No
+  such file or directory (os error 2)` and then parroted that error text
+  into its next call's arguments. Empty or whitespace now means "not
+  specified" and falls back to the working directory. A workdir naming a
+  real but missing path still fails.
+- **Binary read refusals name the right tool for the file.**
+  `pdftotext` for a PDF, `unzip -l` for an archive, `zcat` for a gzip,
+  `tar -tf` for a tarball, and "ask the user to describe it" for an
+  image, since temur cannot see images. The refusal itself is unchanged
+  and unknown binary types keep the general `file`/`strings` hint.
+- **The default system prompt says the filesystem is reachable.** Asked
+  conversationally ("can you find it in the folder?"), qwen3-4b denied
+  having file access while holding file tools; the same request phrased
+  as an instruction used them at once. Both prompt profiles now say to
+  list or read a path before claiming it cannot be accessed.
+- **`scripts/serve.sh start <model>` no longer says OK while serving a
+  different one.** With a server already up, a request for another model
+  printed `OK: already running` and kept serving the old one, which
+  silently poisoned a measurement. It now fails, naming both models and
+  the stop-then-restart sequence. With no model requested, the previous
+  behavior stands.
+
 ## v0.19.0 - 2026-08-13
 
 - **A model that narrates before it calls no longer ends its turn in

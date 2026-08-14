@@ -139,6 +139,15 @@ summary() {
 start_cmd() { # $1 (optional) = model name resolved via select_model
     [ "$#" -le 1 ] || { usage; exit 2; }
     model_arg="${1:-}"
+    # Did the CALLER name a model? Recorded before any defaulting, because
+    # by the time the already-running check runs, MODEL_GGUF is always set.
+    # T31 (D4, operator dogfood 2026-08-14): `start <name>` against a
+    # running server printed OK and kept serving the OLD model, which
+    # silently poisoned a measurement.
+    model_requested=""
+    if [ -n "$MODEL_GGUF" ] || [ -n "$model_arg" ]; then
+        model_requested=yes
+    fi
     echo "==== serve: preflight ===="
     command -v podman >/dev/null 2>&1 || { echo "FAIL: podman not found"; exit 1; }
     # NEVER auto-pull (offline_demo.sh precedent): missing image => print
@@ -194,6 +203,18 @@ start_cmd() { # $1 (optional) = model name resolved via select_model
     echo "OK: image and model present (nothing will be pulled)"
 
     if is_running; then
+        # A running server keeps its model. Saying OK to a request for a
+        # DIFFERENT one hands back a server that answers as the old model,
+        # and nothing downstream can tell. Fail loudly instead; with no
+        # model requested, "already running" stands exactly as before.
+        running_model=$(podman inspect --format '{{range .Mounts}}{{.Source}}{{end}}' "$CONTAINER_NAME" 2>/dev/null || true)
+        if [ -n "$model_requested" ] && [ -n "$running_model" ] && [ "$running_model" != "$MODEL_GGUF" ]; then
+            echo "FAIL: $CONTAINER_NAME is already serving a different model"
+            echo "  running  : $running_model"
+            echo "  requested: $MODEL_GGUF"
+            echo "  a running server keeps its model; switch with:  $0 stop  then re-run this command"
+            exit 1
+        fi
         echo "OK: already running"
         summary
         exit 0

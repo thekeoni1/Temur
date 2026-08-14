@@ -410,6 +410,25 @@ politely; none of these are errors:
 | `role` repeated in every delta | Tolerated |
 | `finish_reason` missing after tool calls | Tool use inferred; the calls execute |
 | Error as a bare string (`{"error":"…"}`) | Parsed and reported like the object form |
+| Tool definitions silently dropped (`--jinja`, template without tool support) | Nothing on the wire says so; `temur doctor` detects it (see below) and WARNs |
+
+**The tools-drop quirk is the one that looks like a bad model.** When
+llama.cpp runs `--jinja` against a chat template with no tool support,
+the tools array is dropped: HTTP 200, no log line, no response signal,
+and a model that was never told tools exist. It answers in prose, or
+invents shapes like `{"name": "delete", "arguments": {...}}`, and the
+session reads as a model that cannot follow instructions.
+
+`temur doctor` diagnoses it for the active selection on a keyless
+local endpoint: it sends one tiny completion twice, bare and with a
+single probe tool, and compares the reported prompt tokens. Identical
+counts mean the array went nowhere and doctor WARNs; differing counts
+PASS. Re-confirmed on `b10423-a94d563ed` on 2026-08-14 (gemma-3-4b
+10/10, Phi-4-mini 4/4, SmolLM2 31/31 prompt tokens with and without
+tools, against a Qwen3-4B control that moved), so it is current
+behavior, not a fixed historical quirk. Reported upstream 2026-08-14.
+The fix is a chat template with tool support, or a model whose bundled
+one has it.
 
 ## The offline demo
 
