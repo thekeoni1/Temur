@@ -69,8 +69,9 @@ impl Tool for ReadTool {
         }
         if is_binary(&path)? {
             return Err(ToolError::failed(format!(
-                "Cannot read binary file: {}. Inspect it with bash instead (e.g. file, unzip -l, strings).",
-                path.display()
+                "Cannot read binary file: {}. {}",
+                path.display(),
+                binary_hint(&path)
             )));
         }
 
@@ -178,6 +179,31 @@ fn read_dir(path: &std::path::Path, offset: u64, limit: u64, title: String) -> R
             sliced.join("\n")
         ),
     })
+}
+
+/// What to do INSTEAD, by file type. T31 (D3, operator dogfood
+/// 2026-08-14): the binary refusal worked live (qwen3-4b stopped trying to
+/// read a PDF as text), but the generic hint sent it toward `unzip -l` on a
+/// PDF. A remedy the model can act on is worth a table this small. Unknown
+/// types keep the generic sentence, byte-identical to the pre-T31 message.
+fn binary_hint(path: &std::path::Path) -> &'static str {
+    const GENERIC: &str = "Inspect it with bash instead (e.g. file, unzip -l, strings).";
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return GENERIC;
+    };
+    match ext.to_ascii_lowercase().as_str() {
+        "pdf" => {
+            "Its text is compressed, so convert it with bash first (e.g. pdftotext file.pdf -) \
+             or ask the user for the text."
+        }
+        "zip" | "jar" | "war" => "List its contents with bash (e.g. unzip -l).",
+        "gz" => "Decompress it with bash (e.g. zcat, or gunzip -c for a copy).",
+        "tar" => "List its contents with bash (e.g. tar -tf).",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => {
+            "It is image content and temur cannot see images, so ask the user to describe it."
+        }
+        _ => GENERIC,
+    }
 }
 
 fn is_binary(path: &std::path::Path) -> Result<bool, ToolError> {

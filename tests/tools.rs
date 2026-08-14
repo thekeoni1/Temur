@@ -337,15 +337,37 @@ fn read_binary_denial_names_bash_inspection() {
     let dir = tempfile::tempdir().unwrap();
     let reg = Registry::standard();
     let mut ctx = ctx_in(dir.path());
-    let target = dir.path().join("blob.gz");
-    std::fs::write(&target, b"\x1f\x8b\x08\x00binary").unwrap();
-    let err = run(&reg, &mut ctx, "read", json!({"filePath": target.to_str().unwrap()}))
-        .unwrap_err();
-    assert!(err.to_string().contains("Cannot read binary file"), "{err}");
+    let refuse = |ctx: &mut _, name: &str| {
+        let target = dir.path().join(name);
+        std::fs::write(&target, b"\x1f\x8b\x08\x00binary\x00stuff").unwrap();
+        let err = run(&reg, ctx, "read", json!({"filePath": target.to_str().unwrap()}))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Cannot read binary file"), "{err}");
+        err
+    };
+
+    // An unknown binary type keeps the pre-T31 sentence, byte-identical.
+    let err = refuse(&mut ctx, "blob.dat");
     assert!(
-        err.to_string().contains("Inspect it with bash instead"),
+        err.ends_with("Inspect it with bash instead (e.g. file, unzip -l, strings)."),
         "{err}"
     );
+    let err = refuse(&mut ctx, "noext");
+    assert!(err.contains("Inspect it with bash instead"), "{err}");
+
+    // T31 (D3): known types get a remedy they can actually run. Sending a
+    // model toward `unzip -l` on a PDF is what this replaces.
+    let err = refuse(&mut ctx, "paper.pdf");
+    assert!(err.contains("pdftotext"), "{err}");
+    assert!(!err.contains("unzip -l"), "{err}");
+    let err = refuse(&mut ctx, "bundle.zip");
+    assert!(err.contains("unzip -l"), "{err}");
+    let err = refuse(&mut ctx, "blob.gz");
+    assert!(err.contains("zcat"), "{err}");
+    let err = refuse(&mut ctx, "shot.png");
+    assert!(err.contains("cannot see images"), "{err}");
+    assert!(!err.contains("strings"), "{err}");
 }
 
 #[test]
@@ -393,6 +415,54 @@ fn bash_output_exit_code_and_timeout() {
     // workdir respected
     let out = run(&reg, &mut ctx, "bash", json!({"command": "pwd", "workdir": dir.path().to_str().unwrap()})).unwrap();
     assert!(out.output.contains(dir.path().file_name().unwrap().to_str().unwrap()));
+}
+
+/// T31 (H2, operator dogfood 2026-08-14, eval task 6): the model filled the
+/// optional workdir in with "", which reached the spawn verbatim and failed
+/// with "No such file or directory (os error 2)"; it then parroted that
+/// error into its next call's arguments. Empty means absent.
+#[test]
+fn bash_empty_workdir_falls_back_to_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let leaf = dir.path().file_name().unwrap().to_str().unwrap();
+
+    for empty in ["", "   ", "\t\n"] {
+        let out = run(
+            &reg,
+            &mut ctx,
+            "bash",
+            json!({"command": "pwd", "workdir": empty}),
+        )
+        .unwrap_or_else(|e| panic!("workdir {empty:?} must not fail the spawn: {e}"));
+        assert!(
+            !out.output.contains("failed to spawn shell"),
+            "workdir {empty:?}: {}",
+            out.output
+        );
+        assert!(out.output.contains(leaf), "workdir {empty:?}: {}", out.output);
+    }
+
+    // A real workdir is still honored, and a bogus one still fails loudly
+    // rather than being silently swallowed by the new fallback.
+    let sub = dir.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let out = run(
+        &reg,
+        &mut ctx,
+        "bash",
+        json!({"command": "pwd", "workdir": sub.to_str().unwrap()}),
+    )
+    .unwrap();
+    assert!(out.output.contains("sub"), "{}", out.output);
+    let bogus = run(
+        &reg,
+        &mut ctx,
+        "bash",
+        json!({"command": "pwd", "workdir": "/no/such/dir/anywhere"}),
+    );
+    assert!(bogus.is_err(), "a named but missing workdir must still error");
 }
 
 #[test]

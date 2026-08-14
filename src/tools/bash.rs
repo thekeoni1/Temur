@@ -238,8 +238,17 @@ impl Tool for BashTool {
     fn execute(&self, input: Value, ctx: &mut ToolCtx) -> Result<ToolOutput, ToolError> {
         let p: Params = parse_input(input)?;
         let timeout = Duration::from_millis(p.timeout.unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS));
+        // An empty or whitespace-only workdir means "not specified", not
+        // "the empty path". T31 (H2, operator dogfood 2026-08-14, eval task
+        // 6): Qwen2.5-Coder-1.5B filled the optional field in with "",
+        // which reached Command::current_dir verbatim and failed the spawn
+        // with "No such file or directory (os error 2)". The model then
+        // parroted that error text back into the next call's arguments and
+        // got nowhere. Treating it as absent costs nothing: no real
+        // directory is named by an empty string.
         let workdir = p
             .workdir
+            .filter(|w| !w.trim().is_empty())
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| ctx.cwd.clone());
 
