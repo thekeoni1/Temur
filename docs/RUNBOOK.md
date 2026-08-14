@@ -4538,3 +4538,199 @@ Residuals carried out of this cycle, none blocking:
   next matrix pass measures it, the five surviving T29 queue items
   keep their original numbers, and the USAGE index-size figures are
   arithmetic on an earlier capture rather than a fresh one.
+
+## T31 acceptance - recorded result (no release)
+
+Model floor, round three: seven findings from operator dogfood day 1
+plus a Qwen2.5-Coder-1.5B eval re-run, all dated 2026-08-14, built one
+phase at a time with a full `scripts/check.sh` gate per phase. Offline
+throughout except one live `serve.sh` check against a stub container
+(no model was loaded and no provider was called). The matrix was NOT
+re-run.
+
+### What shipped
+
+- **H1, the unbounded recovery loop.** Prose-call recovery executed a
+  byte-identical resend as a fresh call every time. Eval task 8 has the
+  model resending ONE fenced `write` about sixty consecutive times, each
+  a fresh SUCCESS, until the context window overflowed: `NUDGE_LIMIT`
+  bounds nudges and FAILED executions, and successes were uncapped.
+  `ProseRepeatGuard` remembers the last DISPATCHED call (executed or
+  failed, since the failure text is fed back either way). A resend equal
+  in tool name and argument VALUE is answered with a short honest notice
+  rather than run, and the notice counts against the same cap, so the
+  sequence is execute, notice, notice, turn end. Any change of name or
+  argument resets the guard; key ORDER is not a change, because
+  serde_json runs with `preserve_order` and IndexMap equality is
+  order-independent. Structured `tool_use` repetition keeps the M2
+  doom-loop guard and is deliberately out of scope: no evidence of harm
+  there.
+
+- **H3, the unknown tool.** Eval task 7 died in three seconds at 31
+  output tokens: a fenced `{"name": "delete", "arguments": {...}}`
+  matched neither the executor nor the nudge, both of which require a
+  REGISTERED name. That requirement is the false-positive killer and
+  stays. `detect_unknown_tool_call` is a SIBLING of the detector rather
+  than a widening of it, so every existing pin in
+  `detect_text_tool_call` is literally unchanged; the loop names the
+  bogus tool and lists the registry, never a hardcoded set. It never
+  executes and is capped like every other nudge. It requires a FENCE and
+  an arguments-like key, so the unfenced whole-message pin and the
+  `{"name": ...}` package.json-fragment pin both hold, and the
+  registered paths keep priority.
+
+- **H2, the empty workdir.** bash treated `""` as a path and failed the
+  spawn with `No such file or directory (os error 2)`, after which the
+  model parroted that error text into its next call's arguments. Empty
+  or whitespace after trim now means absent and falls back to
+  `ctx.cwd`; a workdir naming a real but missing path still errors. The
+  schema description is unchanged.
+
+- **D3, the binary refusal hint.** The refusal worked live (qwen3-4b
+  stopped trying to read a PDF as text) but pointed every type at one
+  generic hint, sending a PDF toward `unzip -l`. Known types now get a
+  remedy they can run: `pdftotext`, `unzip -l`, `zcat`, `tar -tf`, and
+  "ask the user to describe it" for images. Unknown types keep the
+  pre-T31 sentence byte-identically, and the test pins that with
+  `ends_with`.
+
+- **The doctor tools-drop probe.** llama.cpp `--jinja` drops the tools
+  array for templates without tool support at HTTP 200, with no log
+  line and no response signal. Re-confirmed on `b10423-a94d563ed` on
+  2026-08-14 (gemma-3-4b 10/10, Phi-4-mini 4/4, SmolLM2 31/31 prompt
+  tokens with and without tools, against a Qwen3-4B control that
+  moved), so this is CURRENT behavior, not a fixed historical quirk.
+  Reported upstream 2026-08-14. Doctor sends one tiny completion twice,
+  bare and with a single probe tool, and compares
+  `usage.prompt_tokens`: identical WARNs naming both counts and the
+  consequence, differing PASSes naming both, anything unusable is a
+  NOTE and never a FAIL. `probe_prompt_tokens` is the THIRD and last
+  keyless request doctor may make and takes a base URL and a model id
+  and nothing else, so it cannot attach an auth header or touch a key
+  file by construction. Active selection only, openai-compat only,
+  keyless only, absent under `--no-network`, one generated token each.
+
+- **D1, the prompt sentence.** Asked conversationally ("can you find it
+  in the folder?"), qwen3-4b denied having file access while holding
+  file tools; the same request phrased as an instruction used them at
+  once. Both prompt profiles gain one sentence saying the filesystem is
+  reachable through these tools and to list or read a path before
+  claiming it cannot be accessed.
+
+- **D4, the serve.sh model mismatch.** With a server already up,
+  `serve.sh start <name>` printed `OK: already running` and kept
+  serving the OLD model, which silently poisoned a measurement. A model
+  REQUESTED by name argument or `MODEL_GGUF` is now compared against
+  the running container's mounted source, and a mismatch FAILs naming
+  both models and the stop-then-restart sequence. Whether a model was
+  requested is recorded BEFORE any defaulting, because by the time the
+  already-running check runs `MODEL_GGUF` is always set; the
+  no-model-requested path is unchanged.
+
+### Design choices worth recording
+
+- **H3 as a sibling, not a widening.** The kickoff described widening
+  `detect_text_tool_call`. Returning a variant from that function would
+  have rewritten its whole pin table, which is the neighbouring
+  contract T30 went out of its way to keep byte-identical. A separate
+  `detect_unknown_tool_call`, consulted only when the registered paths
+  find nothing, gets the same behavior with every existing pin
+  untouched.
+
+- **H1 reuses `NUDGE_LIMIT`.** The kickoff allowed a sibling constant.
+  Reusing the existing counter means the repeat notice, the failed
+  prose execution, and the plain-text nudge all draw on one per-turn
+  budget, which is the property that matters (a stubborn model ends its
+  turn) without a second number to keep consistent.
+
+### Test changed by a behavior change
+
+`prose_call_failures_count_toward_nudge_cap_and_terminate` scripted
+three IDENTICAL failing prose calls. Under H1 the second one takes the
+repeat-guard path instead of a second execution, so the test would have
+measured the guard rather than the failure cap. It now uses three
+distinct targets and still pins exactly two failed executions per turn.
+Recorded because a changed test is a claim about intent, not a fix.
+
+### Deviations
+
+- **The evidence archive did not exist at the stated path.** The
+  kickoff pointed at `~/temur-eval-archive/coder15b-2026-08-14/`, which
+  was absent. The transcripts were found at `/tmp/temur-weak-eval/`
+  (task1 through task9, mtimes 2026-08-14 15:54 to 16:00) and every
+  finding matched the kickoff description, so they are the same
+  evidence. All nine were copied to the archive path the kickoff named,
+  since `/tmp` does not survive a reboot. The build session CREATED
+  that directory rather than reading it.
+
+- **The kickoff text arrived truncated.** Several lines ended
+  mid-sentence (the H1, H2 and H3 bullets, the P1 H3 contract, P2, P3,
+  P4, and the closing paragraph). The contracts were read from the
+  surviving text plus the three transcripts. The two places where a
+  choice had to be made are recorded under "Design choices" above.
+
+- **The gate runs were launched detached under `script(1)`**, the
+  standing deviation: a full gate exceeds the build session's
+  foreground command cap. Every run was pty-backed, fully teed to a
+  log, and watched for the 180s pty-smoke signature.
+
+### Live check (D4 only)
+
+Verified against a stub container (`busybox`, `sleep 300`, a model file
+bind-mounted so `podman inspect Mounts` reports it) standing in for a
+running server, so nothing loaded a model:
+
+```
+start Qwen3-1.7B      -> FAIL naming both models, exit 1
+start Qwen3-0.6B      -> OK: already running (the mounted model)
+MODEL_GGUF=SmolLM2... -> FAIL naming both models, exit 1
+no model requested    -> OK: already running (previous behavior)
+```
+
+The stub container was removed afterward.
+
+### Deliberate non-changes
+
+The matrix was NOT re-run: every score in OFFLINE.md keeps its
+2026-08-12 date. Native `tool_use` repetition stays unguarded beyond
+the doom loop. D2 (a turn that announces future action with zero tool
+calls) and a `serve.sh` `SERVER_ARGS` knob are queued in ROADMAP with
+their reasons, not built.
+
+### Gate outcomes
+
+Four phases, four full `check.sh` runs, every one ending
+`== ALL CHECKS PASSED ==` with exit 0 across both paths (gnu-debug and
+the musl-release acceptance path), each green on the FIRST try. All
+three TUI pty smokes reported OK in all four runs; the 180s bound was
+never approached and the hang signature never appeared. Staticness
+clean each time (no INTERP, no NEEDED), forbidden-deps clean, bare
+busybox container printing the version.
+
+### Phase commits
+
+```
+d43c64a  P1  prose repeat guard (H1) + unknown-tool feedback (H3)
+015bad1  P2  empty workdir means absent (H2) + typed binary read hints (D3)
+88c7a99  P3  doctor probe for silently dropped tool definitions
+a21b9a7  P4  prompt sentence (D1), serve.sh model mismatch (D4), docs
+```
+
+### Residuals
+
+- No upstream issue NUMBER was available when this shipped, so the
+  doctor doc comment and the OFFLINE paragraph carry the dated
+  "Reported upstream 2026-08-14" sentence instead. Folding a number in
+  later is a one-line doc edit in two places.
+- The doctor probe has no live leg in this cycle: it is verified
+  against canned servers only. The upstream behavior it detects was
+  measured live on 2026-08-14, but temur's own WARN has not yet fired
+  against a real llama.cpp server in a recorded run.
+- The Coder-1.5B re-run scored 5/9 and neither confirms nor refutes
+  T30's prediction that the preamble-then-fence fix would raise that
+  model. It was a dogfood pass, not a matrix pass. Recorded on the T30
+  ROADMAP row as an UPDATE and in the T31 queue section; the formal
+  check stays with the next matrix pass.
+- `src/tools/edit/matchers.rs:122` carries a pre-existing `dead_code`
+  warning on `line_trimmed`, untouched by T31 and noted so it is not
+  read later as introduced here.
