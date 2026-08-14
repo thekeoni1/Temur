@@ -227,6 +227,58 @@ fn names_registered_tool_with_args(body: &str, tool_names: &[String]) -> bool {
     named && has_args
 }
 
+/// Detect a fenced JSON object that is shaped like a tool call but names a
+/// tool that does NOT exist, returning the bogus name.
+///
+/// T31 (H1's sibling, H3; operator dogfood 2026-08-14, eval task 7):
+/// Qwen2.5-Coder-1.5B answered "delete /work/obsolete.tmp" with a fenced
+/// `{"name": "delete", "arguments": {...}}` and got TOTAL SILENCE, because
+/// [`detect_text_tool_call`] requires a REGISTERED name (its false-positive
+/// killer) and there is no `delete` tool. The task died in three seconds
+/// with 31 output tokens. The model cannot discover its mistake from an
+/// empty response, so this reports it by name and lists what does exist.
+///
+/// Deliberately NARROWER than the registered path: a fence is required
+/// (whole-message leading-brace JSON without a fence stays undetected, so
+/// the existing `{"name": "compile", ...}` pin is unchanged), and the
+/// object must carry an arguments-like key, so a `{"name": ...}`
+/// package.json fragment in a code block still says nothing. A fenced
+/// function-schema fragment with `name` + `parameters` can false-positive
+/// here; the cost is one bounded nudge, which beats the silence.
+///
+/// NEVER executes: the returned name is only ever quoted back to the model.
+pub fn detect_unknown_tool_call(text: &str, tool_names: &[String]) -> Option<String> {
+    fenced_blocks(text)
+        .iter()
+        .find_map(|b| unknown_tool_named_with_args(b, tool_names))
+}
+
+/// The inner test for [`detect_unknown_tool_call`]: the mirror image of
+/// [`names_registered_tool_with_args`], demanding an UNregistered name.
+fn unknown_tool_named_with_args(body: &str, tool_names: &[String]) -> Option<String> {
+    let body = body.trim();
+    if !body.starts_with('{') {
+        return None;
+    }
+    let obj = serde_json::from_str::<Value>(body).ok().or_else(|| {
+        first_balanced_object(body).and_then(|s| serde_json::from_str::<Value>(s).ok())
+    })?;
+    let has_args = obj.get("arguments").is_some()
+        || obj.get("input").is_some()
+        || obj.get("parameters").is_some();
+    if !has_args {
+        return None;
+    }
+    let name = obj
+        .get("name")
+        .or_else(|| obj.get("tool"))
+        .and_then(|v| v.as_str())?;
+    if tool_names.iter().any(|t| t.as_str() == name) {
+        return None;
+    }
+    Some(name.to_string())
+}
+
 /// The inner text of every fenced block, in order. A fence opens on a line
 /// whose first non-space run is ``` (any info string is dropped with that
 /// line) and closes on the next such line; an unclosed final fence yields
@@ -315,6 +367,42 @@ pub fn extract_prose_tool_call(text: &str, tool_names: &[String]) -> Option<Pros
         name: name.to_string(),
         args: args.clone(),
     })
+}
+
+/// Per-turn memory of the last prose call that was actually dispatched, so
+/// a byte-identical repeat can be answered honestly instead of run again.
+///
+/// T31 (H1; operator dogfood 2026-08-14, eval task 8): Qwen2.5-Coder-1.5B
+/// emitted ONE fenced `write` call and then re-emitted it, byte for byte,
+/// about sixty consecutive times. Every repeat was a fresh SUCCESSFUL
+/// prose-call execution, and nothing bounds successes: `NUDGE_LIMIT` caps
+/// nudges and failed executions only. The turn grew by roughly the whole
+/// history each round until the context window overflowed. Structured
+/// `tool_use` repetition already has the doom-loop guard; this is its prose
+/// twin, and it lives with the turn loop's other guard state, per turn.
+///
+/// Only the IMMEDIATELY preceding dispatch is remembered: any change of
+/// tool name or argument value resets the guard, so a model making
+/// progress, or alternating between two calls, is untouched.
+#[derive(Debug, Default)]
+pub struct ProseRepeatGuard {
+    last: Option<ProseCall>,
+}
+
+impl ProseRepeatGuard {
+    /// `true` when `call` repeats the last dispatched call verbatim (same
+    /// tool name, equal argument value). Pure: [`Self::record`] is what
+    /// advances the state, and only a dispatch should call it.
+    pub fn is_repeat(&self, call: &ProseCall) -> bool {
+        self.last.as_ref() == Some(call)
+    }
+
+    /// Remember `call` as the last dispatched one. Called for executions
+    /// that SUCCEEDED and for those that FAILED: the failure text is fed
+    /// back either way, so an identical retry is just as uninformative.
+    pub fn record(&mut self, call: &ProseCall) {
+        self.last = Some(call.clone());
+    }
 }
 
 /// The prefix of `s` forming the first balanced JSON object, string-aware.
@@ -581,6 +669,104 @@ mod tests {
                 "text: {text:?}"
             );
         }
+    }
+
+    #[test]
+    fn detect_unknown_tool_call_table() {
+        let tools: Vec<String> = vec!["read".into(), "write".into(), "bash".into()];
+        let cases: Vec<(&str, Option<&str>)> = vec![
+            // T31 (H3): the exact eval-task-7 shape, which used to be
+            // silence. A fenced call to a tool that does not exist.
+            (
+                "```json\n{\"name\": \"delete\", \"arguments\": {\"filePath\": \"/work/obsolete.tmp\"}}\n```",
+                Some("delete"),
+            ),
+            // Preamble before the fence, "tool" + "input" spelling.
+            (
+                "I'll remove it.\n```json\n{\"tool\": \"rm\", \"input\": {\"path\": \"a\"}}\n```",
+                Some("rm"),
+            ),
+            // "parameters" spelling, unclosed fence.
+            (
+                "```\n{\"name\": \"compile\", \"parameters\": {\"target\": \"x\"}}",
+                Some("compile"),
+            ),
+            // The second block is the call; the first is a config sample.
+            (
+                "Config:\n```json\n{\"debug\": true}\n```\nNow:\n```json\n{\"name\": \"fetch\", \"arguments\": {}}\n```",
+                Some("fetch"),
+            ),
+            // REGISTERED names are the other path's business, never this
+            // one's: no unknown-tool nudge for a real tool.
+            (
+                "```json\n{\"name\": \"read\", \"arguments\": {\"filePath\": \"a\"}}\n```",
+                None,
+            ),
+            // No arguments-like key: the package.json fragment pin. A code
+            // block naming a project must never nudge.
+            (
+                "Here is the config file:\n```json\n{\"name\": \"my-project\", \"version\": \"1.0\"}\n```",
+                None,
+            ),
+            // UNFENCED, whole message: undetected, deliberately. The
+            // pre-T31 pin for this shape stays false.
+            ("{\"name\": \"compile\", \"arguments\": {}}", None),
+            // UNFENCED mid-prose: undetected, deliberately.
+            ("Here is the plan: {\"name\": \"delete\", \"arguments\": {}}", None),
+            // Fenced but not JSON: a shell snippet is not a call.
+            ("Run this:\n```sh\ndelete a.txt\n```", None),
+            // Fenced JSON that is not an object.
+            ("```json\n[1, 2, 3]\n```", None),
+            // No name-like key at all.
+            ("```json\n{\"arguments\": {\"filePath\": \"a\"}}\n```", None),
+            // No fence anywhere.
+            ("You should delete a.txt.", None),
+            ("", None),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(
+                detect_unknown_tool_call(text, &tools).as_deref(),
+                expected,
+                "text: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn prose_repeat_guard_table() {
+        let call = |name: &str, args: Value| ProseCall {
+            name: name.into(),
+            args,
+        };
+        let write_a = call("write", json!({"filePath": "a.txt", "content": "x"}));
+        let mut guard = ProseRepeatGuard::default();
+
+        // Nothing dispatched yet: the first call is never a repeat.
+        assert!(!guard.is_repeat(&write_a));
+        guard.record(&write_a);
+        // The eval-task-8 shape: byte-identical resend.
+        assert!(guard.is_repeat(&write_a));
+        // Still a repeat after N notices, since nothing new was dispatched.
+        assert!(guard.is_repeat(&write_a));
+
+        // Changed ARGUMENTS reset the guard.
+        let write_b = call("write", json!({"filePath": "a.txt", "content": "y"}));
+        assert!(!guard.is_repeat(&write_b));
+        guard.record(&write_b);
+        assert!(guard.is_repeat(&write_b));
+        // ... and the older call is no longer the remembered one.
+        assert!(!guard.is_repeat(&write_a));
+        guard.record(&write_a);
+
+        // Changed TOOL NAME resets the guard.
+        let read_a = call("read", json!({"filePath": "a.txt", "content": "x"}));
+        assert!(!guard.is_repeat(&read_a));
+        guard.record(&read_a);
+        assert!(guard.is_repeat(&read_a));
+
+        // Key ORDER is not a difference: the same object either way.
+        guard.record(&call("bash", json!({"command": "ls", "workdir": "/w"})));
+        assert!(guard.is_repeat(&call("bash", json!({"workdir": "/w", "command": "ls"}))));
     }
 
     #[test]

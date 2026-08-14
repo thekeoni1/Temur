@@ -635,6 +635,9 @@ impl Session {
         let mut consecutive_failed_batches: u32 = 0;
         let mut consecutive_empty: u32 = 0;
         let mut nudges: u32 = 0;
+        // T31 (H1): the last DISPATCHED prose call, so a byte-identical
+        // repeat is answered instead of executed again.
+        let mut prose_guard = recover::ProseRepeatGuard::default();
 
         loop {
             iterations += 1;
@@ -962,6 +965,8 @@ impl Session {
                     // switch restores detect+nudge byte-identically.
                     let mut prose_call: Option<recover::ProseCall> = None;
                     let mut nudge = false;
+                    let mut unknown_tool: Option<String> = None;
+                    let mut tool_names: Vec<String> = Vec::new();
                     if matches!(other, Some(StopReason::EndTurn))
                         && nudges < NUDGE_LIMIT
                         && !content
@@ -976,7 +981,7 @@ impl Session {
                             })
                             .collect::<Vec<_>>()
                             .join("\n");
-                        let tool_names: Vec<String> = self
+                        tool_names = self
                             .registry
                             .definitions()
                             .iter()
@@ -989,12 +994,47 @@ impl Session {
                         if prose_call.is_none() {
                             nudge = recover::detect_text_tool_call(&text, &tool_names);
                         }
+                        // T31 (H3): a fenced call to a tool that does not
+                        // exist used to match neither predicate, so the
+                        // turn ended in silence. Last resort only: the
+                        // registered paths above keep priority.
+                        if prose_call.is_none() && !nudge {
+                            unknown_tool =
+                                recover::detect_unknown_tool_call(&text, &tool_names);
+                        }
                     }
                     self.history.push(RequestMessage {
                         role: Role::Assistant,
                         content,
                     });
                     if let Some(call) = prose_call {
+                        // T31 (H1): a byte-identical repeat of the call
+                        // just dispatched is NOT run again. Re-running it
+                        // produced nothing new sixty times over in eval
+                        // task 8, only history growth to context overflow.
+                        // The notice counts against the nudge cap, so a
+                        // model that will not move on ends the turn rather
+                        // than trading notices forever.
+                        if prose_guard.is_repeat(&call) {
+                            nudges += 1;
+                            let name = call.name.clone();
+                            self.history.push(RequestMessage {
+                                role: Role::User,
+                                content: vec![ContentBlock::Text {
+                                    text: format!(
+                                        "You already made that exact {name} tool call and its \
+                                         result is above. Nothing was executed this time. \
+                                         Repeating the same call changes nothing, so take the \
+                                         next step or answer the question."
+                                    ),
+                                }],
+                            });
+                            ui(AgentEvent::Notice(format!(
+                                "prose-call recovery: the {name} call repeated verbatim; not executed again"
+                            )));
+                            continue;
+                        }
+                        prose_guard.record(&call);
                         // No tool_use id exists, so the result goes back as
                         // PLAIN USER TEXT, wire-legal on both providers,
                         // request-body goldens untouched. No ToolEnd event:
@@ -1049,6 +1089,27 @@ impl Session {
                             "the model wrote a tool call as plain text; asked it to use the tool interface"
                                 .into(),
                         ));
+                        continue;
+                    }
+                    if let Some(bogus) = unknown_tool {
+                        // T31 (H3): name the mistake and list the registry,
+                        // never a hardcoded set, so the correction stays
+                        // true as tools come and go.
+                        nudges += 1;
+                        self.history.push(RequestMessage {
+                            role: Role::User,
+                            content: vec![ContentBlock::Text {
+                                text: format!(
+                                    "There is no tool named \"{bogus}\", so nothing was \
+                                     executed. The available tools are: {}. Use one of those \
+                                     through the structured tool-calling interface.",
+                                    tool_names.join(", ")
+                                ),
+                            }],
+                        });
+                        ui(AgentEvent::Notice(format!(
+                            "the model called a tool that does not exist (\"{bogus}\"); listed the available tools"
+                        )));
                         continue;
                     }
                     match other {

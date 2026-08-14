@@ -454,19 +454,32 @@ fn prose_call_failures_count_toward_nudge_cap_and_terminate() {
     // A prose call that EXECUTES but fails (write to an existing unread
     // file, the P2 rule) feeds the error back and counts toward
     // NUDGE_LIMIT, so a model stuck on a failing prose call terminates.
+    //
+    // T31 (H1): the calls differ by target, because a model that resends
+    // one call VERBATIM now takes the repeat-guard path instead of a second
+    // execution (see `identical_prose_call_is_not_executed_twice`). This
+    // test is about the failure cap, so it keeps failing with fresh calls.
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("locked.txt"), "original").unwrap();
-    let prose = || {
+    std::fs::write(dir.path().join("locked2.txt"), "original").unwrap();
+    std::fs::write(dir.path().join("locked3.txt"), "original").unwrap();
+    let prose = |target: &str| {
         msg(
-            vec![text(
-                "{\"name\": \"write\", \"arguments\": \
-                 {\"filePath\": \"locked.txt\", \"content\": \"clobber\"}}",
-            )],
+            vec![text(&format!(
+                "{{\"name\": \"write\", \"arguments\": \
+                 {{\"filePath\": \"{target}\", \"content\": \"clobber\"}}}}"
+            ))],
             StopReason::EndTurn,
         )
     };
-    let (mut session, requests) =
-        session_with(dir.path(), vec![prose(), prose(), prose()]);
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            prose("locked.txt"),
+            prose("locked2.txt"),
+            prose("locked3.txt"),
+        ],
+    );
     let events = collect_events(&mut session, "go");
 
     // Fail (1), fail (2 = cap), then the third prose call is over the cap:
@@ -603,6 +616,188 @@ fn preamble_fenced_nudges_are_capped_at_two_as_well() {
         .filter(|n| n.contains("plain text"))
         .count();
     assert_eq!(nudge_notices, 2, "exactly two nudges per turn");
+}
+
+// ------------------------- T31: prose repeat guard, unknown-tool feedback
+
+/// H1, operator dogfood 2026-08-14 (eval task 8): Qwen2.5-Coder-1.5B wrote
+/// one fenced `write` call and then resent it byte for byte about sixty
+/// times. Each resend was a fresh SUCCESSFUL prose-call execution, and
+/// successes are uncapped, so the turn only ended when the context window
+/// overflowed. The first call must still run; identical resends must not.
+#[test]
+fn identical_prose_call_is_not_executed_twice() {
+    let dir = tempfile::tempdir().unwrap();
+    // The transcript's exact shape: fenced JSON, whole message.
+    let repeat = || {
+        msg(
+            vec![text(
+                "```json\n{\"name\": \"write\", \"arguments\": \
+                 {\"content\": \"eval-gz-99\", \"filePath\": \"notes.txt\"}}\n```",
+            )],
+            StopReason::EndTurn,
+        )
+    };
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![repeat(), repeat(), repeat(), repeat()],
+    );
+    let events = collect_events(&mut session, "write the file");
+    let notices = notices(&events);
+
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("notes.txt")).unwrap(),
+        "eval-gz-99",
+        "the FIRST call still executes"
+    );
+    assert_eq!(
+        notices
+            .iter()
+            .filter(|n| n.contains("prose-call recovery: executed the write tool call"))
+            .count(),
+        1,
+        "exactly one execution, not one per resend: {notices:?}"
+    );
+    assert_eq!(
+        notices
+            .iter()
+            .filter(|n| n.contains("repeated verbatim; not executed again"))
+            .count(),
+        2,
+        "the repeats are answered, and the answers are capped: {notices:?}"
+    );
+    // Resend 1 and 2 get the notice; by resend 3 the cap is reached and the
+    // turn ends on a plain EndTurn instead of trading notices forever.
+    assert_eq!(requests.borrow().len(), 4);
+    // The notice reached the model as plain user text, honestly.
+    let reqs = requests.borrow();
+    match &reqs[2].messages.last().unwrap().content[..] {
+        [ContentBlock::Text { text }] => {
+            assert!(
+                text.starts_with("You already made that exact write tool call"),
+                "{text}"
+            );
+            assert!(text.contains("Nothing was executed this time"), "{text}");
+        }
+        other => panic!("expected plain user text, got {other:?}"),
+    }
+}
+
+/// A DIFFERENT call resets the guard: the second write is not a repeat of
+/// the first, so it executes. The guard must not stall a working model.
+#[test]
+fn different_prose_call_resets_the_repeat_guard() {
+    let dir = tempfile::tempdir().unwrap();
+    let call = |path: &str| {
+        msg(
+            vec![text(&format!(
+                "{{\"name\": \"write\", \"arguments\": \
+                 {{\"filePath\": \"{path}\", \"content\": \"x\"}}}}"
+            ))],
+            StopReason::EndTurn,
+        )
+    };
+    let (mut session, _requests) = session_with(
+        dir.path(),
+        vec![call("one.txt"), call("two.txt"), msg(vec![text("done")], StopReason::EndTurn)],
+    );
+    let events = collect_events(&mut session, "write both files");
+
+    assert!(dir.path().join("one.txt").exists(), "first call executes");
+    assert!(dir.path().join("two.txt").exists(), "a changed call executes too");
+    assert!(
+        !notices(&events)
+            .iter()
+            .any(|n| n.contains("repeated verbatim")),
+        "no repeat guard on distinct calls: {:?}",
+        notices(&events)
+    );
+}
+
+/// H3, operator dogfood 2026-08-14 (eval task 7): a fenced call to a tool
+/// that does not exist matched neither the execution predicate nor the
+/// detector (both require a REGISTERED name), so the turn ended in total
+/// silence after 31 output tokens. It must now say so, by name, and list
+/// what does exist, without ever executing anything.
+#[test]
+fn unknown_tool_call_is_named_and_never_executed() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("obsolete.tmp"), "junk").unwrap();
+    let bogus = "```json\n{\"name\": \"delete\", \"arguments\": \
+                 {\"filePath\": \"obsolete.tmp\"}}\n```";
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(vec![text(bogus)], StopReason::EndTurn),
+            // The correction lands: a real tool, structured.
+            msg(
+                vec![tool_use(
+                    "tu_1",
+                    "bash",
+                    serde_json::json!({"command": "rm obsolete.tmp"}),
+                )],
+                StopReason::ToolUse,
+            ),
+            msg(vec![text("removed")], StopReason::EndTurn),
+        ],
+    );
+    let events = collect_events(&mut session, "delete obsolete.tmp");
+
+    assert_eq!(requests.borrow().len(), 3, "silence is what this fixes");
+    assert!(
+        notices(&events)
+            .iter()
+            .any(|n| n.contains("a tool that does not exist (\"delete\")")),
+        "{:?}",
+        notices(&events)
+    );
+    assert!(
+        !notices(&events).iter().any(|n| n.contains("prose-call recovery")),
+        "an unknown tool must NEVER execute: {:?}",
+        notices(&events)
+    );
+    // The feedback names the bogus tool and lists the registry, in order.
+    let reqs = requests.borrow();
+    let registered: Vec<String> = reqs[1].tools.iter().map(|d| d.name.clone()).collect();
+    match &reqs[1].messages.last().unwrap().content[..] {
+        [ContentBlock::Text { text }] => {
+            assert!(text.contains("There is no tool named \"delete\""), "{text}");
+            assert!(text.contains(&registered.join(", ")), "{text}");
+            for name in &registered {
+                assert!(text.contains(name.as_str()), "{name} missing from {text}");
+            }
+        }
+        other => panic!("expected plain user text, got {other:?}"),
+    }
+    // The scripted follow-up ran, so the turn recovered rather than dying.
+    assert!(!dir.path().join("obsolete.tmp").exists());
+}
+
+/// The unknown-tool path is bounded by the same cap as every other nudge.
+#[test]
+fn unknown_tool_nudges_are_capped_at_two() {
+    let dir = tempfile::tempdir().unwrap();
+    let bogus = || {
+        msg(
+            vec![text(
+                "```json\n{\"name\": \"delete\", \"arguments\": {\"filePath\": \"a\"}}\n```",
+            )],
+            StopReason::EndTurn,
+        )
+    };
+    let (mut session, requests) =
+        session_with(dir.path(), vec![bogus(), bogus(), bogus()]);
+    let events = collect_events(&mut session, "go");
+
+    assert_eq!(requests.borrow().len(), 3);
+    assert_eq!(
+        notices(&events)
+            .iter()
+            .filter(|n| n.contains("does not exist"))
+            .count(),
+        2,
+        "exactly two unknown-tool nudges per turn"
+    );
 }
 
 #[test]
