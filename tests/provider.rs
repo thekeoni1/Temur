@@ -921,6 +921,131 @@ fn props_probe_http_error_and_bad_body_and_refusal_are_all_none() {
     );
 }
 
+// ------------------------------------------- T31: tools-drop probe (POST)
+
+/// POST-aware sibling of [`one_shot_server`]: reads the whole declared body
+/// before answering, so the captured request includes it.
+fn one_shot_post_server(
+    status_line: &str,
+    body: &'static str,
+) -> (String, std::thread::JoinHandle<String>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let response = format!(
+        "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let handle = std::thread::spawn(move || {
+        use std::io::Write;
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut req = Vec::new();
+        let mut buf = [0u8; 1024];
+        loop {
+            let n = stream.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            req.extend_from_slice(&buf[..n]);
+            let Some(h) = req.windows(4).position(|w| w == b"\r\n\r\n") else {
+                continue;
+            };
+            let head = String::from_utf8_lossy(&req[..h]).to_ascii_lowercase();
+            let len: usize = head
+                .split("content-length:")
+                .nth(1)
+                .and_then(|s| s.split(['\r', '\n']).next())
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0);
+            if req.len() >= h + 4 + len {
+                break;
+            }
+        }
+        stream.write_all(response.as_bytes()).unwrap();
+        String::from_utf8_lossy(&req).into_owned()
+    });
+    (format!("http://127.0.0.1:{port}/v1"), handle)
+}
+
+#[test]
+fn tools_drop_probe_body_differs_only_by_the_tools_array() {
+    let bare = tools_drop_probe_body("my-model", false);
+    let with = tools_drop_probe_body("my-model", true);
+    // Both are tiny, capped at one generated token, and non-streaming, so
+    // the usage block comes back in one response.
+    for b in [&bare, &with] {
+        let v: serde_json::Value = serde_json::from_str(b).unwrap();
+        assert_eq!(v["model"], "my-model");
+        assert_eq!(v["max_tokens"], 1);
+        assert_eq!(v["stream"], false);
+        assert_eq!(v["messages"][0]["role"], "user");
+    }
+    assert!(!bare.contains("\"tools\""), "{bare}");
+    let v: serde_json::Value = serde_json::from_str(&with).unwrap();
+    assert_eq!(v["tools"][0]["type"], "function");
+    assert_eq!(v["tools"][0]["function"]["name"], "probe");
+    assert_eq!(v["tools"][0]["function"]["parameters"]["type"], "object");
+    assert_eq!(v["tools"].as_array().unwrap().len(), 1, "one tool, minimal");
+}
+
+#[test]
+fn parse_prompt_tokens_reads_usage_and_rejects_everything_else() {
+    assert_eq!(
+        parse_prompt_tokens(r#"{"choices":[],"usage":{"prompt_tokens":31,"completion_tokens":1}}"#),
+        Some(31)
+    );
+    // Zero is a real answer here (unlike n_ctx): a server that says the
+    // prompt cost nothing is still saying something comparable.
+    assert_eq!(parse_prompt_tokens(r#"{"usage":{"prompt_tokens":0}}"#), Some(0));
+    // No usage block, wrong type, wrong shape, not JSON: all None.
+    assert_eq!(parse_prompt_tokens(r#"{"choices":[]}"#), None);
+    assert_eq!(parse_prompt_tokens(r#"{"usage":{}}"#), None);
+    assert_eq!(parse_prompt_tokens(r#"{"usage":{"prompt_tokens":"ten"}}"#), None);
+    assert_eq!(parse_prompt_tokens(r#"{"prompt_tokens":10}"#), None);
+    assert_eq!(parse_prompt_tokens("<html>404</html>"), None);
+}
+
+#[test]
+fn tools_drop_probe_posts_to_chat_completions_and_sends_no_auth_header() {
+    let (base, server) = one_shot_post_server(
+        "HTTP/1.1 200 OK",
+        r#"{"choices":[],"usage":{"prompt_tokens":31}}"#,
+    );
+    assert_eq!(
+        probe_prompt_tokens(&base, "m", true, KEYLESS_TIMEOUT),
+        Some(31)
+    );
+    let request = server.join().unwrap();
+    let head = request.to_ascii_lowercase();
+    assert!(head.starts_with("post /v1/chat/completions "), "path: {request}");
+    // The amendment contract, same assertion as the two keyless GETs:
+    // NOTHING resembling credentials may be on this wire.
+    assert!(!head.contains("authorization"), "{request}");
+    assert!(!head.contains("x-api-key"), "{request}");
+    assert!(!head.contains("bearer"), "{request}");
+    // The tools array really went out; the probe is worthless otherwise.
+    assert!(request.contains("\"tools\""), "{request}");
+}
+
+#[test]
+fn tools_drop_probe_http_error_and_bad_body_and_refusal_are_all_none() {
+    let (base, server) = one_shot_post_server("HTTP/1.1 404 Not Found", "not found");
+    assert_eq!(probe_prompt_tokens(&base, "m", false, KEYLESS_TIMEOUT), None);
+    server.join().unwrap();
+
+    let (base, server) = one_shot_post_server("HTTP/1.1 200 OK", "<html>gateway</html>");
+    assert_eq!(probe_prompt_tokens(&base, "m", false, KEYLESS_TIMEOUT), None);
+    server.join().unwrap();
+
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    assert_eq!(
+        probe_prompt_tokens(&format!("http://127.0.0.1:{port}/v1"), "m", false, KEYLESS_TIMEOUT),
+        None
+    );
+}
+
 // -------------------------- T22: listing entries carry max_input_tokens
 
 #[test]

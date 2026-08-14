@@ -345,6 +345,87 @@ pub fn probe_props_context(base_url: &str, timeout: std::time::Duration) -> Opti
     parse_props_context(&body)
 }
 
+/// The probe body for the T31 tools-drop check: a one-word completion
+/// capped at one generated token, sent once bare and once carrying a single
+/// minimal tool. Pure, so the wire shape is unit-testable without a server.
+///
+/// Non-streaming on purpose: doctor wants the `usage` block, not deltas,
+/// and every compat server reports usage on a non-streamed response.
+pub fn tools_drop_probe_body(model: &str, with_tools: bool) -> String {
+    let mut body = serde_json::json!({
+        "model": model,
+        "stream": false,
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "hi"}],
+    });
+    if with_tools {
+        body["tools"] = serde_json::json!([{
+            "type": "function",
+            "function": {
+                "name": "probe",
+                "description": "A probe tool. Never call it.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string", "description": "ignored"}}
+                }
+            }
+        }]);
+    }
+    to_sorted_json_string(&body).unwrap_or_else(|_| body.to_string())
+}
+
+/// Extract `usage.prompt_tokens` from a non-streamed completion body.
+/// `None` for anything else: servers that report no usage are a known part
+/// of the world, and the caller degrades to a NOTE. Pure, unit-tested.
+pub fn parse_prompt_tokens(body: &str) -> Option<u64> {
+    serde_json::from_str::<Value>(body)
+        .ok()?
+        .get("usage")?
+        .get("prompt_tokens")?
+        .as_u64()
+}
+
+/// The THIRD (and last) keyless request doctor may make (T31), under the
+/// same amendment contract as [`list_models_keyless`] and
+/// [`probe_props_context`]: it takes a base URL and a model id and nothing
+/// else, so it can never attach an auth header or touch a key file by
+/// construction. Unlike its two GET siblings this one POSTs, which is why
+/// it is capped at ONE generated token: the cost of a call is a handful of
+/// prompt tokens plus a single token of output, on a local server.
+///
+/// Returns the server's reported prompt-token count, or `None` for ANY
+/// problem (network, HTTP status, no usage block, unparseable body).
+pub fn probe_prompt_tokens(
+    base_url: &str,
+    model: &str,
+    with_tools: bool,
+    timeout: std::time::Duration,
+) -> Option<u64> {
+    use std::io::Read;
+    rustls::crypto::ring::default_provider().install_default().ok();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_global(Some(timeout))
+        .build()
+        .new_agent();
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let res = agent
+        .post(&url)
+        .header("content-type", "application/json")
+        .send(tools_drop_probe_body(model, with_tools))
+        .ok()?;
+    if !(200..300).contains(&res.status().as_u16()) {
+        return None;
+    }
+    let mut body = String::new();
+    let _ = res
+        .into_body()
+        .into_reader()
+        .take(64 * 1024)
+        .read_to_string(&mut body);
+    parse_prompt_tokens(&body)
+}
+
 /// One row of a model listing (T22): the id both wires share, plus the
 /// context window where a wire reports one. The Anthropic listing carries
 /// a per-model `max_input_tokens` ("maximum input context window size in

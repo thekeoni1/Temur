@@ -254,6 +254,11 @@ fn run_with_sandbox_probe(
         context_check(&mut r, &prefix, p, no_network, &mut props)?;
     }
 
+    // Tools-drop probe (T31). The ACTIVE selection only, because unlike
+    // the checks above this one POSTs, and two requests per configured
+    // profile is more than a report should cost.
+    tools_drop_check(&mut r, &active, no_network)?;
+
     finish(r)
 }
 
@@ -305,6 +310,54 @@ fn context_check(
             "NOTE: {prefix}no context_window configured: the context usage advisory and context-scaled tool-output caps are off for this profile"
         ),
         (None, Some(_)) => Ok(()),
+    }
+}
+
+/// The tools-drop probe (T31). llama.cpp's `--jinja` mode SILENTLY drops
+/// the tools array when the model's chat template has no tool support: the
+/// request returns HTTP 200, the server logs nothing, and the response
+/// carries no signal at all, so every tool call the agent could make simply
+/// never happens. Confirmed on b10423-a94d563ed on 2026-08-14: gemma-3-4b
+/// 10/10, Phi-4-mini 4/4 and SmolLM2 31/31 prompt_tokens with and without a
+/// tools array, against a Qwen3-4B control that moved. Reported upstream
+/// 2026-08-14.
+///
+/// temur can see what the server will not say: send the same tiny
+/// completion twice, once bare and once with one minimal tool, and compare
+/// the prompt-token counts. A template that rendered the tools MUST cost
+/// more prompt tokens; identical counts mean the array went nowhere.
+///
+/// Costs two requests of ~1 generated token each, and only ever runs for
+/// the ACTIVE selection, on a keyless openai-compat endpoint, with network
+/// checks enabled. Never FAILs: a degraded server is a known world, and
+/// doctor stays honest but calm.
+fn tools_drop_check(
+    r: &mut Report<'_>,
+    p: &crate::config::ResolvedProfile,
+    no_network: bool,
+) -> std::io::Result<()> {
+    if no_network || p.provider != "openai-compat" || p.api_key_file.is_some() {
+        return Ok(());
+    }
+    let timeout =
+        std::time::Duration::from_secs(crate::provider::KEYLESS_LISTING_TIMEOUT_SECS);
+    let bare = crate::provider::probe_prompt_tokens(&p.base_url, &p.model, false, timeout);
+    let with_tools =
+        crate::provider::probe_prompt_tokens(&p.base_url, &p.model, true, timeout);
+    match (bare, with_tools) {
+        (Some(a), Some(b)) if a == b => r.warn(&format!(
+            "the server at {} appears to drop tool definitions for \"{}\" (prompt_tokens {a} with and without tools): the chat template has no tool support, so tool calls can silently never happen",
+            p.base_url, p.model
+        )),
+        (Some(a), Some(b)) => r.pass(&format!(
+            "the server at {} renders tool definitions for \"{}\" (prompt_tokens {a} without tools, {b} with)",
+            p.base_url, p.model
+        )),
+        _ => writeln!(
+            r.out,
+            "NOTE: tools-drop probe at {} skipped: the server reported no usable prompt_tokens",
+            p.base_url
+        ),
     }
 }
 
@@ -808,6 +861,68 @@ mod tests {
         format!("http://127.0.0.1:{port}/v1")
     }
 
+    /// Path- and method-aware sibling for the T31 tools-drop probe: POST
+    /// answers `with_tools` when the request body carries a tools array and
+    /// `bare` when it does not, every GET answers `models_body`. Reads the
+    /// whole declared body, since the tools array is the thing under test.
+    fn canned_server_with_completions(
+        models_body: &'static str,
+        bare: &'static str,
+        with_tools: &'static str,
+    ) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                use std::io::{Read, Write};
+                let mut req = Vec::new();
+                let mut buf = [0u8; 1024];
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            req.extend_from_slice(&buf[..n]);
+                            let Some(h) = req.windows(4).position(|w| w == b"\r\n\r\n") else {
+                                continue;
+                            };
+                            let head =
+                                String::from_utf8_lossy(&req[..h]).to_ascii_lowercase();
+                            let len: usize = head
+                                .split("content-length:")
+                                .nth(1)
+                                .and_then(|s| s.split(['\r', '\n']).next())
+                                .and_then(|s| s.trim().parse().ok())
+                                .unwrap_or(0);
+                            if req.len() >= h + 4 + len {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let text = String::from_utf8_lossy(&req);
+                if text.is_empty() {
+                    continue; // the reachability probe: a bare TCP connect
+                }
+                let picked = if text.starts_with("POST ") {
+                    if text.contains("\"tools\"") {
+                        with_tools
+                    } else {
+                        bare
+                    }
+                } else {
+                    models_body
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{picked}",
+                    picked.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://127.0.0.1:{port}/v1")
+    }
+
     /// Run doctor over a literal config in a tempdir, capturing output.
     fn doctor_over(config: &str, no_network: bool) -> (bool, String) {
         let tmp = tempfile::tempdir().unwrap();
@@ -1050,6 +1165,65 @@ mod tests {
         assert!(healthy, "{out}");
         assert!(!out.contains("server context allocation"), "{out}");
         assert!(out.contains("NOTE: no context_window configured"), "{out}");
+    }
+
+    // ---------------------------------------- T31: tools-drop probe (D-probe)
+
+    const USAGE_10: &str = r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1}}"#;
+    const USAGE_31: &str = r#"{"choices":[],"usage":{"prompt_tokens":31,"completion_tokens":1}}"#;
+
+    /// The confirmed llama.cpp --jinja failure: identical prompt_tokens with
+    /// and without a tools array means the template rendered nothing, and
+    /// the server says so nowhere else.
+    #[test]
+    fn tools_drop_probe_warns_when_counts_are_identical() {
+        let base = canned_server_with_completions(LLAMA_MODELS, USAGE_10, USAGE_10);
+        let (healthy, out) = doctor_over(&keyless_config(&base, "m"), false);
+        assert!(healthy, "a dropped tools array is a WARN, never a FAIL: {out}");
+        assert!(
+            out.contains(&format!(
+                "WARN: the server at {base} appears to drop tool definitions for \"m\" (prompt_tokens 10 with and without tools)"
+            )),
+            "{out}"
+        );
+        assert!(out.contains("tool calls can silently never happen"), "{out}");
+    }
+
+    #[test]
+    fn tools_drop_probe_passes_when_counts_differ() {
+        let base = canned_server_with_completions(LLAMA_MODELS, USAGE_10, USAGE_31);
+        let (healthy, out) = doctor_over(&keyless_config(&base, "m"), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "PASS: the server at {base} renders tool definitions for \"m\" (prompt_tokens 10 without tools, 31 with)"
+            )),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn tools_drop_probe_missing_usage_is_a_note() {
+        let no_usage = r#"{"choices":[{"message":{"content":"hi"}}]}"#;
+        let base = canned_server_with_completions(LLAMA_MODELS, no_usage, no_usage);
+        let (healthy, out) = doctor_over(&keyless_config(&base, "m"), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "NOTE: tools-drop probe at {base} skipped: the server reported no usable prompt_tokens"
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("drop tool definitions"), "{out}");
+    }
+
+    #[test]
+    fn tools_drop_probe_is_absent_under_no_network() {
+        let base = canned_server_with_completions(LLAMA_MODELS, USAGE_10, USAGE_10);
+        let (healthy, out) = doctor_over(&keyless_config(&base, "m"), true);
+        assert!(healthy, "{out}");
+        assert!(!out.contains("tools-drop probe"), "{out}");
+        assert!(!out.contains("tool definitions"), "{out}");
     }
 
     // ------------------------------- T17 P4: key-rotation reminder (mtime)
