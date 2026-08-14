@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.20.0 - 2026-08-14
+
 - **A tool call written as plain text is executed once, not once per
   resend.** Prose-call recovery executes a call the model wrote as text.
   A model can write the same call again, and again: one wrote a single
