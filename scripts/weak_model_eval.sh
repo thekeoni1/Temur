@@ -38,7 +38,7 @@ cd "$(dirname "$0")/.."
 MUSL_BIN="${MUSL_BIN:-/home/dev/rustcode-target/i686-unknown-linux-musl/release/temur}"
 # Pinned llama.cpp server build (tag scheme: server-b<build>); update
 # deliberately, never track latest.
-LLAMA_IMAGE="${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b10068}"
+LLAMA_IMAGE="${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b10438}"
 APP_IMG=docker.io/i386/debian:stable
 BARE_IMG=docker.io/library/busybox:stable
 CTX="${CTX:-8192}"

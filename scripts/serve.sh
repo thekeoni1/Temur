@@ -44,7 +44,7 @@ MODEL_GGUF="${MODEL_GGUF:-}"
 MODELS_DIR="${MODELS_DIR:-$HOME/models}"
 # Pinned llama.cpp server build (tag scheme: server-b<build>) — same pin as
 # offline_demo.sh; update deliberately, never track latest.
-LLAMA_IMAGE="${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b10068}"
+LLAMA_IMAGE="${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b10438}"
 CTX="${CTX:-8192}"
 PORT="${PORT:-8080}"
 BIND="${BIND:-127.0.0.1}"

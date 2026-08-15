@@ -23,13 +23,13 @@ llama.cpp's `llama-server` speaks the OpenAI-compatible API temur's
 llama-server -m /path/to/model.gguf -c 8192 --jinja --port 8080
 ```
 
-**Container** (the repo pins `server-b10068` - the tag scheme is
+**Container** (the repo pins `server-b10438` - the tag scheme is
 `server-b<build>`; update the pin deliberately, never track `latest`):
 
 ```sh
 podman run --rm -p 127.0.0.1:8080:8080 \
     -v /path/to/model.gguf:/model.gguf:ro \
-    ghcr.io/ggml-org/llama.cpp:server-b10068 \
+    ghcr.io/ggml-org/llama.cpp:server-b10438 \
     -m /model.gguf -c 8192 --jinja --host 0.0.0.0 --port 8080
 ```
 
