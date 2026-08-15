@@ -4734,3 +4734,79 @@ a21b9a7  P4  prompt sentence (D1), serve.sh model mismatch (D4), docs
 - `src/tools/edit/matchers.rs:122` carries a pre-existing `dead_code`
   warning on `line_trimmed`, untouched by T31 and noted so it is not
   read later as introduced here.
+
+## v0.20.0 acceptance - recorded result (SHIPPED, private)
+
+What shipped: T31 alone, model floor round three. Seven findings from
+operator dogfood day 1, all offline-verifiable; the T31 acceptance
+record above carries the per-finding detail, the design choices, the
+deviations, and the deliberate non-changes.
+
+Stage 1:
+
+- Four T31 commits pushed d43c64a..a21b9a7 (P1 prose repeat guard (H1)
+  and unknown-tool feedback (H3), P2 empty workdir means absent (H2)
+  and typed binary read hints (D3), P3 doctor probe for servers that
+  silently drop tool definitions, P4 prompt sentence (D1), serve.sh
+  model mismatch (D4), docs). On-push ci run 31841482324 on headSha
+  a21b9a7 green in both jobs (test 1m06s 21:13:33Z..21:14:39Z,
+  release-gate 6m39s 21:13:33Z..21:20:12Z).
+- Three local prep commits: 64e6590 bump (four files, Cargo.lock's
+  temur entry only, Cargo.toml, five README tag pins, scripts/install.sh),
+  d584974 CHANGELOG cut to "## v0.20.0 - 2026-08-14", d3d7fe7 close-out
+  carrying the T31 acceptance record above.
+- Stage 1 verified by the planning session before stage 2 opened.
+
+Stage 2:
+
+- Prep pushed a21b9a7..d3d7fe7; ci run 31854690993 on headSha d3d7fe7
+  green in both jobs (test 2m06s 00:47:56Z..00:50:02Z, release-gate
+  7m47s 00:47:56Z..00:55:43Z).
+- Annotated tag v0.20.0 AT d3d7fe7, tag object
+  241deabf026242591a3e8dd8d66cbdc452785416. The message was verified
+  against the RAW object before the tag was pushed, not through
+  `git tag -l --format` (which appends its own newline): the object's
+  message region under `od -c` is exactly
+  "temur v0.20.0 - model floor round three (T31)" followed by one \n,
+  45 message bytes, one line, ASCII hyphen, zero em-dash bytes. The
+  remote ref resolves to the same object hash.
+- scripts/release.sh with NO SKIP_CHECK: green first try, 4/4
+  artifacts gated and staged, leak grep clean, install.sh/README skew
+  gate clean, all three TUI pty smokes quiet, bare busybox container
+  reporting "temur 0.20.0".
+
+Staged sha256 (and the same values inside SHA256SUMS):
+
+```
+06ede7a8  temur-v0.20.0-aarch64-unknown-linux-musl
+347b82e0  temur-v0.20.0-armv7-unknown-linux-musleabihf
+f09a3897  temur-v0.20.0-i686-unknown-linux-musl
+e60ec10f  temur-v0.20.0-x86_64-unknown-linux-musl
+1ae6b3b2  SHA256SUMS itself
+```
+
+- Private release created with 5 assets, not draft, not prerelease,
+  notes = the CHANGELOG v0.20.0 section verbatim, title "temur v0.20.0
+  - model floor round three (T31)". Repo isPrivate confirmed true
+  BEFORE creating it and again AFTER uploading.
+- Closing gate: the x86_64 asset and SHA256SUMS were re-downloaded and
+  both `cmp`-identical to staged, re-hashing to e60ec10f and 1ae6b3b2,
+  with `sha256sum -c` OK inside the download dir. Then a fresh FULL
+  download of all five assets, every one `cmp`-identical to staged and
+  `sha256sum -c` 4/4 OK. Installer matrix 6/6 twice, once against the
+  staged dir and once against that fresh download (pass + corrupt +
+  unlisted, on the GNU host and in busybox).
+
+Residuals carried out of this cycle, none blocking:
+
+- The gate, release and installer runs were launched detached under
+  script(1) rather than in a literal foreground shell, the standing
+  deviation: they exceed the build session's foreground time cap. All
+  were pty-backed, fully teed, and watched for the 180s pty-smoke
+  bound, which was never approached. Second consecutive cycle with
+  every pty smoke quiet and zero reruns.
+- The substantive T31 residuals are unchanged and listed in the T31
+  record: the doctor probe has no live leg, the upstream llama.cpp
+  report carries no issue number yet, the Coder-1.5B dogfood score
+  does not settle T30's prediction, and the pre-existing `dead_code`
+  warning at `src/tools/edit/matchers.rs:122` is untouched.
