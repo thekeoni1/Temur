@@ -5109,5 +5109,37 @@ Stage 1:
   0 in any of the three messages.
 - No tag and no release in this stage. Version 0.20.0 is now 0.21.0 in
   the tree only.
+- Stage 1 verified by the planning session before stage 2 opened.
 
-Stage 2: not yet run.
+Stage 2:
+
+- Prep pushed 048c8d9..aa75171; ci run 31968177004 on headSha aa75171
+  green in both jobs (test 2m16s 19:38:23Z..19:40:39Z, release-gate
+  7m39s 19:38:23Z..19:46:02Z).
+- Annotated tag v0.21.0 AT aa75171, tag object
+  d202f1ab864d6f3ad1167d0f18f5c70686f1da6d. The message was verified
+  against the RAW object before the tag was pushed, not through
+  `git tag -l --format` (which appends its own newline) and not through
+  a line-based filter such as `awk` (which re-adds one): the object was
+  split on its first blank line and the remaining bytes are exactly
+  "temur v0.21.0 - matrix round two (T32)" followed by one \n, 39
+  message bytes, one line, one ASCII hyphen, zero non-ASCII bytes. The
+  remote ref resolves to the same object hash and `^{}` to aa75171.
+- scripts/release.sh with NO SKIP_CHECK: green first try, exit 0, 4/4
+  artifacts gated and staged, leak grep clean, install.sh/README skew
+  gate clean, all three TUI pty smokes OK (the 180s bound was never
+  approached and the hang signature never appeared), bare busybox
+  container printing "temur 0.21.0".
+- Staged sha256s:
+  c73a11eb aarch64, 42510521 armv7, 9362064e i686, 43ed7de9 x86_64,
+  f83be5aa SHA256SUMS.
+- Private release created with 5 assets, not draft, not prerelease.
+  Repo isPrivate confirmed true BEFORE creating it and again AFTER.
+- Closing gate: the x86_64 asset and SHA256SUMS were re-downloaded
+  fresh from the release and both are `cmp`-identical to staged; the
+  downloaded x86_64 re-hashes to 43ed7de9..., and `sha256sum -c` on the
+  downloaded SHA256SUMS is OK. Installer matrix 6/6 twice, once against
+  the staged dir and once against the freshly downloaded assets
+  (pass + corrupt + unlisted, on the GNU host and in the busybox
+  container).
+- Local ~/.local/bin/temur refreshed from the shipped i686 artifact.
