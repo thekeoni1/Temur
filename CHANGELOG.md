@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.21.0 - 2026-08-16
+
 - **The local-model table is re-measured, and every model now shows two
   scores instead of one.** Ten models ran the nine-task eval twice each
   against the shipped v0.20.0 binary on llama.cpp `server-b10438`, and
