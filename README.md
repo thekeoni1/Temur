@@ -69,6 +69,11 @@ through the compact prompt profile (llama.cpp `server-b10068`,
 Score: **9/9**. The recorded transcript lives in
 [docs/RUNBOOK.md](docs/RUNBOOK.md), record "T19 acceptance".
 
+That table is the T19 acceptance run on `server-b10068`, kept as the
+record it was; it is not re-measured per release. The current
+per-release matrix, covering every model tested and dated to the pass
+that produced it, lives in [docs/OFFLINE.md](docs/OFFLINE.md).
+
 The same harness floor is active on every provider, hosted
 included: tool output
 over the per-result cap keeps its true head and tail around a

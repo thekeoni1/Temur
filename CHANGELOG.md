@@ -6,11 +6,13 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 - **The local-model table is re-measured, and every model now shows two
   scores instead of one.** Ten models ran the nine-task eval twice each
-  on 2026-08-15 against the shipped v0.20.0 binary, on llama.cpp
-  `server-b10438`. Showing the pair is the point: two models changed
-  score between consecutive runs under identical conditions, and two
-  more held their score while the tasks underneath them moved, so a
-  one-task difference between two rows was never a real difference. The
+  against the shipped v0.20.0 binary on llama.cpp `server-b10438`, and
+  the two rows whose runs disagreed by 2 or more tasks ran a third
+  time. Showing every run is the point: two models changed score
+  between consecutive runs under identical conditions, two more held
+  their score while the tasks underneath them moved, and one returned a
+  third distinct score when asked again, so a one-task difference
+  between two rows was never a real difference. The
   new numbers are a fresh baseline and are NOT comparable to the
   2026-08-12 table, because the server build, the completion budget and
   two task wordings all changed between passes. Qwen3-4B-Instruct-2507

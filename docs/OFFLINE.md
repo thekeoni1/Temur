@@ -287,8 +287,8 @@ keyless endpoints only.
 | Model | Quant | File size | Est. RAM at 8k ctx | Tool calls | Indirect selection | Status |
 |---|---|---|---|---|---|---|
 | **Qwen3-4B-Instruct-2507** (primary) | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | verified 2026-08-15 (eval 9/9, 9/9) |
-| Qwen3-4B-Thinking-2507 | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | verified 2026-08-15 (eval 7/9, 9/9) |
-| Qwen2.5-Coder-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | via prose recovery | yes | verified 2026-08-15 (eval 6/9, 9/9) |
+| Qwen3-4B-Thinking-2507 | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | verified 2026-08-15 (eval 7/9, 9/9, 9/9) |
+| Qwen2.5-Coder-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | via prose recovery | yes | verified 2026-08-15 (eval 6/9, 9/9, 7/9) |
 | Qwen3-1.7B (low-RAM floor) | Q4_K_M | ~1.1 GB | ~2.1 GB | yes | yes | verified 2026-08-15 (eval 7/9, 7/9) |
 | Qwen3-0.6B | Q4_K_M | ~0.4 GB | ~1.4 GB | degraded | yes | verified 2026-08-15 (eval 5/9, 5/9) |
 | Qwen2.5-Coder-1.5B-Instruct | Q4_K_M | ~0.9 GB | ~1.9 GB | intermittent | 1 of 2 runs | verified 2026-08-15 (eval 4/9, 4/9) |
@@ -303,8 +303,9 @@ Est. RAM uses the serve.sh warning's own arithmetic: file size plus
 under identical conditions: compact profile, llama.cpp
 `server-b10438` (digest `sha256:190813e8...`), ctx 8192, `--jinja`,
 `EVAL_MAX_TOKENS` 3072, and a pod created with `--network none`. Each
-model ran the nine tasks TWICE and both scores are shown; a third run
-is taken only where two runs differ by 2 or more tasks. The three
+model ran the nine tasks TWICE and every score is shown; where the two
+runs differed by 2 or more tasks a THIRD run was taken (2026-08-16, on
+the same binary, server and settings) and it is shown too. The three
 rows that deliver no tools ran once, since a second 0/9 measures the
 same template.
 
@@ -315,15 +316,18 @@ of eval tasks 2 and 9. A row that moved could have moved for any of
 those reasons. Round two is a new baseline, not a delta against the old
 one.
 
-Read a score as one sample, not a constant, and read the PAIR before
-reading either number. Under fixed conditions Qwen2.5-Coder-3B scored
-6/9 then 9/9 and Qwen3-4B-Thinking 7/9 then 9/9. Two more models held
-their score while the underlying tasks moved: Qwen2.5-Coder-1.5B
-scored 4/9 twice with only two of nine tasks passing both times, and
-Qwen3-1.7B scored 7/9 twice failing a different pair each run. Only
-Qwen3-0.6B repeated its exact task set. A one-task difference between
-two rows here is not a real difference, and a single run locates a
-model to within roughly two tasks.
+Read a score as one sample, not a constant, and read the whole row
+before reading any single number. Under fixed conditions
+Qwen2.5-Coder-3B scored 6/9, 9/9 and 7/9 across three runs, three
+different values spanning 3 tasks, and the third run landed between
+the first two rather than settling them. Qwen3-4B-Thinking went 7/9
+then 9/9 twice, which does settle: 9/9 is its level and the 7/9 was
+the outlier. Two more models held their score while the underlying
+tasks moved: Qwen2.5-Coder-1.5B scored 4/9 twice with only two of nine
+tasks passing both times, and Qwen3-1.7B scored 7/9 twice failing a
+different pair each run. Only Qwen3-0.6B repeated its exact task set.
+A one-task difference between two rows here is not a real difference,
+and a single run locates a model to within roughly two tasks.
 
 Since 2026-08-15 the two tasks that phrased their target as a
 placeholder name the value indirectly instead ("the text that follows
@@ -361,8 +365,9 @@ than the boolean. temur answers `invalid type: string "false", expected
 a boolean`, the model resends the identical call, and the repeat guard
 stops it at three. Sixteen such rejections were recorded across the
 2026-08-15 pass, all of them booleans or `u64` counts sent as strings,
-and Qwen2.5-Coder-1.5B produces them too. This is a temur-side
-tolerance question rather than a model verdict, and it is queued.
+and all of them this model. No other model in the matrix produced one.
+This is a temur-side tolerance question rather than a model verdict,
+and it is queued.
 
 Qwen2.5-Coder-3B is the row that changed most across milestones, from
 `0/7` to 8/9 on 2026-08-12 and to 6/9 and 9/9 on 2026-08-15, and the

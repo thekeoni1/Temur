@@ -4946,13 +4946,35 @@ failed 10 times, task 9 seven, task 5 six, task 2 five, task 6 four,
 tasks 3 and 7 three each, task 4 twice, task 1 once. Task 8 is the
 discriminator and only the two 4B models ever pass it.
 
-Third-run candidates NOT run, per the milestone's ban on auto-third-run
-logic: Qwen3-4B-Thinking (spread 2) and Qwen2.5-Coder-3B (spread 3) on
-the SCORE reading of the rule. The rule is ambiguous and the reading
-changes the answer: on a TASK-SET reading, Coder-1.5B (six tasks moved
-at an identical score) is the strongest candidate in the matrix. The
-score reading was applied because it is what the probe-gated economy
-assumed and what keeps the run count bounded. Left for the operator.
+### Third runs, run 2026-08-16
+
+The milestone's ban covered HARNESS auto-logic, not the policy itself.
+The operator invoked the third-run rule (spread >= 2, SCORE reading) for
+both qualifying models, one `EVAL_RUNS=1` run each, same binary, server
+and settings as the pass.
+
+```
+model                        run 1  run 2  run 3   failed in run 3
+Qwen3-4B-Thinking-2507        7/9    9/9    9/9    none
+Qwen2.5-Coder-3B-Instruct     6/9    9/9    7/9    6, 8
+```
+
+Qwen3-4B-Thinking resolves: two consecutive sweeps after the 7/9, and
+run 3 passed both tasks run 1 failed. 9/9 is the model's level.
+
+Qwen2.5-Coder-3B does NOT resolve. Three runs, three different scores,
+spanning 3 tasks, with the third landing between the first two. The
+policy call was right and the answer it returned is "still unresolved",
+which is a fact about the instrument rather than about the model: at
+this spread no small number of runs pins the row down. The table shows
+the triple rather than a representative score, because there is no
+honest single number to show.
+
+The rule's ambiguity survives and is worth recording: on a TASK-SET
+reading rather than a score reading, Qwen2.5-Coder-1.5B is the
+strongest candidate in the matrix (six of nine tasks moved at an
+identical 4/9) and Qwen3-1.7B also qualifies. Neither was run; that
+reading stays optional and operator-invoked.
 
 Wall clock, sum of task durations: Thinking 6172s, Qwen3-1.7B 2309s,
 Instruct 514s, Coder-1.5B 366s, Coder-3B 358s, Llama 304s, gemma 68s,
@@ -4984,13 +5006,21 @@ Every other argument was correct.
 This closes T29 queue item 9 with the argument capture it asked for,
 and it proves the sibling state mount was necessary to see any of it.
 
-Matrix-wide the shape is systematic, sixteen rejections on two models:
-six `"false"` for a boolean, and ten numeric strings for `u64`
-(`"600000"` five times, `"120000"` twice, `"1200000"`, `"null"`, `"0"`).
-Only booleans and `u64` counts are affected, which is the entire set of
-non-string scalars the tool schemas use. Queued in ROADMAP as a
-tolerant-parsing item, NOT fixed here: changing argument handling
-mid-pass would have made rows incomparable.
+Within this model the shape is systematic, sixteen rejections across
+five archived tasks: six `"false"` for a boolean, and ten numeric
+strings for `u64` (`"600000"` five times, `"120000"` twice,
+`"1200000"`, `"null"`, `"0"`). Only booleans and `u64` counts are
+affected, which is the entire set of non-string scalars the tool
+schemas use. Queued in ROADMAP as a tolerant-parsing item, NOT fixed
+here: changing argument handling mid-pass would have made rows
+incomparable.
+
+The finding is confined to Llama-3.2-3B: no other model in the matrix
+produced a single `invalid type: string` rejection. Qwen2.5-Coder-1.5B
+has exactly one invalid-argument event in the whole archive
+(`task2.run2`), and it is a different class, `offset must be greater
+than or equal to 1`, a RANGE check that runs after the type parsed
+successfully. Tolerant coercion would not have changed it.
 
 ### F2. VERIFIED: `EVAL_TASK_TIMEOUT` is advertised and not enforced
 
