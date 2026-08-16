@@ -319,8 +319,9 @@ fn context_check(
 /// carries no signal at all, so every tool call the agent could make simply
 /// never happens. Confirmed on b10423-a94d563ed on 2026-08-14: gemma-3-4b
 /// 10/10, Phi-4-mini 4/4 and SmolLM2 31/31 prompt_tokens with and without a
-/// tools array, against a Qwen3-4B control that moved. Reported upstream
-/// 2026-08-14.
+/// tools array, against a Qwen3-4B control that moved. Tracked upstream at
+/// ggml-org/llama.cpp#27129. This probe reproduced those three counts live
+/// on 2026-08-15 across ten served models (T32 P2).
 ///
 /// temur can see what the server will not say: send the same tiny
 /// completion twice, once bare and once with one minimal tool, and compare

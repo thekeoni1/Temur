@@ -4,6 +4,35 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **The local-model table is re-measured, and every model now shows two
+  scores instead of one.** Ten models ran the nine-task eval twice each
+  on 2026-08-15 against the shipped v0.20.0 binary, on llama.cpp
+  `server-b10438`. Showing the pair is the point: two models changed
+  score between consecutive runs under identical conditions, and two
+  more held their score while the tasks underneath them moved, so a
+  one-task difference between two rows was never a real difference. The
+  new numbers are a fresh baseline and are NOT comparable to the
+  2026-08-12 table, because the server build, the completion budget and
+  two task wordings all changed between passes. Qwen3-4B-Instruct-2507
+  remains the primary recommendation as the only model to sweep 9/9
+  twice; Qwen3-4B-Thinking-2507 joins the table at the same ceiling and
+  roughly twelve times the wall clock.
+- **The eval harness repeats, keeps evidence, and stops handing models
+  the answer.** `EVAL_RUNS` repeats the nine tasks with the server and
+  pod built once; every FAILED task's work dir, state dir and results
+  are archived before teardown, so a failure can be read after the fact
+  instead of guessed at; `EVAL_MAX_TOKENS` (new default 3072) replaces a
+  hardcoded 2048 that was a binding limit on some tasks rather than
+  headroom; and the two tasks that printed a literal placeholder for the
+  model to copy now name their target indirectly, so they measure the
+  capability they are named for. Operator-run harness only, not part of
+  `check.sh`, and no product behavior changes.
+- **The tools-drop defect now cites its upstream issue.** `temur doctor`
+  and the offline docs point at ggml-org/llama.cpp#27129 instead of a
+  bare date. The probe itself was confirmed live for the first time
+  across ten served models, reproducing the three hand-measured token
+  counts exactly on a different server build.
+
 ## v0.20.0 - 2026-08-14
 
 - **A tool call written as plain text is executed once, not once per

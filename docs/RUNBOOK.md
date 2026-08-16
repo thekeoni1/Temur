@@ -4810,3 +4810,242 @@ Residuals carried out of this cycle, none blocking:
   report carries no issue number yet, the Coder-1.5B dogfood score
   does not settle T30's prediction, and the pre-existing `dead_code`
   warning at `src/tools/edit/matchers.rs:122` is untouched.
+
+## T32 acceptance - recorded result (no release)
+
+Measurement milestone with one harness change ahead of it: the five
+surviving T29 queue items cleared, then the whole local-model matrix
+re-measured against the SHIPPED v0.20.0 binary. No product behavior
+changed. The only Rust touched is one doc comment.
+
+### Conditions
+
+Binary: the i686 musl-static release, sha256
+`f09a38978643efcf063a2434e2336b77bd0970bff7273c4feee7993091b38f0e`,
+verified byte-identical to the shipped v0.20.0 i686 asset before any
+measurement ran, reporting `temur 0.20.0`.
+
+Server: `ghcr.io/ggml-org/llama.cpp:server-b10438`, manifest digest
+`sha256:190813e82f33a82f506e66826f367004a3159f8b8139b11d07566437aecdac93`,
+self-reported `version: 0.1.0-dev (build 10438, commit 9d57ce456)`,
+`--jinja`, ctx 8192. The pin was chosen by paginating the GHCR tag list
+(11 pages, 10,614 tags, 478 matching `server-b<digits>`) and taking the
+newest; the registry's first page returns a stale b5xxx-era window and
+cannot be trusted for this.
+
+Harness: `scripts/weak_model_eval.sh` at 10a7787, compact prompt
+profile, `EVAL_MAX_TOKENS` 3072, each task in a fresh work dir with a
+fresh process and a mounted state dir, inside a `--network none` pod.
+Keyless throughout; no Anthropic call was made in any phase.
+
+### P0: the bridge run
+
+The unchanged harness at 59b7878 was run once on Qwen2.5-Coder-1.5B
+against the v0.20.0 binary, to check T31's three fixes live and to
+settle T30's F1 prediction. `SCORE: 5/9`, failed tasks 5, 7, 8, 9,
+about 140s total.
+
+The archived 0.19.0 run also scored 5/9 but failed 2, 6, 7, 8: same
+number, four of nine tasks moved. That run's failed-task NUMBERS were
+never recorded anywhere in the tree (RUNBOOK and ROADMAP give the score
+only), so they were RECONSTRUCTED from the archived transcripts rather
+than assumed: four transcripts show a failing end state and five show
+the assertion's target being produced, which is the recorded 5/9.
+
+- **H1 CONFIRMED, and wider than T31 described.** The unbounded resend
+  also ran on eval tasks 1 and 4 (62 and 60 consecutive executions of
+  one identical call, each ending in an HTTP 400 context overflow).
+  Both tasks PASSED anyway, because the first execution already did the
+  work, so the defect was invisible in the score and visible only as
+  cost: task 8 alone billed 321,207 input tokens. In the bridge run all
+  three are bounded to execute-then-notice-then-notice, task 8's input
+  falls to 11,530 (a 96.4% reduction), and there are zero context
+  overflows against three in the archive. The guard fired on SEVEN of
+  the nine tasks.
+- **H3 CONFIRMED.** Where the archived transcript had three seconds and
+  31 output tokens of silence after a fenced `{"name": "delete", ...}`,
+  the bridge run names the tool that does not exist and lists the real
+  ones. The model then tried `write` and `read` and never reached
+  `bash`, so the task still FAILS. Firing is the fix; recovery was
+  never claimed.
+- **H2 NOT EXERCISED.** The prediction was that task 6's empty
+  `workdir` would now fall back to cwd. The model sent no `workdir` at
+  all this time, so the code path was never entered; task 6 moved FAIL
+  to PASS on a model-side difference. H2 still has no live leg.
+- **T30 F1 NOT CONFIRMED.** Across 0.18.0-era 7/9, 0.19.0 5/9 and
+  0.20.0 5/9 the score never rose. What T31 changed is the SHAPE of the
+  failures, not the count. The matrix pass then measured this model at
+  4/9 twice with six of nine tasks moving between runs, so the noise is
+  larger than the effect being looked for. Closed as unprovable by this
+  instrument rather than left open.
+
+### P2: the doctor tools-drop probe, first live leg
+
+Every model on disk, one at a time: `serve.sh start`, `temur doctor`
+against it with a keyless local config, tools-drop line recorded
+verbatim, `serve.sh stop`. Ten models, zero servers left running.
+
+```
+model                          verdict  prompt_tokens (without / with tools)
+Qwen3-4B-Instruct-2507          PASS      9 / 147
+Qwen3-4B-Thinking-2507          PASS     11 / 149
+Qwen2.5-Coder-3B-Instruct       PASS     30 / 163
+Qwen2.5-Coder-1.5B-Instruct     PASS     30 / 163
+Qwen3-1.7B                      PASS      9 / 147
+Qwen3-0.6B                      PASS      9 / 147
+Llama-3.2-3B-Instruct           PASS     36 / 170
+gemma-3-4b-it                   WARN     10 / 10
+Phi-4-mini-instruct             WARN      4 / 4
+SmolLM2-1.7B-Instruct           WARN     31 / 31
+```
+
+T31 measured those same three templates BY HAND on a different server
+build (`b10423-a94d563ed`) and got gemma-3-4b 10/10, Phi-4-mini 4/4,
+SmolLM2 31/31. Two independent methods, two server builds, identical
+counts. That closes the T31 residual recording that the probe had never
+fired against a real server in a recorded run.
+
+Llama-3.2-3B PASSes the probe while scoring 2/9, which is the probe
+working correctly rather than contradicting itself: it receives the
+tools and fails later, so the probe separates the template-drop family
+from every other failure mode. A model can pass the probe and still be
+unusable; the probe never claimed otherwise.
+
+### P3: the matrix, measured 2026-08-15
+
+Two runs per model; the three WARN rows ran once under the probe-gated
+economy, and all three scored 0, so none was promoted.
+
+```
+model                          run 1  run 2   failed tasks
+Qwen3-4B-Instruct-2507          9/9    9/9    none / none
+Qwen3-4B-Thinking-2507          7/9    9/9    6,8 / none
+Qwen2.5-Coder-3B-Instruct       6/9    9/9    5,6,8 / none
+Qwen3-1.7B                      7/9    7/9    8,9 / 5,8
+Qwen3-0.6B                      5/9    5/9    2,5,8,9 / 2,5,8,9
+Qwen2.5-Coder-1.5B-Instruct     4/9    4/9    1,3,5,8,9 / 2,5,7,8,9
+Llama-3.2-3B-Instruct           2/9    2/9    2,3,4,6,7,8,9 (both)
+gemma-3-4b-it                   0/9     -     all nine
+Phi-4-mini-instruct             0/9     -     all nine
+SmolLM2-1.7B-Instruct           0/9     -     all nine
+```
+
+NOT comparable to the 2026-08-12 table: the server build, `max_tokens`
+and two task wordings all changed at once.
+
+Variance is the headline. Two models changed score between consecutive
+runs under fixed conditions (Coder-3B by 3 tasks, Thinking by 2). Two
+more held their score while the task set moved: Coder-1.5B scored 4/9
+twice with only tasks 4 and 6 passing both times, six of nine moving,
+and Qwen3-1.7B scored 7/9 twice failing a different pair each run. Only
+Qwen3-0.6B repeated its exact task set. This independently reproduces
+P0's finding on a different axis.
+
+Task difficulty across the 7 tool-capable models (14 runs): task 8
+failed 10 times, task 9 seven, task 5 six, task 2 five, task 6 four,
+tasks 3 and 7 three each, task 4 twice, task 1 once. Task 8 is the
+discriminator and only the two 4B models ever pass it.
+
+Third-run candidates NOT run, per the milestone's ban on auto-third-run
+logic: Qwen3-4B-Thinking (spread 2) and Qwen2.5-Coder-3B (spread 3) on
+the SCORE reading of the rule. The rule is ambiguous and the reading
+changes the answer: on a TASK-SET reading, Coder-1.5B (six tasks moved
+at an identical score) is the strongest candidate in the matrix. The
+score reading was applied because it is what the probe-gated economy
+assumed and what keeps the run count bounded. Left for the operator.
+
+Wall clock, sum of task durations: Thinking 6172s, Qwen3-1.7B 2309s,
+Instruct 514s, Coder-1.5B 366s, Coder-3B 358s, Llama 304s, gemma 68s,
+Phi-4-mini 55s, SmolLM2 32s, Qwen3-0.6B 729s. Thinking alone is more
+than half the pass: same size as Instruct, same 9/9 ceiling, twelve
+times the wall clock.
+
+### F1. VERIFIED: Llama-3.2-3B has a second, undocumented failure mode
+
+The published table explained this row entirely by llama.cpp's
+peg-native grammar rejection. That is still live (nine provider errors
+across tasks 2, 4, 6, 7, 8, 9), but it is not the only cause. The new
+state-dir archiving shows the model emitting structurally perfect tool
+calls whose scalar arguments are stringified:
+
+```json
+{"type": "tool_use", "name": "edit",
+ "input": {"filePath": "/work/config.ini",
+           "oldString": "mode = development",
+           "newString": "mode = production",
+           "replaceAll": "false"}}
+```
+
+`replaceAll` is the string `"false"`, not the boolean. temur answers
+`invalid type: string "false", expected a boolean`, the model resends
+the identical call twice more, and the repeat guard stops it at three.
+Every other argument was correct.
+
+This closes T29 queue item 9 with the argument capture it asked for,
+and it proves the sibling state mount was necessary to see any of it.
+
+Matrix-wide the shape is systematic, sixteen rejections on two models:
+six `"false"` for a boolean, and ten numeric strings for `u64`
+(`"600000"` five times, `"120000"` twice, `"1200000"`, `"null"`, `"0"`).
+Only booleans and `u64` counts are affected, which is the entire set of
+non-string scalars the tool schemas use. Queued in ROADMAP as a
+tolerant-parsing item, NOT fixed here: changing argument handling
+mid-pass would have made rows incomparable.
+
+### F2. VERIFIED: `EVAL_TASK_TIMEOUT` is advertised and not enforced
+
+The knob documents itself as "seconds allowed per task" and defaults to
+300. Ten task runs exceeded it on 2026-08-15, worst 994s at 3.3x the
+cap (Thinking task 8), then 807s (Qwen3-1.7B task 8) and 742s. The
+`timeout` call wraps `podman run`, but the podman client keeps waiting
+after the signal fires, so the bound never binds. The line is
+byte-identical to its pre-T32 form, so this is long-standing and not
+introduced by P1. Deliberately not fixed mid-pass, for comparability.
+Queued. The OFFLINE conditions caption states no per-task bound.
+
+### Deliberate non-changes
+
+The task count stays 9 and the seeds stay fixed, so round two remains
+comparable to round three. No auto-third-run logic: the 2-task rule is
+the operator's to invoke. The three template-limited families stay in
+the table with their scores, because the fix is upstream at
+ggml-org/llama.cpp#27129, not in temur.
+
+The T31 acceptance record above keeps its "Reported upstream
+2026-08-14" wording: it is a historical record of what was true when
+T31 shipped. The issue number was folded into the two LIVE claim sites
+that T31's own residual named, the `src/doctor.rs` doc comment and the
+OFFLINE paragraph.
+
+### Phase commits
+
+```
+b7c35cf  P1  eval harness knobs and artifact retention
+10a7787  P3  bump the pinned llama.cpp server build to b10438
+(this commit)  P4  matrix restatement and queue dequeue
+```
+
+P0 and P2 produced no commits by design.
+
+### Residuals
+
+- Granite-3.3-2B-Instruct and Hermes-3-Llama-3.2-3B were not on disk
+  when the pass ran, so the matrix is TEN rows rather than the twelve
+  planned. Adding them later is a run plus two table rows; nothing
+  about the existing rows changes.
+- H2 (empty `workdir` means absent) still has no live leg. Two matrix
+  passes have now failed to make a model send an empty `workdir`.
+- `README.md` prints a 9/9 task table for Qwen3-4B-Instruct-2507 under
+  `server-b10068` attributed to T19 acceptance. It is true as recorded
+  and outside this milestone's stated scope, but it now sits beside a
+  table measured on a different build and reads as current.
+- The eval driver scripts for P2 and P3 live in the session scratchpad,
+  not the repo, on the same reasoning as T29's: these phases ask for
+  measurements, not new committed tools. The scratchpad was cleared
+  partway through and the P3 driver was rebuilt from the archive
+  ledger, which is what made the pass resumable in practice.
+- The pass was interrupted once by an operator pause and resumed.
+  Qwen2.5-Coder-3B was in flight and was re-measured from scratch, so
+  no row mixes data from before and after the pause.
+- The pre-existing `dead_code` warning at
+  `src/tools/edit/matchers.rs:122` is untouched.
