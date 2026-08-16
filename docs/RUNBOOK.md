@@ -5079,3 +5079,35 @@ P0 and P2 produced no commits by design.
   no row mixes data from before and after the pause.
 - The pre-existing `dead_code` warning at
   `src/tools/edit/matchers.rs:122` is untouched.
+
+## v0.21.0 acceptance - recorded result (stage 1 only, NOT released)
+
+What shipped: T32 alone, eval harness round two plus a full matrix
+refresh. The T32 acceptance record above carries the per-phase detail,
+the third runs, the two new findings, the deviations and the residuals.
+
+Stage 1:
+
+- Four T32 commits pushed 59b7878..048c8d9 (P1 eval harness knobs and
+  artifact retention, P3 the llama.cpp server pin bumped to b10438, P4
+  the matrix restatement and T29 queue dequeue, and the rider carrying
+  the two third runs and the corrected stringified-scalar attribution).
+  On-push ci run 31954598928 on headSha 048c8d9 green in both jobs
+  (test 1m10s 15:05:14Z..15:06:24Z, release-gate 4m27s
+  15:05:15Z..15:09:42Z).
+- Three local prep commits: 292332a bump (four files, Cargo.lock's
+  temur entry only with `untrusted` still pinned 0.9.0, Cargo.toml,
+  scripts/install.sh VERSION, five README tag pins, zero 0.20.0
+  residual outside history sections), cf45f57 CHANGELOG cut to
+  "## v0.21.0 - 2026-08-16" with a fresh empty Unreleased above it and
+  no entry text touched, and this close-out.
+- Full `scripts/check.sh` on the prep head: ALL CHECKS PASSED, exit 0,
+  all three TUI pty smokes OK, bare busybox container printing
+  "temur 0.21.0". Log kept beside the T32 gate logs in the evaluation
+  archive.
+- Em-dash differential across the three prep commits: 0 added lines,
+  0 in any of the three messages.
+- No tag and no release in this stage. Version 0.20.0 is now 0.21.0 in
+  the tree only.
+
+Stage 2: not yet run.
