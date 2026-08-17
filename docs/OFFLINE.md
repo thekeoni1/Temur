@@ -323,9 +323,15 @@ what did not. Every other row is still the 2026-08-15 measurement.
 Since 2026-08-16 `EVAL_TASK_TIMEOUT` is enforced (T33) where it
 previously bound nothing, so a task can now be killed at the cap. The
 default is 1200s and no task in any published row here has approached
-it: the slowest legitimate task ever observed took 994s, and the
-slowest in the Llama re-measure took 434s. No score in this table was
-truncated by the bound.
+it: the slowest legitimate task ever observed took 994s, which is the
+figure the default is set above. No score in this table was truncated
+by the bound.
+
+The Llama re-measure's own slowest task, 434s, is deliberately NOT
+offered as a second data point (corrected 2026-08-17, having first been
+written as one): that task spent its time in an unguarded loop of 77
+tool calls that ended at the context window, not in work, so it says
+nothing about how long a real task needs.
 
 These numbers are not comparable to the table published on 2026-08-12.
 Three things changed between the two passes: the server build, the

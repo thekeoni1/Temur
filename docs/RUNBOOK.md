@@ -5171,8 +5171,23 @@ Two conditions differ from the T32 matrix and both are deliberate.
 only the failures, which is what the metric enumerates; it changes
 archiving only, never a score. And `EVAL_TASK_TIMEOUT` is now ENFORCED
 at its new 1200s default where T32 ran with a 300s cap that bound
-nothing: no task in the re-measure carried a timeout marker and the
-slowest took 434s, so nothing was truncated by it.
+nothing: no task in the re-measure carried a timeout marker, so nothing
+was truncated by it. The justification for the 1200s figure is the
+genuine 994s task T32 measured, not anything in this pass.
+
+CORRECTION 2026-08-17: this paragraph first cited the re-measure's
+slowest task, 434s, as supporting evidence that the cap does not
+truncate ordinary work. That was wrong about what the 434s WAS. It is
+task8.run1, and the time went to an unguarded rotating-repertoire loop
+rather than to work: 77 tool calls in one task, cycling roughly six
+distinct calls (read offset "0" x19, `gunzip -c` x15, read offset "1"
+x14, `zcat` x9, plus `cat`, `gunzip` and `write`) with ZERO identical
+consecutive pairs, ended by the context window at 440,983 input tokens
+with temur's own overflow-reworded truncation notice. The
+no-truncation fact is unaffected, since the bound still never fired;
+only the "slowest legitimate task" reading of the 434s is withdrawn,
+and the load-bearing number stays the 994s one. The loop itself is
+queued in ROADMAP as a guard-coverage gap.
 
 ### P1: the coercion
 

@@ -317,6 +317,37 @@ became field-level tolerant coercion at the argument boundary, and
   the one asked for is worse than a loud refusal, and the T33 no-
   corruption rule is the same principle one level up.
 
+  MEASURED 2026-08-17 from the archive, and it shrinks the item. The
+  nineteen events are not a pattern across the pass: they are ONE task
+  in ONE run, `task8.run1`. Post-rejection the model corrected `offset`
+  to `1` in about 11 of 19 and resent `"0"` unchanged in 8; the T32
+  type-rejection comparison over the same tool is 3 of 5 recovered, 2
+  abandoned. So the model partially recovers from BOTH messages and the
+  sample is far too small to rank one against the other. What the task
+  actually died of was not this at all but the loop queued directly
+  below, which is where the effort belongs.
+
+- **A rotating repertoire of tool calls passes every loop guard.**
+  The guards are each deliberately narrow: the doom-loop guard needs
+  three IDENTICAL CONSECUTIVE calls, the T4 alternating-pair guard
+  needs a strict `A,B,A,B,A,B` over a six-deep fingerprint window, and
+  T31's `ProseRepeatGuard` compares against the LAST dispatched call.
+  A model that rotates through roughly six distinct calls satisfies
+  none of those shapes and runs unbounded. Evidence, and the reason
+  this is filed rather than theorised:
+  `~/temur-eval-archive/llama32-coercion-2026-08-16` `task8.run1`, 77
+  tool calls in one task with ZERO identical-consecutive pairs, cycling
+  read offset `"0"` x19, `gunzip -c` x15, read offset `"1"` x14, `zcat`
+  x9 plus `cat`, `gunzip` and `write`, ending at the context window on
+  440,983 input tokens with temur's overflow-reworded truncation
+  notice. This is the H1 cost/context-burn class rather than a
+  correctness bug: like T31's H1 the task fails either way, and what
+  the gap costs is tokens and wall clock. Note the tension before
+  building anything: widening a loop guard trades against legitimate
+  repetition, since a model editing ten files really does call the same
+  few tools in a rotation, so the discriminator has to be lack of
+  PROGRESS rather than repetition alone.
+
 ### T0 - Identity + honest gate
 - Rename `opencode-rust` → `temur`: package name, `--version`, binary name,
   doc headers, RUNBOOK. Keep an MIT attribution note for the OpenCode-ported
