@@ -21,7 +21,10 @@
 #         LLAMA_IMAGE        server image (pinned default below)
 #         CTX                server context size, mirrored into context_window
 #         PROMPT_PROFILE     temur prompt profile for the run (default compact)
-#         EVAL_TASK_TIMEOUT  seconds allowed per task (default 300)
+#         EVAL_TASK_TIMEOUT  seconds allowed per task, ENFORCED (default
+#                            1200); 0 disables the bound entirely. A task
+#                            the bound kills is recorded FAIL with a
+#                            TIMEOUT@<n>s note in the results table.
 #         EVAL_MAX_TOKENS    per-turn completion budget (default 3072)
 #         EVAL_RUNS          how many times the nine tasks repeat (default 1);
 #                            the server and the pod are built ONCE and shared
@@ -43,7 +46,7 @@ APP_IMG=docker.io/i386/debian:stable
 BARE_IMG=docker.io/library/busybox:stable
 CTX="${CTX:-8192}"
 PROMPT_PROFILE="${PROMPT_PROFILE:-compact}"
-EVAL_TASK_TIMEOUT="${EVAL_TASK_TIMEOUT:-300}"
+EVAL_TASK_TIMEOUT="${EVAL_TASK_TIMEOUT:-1200}"
 EVAL_MAX_TOKENS="${EVAL_MAX_TOKENS:-3072}"
 EVAL_RUNS="${EVAL_RUNS:-1}"
 EVAL_MIN="${EVAL_MIN:-0}"
@@ -126,13 +129,46 @@ mkdir -p "$CFG_DIR/temur" "$EVAL_TRANSCRIPT_DIR"
 # returns exceed_context_size_error naming n_prompt_tokens only).
 printf '{"provider":"openai-compat","max_tokens":%s,"prompt_profile":"%s","openai_compat":{"model":"local-gguf","context_window":%s}}\n' \
     "$EVAL_MAX_TOKENS" "$PROMPT_PROFILE" "$CTX" > "$CFG_DIR/temur/config.json"
-echo "profile: $PROMPT_PROFILE   per-task timeout: ${EVAL_TASK_TIMEOUT}s   max_tokens: $EVAL_MAX_TOKENS"
+if [ "$EVAL_TASK_TIMEOUT" -gt 0 ]; then
+    TIMEOUT_BANNER="${EVAL_TASK_TIMEOUT}s (enforced)"
+else
+    TIMEOUT_BANNER="disabled"
+fi
+echo "profile: $PROMPT_PROFILE   per-task timeout: $TIMEOUT_BANNER   max_tokens: $EVAL_MAX_TOKENS"
 echo "runs: $EVAL_RUNS   transcripts: $EVAL_TRANSCRIPT_DIR"
 
 SCORES="$EVAL_ROOT/scores.txt"
 : > "$SCORES"
 
 trimmed() { cat "$1" 2>/dev/null | tr -d '[:space:]' || true; }
+
+# T33: how the per-task bound is actually enforced. Until now the line
+# was `timeout $EVAL_TASK_TIMEOUT podman run ...`, which never bound: on
+# expiry `timeout` signals the podman CLIENT, and the client neither dies
+# nor stops the container. T32 measured ten tasks overrunning the 300s
+# cap, worst 994s. Measured again directly on podman 4.9.3, 2026-08-16, a
+# 30s container against a 5s bound:
+#   timeout (SIGTERM to client)   32s, never bound
+#   timeout -s KILL / -k          5-8s, but the container SURVIVES the
+#                                 client and keeps running in the pod
+#   podman run --timeout          7s, container killed by conmon, and
+#                                 --rm still removed it: no orphan
+# So the bound is podman's own --timeout, which conmon enforces on the
+# container rather than on the client. The outer `timeout -s KILL` stays
+# as a backstop only, at a grace above the real cap, for the case where
+# conmon itself wedges; it is what the sweep after each task cleans up
+# after. 0 disables both, since podman reads --timeout 0 as "no bound"
+# and a backstop with no bound to back would kill every task at the
+# grace.
+TIMEOUT_BACKSTOP=60
+TIMED_OUT=0
+if [ "$EVAL_TASK_TIMEOUT" -gt 0 ]; then
+    BOUND_ARG="--timeout $EVAL_TASK_TIMEOUT"
+    BOUND_CMD="timeout -s KILL $(( EVAL_TASK_TIMEOUT + TIMEOUT_BACKSTOP ))"
+else
+    BOUND_ARG=""
+    BOUND_CMD=""
+fi
 
 # run_task <n> <name> <prompt>: launches a fresh temur --plain process in
 # the task's own work subdir. Each task block below mkdirs and seeds its
@@ -149,14 +185,31 @@ run_task() {
     work="$WORKROOT/task$n"
     state="$WORKROOT/state$n"
     mkdir -p "$state"
+    cname="temur-eval-t$n-r$RUN"
+    # A leftover of this name would make the run below fail on the name
+    # rather than on the task, so sweep before as well as after.
+    podman rm -f "$cname" >/dev/null 2>&1 || true
+    TIMED_OUT=0
+    rc=0
     start=$(date +%s)
-    printf '%s\n' "$prompt" | timeout "$EVAL_TASK_TIMEOUT" \
-        podman run --rm -i --pod "$POD" \
+    # shellcheck disable=SC2086  # $BOUND_* are deliberately word-split
+    printf '%s\n' "$prompt" | $BOUND_CMD \
+        podman run --rm -i --name "$cname" $BOUND_ARG --pod "$POD" \
         -v "$(dirname "$MUSL_BIN")":/app:ro \
         -v "$CFG_DIR":/cfg:ro -v "$work":/work -v "$state":/state \
         -e XDG_CONFIG_HOME=/cfg -e XDG_STATE_HOME=/state -w /work "$APP_IMG" \
-        /app/temur --plain > "$EVAL_TRANSCRIPT_DIR/task$n.run$RUN.txt" 2>&1 || true
+        /app/temur --plain > "$EVAL_TRANSCRIPT_DIR/task$n.run$RUN.txt" 2>&1 || rc=$?
     SECS=$(( $(date +%s) - start ))
+    # Only the backstop can leave a container behind (measured); conmon's
+    # own kill honors --rm. Unconditional, so the next task never inherits
+    # a live temur holding the shared server busy.
+    podman rm -f "$cname" >/dev/null 2>&1 || true
+    # A nonzero exit at or past the cap is the bound firing. Neither half
+    # alone is enough: the cap alone would mislabel a task that finished
+    # normally just under it, and a nonzero exit alone is any podman error.
+    if [ "$EVAL_TASK_TIMEOUT" -gt 0 ] && [ "$rc" -ne 0 ] && [ "$SECS" -ge "$EVAL_TASK_TIMEOUT" ]; then
+        TIMED_OUT=1
+    fi
 }
 
 # archive_task <n> <PASS|FAIL>: keeps a failed task's evidence before
@@ -178,9 +231,19 @@ archive_task() {
 }
 
 record() { # record <n> <name> <PASS|FAIL> <secs>
-    printf '%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" >> "$RESULTS"
-    echo "task $1 ($2): $3 (${4}s)"
-    archive_task "$1" "$3"
+    res=$3
+    note=""
+    # A task the bound killed is a FAIL regardless of what its assertion
+    # found: whatever is on disk was produced by a run that did not finish
+    # under the stated conditions, so scoring it as a pass would publish a
+    # number the conditions did not actually produce.
+    if [ "$TIMED_OUT" = "1" ]; then
+        res=FAIL
+        note="TIMEOUT@${EVAL_TASK_TIMEOUT}s"
+    fi
+    printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$res" "$4" "$note" >> "$RESULTS"
+    echo "task $1 ($2): $res${note:+ [$note]} (${4}s)"
+    archive_task "$1" "$res"
 }
 
 # run_round: the nine tasks, in order, against the already-running server.
@@ -304,11 +367,11 @@ if [ "$(trimmed "$WORKROOT/task$n/tail.txt")" = "OMEGA-3141" ]; then
 # report_round: prints the run's table and appends its score to $SCORES.
 report_round() {
     echo "==== results (run $RUN of $EVAL_RUNS) ===="
-    printf '%-4s %-14s %-6s %s\n' "task" "name" "result" "seconds"
-    printf '%-4s %-14s %-6s %s\n' "----" "--------------" "------" "-------"
+    printf '%-4s %-14s %-6s %-8s %s\n' "task" "name" "result" "seconds" "note"
+    printf '%-4s %-14s %-6s %-8s %s\n' "----" "--------------" "------" "-------" "----"
     SCORE=0
-    while IFS='|' read -r n name res secs; do
-        printf '%-4s %-14s %-6s %s\n' "$n" "$name" "$res" "$secs"
+    while IFS='|' read -r n name res secs note; do
+        printf '%-4s %-14s %-6s %-8s %s\n' "$n" "$name" "$res" "$secs" "$note"
         [ "$res" = "PASS" ] && SCORE=$((SCORE + 1))
     done < "$RESULTS"
     cp "$RESULTS" "$EVAL_TRANSCRIPT_DIR/results.run$RUN.txt"
