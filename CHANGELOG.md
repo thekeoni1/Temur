@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.22.0 - 2026-08-16
+
 - **A tool argument sent as a string where a number or a boolean was
   asked for is now accepted rather than rejected.** Small local models
   sometimes emit an otherwise perfect tool call carrying
