@@ -5359,3 +5359,50 @@ Stage 1:
   no v0.22.0 tag exists, and no release has been created. The decided
   tag message for stage 2 is exactly one line,
   "temur v0.22.0 - tolerant scalars (T33)".
+
+Stage 2:
+
+- Prep pushed d4da809..6fbc6fc; ci run 32033811646 on headSha 6fbc6fc
+  green in both jobs (test 2m12s 13:12:26Z..13:14:38Z, release-gate
+  7m53s 13:12:21Z..13:20:14Z).
+- Annotated tag v0.22.0 AT 6fbc6fc, tag object
+  d08b8ddf6d6d5360b3c3d01e0a251aa3ff7a346c. The message was verified
+  against the RAW object before the tag was pushed, not through
+  `git tag -l --format` (which appends its own newline): the object was
+  split on its first blank line and the remaining bytes piped through
+  `od`. They are exactly "temur v0.22.0 - tolerant scalars (T33)"
+  followed by one \n: 39 bytes, one line, the separator an ASCII
+  hyphen-minus (0x2d), a single trailing 0x0a and no other newline,
+  every byte below 0x80. The remote ref resolves to the same object
+  hash and `^{}` to 6fbc6fc.
+- scripts/release.sh with NO SKIP_CHECK: green first try, exit 0, 4/4
+  artifacts gated and staged, leak grep clean, install.sh/README skew
+  gate clean, all three TUI pty smokes OK (the 180s bound was never
+  approached and the hang signature never appeared), bare busybox
+  container printing "temur 0.22.0". Log kept in the evaluation archive
+  as `v0220-stage2-release-2026-08-17.log`.
+- Staged sha256s:
+  2113eb6a aarch64, dadbcfd3 armv7, 2de2c566 i686, 29530e6b x86_64,
+  cd25807a SHA256SUMS.
+- Private release created with 5 assets, not draft, not prerelease.
+  Repo isPrivate confirmed true BEFORE creating it and again AFTER.
+- Closing gate: the x86_64 asset and SHA256SUMS were re-downloaded
+  fresh from the release and both are `cmp`-identical to staged; the
+  downloaded x86_64 re-hashes to 29530e6b..., and `sha256sum -c` on the
+  downloaded SHA256SUMS is OK. A second, FULL download of all five
+  assets is also `cmp`-identical to staged, all five. Installer matrix
+  6/6 twice, once against the staged dir and once against that full
+  download (pass + corrupt + unlisted, on the GNU host and in the
+  busybox container).
+- Local ~/.local/bin/temur refreshed from the shipped i686 artifact: it
+  prints "temur 0.22.0", hashes 2de2c566... which is the published i686
+  entry in the downloaded SHA256SUMS, and is `cmp`-identical to the
+  freshly downloaded asset, so the chain from staged to published to
+  installed is closed independently.
+- CHANGELOG dating, recorded rather than corrected: the v0.22.0 heading
+  reads 2026-08-16, the local day both prep commits were cut on, while
+  the tag and release were created on 2026-08-17. The file says dates
+  are release dates, so the heading is a day early. It is NOT being
+  amended: the tag is pushed and this project never retags, and editing
+  it now would leave the released tree and main disagreeing about the
+  same line for no gain.
