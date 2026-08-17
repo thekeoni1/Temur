@@ -292,7 +292,7 @@ keyless endpoints only.
 | Qwen3-1.7B (low-RAM floor) | Q4_K_M | ~1.1 GB | ~2.1 GB | yes | yes | verified 2026-08-15 (eval 7/9, 7/9) |
 | Qwen3-0.6B | Q4_K_M | ~0.4 GB | ~1.4 GB | degraded | yes | verified 2026-08-15 (eval 5/9, 5/9) |
 | Qwen2.5-Coder-1.5B-Instruct | Q4_K_M | ~0.9 GB | ~1.9 GB | intermittent | 1 of 2 runs | verified 2026-08-15 (eval 4/9, 4/9) |
-| Llama-3.2-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | unreliable | no | verified 2026-08-15 (eval 2/9, 2/9) |
+| Llama-3.2-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | unreliable | no | re-measured 2026-08-16 on v0.22.0, different binary from the rows above (eval 4/9, 3/9; was 2/9, 2/9 on 2026-08-15) |
 | Gemma-3-4B-it | Q4_K_M | ~2.3 GB | ~3.3 GB | no (tools not delivered) | n/a | verified 2026-08-15 (eval 0/9) |
 | Phi-4-mini-instruct | Q4_K_M | ~2.3 GB | ~3.3 GB | no (tools not delivered) | n/a | verified 2026-08-15 (eval 0/9) |
 | SmolLM2-1.7B-Instruct | Q4_K_M | ~1.0 GB | ~2.0 GB | no (tools not delivered) | n/a | verified 2026-08-15 (eval 0/9) |
@@ -308,6 +308,24 @@ runs differed by 2 or more tasks a THIRD run was taken (2026-08-16, on
 the same binary, server and settings) and it is shown too. The three
 rows that deliver no tools ran once, since a second 0/9 measures the
 same template.
+
+One row is deliberately outside that sentence. Llama-3.2-3B was
+re-measured on 2026-08-16 against a LATER temur binary, the one
+carrying T33's tolerant scalar coercion, because that fix was written
+for a defect only this model exhibited and the point was to measure it.
+Server build, ctx, profile, `max_tokens`, seeds and task wording are
+unchanged, so the only difference from its 2026-08-15 pair is the
+temur binary and the per-task bound described below; but its numbers
+are a two-sample comparison against a two-sample baseline, and the
+paragraph on scalar coercion further down says what actually moved and
+what did not. Every other row is still the 2026-08-15 measurement.
+
+Since 2026-08-16 `EVAL_TASK_TIMEOUT` is enforced (T33) where it
+previously bound nothing, so a task can now be killed at the cap. The
+default is 1200s and no task in any published row here has approached
+it: the slowest legitimate task ever observed took 994s, and the
+slowest in the Llama re-measure took 434s. No score in this table was
+truncated by the bound.
 
 These numbers are not comparable to the table published on 2026-08-12.
 Three things changed between the two passes: the server build, the
@@ -350,8 +368,8 @@ invent shapes like `{"tool": "file_delete", "path": "obsolete.tmp"}`.
 A different chat template would be needed, and the eval harness has no
 knob for one.
 
-Llama-3.2-3B is not in that category and its 2/9 is its own story,
-with two independent causes. It receives the full tool array, and
+Llama-3.2-3B is not in that category, and the 2/9 pair it scored on
+2026-08-15 is its own story, with two independent causes. It receives the full tool array, and
 llama.cpp's own tool-call grammar then rejects the model's output
 server-side with `The model produced output that does not match the
 expected peg-native format`, upstream of anything temur parses. That
@@ -361,13 +379,33 @@ The second cause is visible only with the session store mounted, which
 the harness now does for failed tasks. The model also emits well-formed
 tool calls whose scalar arguments are stringified: an otherwise perfect
 `edit` call carrying `"replaceAll": "false"`, the JSON string rather
-than the boolean. temur answers `invalid type: string "false", expected
-a boolean`, the model resends the identical call, and the repeat guard
-stops it at three. Sixteen such rejections were recorded across the
-2026-08-15 pass, all of them booleans or `u64` counts sent as strings,
-and all of them this model. No other model in the matrix produced one.
-This is a temur-side tolerance question rather than a model verdict,
-and it is queued.
+than the boolean. temur answered `invalid type: string "false",
+expected a boolean`, the model resent the identical call, and the
+repeat guard stopped it at three. Sixteen such rejections were recorded
+across the 2026-08-15 pass, all of them booleans or `u64` counts sent
+as strings, and all of them this model. No other model in the matrix
+produced one.
+
+That was a temur-side tolerance question rather than a model verdict,
+and T33 answered it: the four non-string scalar arguments in the tool
+schemas now accept `"true"`/`"false"` for a boolean and a digit string
+for a count, at the parse boundary only. Re-measured on 2026-08-16
+against the fixed binary, the same enumeration over the archived
+session JSONs returns ZERO stringified-scalar rejections against the
+earlier sixteen.
+
+What that did NOT do is make this model reliable, and the re-measure is
+worth reading carefully. Its score moved from 2/9, 2/9 to 4/9, 3/9,
+which is two samples against two and overlaps once. The server-side
+grammar rejections above are untouched (nine then, eight now) and still
+account for most of the row. And the coercion moved one failure rather
+than removing it: every `offset` this model sent in the re-measure was
+a string, and while `"1"`, `"2"` and `"null"` now parse and run, the
+nineteen `"0"`s now parse and then fail the read tool's own range check
+(`offset must be greater than or equal to 1`, since offsets are
+1-indexed). A type rejection became a range rejection on that subset.
+The model is still wrong about the value; temur is no longer wrong
+about the type.
 
 Qwen2.5-Coder-3B is the row that changed most across milestones, from
 `0/7` to 8/9 on 2026-08-12 and to 6/9 and 9/9 on 2026-08-15, and the
@@ -516,7 +554,9 @@ oversized tool output survives only through the head+tail truncation).
 Every task is scored by a host-verified filesystem assertion (model
 prose is never evidence; the indirect probe additionally requires a bash
 `rm` call in the transcript), and the run ends with a fixed-width
-PASS/FAIL table plus a `SCORE: N/9` line.
+PASS/FAIL table plus a `SCORE: N/9` line. A task killed by the per-task
+timeout is a FAIL carrying a `TIMEOUT@<n>s` note in that table's last
+column, so an overrun is never mistaken for an ordinary failure.
 
 ```sh
 MODEL_GGUF=/path/to/model.gguf scripts/weak_model_eval.sh
@@ -524,10 +564,12 @@ MODEL_GGUF=/path/to/model.gguf scripts/weak_model_eval.sh
 
 Knobs: `MUSL_BIN`, `LLAMA_IMAGE`, `CTX` (default 8192), `PROMPT_PROFILE`
 (default `compact`, written into the generated keyless config),
-`EVAL_TASK_TIMEOUT` (seconds per task, default 300), `EVAL_MIN` (default
-0 = informational; a nonzero value makes the script exit 1 below that
-score), and `EVAL_TRANSCRIPT_DIR` (per-task transcripts are kept there
-for debugging).
+`EVAL_TASK_TIMEOUT` (seconds per task, enforced, default 1200; `0`
+disables it, and a task the bound kills is recorded FAIL with a
+`TIMEOUT@<n>s` note), `EVAL_MIN` (default 0 = informational; a nonzero
+value makes the script exit 1 below that score), and
+`EVAL_TRANSCRIPT_DIR` (per-task transcripts are kept there for
+debugging).
 
 ## Troubleshooting
 

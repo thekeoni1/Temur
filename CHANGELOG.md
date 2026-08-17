@@ -4,6 +4,33 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **A tool argument sent as a string where a number or a boolean was
+  asked for is now accepted rather than rejected.** Small local models
+  sometimes emit an otherwise perfect tool call carrying
+  `"replaceAll": "false"` or `"timeout": "600000"` in quotes; temur
+  answered `invalid type: string "false", expected a boolean`, and a
+  model with no other idea resent the identical call until the repeat
+  guard stopped the turn. The four non-string scalar arguments in the
+  tool schemas (`edit` `replaceAll`, `read` `offset` and `limit`, `bash`
+  `timeout`) now accept `"true"`/`"false"` for a boolean, a string of
+  digits for a count, and `"null"` for an omitted value. Nothing else:
+  `"maybe"`, `"12.5"`, `"-3"`, `"True"` and a padded `" true"` all still
+  fail, now with a message that names the forms that would have worked.
+  The tolerance is per-field and applies only to those four arguments,
+  so text stays text, and an edit whose search string is literally
+  `false` is untouched. The published schemas are byte-identical: this
+  is what temur ACCEPTS, not what it asks for.
+- **The eval harness's per-task timeout now actually stops a task.**
+  `EVAL_TASK_TIMEOUT` documented itself as "seconds allowed per task"
+  and enforced nothing: the signal went to the podman client, which
+  neither stopped nor stopped waiting, and one measured task ran 994s
+  against a 300s cap. The bound is now enforced on the container, a
+  task that hits it is recorded as a failure with a `TIMEOUT@<n>s` note
+  rather than silently overrunning, and no container outlives its task.
+  The default rises to 1200s, chosen above the slowest legitimate task
+  ever observed so that it bounds hangs rather than truncating work;
+  `0` disables it. No published score changes.
+
 ## v0.21.0 - 2026-08-16
 
 - **The local-model table is re-measured, and every model now shows two

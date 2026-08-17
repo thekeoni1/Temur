@@ -5143,3 +5143,179 @@ Stage 2:
   (pass + corrupt + unlisted, on the GNU host and in the busybox
   container).
 - Local ~/.local/bin/temur refreshed from the shipped i686 artifact.
+
+## T33 acceptance - recorded result (no release)
+
+Tolerant scalar coercion plus the eval harness's per-task bound: the
+two items T32 queued, taken together. Version stays 0.21.0; this ships
+as v0.22.0 in a later cycle.
+
+### Conditions
+
+`scripts/weak_model_eval.sh` at its defaults except where noted:
+compact prompt profile, llama.cpp `server-b10438`, ctx 8192 with
+`--jinja`, `EVAL_MAX_TOKENS` 3072, `EVAL_MIN` 0, the i686 musl-static
+release binary mounted read-only into `docker.io/i386/debian:stable`,
+each task in a fresh work dir with a fresh process, inside a
+`--network none` pod. Nothing was pulled; every image was already
+local. Keyless throughout; no live Anthropic call was made from this
+session.
+
+Binary under test: `i686-unknown-linux-musl` release at the P1 head,
+sha256 `1abf58ee945a6e9ceb536e90877bd2456a27e7df41eb725679688c83c2146be7`.
+Rebuilt after P1 and re-hashed to the same value the gate had already
+produced, so the measured binary is provably the committed source.
+
+Two conditions differ from the T32 matrix and both are deliberate.
+`EVAL_KEEP_ALL=1`, so every task's session JSON is archived rather than
+only the failures, which is what the metric enumerates; it changes
+archiving only, never a score. And `EVAL_TASK_TIMEOUT` is now ENFORCED
+at its new 1200s default where T32 ran with a 300s cap that bound
+nothing: no task in the re-measure carried a timeout marker and the
+slowest took 434s, so nothing was truncated by it.
+
+### P1: the coercion
+
+Four fields, chosen because they are the entire set of non-string
+scalars the tool schemas declare: `edit` `replaceAll` (bool),
+`read` `offset` and `limit`, `bash` `timeout` (`Option<u64>`).
+Field-level serde `deserialize_with` helpers in `src/tools/coerce.rs`,
+NOT a central value-walk at `parse_input`: a blind rewrite there would
+corrupt legitimate string fields, and an `oldString` of `"false"` must
+stay the four-character string.
+
+Accepted: `"true"`/`"false"` for a bool, an ASCII-digit string for a
+`u64`, `"null"` for an `Option`. Rejected loudly, with a message naming
+the accepted forms: `"maybe"`, `""`, `"12.5"`, `"-3"`, `"+3"`, `" 12"`,
+`"1_000"`, `"0x10"`, `"1e3"`, `"True"`, `"FALSE"`, `"1"`, `"yes"`,
+`"NULL"`. Real floats and negatives are delegated to the ordinary
+`from_value` path and keep their pre-T33 serde wording exactly.
+`input_schema()` is byte-identical for every tool.
+
+One mechanical consequence worth recording: the `Option` fields needed
+`serde(default)` added alongside `deserialize_with`, because naming a
+deserializer turns off serde's implicit "missing `Option` is `None`".
+Without it an ABSENT `offset` would have become a hard error, which no
+test of the coercion itself would have caught.
+
+Tests pin the three archived shapes by VALUE rather than by parsing at
+all: a stringified `"false"` produces the two-occurrence ambiguity
+error (proving it read as false, not merely that it parsed), a
+stringified `"200"` actually binds the bash timeout, `"null"` reads the
+whole file. Plus the unchanged real-value path, the loud-failure set
+above, and the no-corruption pin where `oldString`/`newString` are the
+literal strings `false` and `600000`.
+
+### P2: making `EVAL_TASK_TIMEOUT` bind
+
+Measured on podman 4.9.3, 2026-08-16, a 30s container against a 5s
+bound, rather than reasoned about:
+
+```
+timeout (SIGTERM to client)     elapsed 32s   never bound
+timeout -s KILL (SIGKILL)       elapsed  5s   container SURVIVES, still running
+timeout -k 3 (TERM then KILL)   elapsed  8s   container SURVIVES, still running
+podman run --timeout (conmon)   elapsed  7s   container killed, --rm removed it
+```
+
+The signal never reached anything that could stop the work: `timeout`
+signals the podman CLIENT, which neither dies nor stops the container.
+Killing the client returns control but leaves a live temur in the pod
+holding the shared llama.cpp server busy for every later task, which is
+worse than the overrun it fixes. So the bound is podman's own
+`--timeout`, enforced by conmon on the container; the outer `timeout`
+survives only as a SIGKILL backstop at cap+60s, and because that path
+is the one that can orphan a container, each task now runs under a
+deterministic `--name` swept with `podman rm -f` before and after.
+
+Smoke, Qwen3-0.6B at `EVAL_TASK_TIMEOUT=60`:
+
+```
+task 8 binary-nudge   FAIL  61s  TIMEOUT@60s   bound fired (~1s conmon overhead)
+task 5 find-needle    FAIL  50s               under the cap, no marker: no over-fire
+task 9 large-tail     FAIL  17s               ran AFTER the kill, unaffected
+```
+
+No container and no pod outlived the run; exit 0; `sh -n` clean.
+Detection requires BOTH a nonzero exit AND elapsed at or past the cap,
+since the cap alone mislabels a normal finish just under it and a
+nonzero exit alone is any podman error.
+
+Default 300 to 1200: the worst LEGITIMATE task observed was 994s, so a
+binding 300 would have truncated Qwen3-4B-Thinking's published scores
+rather than bounded a hang. `0` disables the bound explicitly, because
+podman reads `--timeout 0` as "no bound" and a backstop with no bound
+to back would kill every task at the grace.
+
+### P3: the targeted re-measure (no commit, archive only)
+
+Llama-3.2-3B only, 2 runs, archived to
+`~/temur-eval-archive/llama32-coercion-2026-08-16/`. Qwen2.5-Coder-1.5B
+was deliberately NOT re-measured: its single invalid-argument event is
+a range check that runs after a successful type parse, which coercion
+does not touch.
+
+PRIMARY METRIC, stringified-scalar rejections enumerated over the
+archived session JSONs. The counter was validated against a known
+answer BEFORE being trusted: run against the T32 archive it reproduces
+sixteen exactly, 6x `"false"` to boolean and 5x `"600000"`, 2x
+`"120000"`, 1x each `"1200000"`, `"0"`, `"null"` to `u64`, across all
+70 session JSONs of the ten-model matrix, confirming all sixteen were
+this model. Two bugs in the counter surfaced during that validation (a
+JSON-escaping miss, and a delivery path where an error arrives as a
+prose-call-recovery text block rather than a `tool_result`); without
+the known-16 check either would have produced a falsely clean zero.
+
+```
+                                    T32 (2026-08-15)   T33 (2026-08-16)
+stringified-scalar rejections              16                  0
+  same, counted anywhere in session        16                  0
+score, run 1 / run 2                    2/9, 2/9           4/9, 3/9
+peg-native grammar rejections               9                  8
+offset range-check events                   0                 19
+```
+
+Score is SECONDARY and is two samples against two. The server-side
+grammar rejections are barely moved and still dominate the row, which
+is what was predicted.
+
+HONEST RESIDUAL. Every `offset` this model sent in the re-measure was
+a string: `"0"` x19, `"1"` x16, `"2"` x1, `"null"` x1. The 18
+non-`"0"` ones now parse and run, which is the fix working. The 19
+`"0"`s now parse and then fail `read`'s own 1-indexed range check, so
+on that subset a type rejection became a RANGE rejection rather than a
+success, and the model still gets an error and still loops. 16 to 0 is
+true and is the metric that was set, but it must not be read as "the
+argument-rejection loop is gone for this model". Queued in ROADMAP as
+a measurement, explicitly not as a licence to read `0` as `1`.
+
+### Deliberate non-changes
+
+No float coercion, no trimming, no case tolerance, no sign handling.
+`input_schema()` untouched for every tool: the schema stays the
+contract and the coercion is parse-time tolerance, not a relaxation of
+what temur asks for. The central `parse_input` boundary is unchanged.
+The task count stays 9, the seeds stay fixed, and the other nine matrix
+rows were NOT re-measured, so OFFLINE.md's caption now says explicitly
+that the Llama row alone sits on a later binary.
+
+### Phase commits
+
+```
+f1b14ec  P1  tolerant scalar coercion at the argument boundary
+8cc5e04  P2  make EVAL_TASK_TIMEOUT actually bind
+(this commit)  P4  docs and gate
+```
+
+P3 produced no commit by design.
+
+### Residuals
+
+- Granite-3.3-2B-Instruct and Hermes-3-Llama-3.2-3B are still not in
+  `~/models`, so the matrix stays TEN rows and neither was run.
+- The `"0"` offset range check above, queued rather than fixed.
+- The pre-existing `dead_code` warning at
+  `src/tools/edit/matchers.rs:122` is untouched.
+- Coercion is proven against ONE model's captured shapes. That bears
+  on how much it buys, not on whether the gap was real, and the
+  no-corruption rule means the cost to every other model is zero.
