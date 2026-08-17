@@ -5319,3 +5319,43 @@ P3 produced no commit by design.
 - Coercion is proven against ONE model's captured shapes. That bears
   on how much it buys, not on whether the gap was real, and the
   no-corruption rule means the cost to every other model is zero.
+
+## v0.22.0 acceptance - recorded result (stage 1 only, NOT released)
+
+What shipped: T33 alone, tolerant scalar coercion plus the eval
+harness's per-task bound. The T33 acceptance record above carries the
+per-phase detail, the measured podman comparison, the 16 to 0 metric
+with its honest residual, and the deliberate non-changes.
+
+Stage 1:
+
+- Three T33 commits pushed 7fa7f41..d4da809 (P1 the field-level
+  coercion on the four non-string scalar args, P2 the podman
+  `--timeout` bound with its TIMEOUT marker and the 300 to 1200
+  default, P4 the docs and gate). P3 produced no commit by design.
+  On-push ci run 31991564491 on headSha d4da809 green in both jobs
+  (test 1m05s 03:34:07Z..03:35:12Z, release-gate 4m28s
+  03:34:08Z..03:38:36Z).
+- Three local prep commits: c1ff43f bump (four files, Cargo.lock's
+  temur entry only with `untrusted` still pinned 0.9.0, Cargo.toml,
+  scripts/install.sh VERSION, five README tag pins, zero 0.21.0
+  residual in any of the four), 05b60ab CHANGELOG cut to
+  "## v0.22.0 - 2026-08-16" with a fresh empty Unreleased above it and
+  no entry text touched (two lines added, none removed), and this
+  close-out.
+- Full `scripts/check.sh` on the prep head: ALL CHECKS PASSED, exit 0,
+  all three TUI pty smokes OK, bare busybox container printing
+  "temur 0.22.0". Log kept beside the T33 gate logs in the evaluation
+  archive as `v0220-stage1-check-2026-08-16.log`.
+- As in previous cycles the gate ran on the CHANGELOG head, 05b60ab,
+  rather than on this close-out commit: this delta is RUNBOOK-only and
+  changes no gate input, so re-running it against an identical tree
+  would measure the same thing twice.
+- Em-dash differential across the three prep commits: 0 added lines,
+  0 in any of the three messages.
+- No tag and no release in this stage. Version 0.21.0 is now 0.22.0 in
+  the tree only.
+- Stage 2 is explicitly NOT YET RUN. Nothing is pushed beyond d4da809,
+  no v0.22.0 tag exists, and no release has been created. The decided
+  tag message for stage 2 is exactly one line,
+  "temur v0.22.0 - tolerant scalars (T33)".
