@@ -20,7 +20,7 @@ struct Params {
     old_string: String,
     #[serde(rename = "newString")]
     new_string: String,
-    #[serde(rename = "replaceAll", default)]
+    #[serde(rename = "replaceAll", default, deserialize_with = "super::coerce::lenient_bool")]
     replace_all: bool,
 }
 

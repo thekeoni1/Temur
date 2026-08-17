@@ -20,7 +20,12 @@ const MAX_BYTES: u64 = 28 * 1024;
 struct Params {
     #[serde(rename = "filePath")]
     file_path: String,
+    // `default` is required alongside `deserialize_with`: naming a
+    // deserializer turns off serde's implicit "missing Option is None"
+    // (T33), and an absent offset/limit must keep meaning absent.
+    #[serde(default, deserialize_with = "super::coerce::lenient_opt_u64")]
     offset: Option<u64>,
+    #[serde(default, deserialize_with = "super::coerce::lenient_opt_u64")]
     limit: Option<u64>,
 }
 

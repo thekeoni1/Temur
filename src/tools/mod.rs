@@ -2,6 +2,7 @@
 //! from sst/opencode v1.2.25 (MIT), per the project brief.
 
 mod bash;
+mod coerce;
 mod edit;
 mod glob;
 mod grep;

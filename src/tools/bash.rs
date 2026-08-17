@@ -206,7 +206,10 @@ fn kill_group(child: &mut std::process::Child) {
 #[derive(Deserialize)]
 struct Params {
     command: String,
-    /// Milliseconds.
+    /// Milliseconds. `default` is required alongside `deserialize_with`
+    /// (T33): naming a deserializer turns off serde's implicit "missing
+    /// Option is None", and an absent timeout must keep meaning absent.
+    #[serde(default, deserialize_with = "super::coerce::lenient_opt_u64")]
     timeout: Option<u64>,
     workdir: Option<String>,
 }

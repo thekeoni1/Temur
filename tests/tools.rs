@@ -1555,3 +1555,177 @@ fn execute_hands_the_tool_the_context_scaled_cap() {
     reg.set_context_window(Some(100));
     assert_eq!(run(&reg, &mut ctx, "capecho", json!({})).unwrap().output, "4000");
 }
+
+// --- T33 tolerant scalar coercion -----------------------------------------
+
+/// The three shapes taken VERBATIM from the T32 archive (2026-08-15,
+/// Llama-3.2-3B): a boolean sent as `"false"`, a `u64` sent as `"600000"`,
+/// and an optional `u64` sent as the string `"null"`. Each was rejected at
+/// the parse boundary and resent until the repeat guard stopped the loop.
+#[test]
+fn t33_archived_stringified_scalars_are_coerced() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+
+    // 1. edit replaceAll: "false" -> false. Two occurrences, so reading it
+    //    as false is what produces the ambiguity error — a call that merely
+    //    parsed would not prove the VALUE.
+    let f = dir.path().join("e.txt");
+    std::fs::write(&f, "foo bar foo").unwrap();
+    let fp = f.to_str().unwrap();
+    let err = run(&reg, &mut ctx, "edit",
+        json!({"filePath": fp, "oldString": "foo", "newString": "baz", "replaceAll": "false"}))
+        .unwrap_err();
+    assert!(err.to_string().contains("2 times"), "replaceAll \"false\" must read as false: {err}");
+    // ...and the other direction, so the coercion is not a constant.
+    run(&reg, &mut ctx, "edit",
+        json!({"filePath": fp, "oldString": "foo", "newString": "baz", "replaceAll": "true"}))
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "baz bar baz");
+
+    // 2. bash timeout: the archived "600000" parses, and a stringified
+    //    small bound proves the NUMBER survives, not just the parse.
+    let out = run(&reg, &mut ctx, "bash",
+        json!({"command": "echo hi", "timeout": "600000"})).unwrap();
+    assert!(out.output.contains("hi"));
+    let out = run(&reg, &mut ctx, "bash",
+        json!({"command": "sleep 5", "timeout": "200"})).unwrap();
+    assert!(out.output.contains("timed out"), "stringified timeout must bind: {}", out.output);
+
+    // 3. read offset/limit: the string "null" reads as absent (whole file),
+    //    and a digit string binds as the number.
+    let r = dir.path().join("r.txt");
+    std::fs::write(&r, "alpha\nbeta\ngamma\n").unwrap();
+    let rp = r.to_str().unwrap();
+    let out = run(&reg, &mut ctx, "read",
+        json!({"filePath": rp, "offset": "null", "limit": "null"})).unwrap();
+    assert!(out.output.contains("alpha") && out.output.contains("gamma"));
+    let out = run(&reg, &mut ctx, "read",
+        json!({"filePath": rp, "offset": "2", "limit": "1"})).unwrap();
+    assert!(out.output.contains("beta"), "{}", out.output);
+    assert!(!out.output.contains("alpha") && !out.output.contains("gamma"), "{}", out.output);
+    // The archived "0" shape parses too (and keeps its existing range
+    // check, which coercion does not touch).
+    let err = run(&reg, &mut ctx, "read", json!({"filePath": rp, "offset": "0"})).unwrap_err();
+    assert!(err.to_string().contains("greater than or equal to 1"), "{err}");
+}
+
+/// Real scalars, real `null`, and absent fields keep their pre-T33 path.
+#[test]
+fn t33_real_scalars_and_absence_are_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let r = dir.path().join("r.txt");
+    std::fs::write(&r, "alpha\nbeta\ngamma\n").unwrap();
+    let rp = r.to_str().unwrap();
+
+    // Absent -> whole file; real null -> whole file; real numbers -> bound.
+    let whole = run(&reg, &mut ctx, "read", json!({"filePath": rp})).unwrap().output;
+    let nulls = run(&reg, &mut ctx, "read",
+        json!({"filePath": rp, "offset": null, "limit": null})).unwrap().output;
+    assert_eq!(whole, nulls);
+    let out = run(&reg, &mut ctx, "read",
+        json!({"filePath": rp, "offset": 2, "limit": 1})).unwrap().output;
+    assert!(out.contains("beta") && !out.contains("alpha"));
+
+    // Real booleans on both sides.
+    let f = dir.path().join("e.txt");
+    std::fs::write(&f, "foo bar foo").unwrap();
+    let fp = f.to_str().unwrap();
+    let err = run(&reg, &mut ctx, "edit",
+        json!({"filePath": fp, "oldString": "foo", "newString": "baz", "replaceAll": false}))
+        .unwrap_err();
+    assert!(err.to_string().contains("2 times"), "{err}");
+    run(&reg, &mut ctx, "edit",
+        json!({"filePath": fp, "oldString": "foo", "newString": "baz", "replaceAll": true}))
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "baz bar baz");
+}
+
+/// Everything the coercion does NOT accept still fails LOUDLY, with a
+/// message that names the accepted forms so the loop stays self-healing.
+/// No trimming, no case tolerance, no floats, no signs.
+#[test]
+fn t33_unaccepted_strings_fail_loudly_with_the_accepted_forms() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let r = dir.path().join("r.txt");
+    std::fs::write(&r, "alpha\n").unwrap();
+    let rp = r.to_str().unwrap();
+    let f = dir.path().join("e.txt");
+    std::fs::write(&f, "foo").unwrap();
+    let fp = f.to_str().unwrap();
+
+    const BOOL_FORMS: &str = "expected a boolean, or the string \"true\" or \"false\"";
+    const U64_FORMS: &str =
+        "expected a number, or a string of digits like \"600000\", or the string \"null\"";
+
+    // bool: garbage, and the near-misses the rule deliberately excludes.
+    for bad in ["maybe", "", "True", "FALSE", " true", "true ", "1", "0", "yes"] {
+        let err = run(&reg, &mut ctx, "edit", json!({
+            "filePath": fp, "oldString": "foo", "newString": "baz", "replaceAll": bad
+        })).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidInput(_)), "{bad:?} must be InvalidInput");
+        let msg = err.to_string();
+        assert!(msg.contains(BOOL_FORMS), "{bad:?} message must name the accepted forms: {msg}");
+    }
+    // The file was never touched by any of those.
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "foo");
+
+    // u64: garbage, floats, signs, whitespace, separators, case.
+    for bad in ["maybe", "", "12.5", "-3", "+3", " 12", "12 ", "1_000", "0x10", "1e3", "NULL"] {
+        let err = run(&reg, &mut ctx, "read",
+            json!({"filePath": rp, "limit": bad})).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidInput(_)), "{bad:?} must be InvalidInput");
+        let msg = err.to_string();
+        assert!(msg.contains(U64_FORMS), "{bad:?} message must name the accepted forms: {msg}");
+    }
+    // Digits that overflow u64 say so rather than claim digits are unusable.
+    let err = run(&reg, &mut ctx, "read",
+        json!({"filePath": rp, "limit": "99999999999999999999999"})).unwrap_err();
+    assert!(err.to_string().contains("out of range for u64"), "{err}");
+
+    // Real floats and negatives keep failing exactly as they did pre-T33.
+    for bad in [json!(12.5), json!(-3)] {
+        let err = run(&reg, &mut ctx, "read",
+            json!({"filePath": rp, "limit": bad})).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidInput(_)), "{bad} must be InvalidInput");
+        assert!(err.to_string().contains("expected u64"), "{err}");
+    }
+}
+
+/// NO-CORRUPTION PIN. The reason coercion is field-level and not a value
+/// walk: an edit whose oldString/newString is the literal string "false"
+/// must be treated as text, byte-for-byte, with no coercion anywhere near
+/// it.
+#[test]
+fn t33_string_fields_named_false_are_never_coerced() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let f = dir.path().join("cfg.txt");
+    std::fs::write(&f, "enabled = false\n").unwrap();
+    let fp = f.to_str().unwrap();
+
+    run(&reg, &mut ctx, "edit", json!({
+        "filePath": fp, "oldString": "false", "newString": "true", "replaceAll": false
+    })).unwrap();
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "enabled = true\n");
+
+    // And back, with every scalar arg sent stringified at the same time:
+    // the scalars coerce, the text fields do not.
+    run(&reg, &mut ctx, "edit", json!({
+        "filePath": fp, "oldString": "true", "newString": "false", "replaceAll": "false"
+    })).unwrap();
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "enabled = false\n");
+
+    // Digit-only text is text too: writing "600000" over "false" is a
+    // string replacement, not a number.
+    run(&reg, &mut ctx, "edit", json!({
+        "filePath": fp, "oldString": "false", "newString": "600000"
+    })).unwrap();
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "enabled = 600000\n");
+}
