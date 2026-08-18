@@ -47,9 +47,10 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   REACHED two of the three. Phi-4-mini's own bundled template reads a
   per-message `tools` key and never the top-level variable every
   standard pipeline passes, so it renders identically with and without
-  tools and llama.cpp drops the array (reported to the publisher);
-  SmolLM2's template has no tool branch at all; gemma-3-4b stayed at
-  0/9 even under a working substitute template and remains unexplained.
+  tools and llama.cpp drops the array (publisher report drafted, not
+  yet filed); SmolLM2's template has no tool branch at all; gemma-3-4b
+  stayed at 0/9 even under a working substitute template and remains
+  unexplained.
   The substitute-template scores are published in their own subsection,
   captioned as NOT comparable to the main matrix.
 

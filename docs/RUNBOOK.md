@@ -5604,6 +5604,14 @@ Stage 1:
   upstream at ggml-org/llama.cpp#27129", and that issue exists
   independently of temur. Stage 2 should either land the filings first
   or carry a rider softening all three before the tag.
+  CORRECTION 2026-08-18: this paragraph inverted the stage-1
+  instruction, which was to SOFTEN the claim when the reports were NOT
+  filed, not to leave it standing and only record the gap. The operator
+  decided the same day not to file before this ship, so the softening
+  lands in the rider commit carrying this correction rather than in
+  stage 2, and all three sites now describe the filing as drafted and
+  deferred. The phrases quoted above are the pre-rider text, kept as
+  the record of what was corrected.
 - No tag and no release in this stage. Version 0.22.0 is now 0.23.0 in
   the tree only.
 - Stage 2 is explicitly NOT YET RUN. Nothing is pushed beyond c12d9af,

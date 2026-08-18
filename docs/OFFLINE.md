@@ -401,8 +401,9 @@ per-model causes, as far as they are known:
   passes: `apply_chat_template(..., tools=...)`, llama.cpp `--jinja`,
   vllm. So the template renders BYTE-IDENTICALLY with and without
   tools, llama.cpp's capability probe concludes `supports_tools: false`,
-  and the array is dropped. Reported to the model publisher; still
-  present in the published `tokenizer_config.json` as of 2026-08-18.
+  and the array is dropped. A report to the model publisher is drafted
+  (2026-08-18) but not yet filed; the defect is still present in the
+  published `tokenizer_config.json` as of 2026-08-18.
 - **SmolLM2-1.7B** - its template has no tool branch at all. Nothing is
   broken; the capability is simply absent, which is why a template that
   has one is enough to get it calling.
