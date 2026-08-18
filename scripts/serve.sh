@@ -35,6 +35,12 @@
 #         CONTAINER_NAME  container name (default temur-llama)
 #         MEMINFO      meminfo file read by the RAM fit warning (default
 #                      /proc/meminfo; a knob so the check is testable)
+#         CHAT_TEMPLATE_FILE  path to a .jinja chat template to serve the
+#                      model with INSTEAD of its bundled one. Unset (the
+#                      default) is byte-identical to before. See the loud
+#                      warning printed when it is set: a template the model
+#                      was not trained on can produce confident, wrong
+#                      output. Measured 2026-08-17 (T34).
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -51,6 +57,24 @@ BIND="${BIND:-127.0.0.1}"
 # CONTAINER_NAME, not NAME: WSL exports NAME=<hostname> into login shells,
 # so a NAME knob would silently rename the container on every WSL box.
 CONTAINER_NAME="${CONTAINER_NAME:-temur-llama}"
+# T34: substitute chat template, off unless set. The mount destination is
+# fixed so a running server can be inspected for it (see start_cmd).
+CHAT_TEMPLATE_FILE="${CHAT_TEMPLATE_FILE:-}"
+TMPL_DEST=/tmpl.jinja
+
+# The loud banner every path prints while a substitute template is active.
+# Measured, not hypothetical: under a substitute Qwen2.5 template on
+# 2026-08-17, gemma-3-4b produced zero tool calls and spent 150-430s per
+# task inventing plausible tool results, including the contents of a file
+# that does not exist.
+template_banner() {
+    [ -n "$CHAT_TEMPLATE_FILE" ] || return 0
+    echo "WARNING: substitute chat template in use ($CHAT_TEMPLATE_FILE)."
+    echo "  A template the model was not trained on can produce confident, WRONG"
+    echo "  output: under a substitute template gemma-3-4b produced zero tool calls"
+    echo "  and spent minutes per task hallucinating plausible tool results."
+    echo "  Scores are NOT comparable to native-template runs."
+}
 
 usage() {
     echo "Usage: scripts/serve.sh start [model]|stop|status" >&2
@@ -129,10 +153,26 @@ fi
 
 is_running() { podman ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; }
 
+# The host path behind one container mount, selected by DESTINATION.
+# T34: this used to be a bare `{{range .Mounts}}{{.Source}}{{end}}`, which
+# concatenated every mount source; correct while the model was the only
+# mount, wrong the moment a template joins it. Empty = no such mount.
+mount_source() { # $1 = destination inside the container
+    podman inspect --format \
+        "{{range .Mounts}}{{if eq .Destination \"$1\"}}{{.Source}}{{end}}{{end}}" \
+        "$CONTAINER_NAME" 2>/dev/null || true
+}
+
 summary() {
     echo "  container: $CONTAINER_NAME ($(podman ps --filter "name=$CONTAINER_NAME" --format '{{.Status}}'))"
     echo "  image    : $(podman inspect --format '{{.ImageName}}' "$CONTAINER_NAME")"
-    echo "  model    : $(podman inspect --format '{{range .Mounts}}{{.Source}}{{end}}' "$CONTAINER_NAME")"
+    echo "  model    : $(mount_source /model.gguf)"
+    running_tmpl=$(mount_source "$TMPL_DEST")
+    if [ -n "$running_tmpl" ]; then
+        echo "  template : SUBSTITUTE $running_tmpl (not the model's bundled template)"
+    else
+        echo "  template : bundled (model default)"
+    fi
     echo "  published: $(podman ps --filter "name=$CONTAINER_NAME" --format '{{.Ports}}')"
 }
 
@@ -200,19 +240,37 @@ start_cmd() { # $1 (optional) = model name resolved via select_model
                     m / 1073741824, over / 1073741824, c, a * 1024 / 1073741824
         }'
     fi
+    if [ -n "$CHAT_TEMPLATE_FILE" ]; then
+        [ -f "$CHAT_TEMPLATE_FILE" ] || { echo "FAIL: CHAT_TEMPLATE_FILE not found: $CHAT_TEMPLATE_FILE"; exit 1; }
+        [ -r "$CHAT_TEMPLATE_FILE" ] || { echo "FAIL: CHAT_TEMPLATE_FILE not readable: $CHAT_TEMPLATE_FILE"; exit 1; }
+    fi
     echo "OK: image and model present (nothing will be pulled)"
+    template_banner
 
     if is_running; then
         # A running server keeps its model. Saying OK to a request for a
         # DIFFERENT one hands back a server that answers as the old model,
         # and nothing downstream can tell. Fail loudly instead; with no
         # model requested, "already running" stands exactly as before.
-        running_model=$(podman inspect --format '{{range .Mounts}}{{.Source}}{{end}}' "$CONTAINER_NAME" 2>/dev/null || true)
+        running_model=$(mount_source /model.gguf)
         if [ -n "$model_requested" ] && [ -n "$running_model" ] && [ "$running_model" != "$MODEL_GGUF" ]; then
             echo "FAIL: $CONTAINER_NAME is already serving a different model"
             echo "  running  : $running_model"
             echo "  requested: $MODEL_GGUF"
             echo "  a running server keeps its model; switch with:  $0 stop  then re-run this command"
+            exit 1
+        fi
+        # T34, the same defect as D4 one level down: a running server keeps
+        # its TEMPLATE too, and a server serving the bundled template while
+        # the caller asked for a substitute (or the reverse) poisons a
+        # measurement exactly the way the wrong model does, silently. The
+        # mount destination is fixed, so this costs one more inspect.
+        running_tmpl=$(mount_source "$TMPL_DEST")
+        if [ "$running_tmpl" != "$CHAT_TEMPLATE_FILE" ]; then
+            echo "FAIL: $CONTAINER_NAME is already serving a different chat template"
+            echo "  running  : ${running_tmpl:-bundled (model default)}"
+            echo "  requested: ${CHAT_TEMPLATE_FILE:-bundled (model default)}"
+            echo "  a running server keeps its template; switch with:  $0 stop  then re-run this command"
             exit 1
         fi
         echo "OK: already running"
@@ -226,10 +284,17 @@ start_cmd() { # $1 (optional) = model name resolved via select_model
     fi
 
     echo "==== serve: start ===="
+    TMPL_MOUNT=""
+    TMPL_ARG=""
+    if [ -n "$CHAT_TEMPLATE_FILE" ]; then
+        TMPL_MOUNT="-v $CHAT_TEMPLATE_FILE:$TMPL_DEST:ro"
+        TMPL_ARG="--chat-template-file $TMPL_DEST"
+    fi
+    # shellcheck disable=SC2086  # $TMPL_* are deliberately word-split
     podman run -d --name "$CONTAINER_NAME" -p "$BIND:$PORT:8080" \
-        -v "$MODEL_GGUF":/model.gguf:ro "$LLAMA_IMAGE" \
-        -m /model.gguf -c "$CTX" --jinja --host 0.0.0.0 --port 8080 >/dev/null
-    echo "server starting (ctx $CTX, --jinja); waiting on /health"
+        -v "$MODEL_GGUF":/model.gguf:ro $TMPL_MOUNT "$LLAMA_IMAGE" \
+        -m /model.gguf -c "$CTX" --jinja $TMPL_ARG --host 0.0.0.0 --port 8080 >/dev/null
+    echo "server starting (ctx $CTX, --jinja${CHAT_TEMPLATE_FILE:+, template $CHAT_TEMPLATE_FILE}); waiting on /health"
 
     # ~60s budget for model load, probed from the HOST through the
     # published port. On timeout, fail closed: never leave a dead
@@ -247,6 +312,7 @@ start_cmd() { # $1 (optional) = model name resolved via select_model
     done
 
     echo "OK: llama.cpp serving $MODEL_GGUF on http://127.0.0.1:$PORT/v1"
+    template_banner
     if [ "$PORT" = "8080" ]; then
         echo "  matches temur's default base_url — a keyless openai-compat profile needs no base_url"
     else

@@ -255,6 +255,23 @@ pub fn to_sorted_json_string(v: &Value) -> Result<String, serde_json::Error> {
 /// wizard or a doctor report.
 pub const KEYLESS_LISTING_TIMEOUT_SECS: u64 = 3;
 
+/// Seconds of global timeout on ONE tools-drop probe POST.
+///
+/// Much longer than its listing siblings, and measured rather than
+/// guessed. The T34 probe sends temur's real tool definitions, which is
+/// ~29KB of JSON on the full prompt profile, and the server must PREFILL
+/// all of it before it can report a single token of usage. Measured
+/// 2026-08-18 against llama.cpp b10438 on this CPU-only machine,
+/// Phi-4-mini at ctx 8192: 4814 new prompt tokens at 22.6 ms/token, 106
+/// seconds wall clock. The 3-second listing timeout turned that into a
+/// silent "no usable prompt_tokens" NOTE.
+///
+/// This is not a cost the probe invents: it is exactly the prefill the
+/// session's FIRST REAL TURN would pay, for exactly the same bytes, and
+/// llama.cpp's prompt cache means paying it here warms it for that turn.
+/// A second doctor run against the same server returns quickly.
+pub const TOOLS_DROP_PROBE_TIMEOUT_SECS: u64 = 300;
+
 /// The ONE listing request `init` and `doctor` are allowed to make (T15):
 /// an UNAUTHENTICATED GET of `{base}/models`, meant only for KEYLESS
 /// openai-compat endpoints. By construction it takes just a base URL, so it

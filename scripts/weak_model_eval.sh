@@ -35,6 +35,13 @@
 #                            failures (default 0)
 #         EVAL_TRANSCRIPT_DIR  where per-task transcripts, per-run results and
 #                            kept artifacts are stored
+#         CHAT_TEMPLATE_FILE  path to a .jinja chat template to serve the
+#                            model with INSTEAD of its bundled one. Unset
+#                            (the default) is byte-identical to before.
+#                            Scores measured under a substitute template are
+#                            NOT comparable to native-template runs, and the
+#                            banner says so at every opportunity: see the
+#                            warning below and docs/OFFLINE.md.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -52,7 +59,35 @@ EVAL_RUNS="${EVAL_RUNS:-1}"
 EVAL_MIN="${EVAL_MIN:-0}"
 EVAL_KEEP_ALL="${EVAL_KEEP_ALL:-0}"
 EVAL_TRANSCRIPT_DIR="${EVAL_TRANSCRIPT_DIR:-/tmp/temur-weak-eval}"
+# T34: substitute chat template, off unless set. Proven shape from the
+# template experiment of 2026-08-17, which took Phi-4-mini from 0/9 to 4/9
+# by serving it a Qwen2.5 template instead of its own broken one.
+CHAT_TEMPLATE_FILE="${CHAT_TEMPLATE_FILE:-}"
+TMPL_DEST=/tmpl.jinja
 POD=temur-weak-eval
+
+# The loud banner, printed at bring-up and again in the summary. Measured,
+# not hypothetical: under a substitute Qwen2.5 template on 2026-08-17,
+# gemma-3-4b produced zero tool calls and spent 150-430s per task inventing
+# plausible tool results, including the contents of a file that does not
+# exist. A wrong template turns a silent failure into an expensive one.
+template_banner() {
+    [ -n "$CHAT_TEMPLATE_FILE" ] || return 0
+    echo "WARNING: substitute chat template in use ($CHAT_TEMPLATE_FILE)."
+    echo "  A template the model was not trained on can produce confident, WRONG"
+    echo "  output: under a substitute template gemma-3-4b produced zero tool calls"
+    echo "  and spent minutes per task hallucinating plausible tool results."
+    echo "  Scores are NOT comparable to native-template runs."
+}
+
+# One line naming the template in force, for the archived results header.
+template_line() {
+    if [ -n "$CHAT_TEMPLATE_FILE" ]; then
+        echo "# chat template: SUBSTITUTE $CHAT_TEMPLATE_FILE (NOT comparable to native-template runs)"
+    else
+        echo "# chat template: bundled (model default)"
+    fi
+}
 
 EVAL_ROOT=""
 CFG_DIR=""
@@ -80,6 +115,12 @@ for img in "$LLAMA_IMAGE" "$APP_IMG" "$BARE_IMG"; do
 done
 echo "OK: all images present locally (nothing will be pulled)"
 
+if [ -n "$CHAT_TEMPLATE_FILE" ]; then
+    [ -f "$CHAT_TEMPLATE_FILE" ] || { echo "FAIL: CHAT_TEMPLATE_FILE not found: $CHAT_TEMPLATE_FILE"; exit 1; }
+    [ -r "$CHAT_TEMPLATE_FILE" ] || { echo "FAIL: CHAT_TEMPLATE_FILE not readable: $CHAT_TEMPLATE_FILE"; exit 1; }
+    echo "OK: chat template file present ($CHAT_TEMPLATE_FILE)"
+fi
+
 case "$PROMPT_PROFILE" in
     full|compact) ;;
     *) echo "FAIL: PROMPT_PROFILE must be 'full' or 'compact' (got '$PROMPT_PROFILE')"; exit 1 ;;
@@ -99,10 +140,18 @@ echo "==== pod bring-up (--network none) ===="
 
 podman pod rm -f "$POD" >/dev/null 2>&1 || true
 podman pod create --name "$POD" --network none >/dev/null
+TMPL_MOUNT=""
+TMPL_ARG=""
+if [ -n "$CHAT_TEMPLATE_FILE" ]; then
+    TMPL_MOUNT="-v $CHAT_TEMPLATE_FILE:$TMPL_DEST:ro"
+    TMPL_ARG="--chat-template-file $TMPL_DEST"
+fi
+# shellcheck disable=SC2086  # $TMPL_* are deliberately word-split
 podman run -d --pod "$POD" --name "$POD-llama" \
-    -v "$MODEL_GGUF":/model.gguf:ro "$LLAMA_IMAGE" \
-    -m /model.gguf -c "$CTX" --jinja --host 127.0.0.1 --port 8080 >/dev/null
-echo "server starting (ctx $CTX, --jinja)"
+    -v "$MODEL_GGUF":/model.gguf:ro $TMPL_MOUNT "$LLAMA_IMAGE" \
+    -m /model.gguf -c "$CTX" --jinja $TMPL_ARG --host 127.0.0.1 --port 8080 >/dev/null
+echo "server starting (ctx $CTX, --jinja${CHAT_TEMPLATE_FILE:+, template $CHAT_TEMPLATE_FILE})"
+template_banner
 
 i=0
 until podman run --rm --pod "$POD" "$BARE_IMG" \
@@ -136,6 +185,7 @@ else
 fi
 echo "profile: $PROMPT_PROFILE   per-task timeout: $TIMEOUT_BANNER   max_tokens: $EVAL_MAX_TOKENS"
 echo "runs: $EVAL_RUNS   transcripts: $EVAL_TRANSCRIPT_DIR"
+template_line
 
 SCORES="$EVAL_ROOT/scores.txt"
 : > "$SCORES"
@@ -374,7 +424,10 @@ report_round() {
         printf '%-4s %-14s %-6s %-8s %s\n' "$n" "$name" "$res" "$secs" "$note"
         [ "$res" = "PASS" ] && SCORE=$((SCORE + 1))
     done < "$RESULTS"
-    cp "$RESULTS" "$EVAL_TRANSCRIPT_DIR/results.run$RUN.txt"
+    # The archived copy carries a header naming the template, so a results
+    # file found on its own still says what it was measured under. The
+    # working $RESULTS file stays pure pipe-separated rows.
+    { template_line; cat "$RESULTS"; } > "$EVAL_TRANSCRIPT_DIR/results.run$RUN.txt"
     printf '%s|%s\n' "$RUN" "$SCORE" >> "$SCORES"
     echo "SCORE (run $RUN): $SCORE/9"
 }
@@ -394,9 +447,11 @@ done
 echo "==== summary ===="
 echo "  model     : $MODEL_GGUF"
 echo "  server    : $LLAMA_IMAGE, ctx $CTX, --jinja"
+echo "  template  : ${CHAT_TEMPLATE_FILE:-bundled (model default)}"
 echo "  profile   : $PROMPT_PROFILE, max_tokens $EVAL_MAX_TOKENS"
 echo "  transcripts: $EVAL_TRANSCRIPT_DIR/task<n>.run<r>.txt"
 echo "  results    : $EVAL_TRANSCRIPT_DIR/results.run<r>.txt"
+template_banner
 BELOW=0
 while IFS='|' read -r r score; do
     echo "SCORE (run $r): $score/9"

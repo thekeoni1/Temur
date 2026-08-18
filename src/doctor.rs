@@ -379,8 +379,20 @@ fn tools_drop_check(
         return Ok(());
     }
     let timeout =
-        std::time::Duration::from_secs(crate::provider::KEYLESS_LISTING_TIMEOUT_SECS);
+        std::time::Duration::from_secs(crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS);
     let defs = session_tool_definitions(cfg, p);
+    // The second request makes the server prefill every tool definition, so
+    // on a CPU-only local server this check is the slow one (measured 106s,
+    // 2026-08-18). Say so before going quiet for it, rather than after.
+    let bytes: usize = defs.iter().map(|d| d.description.len()).sum();
+    writeln!(
+        r.out,
+        "NOTE: tools-drop probe: sending {} tool definitions (~{}KB) to {}; a local server must prefill all of it, which can take minutes the first time",
+        defs.len(),
+        bytes / 1024,
+        p.base_url
+    )?;
+    let _ = r.out.flush();
     let bare = crate::provider::probe_prompt_tokens(&p.base_url, &p.model, None, timeout);
     let with_tools =
         crate::provider::probe_prompt_tokens(&p.base_url, &p.model, Some(&defs), timeout);
@@ -401,6 +413,15 @@ fn tools_drop_check(
             "the server at {} rejected temur's tool definitions for \"{}\" (HTTP {status}: {message}): every turn that sends tools will fail the same way",
             p.base_url, p.model
         )),
+        // A bare request that answered and a with-tools request that never
+        // did is almost always the prefill above running past the bound,
+        // not a dead server: say which, so nobody reads it as "no signal".
+        (ProbeOutcome::Ok(_), ProbeOutcome::Unreachable) => writeln!(
+            r.out,
+            "NOTE: tools-drop probe at {} inconclusive: the server answered a bare completion but not the one carrying temur's tools within {}s (a slow local server may need longer to prefill them)",
+            p.base_url,
+            crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS
+        ),
         _ => writeln!(
             r.out,
             "NOTE: tools-drop probe at {} skipped: the server reported no usable prompt_tokens",
@@ -926,6 +947,10 @@ mod tests {
     /// case is a 400 on that request alone, while the bare one succeeds),
     /// and a capture of every POST body, so a test can assert what temur
     /// actually put on the wire rather than only what came back.
+    ///
+    /// An EMPTY `with_tools_status` drops that connection without
+    /// answering, which is what a probe running past its bound looks like
+    /// from this side, without a test having to wait for the real one.
     fn canned_server_with_completions_ex(
         models_body: &'static str,
         bare: &'static str,
@@ -971,6 +996,9 @@ mod tests {
                 let (status, picked) = if text.starts_with("POST ") {
                     seen.lock().unwrap().push(text.clone());
                     if text.contains("\"tools\"") {
+                        if with_tools_status.is_empty() {
+                            continue; // answer nothing: the stream drops here
+                        }
                         (with_tools_status, with_tools)
                     } else {
                         ("HTTP/1.1 200 OK", bare)
@@ -1374,6 +1402,45 @@ mod tests {
             "{out}"
         );
         assert!(!out.contains("rejected temur's tool definitions"), "{out}");
+    }
+
+    /// T34: a bare request that answers and a with-tools request that never
+    /// does is the shape a slow local server makes, and the shape doctor
+    /// itself produced live on 2026-08-18 before the probe got its own
+    /// timeout: the second request has to prefill every tool definition.
+    /// Its NOTE says which request went unanswered, so it cannot be read as
+    /// "the server said nothing useful".
+    #[test]
+    fn tools_drop_probe_unanswered_with_tools_request_names_itself() {
+        let (base, _posts) =
+            canned_server_with_completions_ex(LLAMA_MODELS, USAGE_10, "", USAGE_31);
+        let (healthy, out) = doctor_over(&keyless_config(&base, "m"), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!("NOTE: tools-drop probe at {base} inconclusive")),
+            "{out}"
+        );
+        assert!(
+            out.contains("answered a bare completion but not the one carrying temur's tools"),
+            "{out}"
+        );
+    }
+
+    /// The heads-up line: a check that can go quiet for minutes says so
+    /// before it does, not after.
+    #[test]
+    fn tools_drop_probe_announces_what_it_is_about_to_send() {
+        let base = canned_server_with_completions(LLAMA_MODELS, USAGE_10, USAGE_31);
+        let (_healthy, out) = doctor_over(&keyless_config(&base, "m"), false);
+        let expected = crate::tools::Registry::standard_with_skills(vec![]).definitions();
+        assert!(
+            out.contains(&format!(
+                "NOTE: tools-drop probe: sending {} tool definitions (~",
+                expected.len()
+            )),
+            "{out}"
+        );
+        assert!(out.contains("can take minutes the first time"), "{out}");
     }
 
     #[test]
