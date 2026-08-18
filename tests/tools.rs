@@ -81,6 +81,85 @@ fn set_profile_matches_with_profile_both_directions() {
     }
 }
 
+/// T34 interop pin: no tool schema anywhere in the registry may declare a
+/// UNION type. JSON Schema allows `"type": ["string", "number"]`, but some
+/// shipped chat templates stringify a schema by dict lookup on the "type"
+/// value and cannot key on a list: llama.cpp re-renders the template on
+/// every request when no specialized handler matches, so one union type in
+/// one always-registered tool turns into HTTP 400 on every real turn. That
+/// is exactly what the `skill` tool's "section" did until 2026-08-18
+/// (archive: template-experiment-2026-08-17/E2/a1-hermes-root-cause.txt).
+/// Tolerance for non-string spellings belongs at the argument boundary
+/// (T33 coercion), never in the declared type.
+///
+/// Walks BOTH prompt profiles and every nested schema level, so a union
+/// added to any tool, at any depth, fails here rather than in the field.
+#[test]
+fn no_tool_schema_declares_a_union_type() {
+    fn walk(v: &serde_json::Value, tool: &str, path: &str) {
+        match v {
+            serde_json::Value::Object(map) => {
+                if let Some(t) = map.get("type") {
+                    assert!(
+                        t.is_string(),
+                        "{tool}: schema at {path}.type is {t}, not a plain string; \
+                         a union type is unrenderable by templates that key on it"
+                    );
+                }
+                for (k, child) in map {
+                    walk(child, tool, &format!("{path}.{k}"));
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (i, child) in items.iter().enumerate() {
+                    walk(child, tool, &format!("{path}[{i}]"));
+                }
+            }
+            _ => {}
+        }
+    }
+    for profile in [PromptProfile::Full, PromptProfile::Compact] {
+        let reg = Registry::standard_with_skills(vec![std::path::PathBuf::from("/nonexistent")])
+            .with_profile(profile);
+        let defs = reg.definitions();
+        // The tool this pin exists for must actually be in the set walked.
+        assert!(defs.iter().any(|d| d.name == "skill"), "skill tool missing");
+        for d in &defs {
+            walk(&d.input_schema, &d.name, "");
+        }
+    }
+}
+
+/// The other half of the same contract: the schema says "string", and a
+/// JSON number still selects a section. Pinned here beside the schema pin
+/// so the two can never drift apart. (The behavior itself is exercised
+/// end to end in tests/skills.rs.)
+#[test]
+fn skill_section_schema_is_a_string_and_the_execute_path_still_takes_numbers() {
+    let defs = Registry::standard_with_skills(vec![]).definitions();
+    let skill = defs.iter().find(|d| d.name == "skill").unwrap();
+    assert_eq!(skill.input_schema["properties"]["section"]["type"], "string");
+
+    let dir = tempfile::tempdir().unwrap();
+    let skill_dir = dir.path().join("demo");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: demo\ndescription: d\n---\n# Top\nintro\n## Setup\nsetup body\n",
+    )
+    .unwrap();
+    let reg = Registry::standard_with_skills(vec![dir.path().to_path_buf()]);
+    let mut ctx = ctx_in(dir.path());
+    let as_number = reg
+        .execute("skill", json!({"name": "demo", "section": 2}), &mut ctx)
+        .unwrap();
+    let as_string = reg
+        .execute("skill", json!({"name": "demo", "section": "2"}), &mut ctx)
+        .unwrap();
+    assert!(as_number.output.contains("setup body"), "{}", as_number.output);
+    assert_eq!(as_number.output, as_string.output);
+}
+
 fn run(reg: &Registry, ctx: &mut ToolCtx, name: &str, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
     reg.execute(name, input, ctx)
 }

@@ -132,8 +132,29 @@ impl Tool for SkillTool {
                     "type": "string",
                     "description": "The name of the skill to load (its directory name), exactly as listed in <available_skills>."
                 },
+                // T34 interop (2026-08-17/18): this was `["string", "number"]`,
+                // and that union type broke real servers. SkillTool is
+                // registered unconditionally (mod.rs `standard_with_skills`,
+                // sole call site main.rs), so the union rode in EVERY tools
+                // array temur sends. llama.cpp renders chat templates on every
+                // request when no specialized handler matches, and the shipped
+                // Hermes-2-Pro template's `json_to_python_type()` macro opens
+                // with a dict lookup keyed on the schema's "type"; a list key
+                // is unhashable, so the render throws and the server answers
+                // HTTP 400 before the model sees anything. Stock Jinja2 raises
+                // the same. Evidence:
+                // ~/temur-eval-archive/template-experiment-2026-08-17/
+                // E2/a1-hermes-root-cause.txt.
+                //
+                // The declared type is now plainly "string". Nothing about the
+                // execute path changed: `SkillParams::section` is still a raw
+                // Value and `section_ref` still accepts a JSON number, because
+                // tolerance at the ARGUMENT boundary is the contract for
+                // non-string spellings (T33), not a union in the schema. The
+                // schema is what a template has to render; coercion is what we
+                // owe the model.
                 "section": {
-                    "type": ["string", "number"],
+                    "type": "string",
                     "description": "Optional. One section to return instead of the whole skill: either its number from a <skill_index> listing, or its heading text. Omit this to load the skill."
                 }
             },
