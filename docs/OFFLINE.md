@@ -676,8 +676,10 @@ value makes the script exit 1 below that score), and
 `EVAL_TRANSCRIPT_DIR` (per-task transcripts are kept there for
 debugging). Also `CHAT_TEMPLATE_FILE`, with the warning above: the
 template in force is written into the run banner, the summary, and a
-header line on every archived `results.run<r>.txt`, so a results file
-found on its own still says what it was measured under.
+header line on every archived `results.run<r>.txt`, by path AND sha256,
+so a results file found on its own still identifies the exact template
+bytes it was measured under. (A path alone would not: these files get
+fetched at a tag and hand-edited while a recipe is being found.)
 
 `scripts/offline_demo.sh` deliberately has NO template knob. It is a
 fixed acceptance demo on a known-good model, where the only thing a

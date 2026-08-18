@@ -243,6 +243,13 @@ start_cmd() { # $1 (optional) = model name resolved via select_model
     if [ -n "$CHAT_TEMPLATE_FILE" ]; then
         [ -f "$CHAT_TEMPLATE_FILE" ] || { echo "FAIL: CHAT_TEMPLATE_FILE not found: $CHAT_TEMPLATE_FILE"; exit 1; }
         [ -r "$CHAT_TEMPLATE_FILE" ] || { echo "FAIL: CHAT_TEMPLATE_FILE not readable: $CHAT_TEMPLATE_FILE"; exit 1; }
+        # Named at bring-up, where it is true: a path alone does not
+        # identify a template. Deliberately NOT repeated by `status` or
+        # `summary`, which read the mount back from a container that has
+        # been running for a while; hashing the host file there would
+        # report the bytes on disk NOW, not the bytes being served, which
+        # is exactly the kind of provenance line that lies.
+        echo "OK: chat template file present ($CHAT_TEMPLATE_FILE, sha256 $(sha256sum "$CHAT_TEMPLATE_FILE" | cut -d' ' -f1))"
     fi
     echo "OK: image and model present (nothing will be pulled)"
     template_banner

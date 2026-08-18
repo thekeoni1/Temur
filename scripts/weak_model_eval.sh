@@ -64,6 +64,12 @@ EVAL_TRANSCRIPT_DIR="${EVAL_TRANSCRIPT_DIR:-/tmp/temur-weak-eval}"
 # by serving it a Qwen2.5 template instead of its own broken one.
 CHAT_TEMPLATE_FILE="${CHAT_TEMPLATE_FILE:-}"
 TMPL_DEST=/tmpl.jinja
+# sha256 of that file, computed ONCE at preflight. A path alone does not
+# identify a template: these files are fetched from an upstream repo at a
+# tag and edited by hand while a recipe is being found, so an archived
+# result that names only a path can stop being reproducible without
+# anything looking wrong. Empty while no substitute template is in use.
+TMPL_SHA=""
 POD=temur-weak-eval
 
 # The loud banner, printed at bring-up and again in the summary. Measured,
@@ -80,12 +86,24 @@ template_banner() {
     echo "  Scores are NOT comparable to native-template runs."
 }
 
-# One line naming the template in force, for the archived results header.
+# The template in force, as one self-describing phrase: path AND content
+# hash, so an archived results file identifies the exact bytes it was
+# measured under rather than a path that may since have changed.
+template_desc() {
+    if [ -n "$CHAT_TEMPLATE_FILE" ]; then
+        echo "SUBSTITUTE $CHAT_TEMPLATE_FILE (sha256 $TMPL_SHA)"
+    else
+        echo "bundled (model default)"
+    fi
+}
+
+# One line naming the template in force, for the run banner and for the
+# header of every archived results file.
 template_line() {
     if [ -n "$CHAT_TEMPLATE_FILE" ]; then
-        echo "# chat template: SUBSTITUTE $CHAT_TEMPLATE_FILE (NOT comparable to native-template runs)"
+        echo "# chat template: $(template_desc) (NOT comparable to native-template runs)"
     else
-        echo "# chat template: bundled (model default)"
+        echo "# chat template: $(template_desc)"
     fi
 }
 
@@ -118,7 +136,8 @@ echo "OK: all images present locally (nothing will be pulled)"
 if [ -n "$CHAT_TEMPLATE_FILE" ]; then
     [ -f "$CHAT_TEMPLATE_FILE" ] || { echo "FAIL: CHAT_TEMPLATE_FILE not found: $CHAT_TEMPLATE_FILE"; exit 1; }
     [ -r "$CHAT_TEMPLATE_FILE" ] || { echo "FAIL: CHAT_TEMPLATE_FILE not readable: $CHAT_TEMPLATE_FILE"; exit 1; }
-    echo "OK: chat template file present ($CHAT_TEMPLATE_FILE)"
+    TMPL_SHA=$(sha256sum "$CHAT_TEMPLATE_FILE" | cut -d' ' -f1)
+    echo "OK: chat template file present ($CHAT_TEMPLATE_FILE, sha256 $TMPL_SHA)"
 fi
 
 case "$PROMPT_PROFILE" in
@@ -447,7 +466,7 @@ done
 echo "==== summary ===="
 echo "  model     : $MODEL_GGUF"
 echo "  server    : $LLAMA_IMAGE, ctx $CTX, --jinja"
-echo "  template  : ${CHAT_TEMPLATE_FILE:-bundled (model default)}"
+echo "  template  : $(template_desc)"
 echo "  profile   : $PROMPT_PROFILE, max_tokens $EVAL_MAX_TOKENS"
 echo "  transcripts: $EVAL_TRANSCRIPT_DIR/task<n>.run<r>.txt"
 echo "  results    : $EVAL_TRANSCRIPT_DIR/results.run<r>.txt"
