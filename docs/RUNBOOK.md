@@ -5549,3 +5549,64 @@ bound comes from one data point with headroom.
 - The substitute-template scores published in OFFLINE.md are one run
   each, from the archive. They are captioned as not comparable to the
   matrix, and no attempt was made to strengthen them.
+
+## v0.23.0 acceptance - recorded result (stage 1 only, NOT released)
+
+What shipped: T34 alone, template interop. The T34 acceptance record
+above carries the per-phase detail, the HTTP 400 chain, the live smoke
+against the Hermes template, and the deliberate non-changes.
+
+Stage 1:
+
+- Five T34 commits pushed ad1bb5e..c12d9af (P1 the `section` schema
+  declared as a string plus the registry-wide no-union-type pin, P2 the
+  doctor tools-drop probe on the real registry schemas with its
+  HTTP-error WARN arm, P3 the `CHAT_TEMPLATE_FILE` knob and the probe
+  timeout, P4 the docs, and the P3 rider recording the substitute
+  template by sha256 rather than path alone). On-push ci run
+  32152846020 on headSha c12d9af green in both jobs (test 1m22s
+  15:10:35Z..15:11:57Z, release-gate 4m19s 15:10:34Z..15:14:53Z).
+- Three local prep commits: c21a676 bump (four files, Cargo.lock's
+  temur entry only with `untrusted` still pinned 0.9.0, Cargo.toml,
+  scripts/install.sh VERSION, five README tag pins, zero 0.22.0
+  residual in any of the four), 458fb6f CHANGELOG cut to
+  "## v0.23.0 - 2026-08-18" with a fresh empty Unreleased above it and
+  no entry text touched (two lines added, none removed), and this
+  close-out.
+- Full `scripts/check.sh` on the prep head: ALL CHECKS PASSED, exit 0,
+  all 48 "test result:" lines ok over 1631 passing assertions with zero
+  failures, all three TUI pty smokes OK with the 180s bound never
+  approached and the hang signature never appearing, bare busybox
+  container printing "temur 0.23.0". The tallies are identical to the
+  T34 P4 phase gate on the same tree, which is the expected result for
+  a version-string-only delta. Log kept beside the T34 gate logs in the
+  evaluation archive as `v0230-stage1-check-2026-08-18.log`.
+- As in previous cycles the gate ran on the CHANGELOG head, 458fb6f,
+  rather than on this close-out commit: this delta is RUNBOOK-only and
+  changes no gate input, so re-running it against an identical tree
+  would measure the same thing twice.
+- Em-dash differential across the three prep commits: 0 added lines,
+  0 in any of the three messages.
+- Upstream reports, recorded rather than amended: the ROADMAP T34 row
+  was to have its "reported upstream" phrase for the Phi-4-mini
+  template defect softened at this point if BOTH reports had been
+  filed. The operator confirmed on 2026-08-18 that they are NOT both
+  filed yet, so per the stage-1 instruction the row is left byte-
+  unchanged and the status is recorded here instead. As of this commit
+  the drafts exist and neither has been filed from the operator's
+  account. Three tracked sites make the claim and all three are
+  unamended: the ROADMAP T34 row ("reported upstream and still live in
+  the published `tokenizer_config.json` on 2026-08-18"), the CHANGELOG
+  v0.23.0 entry ("reported to the publisher"), and docs/OFFLINE.md
+  ("Reported to the model publisher; still present in the published
+  `tokenizer_config.json` as of 2026-08-18"). The llama.cpp half is a
+  weaker claim and is unaffected: OFFLINE.md says only "Tracked
+  upstream at ggml-org/llama.cpp#27129", and that issue exists
+  independently of temur. Stage 2 should either land the filings first
+  or carry a rider softening all three before the tag.
+- No tag and no release in this stage. Version 0.22.0 is now 0.23.0 in
+  the tree only.
+- Stage 2 is explicitly NOT YET RUN. Nothing is pushed beyond c12d9af,
+  no v0.23.0 tag exists, and no release has been created. The decided
+  tag message for stage 2 is exactly one line,
+  "temur v0.23.0 - template interop (T34)".
