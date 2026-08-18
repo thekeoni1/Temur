@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.23.0 - 2026-08-18
+
 - **The `skill` tool's `section` argument is declared as a string
   instead of a two-type union, which some chat templates could not
   render at all.** JSON Schema allows `"type": ["string", "number"]`,
