@@ -462,18 +462,32 @@ definitions. llama.cpp's `--jinja` mode drops the tools array outright
 when the model's chat template has no tool support: HTTP 200, nothing
 in the log, nothing in the response, and an agent whose tools simply
 never fire. Doctor sends the same one-token completion twice, once
-bare and once carrying a single probe tool, and compares the reported
-prompt tokens:
+bare and once carrying the tool definitions this session would really
+send, and compares the reported prompt tokens:
 
 ```
-WARN: the server at http://127.0.0.1:8080/v1 appears to drop tool definitions for "gemma-3-4b" (prompt_tokens 10 with and without tools): the chat template has no tool support, so tool calls can silently never happen
+WARN: the server at http://127.0.0.1:8080/v1 appears to drop tool definitions for "gemma-3-4b" (prompt_tokens 10 with and without temur's tools): the chat template has no tool support, so tool calls can silently never happen
 ```
 
 Identical counts mean the array went nowhere. Differing counts PASS,
 naming both. A server that reports no usable token counts is a NOTE,
-never a FAIL. The two extra requests are capped at one generated token
-each, go to a local keyless endpoint, and are skipped entirely under
-`--no-network`. See OFFLINE.md for which models this hits.
+never a FAIL.
+
+There is a third answer, and it is the reason the probe carries the
+real definitions rather than a toy one: a server that answers the bare
+completion and then rejects the request the moment tools are attached.
+
+```
+WARN: the server at http://127.0.0.1:8080/v1 rejected temur's tool definitions for "local-gguf" (HTTP 400: Unable to generate parser for this template. Error: Object key of unhashable type: Array): every turn that sends tools will fail the same way
+```
+
+That is a chat template that cannot render what temur sends, quoted in
+the server's own words. It is still a WARN, never a FAIL, but unlike
+the drop it will not be silent in use: every turn dies there.
+
+The two extra requests are capped at one generated token each, go to a
+local keyless endpoint, and are skipped entirely under `--no-network`.
+See OFFLINE.md for which models this hits.
 
 The install check answers a question that costs real debugging time
 after a rebuild: is the `temur` your shell runs the one you just built?

@@ -346,32 +346,69 @@ pub fn probe_props_context(base_url: &str, timeout: std::time::Duration) -> Opti
 }
 
 /// The probe body for the T31 tools-drop check: a one-word completion
-/// capped at one generated token, sent once bare and once carrying a single
-/// minimal tool. Pure, so the wire shape is unit-testable without a server.
+/// capped at one generated token, sent once bare (`tools` = `None`) and
+/// once carrying the caller's REAL tool definitions. Pure, so the wire
+/// shape is unit-testable without a server.
+///
+/// T34: this used to send one synthetic minimal tool, and that made the
+/// check answer a question nobody asked. A server can render a toy schema
+/// perfectly and still reject everything temur actually sends: on
+/// 2026-08-17 the Hermes-2-Pro template probed PASS (221 -> 290
+/// prompt_tokens) while every real request 400d on the `skill` tool's
+/// union type. Probing with the definitions the session will really send
+/// makes the probe answer the question doctor is being asked.
+///
+/// The definitions go out through the SAME openai-compat mapping the
+/// provider uses ([`openai_compat::types::ToolDef`]), never a second
+/// hand-rolled copy, so what the probe measures is what a turn would send.
 ///
 /// Non-streaming on purpose: doctor wants the `usage` block, not deltas,
 /// and every compat server reports usage on a non-streamed response.
-pub fn tools_drop_probe_body(model: &str, with_tools: bool) -> String {
+pub fn tools_drop_probe_body(model: &str, tools: Option<&[ToolDef]>) -> String {
     let mut body = serde_json::json!({
         "model": model,
         "stream": false,
         "max_tokens": 1,
         "messages": [{"role": "user", "content": "hi"}],
     });
-    if with_tools {
-        body["tools"] = serde_json::json!([{
-            "type": "function",
-            "function": {
-                "name": "probe",
-                "description": "A probe tool. Never call it.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"q": {"type": "string", "description": "ignored"}}
-                }
-            }
-        }]);
+    if let Some(defs) = tools {
+        let wire: Vec<openai_compat::types::ToolDef> =
+            defs.iter().map(openai_compat::types::ToolDef::from).collect();
+        body["tools"] = serde_json::to_value(wire).unwrap_or_else(|_| serde_json::json!([]));
     }
     to_sorted_json_string(&body).unwrap_or_else(|_| body.to_string())
+}
+
+/// How much of a server's error message a probe carries back. Long enough
+/// for the diagnostic line that matters (llama.cpp's template failure names
+/// the macro, the line, and the column), short enough that doctor stays one
+/// readable line per check.
+const PROBE_ERROR_MESSAGE_CAP: usize = 300;
+
+/// The server's error message from a non-2xx probe response, as one line.
+///
+/// Reuses the same [`openai_compat::types::ErrorPayload`] the streaming
+/// path parses, so every envelope shape already handled there (bare object,
+/// bare string, Google's one-element array) is handled here too. A body
+/// that is not a recognizable error envelope degrades to the raw text,
+/// which for a 404 HTML page is still more useful than nothing.
+/// Whitespace is collapsed because the message worth quoting is often a
+/// multi-line template traceback. Pure, unit-tested.
+pub fn parse_probe_error_message(body: &str) -> String {
+    let raw = serde_json::from_str::<openai_compat::types::ErrorPayload>(body)
+        .ok()
+        .and_then(openai_compat::types::ErrorPayload::into_error)
+        .map(openai_compat::types::WireError::into_body)
+        .map(|b| b.message)
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| body.to_string());
+    let one_line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.chars().count() > PROBE_ERROR_MESSAGE_CAP {
+        let cut: String = one_line.chars().take(PROBE_ERROR_MESSAGE_CAP).collect();
+        format!("{cut}...")
+    } else {
+        one_line
+    }
 }
 
 /// Extract `usage.prompt_tokens` from a non-streamed completion body.
@@ -385,22 +422,46 @@ pub fn parse_prompt_tokens(body: &str) -> Option<u64> {
         .as_u64()
 }
 
+/// What one tools-drop probe request found out.
+///
+/// T34: this used to be `Option<u64>`, which threw away the only thing
+/// that distinguishes "the server is not talking to us" from "the server
+/// looked at temur's tool definitions and refused them". That second case
+/// is the one worth a diagnosis: it means every real turn will fail the
+/// same way, for a reason the server already stated.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProbeOutcome {
+    /// The server answered 2xx and reported `usage.prompt_tokens`.
+    Ok(u64),
+    /// The server answered, and said no. `message` is its own words,
+    /// already collapsed to one line (see [`parse_probe_error_message`]).
+    HttpError { status: u16, message: String },
+    /// 2xx, but no usable `usage.prompt_tokens`: a known part of the world
+    /// (some servers report no usage at all), and nothing to compare.
+    NoUsage,
+    /// Never got an answer: connect, TLS, or timeout.
+    Unreachable,
+}
+
 /// The THIRD (and last) keyless request doctor may make (T31), under the
 /// same amendment contract as [`list_models_keyless`] and
-/// [`probe_props_context`]: it takes a base URL and a model id and nothing
-/// else, so it can never attach an auth header or touch a key file by
-/// construction. Unlike its two GET siblings this one POSTs, which is why
-/// it is capped at ONE generated token: the cost of a call is a handful of
-/// prompt tokens plus a single token of output, on a local server.
+/// [`probe_props_context`]: it takes a base URL, a model id, and a
+/// serialized set of tool definitions, and NOTHING else, so it can never
+/// attach an auth header or touch a key file by construction. Unlike its
+/// two GET siblings this one POSTs, which is why it is capped at ONE
+/// generated token: the cost of a call is a handful of prompt tokens plus
+/// a single token of output, on a local server.
 ///
-/// Returns the server's reported prompt-token count, or `None` for ANY
-/// problem (network, HTTP status, no usage block, unparseable body).
+/// T34 widened only WHAT is sent (the caller's real definitions instead of
+/// one synthetic tool) and what comes back (a [`ProbeOutcome`] instead of
+/// an `Option`). The contract above is unchanged and still assertable:
+/// there is no credential-shaped parameter to pass.
 pub fn probe_prompt_tokens(
     base_url: &str,
     model: &str,
-    with_tools: bool,
+    tools: Option<&[ToolDef]>,
     timeout: std::time::Duration,
-) -> Option<u64> {
+) -> ProbeOutcome {
     use std::io::Read;
     rustls::crypto::ring::default_provider().install_default().ok();
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -409,21 +470,31 @@ pub fn probe_prompt_tokens(
         .build()
         .new_agent();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let res = agent
+    let res = match agent
         .post(&url)
         .header("content-type", "application/json")
-        .send(tools_drop_probe_body(model, with_tools))
-        .ok()?;
-    if !(200..300).contains(&res.status().as_u16()) {
-        return None;
-    }
+        .send(tools_drop_probe_body(model, tools))
+    {
+        Ok(res) => res,
+        Err(_) => return ProbeOutcome::Unreachable,
+    };
+    let status = res.status().as_u16();
     let mut body = String::new();
     let _ = res
         .into_body()
         .into_reader()
         .take(64 * 1024)
         .read_to_string(&mut body);
-    parse_prompt_tokens(&body)
+    if !(200..300).contains(&status) {
+        return ProbeOutcome::HttpError {
+            status,
+            message: parse_probe_error_message(&body),
+        };
+    }
+    match parse_prompt_tokens(&body) {
+        Some(n) => ProbeOutcome::Ok(n),
+        None => ProbeOutcome::NoUsage,
+    }
 }
 
 /// One row of a model listing (T22): the id both wires share, plus the

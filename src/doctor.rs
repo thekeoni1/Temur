@@ -257,7 +257,7 @@ fn run_with_sandbox_probe(
     // Tools-drop probe (T31). The ACTIVE selection only, because unlike
     // the checks above this one POSTs, and two requests per configured
     // profile is more than a report should cost.
-    tools_drop_check(&mut r, &active, no_network)?;
+    tools_drop_check(&mut r, &cfg, &active, no_network)?;
 
     finish(r)
 }
@@ -313,20 +313,56 @@ fn context_check(
     }
 }
 
-/// The tools-drop probe (T31). llama.cpp's `--jinja` mode SILENTLY drops
-/// the tools array when the model's chat template has no tool support: the
-/// request returns HTTP 200, the server logs nothing, and the response
-/// carries no signal at all, so every tool call the agent could make simply
-/// never happens. Confirmed on b10423-a94d563ed on 2026-08-14: gemma-3-4b
-/// 10/10, Phi-4-mini 4/4 and SmolLM2 31/31 prompt_tokens with and without a
-/// tools array, against a Qwen3-4B control that moved. Tracked upstream at
-/// ggml-org/llama.cpp#27129. This probe reproduced those three counts live
-/// on 2026-08-15 across ten served models (T32 P2).
+/// The tool definitions a real session would send, for the tools-drop
+/// probe (T34). Construction mirrors startup exactly: the same skill-dir
+/// resolution (env override, else config, else the built-in defaults) and
+/// the selection's own resolved prompt profile, because the profile
+/// decides which description set goes on the wire and therefore what the
+/// server has to render.
+///
+/// Skill directories affect only what the `skill` tool can later LOAD, not
+/// its schema, so a machine with no skills installed still probes with the
+/// same definitions as one that has them.
+fn session_tool_definitions(
+    cfg: &Config,
+    p: &crate::config::ResolvedProfile,
+) -> Vec<crate::provider::ToolDef> {
+    let skill_override = std::env::var("TEMUR_SKILLS_DIR")
+        .or_else(|_| std::env::var("OPENCODE_SKILLS_DIR"))
+        .ok()
+        .or_else(|| cfg.skills_dir.clone());
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let skill_dirs =
+        crate::skills::skill_dirs(skill_override.as_deref(), &cwd, home.as_deref());
+    crate::tools::Registry::standard_with_skills(skill_dirs)
+        .with_profile(p.prompt_profile)
+        .definitions()
+}
+
+/// The tools-drop probe (T31, widened by T34). llama.cpp's `--jinja` mode
+/// SILENTLY drops the tools array when the model's chat template has no
+/// tool support: the request returns HTTP 200, the server logs nothing, and
+/// the response carries no signal at all, so every tool call the agent
+/// could make simply never happens. Confirmed on b10423-a94d563ed on
+/// 2026-08-14: gemma-3-4b 10/10, Phi-4-mini 4/4 and SmolLM2 31/31
+/// prompt_tokens with and without a tools array, against a Qwen3-4B control
+/// that moved. Tracked upstream at ggml-org/llama.cpp#27129. This probe
+/// reproduced those three counts live on 2026-08-15 across ten served
+/// models (T32 P2).
 ///
 /// temur can see what the server will not say: send the same tiny
-/// completion twice, once bare and once with one minimal tool, and compare
-/// the prompt-token counts. A template that rendered the tools MUST cost
-/// more prompt tokens; identical counts mean the array went nowhere.
+/// completion twice, once bare and once with tools, and compare the
+/// prompt-token counts. A template that rendered the tools MUST cost more
+/// prompt tokens; identical counts mean the array went nowhere.
+///
+/// T34 sends temur's REAL tool definitions, not one synthetic minimal
+/// tool. The synthetic version answered the wrong question: on 2026-08-17
+/// a Hermes-2-Pro template probed PASS (221 -> 290 prompt_tokens) and then
+/// HTTP 400d on every real request, because rendering temur's actual
+/// schemas threw inside the template and the toy schema never did. A probe
+/// that carries what a turn carries catches that class immediately, which
+/// is the third arm below.
 ///
 /// Costs two requests of ~1 generated token each, and only ever runs for
 /// the ACTIVE selection, on a keyless openai-compat endpoint, with network
@@ -334,24 +370,35 @@ fn context_check(
 /// doctor stays honest but calm.
 fn tools_drop_check(
     r: &mut Report<'_>,
+    cfg: &Config,
     p: &crate::config::ResolvedProfile,
     no_network: bool,
 ) -> std::io::Result<()> {
+    use crate::provider::ProbeOutcome;
     if no_network || p.provider != "openai-compat" || p.api_key_file.is_some() {
         return Ok(());
     }
     let timeout =
         std::time::Duration::from_secs(crate::provider::KEYLESS_LISTING_TIMEOUT_SECS);
-    let bare = crate::provider::probe_prompt_tokens(&p.base_url, &p.model, false, timeout);
+    let defs = session_tool_definitions(cfg, p);
+    let bare = crate::provider::probe_prompt_tokens(&p.base_url, &p.model, None, timeout);
     let with_tools =
-        crate::provider::probe_prompt_tokens(&p.base_url, &p.model, true, timeout);
+        crate::provider::probe_prompt_tokens(&p.base_url, &p.model, Some(&defs), timeout);
     match (bare, with_tools) {
-        (Some(a), Some(b)) if a == b => r.warn(&format!(
-            "the server at {} appears to drop tool definitions for \"{}\" (prompt_tokens {a} with and without tools): the chat template has no tool support, so tool calls can silently never happen",
+        (ProbeOutcome::Ok(a), ProbeOutcome::Ok(b)) if a == b => r.warn(&format!(
+            "the server at {} appears to drop tool definitions for \"{}\" (prompt_tokens {a} with and without temur's tools): the chat template has no tool support, so tool calls can silently never happen",
             p.base_url, p.model
         )),
-        (Some(a), Some(b)) => r.pass(&format!(
-            "the server at {} renders tool definitions for \"{}\" (prompt_tokens {a} without tools, {b} with)",
+        (ProbeOutcome::Ok(a), ProbeOutcome::Ok(b)) => r.pass(&format!(
+            "the server at {} renders temur's tool definitions for \"{}\" (prompt_tokens {a} without tools, {b} with)",
+            p.base_url, p.model
+        )),
+        // The Hermes catch: the server is alive and answers a bare
+        // completion, and rejects the request the moment temur's real tool
+        // definitions are attached. Every turn this session makes will fail
+        // exactly here, so the server's own words are worth repeating.
+        (ProbeOutcome::Ok(_), ProbeOutcome::HttpError { status, message }) => r.warn(&format!(
+            "the server at {} rejected temur's tool definitions for \"{}\" (HTTP {status}: {message}): every turn that sends tools will fail the same way",
             p.base_url, p.model
         )),
         _ => writeln!(
@@ -871,8 +918,24 @@ mod tests {
         bare: &'static str,
         with_tools: &'static str,
     ) -> String {
+        canned_server_with_completions_ex(models_body, bare, "HTTP/1.1 200 OK", with_tools).0
+    }
+
+    /// [`canned_server_with_completions`] with the two things the T34 arms
+    /// need: a settable status line for the WITH-TOOLS response (the Hermes
+    /// case is a 400 on that request alone, while the bare one succeeds),
+    /// and a capture of every POST body, so a test can assert what temur
+    /// actually put on the wire rather than only what came back.
+    fn canned_server_with_completions_ex(
+        models_body: &'static str,
+        bare: &'static str,
+        with_tools_status: &'static str,
+        with_tools: &'static str,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let posts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = std::sync::Arc::clone(&posts);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
@@ -901,27 +964,28 @@ mod tests {
                         }
                     }
                 }
-                let text = String::from_utf8_lossy(&req);
+                let text = String::from_utf8_lossy(&req).into_owned();
                 if text.is_empty() {
                     continue; // the reachability probe: a bare TCP connect
                 }
-                let picked = if text.starts_with("POST ") {
+                let (status, picked) = if text.starts_with("POST ") {
+                    seen.lock().unwrap().push(text.clone());
                     if text.contains("\"tools\"") {
-                        with_tools
+                        (with_tools_status, with_tools)
                     } else {
-                        bare
+                        ("HTTP/1.1 200 OK", bare)
                     }
                 } else {
-                    models_body
+                    ("HTTP/1.1 200 OK", models_body)
                 };
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{picked}",
+                    "{status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{picked}",
                     picked.len()
                 );
                 let _ = stream.write_all(response.as_bytes());
             }
         });
-        format!("http://127.0.0.1:{port}/v1")
+        (format!("http://127.0.0.1:{port}/v1"), posts)
     }
 
     /// Run doctor over a literal config in a tempdir, capturing output.
@@ -1168,7 +1232,7 @@ mod tests {
         assert!(out.contains("NOTE: no context_window configured"), "{out}");
     }
 
-    // ---------------------------------------- T31: tools-drop probe (D-probe)
+    // ------------------------- T31/T34: tools-drop probe (D-probe)
 
     const USAGE_10: &str = r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1}}"#;
     const USAGE_31: &str = r#"{"choices":[],"usage":{"prompt_tokens":31,"completion_tokens":1}}"#;
@@ -1183,7 +1247,7 @@ mod tests {
         assert!(healthy, "a dropped tools array is a WARN, never a FAIL: {out}");
         assert!(
             out.contains(&format!(
-                "WARN: the server at {base} appears to drop tool definitions for \"m\" (prompt_tokens 10 with and without tools)"
+                "WARN: the server at {base} appears to drop tool definitions for \"m\" (prompt_tokens 10 with and without temur's tools)"
             )),
             "{out}"
         );
@@ -1197,10 +1261,83 @@ mod tests {
         assert!(healthy, "{out}");
         assert!(
             out.contains(&format!(
-                "PASS: the server at {base} renders tool definitions for \"m\" (prompt_tokens 10 without tools, 31 with)"
+                "PASS: the server at {base} renders temur's tool definitions for \"m\" (prompt_tokens 10 without tools, 31 with)"
             )),
             "{out}"
         );
+    }
+
+    /// T34, the Hermes catch. The bare completion succeeds and the one
+    /// carrying temur's real tool definitions is refused, which is exactly
+    /// what a template that cannot render those schemas looks like. WARN,
+    /// quoting the server, because doctor never FAILs on a degraded server
+    /// and the server already said the useful thing.
+    #[test]
+    fn tools_drop_probe_warns_when_the_server_rejects_the_real_definitions() {
+        let hermes = r#"{"error":{"code":500,"message":"Unable to generate parser for this template. Error: Object key of unhashable type: Array","type":"server_error"}}"#;
+        let (base, _posts) = canned_server_with_completions_ex(
+            LLAMA_MODELS,
+            USAGE_10,
+            "HTTP/1.1 400 Bad Request",
+            hermes,
+        );
+        let (healthy, out) = doctor_over(&keyless_config(&base, "m"), false);
+        assert!(healthy, "a rejecting server is a WARN, never a FAIL: {out}");
+        assert!(
+            out.contains(&format!(
+                "WARN: the server at {base} rejected temur's tool definitions for \"m\" (HTTP 400:"
+            )),
+            "{out}"
+        );
+        // The server's own words, which are the whole diagnosis here.
+        assert!(out.contains("Object key of unhashable type: Array"), "{out}");
+        assert!(
+            out.contains("every turn that sends tools will fail the same way"),
+            "{out}"
+        );
+        // The pre-T34 probe reported PASS against exactly this server.
+        assert!(!out.contains("renders temur's tool definitions"), "{out}");
+    }
+
+    /// T34: what goes out is what a session would send. Ties P1 to P2: the
+    /// `skill` tool rides every request, and its "section" type is the
+    /// schema that made a shipped template throw.
+    #[test]
+    fn tools_drop_probe_sends_the_real_registry_schemas() {
+        let (base, posts) = canned_server_with_completions_ex(
+            LLAMA_MODELS,
+            USAGE_10,
+            "HTTP/1.1 200 OK",
+            USAGE_31,
+        );
+        let (healthy, out) = doctor_over(&keyless_config(&base, "m"), false);
+        assert!(healthy, "{out}");
+        let bodies = posts.lock().unwrap().clone();
+        let with_tools = bodies
+            .iter()
+            .find(|b| b.contains("\"tools\""))
+            .expect("one probe request carries tools");
+        let json_start = with_tools.find("{").expect("a JSON body");
+        let v: serde_json::Value =
+            serde_json::from_str(&with_tools[json_start..]).expect("parseable body");
+        let tools = v["tools"].as_array().expect("a tools array");
+        let expected = crate::tools::Registry::standard_with_skills(vec![]).definitions();
+        assert_eq!(tools.len(), expected.len(), "the whole registry, not a probe tool");
+        assert!(
+            tools.iter().any(|t| t["function"]["name"] == "bash"),
+            "{with_tools}"
+        );
+        let skill = tools
+            .iter()
+            .find(|t| t["function"]["name"] == "skill")
+            .expect("the skill tool is registered unconditionally");
+        assert_eq!(
+            skill["function"]["parameters"]["properties"]["section"]["type"],
+            "string",
+            "T34 P1: a union type here is a 400 on servers that render schemas"
+        );
+        // The synthetic tool the pre-T34 probe sent is gone.
+        assert!(!with_tools.contains("\"name\":\"probe\""), "{with_tools}");
     }
 
     #[test]
@@ -1216,6 +1353,27 @@ mod tests {
             "{out}"
         );
         assert!(!out.contains("drop tool definitions"), "{out}");
+    }
+
+    /// A bare request that itself fails is the NOTE class, not the new
+    /// rejection WARN: nothing was learned about the tool definitions.
+    #[test]
+    fn tools_drop_probe_failing_bare_request_is_a_note() {
+        let (base, _posts) = canned_server_with_completions_ex(
+            LLAMA_MODELS,
+            "<html>gateway</html>",
+            "HTTP/1.1 400 Bad Request",
+            r#"{"error":{"message":"nope"}}"#,
+        );
+        let (healthy, out) = doctor_over(&keyless_config(&base, "m"), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "NOTE: tools-drop probe at {base} skipped: the server reported no usable prompt_tokens"
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("rejected temur's tool definitions"), "{out}");
     }
 
     #[test]

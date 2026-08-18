@@ -966,10 +966,16 @@ fn one_shot_post_server(
     (format!("http://127.0.0.1:{port}/v1"), handle)
 }
 
+/// The definitions a real session sends, exactly as doctor builds them.
+fn session_defs() -> Vec<temur::provider::ToolDef> {
+    temur::tools::Registry::standard_with_skills(vec![]).definitions()
+}
+
 #[test]
 fn tools_drop_probe_body_differs_only_by_the_tools_array() {
-    let bare = tools_drop_probe_body("my-model", false);
-    let with = tools_drop_probe_body("my-model", true);
+    let defs = session_defs();
+    let bare = tools_drop_probe_body("my-model", None);
+    let with = tools_drop_probe_body("my-model", Some(&defs));
     // Both are tiny, capped at one generated token, and non-streaming, so
     // the usage block comes back in one response.
     for b in [&bare, &with] {
@@ -981,10 +987,24 @@ fn tools_drop_probe_body_differs_only_by_the_tools_array() {
     }
     assert!(!bare.contains("\"tools\""), "{bare}");
     let v: serde_json::Value = serde_json::from_str(&with).unwrap();
-    assert_eq!(v["tools"][0]["type"], "function");
-    assert_eq!(v["tools"][0]["function"]["name"], "probe");
-    assert_eq!(v["tools"][0]["function"]["parameters"]["type"], "object");
-    assert_eq!(v["tools"].as_array().unwrap().len(), 1, "one tool, minimal");
+    let tools = v["tools"].as_array().unwrap();
+    // T34: the REAL registry, in the openai-compat wire shape the provider
+    // itself emits. A synthetic minimal tool is exactly what made this
+    // probe PASS a server that then rejected every real turn.
+    assert_eq!(tools.len(), defs.len(), "every registered tool is probed");
+    for (wire, def) in tools.iter().zip(defs.iter()) {
+        assert_eq!(wire["type"], "function");
+        assert_eq!(wire["function"]["name"], def.name);
+        assert_eq!(wire["function"]["description"], def.description);
+        assert_eq!(wire["function"]["parameters"], def.input_schema);
+    }
+    assert!(tools.iter().any(|t| t["function"]["name"] == "bash"), "{with}");
+    // The schema the T34 interop fix is about really rides this wire.
+    let skill = tools
+        .iter()
+        .find(|t| t["function"]["name"] == "skill")
+        .expect("skill tool is registered unconditionally");
+    assert_eq!(skill["function"]["parameters"]["properties"]["section"]["type"], "string");
 }
 
 #[test]
@@ -1004,36 +1024,95 @@ fn parse_prompt_tokens_reads_usage_and_rejects_everything_else() {
     assert_eq!(parse_prompt_tokens("<html>404</html>"), None);
 }
 
+/// T34: the error message a rejected probe carries back to doctor. Every
+/// envelope shape the streaming path already absorbs, plus the degraded
+/// cases, plus the one-line collapse a template traceback needs.
+#[test]
+fn parse_probe_error_message_absorbs_every_envelope_shape() {
+    // The real llama.cpp answer to the Hermes template failure, shortened
+    // (archive: template-experiment-2026-08-17/E2/a1-hermes-root-cause.txt).
+    assert_eq!(
+        parse_probe_error_message(
+            r#"{"error":{"code":500,"message":"Unable to generate parser for this template.\nError: Object key of unhashable type: Array","type":"server_error"}}"#
+        ),
+        "Unable to generate parser for this template. Error: Object key of unhashable type: Array"
+    );
+    // Bare string under `error`, and Google's one-element array wrapper.
+    assert_eq!(parse_probe_error_message(r#"{"error":"nope"}"#), "nope");
+    assert_eq!(
+        parse_probe_error_message(r#"[{"error":{"message":"model not found"}}]"#),
+        "model not found"
+    );
+    // Not an error envelope at all: the raw text still beats silence.
+    assert_eq!(parse_probe_error_message("<html>404</html>"), "<html>404</html>");
+    // An envelope with an empty message degrades the same way.
+    assert_eq!(parse_probe_error_message(r#"{"error":{"message":""}}"#), r#"{"error":{"message":""}}"#);
+    // Long messages are capped, so doctor stays one line per check.
+    let long = format!(r#"{{"error":{{"message":"{}"}}}}"#, "x".repeat(1000));
+    let out = parse_probe_error_message(&long);
+    assert!(out.ends_with("..."), "{out}");
+    assert!(out.chars().count() < 400, "{}", out.chars().count());
+}
+
 #[test]
 fn tools_drop_probe_posts_to_chat_completions_and_sends_no_auth_header() {
     let (base, server) = one_shot_post_server(
         "HTTP/1.1 200 OK",
         r#"{"choices":[],"usage":{"prompt_tokens":31}}"#,
     );
+    let defs = session_defs();
     assert_eq!(
-        probe_prompt_tokens(&base, "m", true, KEYLESS_TIMEOUT),
-        Some(31)
+        probe_prompt_tokens(&base, "m", Some(&defs), KEYLESS_TIMEOUT),
+        ProbeOutcome::Ok(31)
     );
     let request = server.join().unwrap();
     let head = request.to_ascii_lowercase();
     assert!(head.starts_with("post /v1/chat/completions "), "path: {request}");
     // The amendment contract, same assertion as the two keyless GETs:
-    // NOTHING resembling credentials may be on this wire.
+    // NOTHING resembling credentials may be on this wire. T34 widened what
+    // the probe sends, not what it may attach.
     assert!(!head.contains("authorization"), "{request}");
     assert!(!head.contains("x-api-key"), "{request}");
     assert!(!head.contains("bearer"), "{request}");
     // The tools array really went out; the probe is worthless otherwise.
     assert!(request.contains("\"tools\""), "{request}");
+    assert!(request.contains("\"skill\""), "{request}");
 }
 
 #[test]
-fn tools_drop_probe_http_error_and_bad_body_and_refusal_are_all_none() {
-    let (base, server) = one_shot_post_server("HTTP/1.1 404 Not Found", "not found");
-    assert_eq!(probe_prompt_tokens(&base, "m", false, KEYLESS_TIMEOUT), None);
+fn tools_drop_probe_http_error_carries_the_status_and_the_servers_words() {
+    // The Hermes shape: the server answers, and says exactly why.
+    let (base, server) = one_shot_post_server(
+        "HTTP/1.1 400 Bad Request",
+        r#"{"error":{"message":"Object key of unhashable type: Array","type":"server_error"}}"#,
+    );
+    assert_eq!(
+        probe_prompt_tokens(&base, "m", None, KEYLESS_TIMEOUT),
+        ProbeOutcome::HttpError {
+            status: 400,
+            message: "Object key of unhashable type: Array".into()
+        }
+    );
     server.join().unwrap();
 
+    let (base, server) = one_shot_post_server("HTTP/1.1 404 Not Found", "not found");
+    assert_eq!(
+        probe_prompt_tokens(&base, "m", None, KEYLESS_TIMEOUT),
+        ProbeOutcome::HttpError {
+            status: 404,
+            message: "not found".into()
+        }
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn tools_drop_probe_unusable_body_is_no_usage_and_a_dead_port_is_unreachable() {
     let (base, server) = one_shot_post_server("HTTP/1.1 200 OK", "<html>gateway</html>");
-    assert_eq!(probe_prompt_tokens(&base, "m", false, KEYLESS_TIMEOUT), None);
+    assert_eq!(
+        probe_prompt_tokens(&base, "m", None, KEYLESS_TIMEOUT),
+        ProbeOutcome::NoUsage
+    );
     server.join().unwrap();
 
     let port = {
@@ -1041,8 +1120,8 @@ fn tools_drop_probe_http_error_and_bad_body_and_refusal_are_all_none() {
         l.local_addr().unwrap().port()
     };
     assert_eq!(
-        probe_prompt_tokens(&format!("http://127.0.0.1:{port}/v1"), "m", false, KEYLESS_TIMEOUT),
-        None
+        probe_prompt_tokens(&format!("http://127.0.0.1:{port}/v1"), "m", None, KEYLESS_TIMEOUT),
+        ProbeOutcome::Unreachable
     );
 }
 
