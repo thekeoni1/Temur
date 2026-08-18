@@ -4,6 +4,53 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **The `skill` tool's `section` argument is declared as a string
+  instead of a two-type union, which some chat templates could not
+  render at all.** JSON Schema allows `"type": ["string", "number"]`,
+  but a whole class of shipped chat templates stringifies a schema by
+  looking its type up in a table, and a list is not a valid key there.
+  llama.cpp re-renders the template on every request when it has no
+  specialized handler for the model, so one union type in one
+  always-registered tool meant HTTP 400 on every turn against those
+  servers, before the model saw anything. Confirmed against a
+  Hermes-2-Pro template on 2026-08-17 and fixed: that same server now
+  renders temur's tools normally. Nothing about what temur ACCEPTS
+  changed, `{"section": 2}` still selects section 2, and a new
+  registry-wide test walks every tool's schema at every depth so no
+  union type can come back.
+- **`temur doctor`'s tools-drop probe now sends the tool definitions the
+  session would really send.** It used to send one small synthetic tool,
+  which meant it could report PASS against a server that then rejected
+  every real request: a template can render a toy schema and throw on
+  temur's own. That happened, and it is now the probe's third answer, a
+  WARN quoting the server's own message and saying plainly that every
+  turn sending tools will fail the same way. Still never a FAIL. One
+  cost to expect on a CPU-only local server: the second request makes it
+  prefill about 24KB of tool definitions, measured at 106 seconds the
+  first time, so doctor announces the probe before going quiet for it.
+  That is the same prefill the first real turn pays, and it warms the
+  server's prompt cache for it.
+- **`scripts/serve.sh` and `scripts/weak_model_eval.sh` take an optional
+  `CHAT_TEMPLATE_FILE`,** serving a model with a substitute chat
+  template instead of its bundled one. It exists because that is how a
+  model whose own template hides its tools can be measured at all:
+  Phi-4-mini goes from 0/9 to 4/9 this way, SmolLM2-1.7B from 0/9 to
+  2/9. It is a diagnostic, not a fix, and both scripts say so loudly
+  whenever it is set, because the same substitute template left
+  gemma-3-4b at 0/9 while it spent minutes per task inventing tool
+  results that never happened. Unset, both scripts behave exactly as
+  before. `scripts/offline_demo.sh` deliberately has no such knob.
+- **OFFLINE.md stops saying that three models cannot call tools.** The
+  verified position is narrower and more useful: the tools never
+  REACHED two of the three. Phi-4-mini's own bundled template reads a
+  per-message `tools` key and never the top-level variable every
+  standard pipeline passes, so it renders identically with and without
+  tools and llama.cpp drops the array (reported to the publisher);
+  SmolLM2's template has no tool branch at all; gemma-3-4b stayed at
+  0/9 even under a working substitute template and remains unexplained.
+  The substitute-template scores are published in their own subsection,
+  captioned as NOT comparable to the main matrix.
+
 ## v0.22.0 - 2026-08-16
 
 - **A tool argument sent as a string where a number or a boolean was

@@ -72,7 +72,17 @@ stay explicit),
 `PORT`/`BIND` (published host side only; the container-internal port is
 always 8080 - a non-default `PORT` prints the `base_url` to set),
 `CONTAINER_NAME` (default `temur-llama`), `MEMINFO` (the meminfo file
-the RAM warning reads; default `/proc/meminfo`).
+the RAM warning reads; default `/proc/meminfo`), `CHAT_TEMPLATE_FILE`
+(serve a `.jinja` chat template INSTEAD of the model's bundled one).
+
+> **`CHAT_TEMPLATE_FILE` is a diagnostic knob, not a fix.** A template
+> the model was not trained on can produce confident, wrong output: see
+> "Substitute chat template (not comparable)" below, where the same
+> template that took two models off 0/9 left a third at 0/9 while it
+> spent minutes per task inventing tool results that never happened.
+> Both scripts print a loud banner the whole time it is set, and a
+> running server keeps the template it was started with (asking for a
+> different one fails, the same way asking for a different model does).
 
 > **`--jinja` is STRONGLY RECOMMENDED for tool calls.** Many model chat
 > templates need it before llama-server presents tool definitions
@@ -293,9 +303,14 @@ keyless endpoints only.
 | Qwen3-0.6B | Q4_K_M | ~0.4 GB | ~1.4 GB | degraded | yes | verified 2026-08-15 (eval 5/9, 5/9) |
 | Qwen2.5-Coder-1.5B-Instruct | Q4_K_M | ~0.9 GB | ~1.9 GB | intermittent | 1 of 2 runs | verified 2026-08-15 (eval 4/9, 4/9) |
 | Llama-3.2-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | unreliable | no | re-measured 2026-08-16 on v0.22.0, different binary from the rows above (eval 4/9, 3/9; was 2/9, 2/9 on 2026-08-15) |
-| Gemma-3-4B-it | Q4_K_M | ~2.3 GB | ~3.3 GB | no (tools not delivered) | n/a | verified 2026-08-15 (eval 0/9) |
-| Phi-4-mini-instruct | Q4_K_M | ~2.3 GB | ~3.3 GB | no (tools not delivered) | n/a | verified 2026-08-15 (eval 0/9) |
-| SmolLM2-1.7B-Instruct | Q4_K_M | ~1.0 GB | ~2.0 GB | no (tools not delivered) | n/a | verified 2026-08-15 (eval 0/9) |
+| Gemma-3-4B-it | Q4_K_M | ~2.3 GB | ~3.3 GB | not delivered by its template | n/a | verified 2026-08-15 (eval 0/9) |
+| Phi-4-mini-instruct | Q4_K_M | ~2.3 GB | ~3.3 GB | not delivered by its template | n/a | verified 2026-08-15 (eval 0/9) |
+| SmolLM2-1.7B-Instruct | Q4_K_M | ~1.0 GB | ~2.0 GB | not delivered by its template | n/a | verified 2026-08-15 (eval 0/9) |
+
+The last three rows say "not delivered by its template", not "cannot
+call tools", and the distinction is not pedantic: **the tools never
+reached two of those three models, and when they do, two of the three
+score.** See "Substitute chat template" below.
 
 Est. RAM uses the serve.sh warning's own arithmetic: file size plus
 128 KiB per context token of KV and compute allowance at 8192 ctx
@@ -361,8 +376,9 @@ included models copying that placeholder; these do not.
 
 Three families score 0/9 for a reason that is not about the models:
 llama.cpp `--jinja` silently drops the TOOLS array for gemma-3,
-Phi-4-mini and SmolLM2, because their bundled chat templates have no
-tool-call support. Measured by sending one request three ways and
+Phi-4-mini and SmolLM2, because their bundled chat templates do not
+expose tool support in the way the standard convention requires.
+Measured by sending one request three ways and
 comparing prompt tokens: with a system message plus one tool schema,
 with the system message alone, and with neither. For those three the
 first two are byte-identical in token count (gemma-3 28/28,
@@ -371,10 +387,70 @@ Llama-3.2-3B 240/52. The system message arrives in every case; only
 the tools vanish, the server returns HTTP 200, and nothing warns. Those
 models are never told tools exist, and they answer accordingly, so they
 invent shapes like `{"tool": "file_delete", "path": "obsolete.tmp"}`.
-A different chat template would be needed, and the eval harness has no
-knob for one.
 
-Llama-3.2-3B is not in that category, and the 2/9 pair it scored on
+**A 0/9 here is a statement about the template, not about the model.**
+An experiment on 2026-08-17 served each of the three a substitute
+template and re-ran the same nine tasks; two of them came off zero. The
+per-model causes, as far as they are known:
+
+- **Phi-4-mini** - a defect in its own bundled template, and the
+  clearest case. The template does have a tool branch, but the branch
+  reads a per-message `tools` key
+  (`{% if message['role'] == 'system' and 'tools' in message ... %}`)
+  and never the top-level `tools` variable that every standard pipeline
+  passes: `apply_chat_template(..., tools=...)`, llama.cpp `--jinja`,
+  vllm. So the template renders BYTE-IDENTICALLY with and without
+  tools, llama.cpp's capability probe concludes `supports_tools: false`,
+  and the array is dropped. Reported to the model publisher; still
+  present in the published `tokenizer_config.json` as of 2026-08-18.
+- **SmolLM2-1.7B** - its template has no tool branch at all. Nothing is
+  broken; the capability is simply absent, which is why a template that
+  has one is enough to get it calling.
+- **gemma-3-4b** - unresolved. It stayed at 0/9 with ZERO tool calls
+  even under a substitute template that worked for the other two, so
+  whatever is in its way is not only the delivery problem. That one is
+  still open.
+
+### Substitute chat template (not comparable)
+
+One run each, 2026-08-17, temur 0.22.0, llama.cpp `server-b10438`, ctx
+8192, compact profile, `EVAL_MAX_TOKENS` 3072, serving
+`Qwen-Qwen2.5-7B-Instruct.jinja` (taken from llama.cpp's own
+`models/templates/` at that tag) via `CHAT_TEMPLATE_FILE` instead of
+each model's bundled template:
+
+| Model | Native template | Substitute template | Native tool calls in the run |
+|---|---|---|---|
+| Phi-4-mini-instruct | 0/9 | **4/9** | 419 |
+| SmolLM2-1.7B-Instruct | 0/9 | **2/9** | 63 |
+| Gemma-3-4B-it | 0/9 | 0/9 | 0 |
+
+**These numbers are NOT comparable to the matrix above.** They are a
+different prompt encoding with different failure modes, one run each
+rather than two or three, and run-to-run variance is this instrument's
+own headline finding: two models changed score between consecutive runs
+under fixed conditions in the 2026-08-15 matrix. Read the table as
+"these models can drive tools once the tools reach them", not as a
+ranking.
+
+The passes are earned, not rescued: Phi-4-mini's four came from 419
+ordinary structured tool calls parsed by llama.cpp, with temur's
+prose-call recovery executing exactly once in the whole run. But the
+model pays for the foreign encoding the entire time. Phi has single-token
+markers for its own turn boundaries and none for ChatML's, so
+`<|im_end|>` never stops generation, and four of the nine tasks ran past
+350 seconds with the model writing imaginary user turns until it hit
+`max_tokens`.
+
+And gemma-3-4b is the warning label. Under the same substitute template
+it produced zero tool calls, zero recoveries, and spent 150-430 seconds
+per task generating confident, entirely fabricated tool results,
+including the contents of a `README.md` that does not exist. The knob
+that moved two models off zero turned the third's *silent* failure into
+an *expensive* one. This is why both scripts print a loud banner
+whenever a substitute template is active.
+
+Llama-3.2-3B is not in the tools-dropped category, and the 2/9 pair it scored on
 2026-08-15 is its own story, with two independent causes. It receives the full tool array, and
 llama.cpp's own tool-call grammar then rejects the model's output
 server-side with `The model produced output that does not match the
@@ -511,17 +587,40 @@ invents shapes like `{"name": "delete", "arguments": {...}}`, and the
 session reads as a model that cannot follow instructions.
 
 `temur doctor` diagnoses it for the active selection on a keyless
-local endpoint: it sends one tiny completion twice, bare and with a
-single probe tool, and compares the reported prompt tokens. Identical
-counts mean the array went nowhere and doctor WARNs; differing counts
-PASS. Re-confirmed on `b10423-a94d563ed` on 2026-08-14 (gemma-3-4b
-10/10, Phi-4-mini 4/4, SmolLM2 31/31 prompt tokens with and without
-tools, against a Qwen3-4B control that moved), so it is current
-behavior, not a fixed historical quirk. Tracked upstream at
-ggml-org/llama.cpp#27129. The probe's own WARN was confirmed live on
-2026-08-15 across ten served models, reproducing those three counts
-exactly on a different server build. The fix is a chat template with
-tool support, or a model whose bundled one has it.
+local endpoint: it sends one tiny completion twice, bare and carrying
+the tool definitions this session would really send, and compares the
+reported prompt tokens. Identical counts mean the array went nowhere
+and doctor WARNs; differing counts PASS. Re-confirmed on
+`b10423-a94d563ed` on 2026-08-14 (gemma-3-4b 10/10, Phi-4-mini 4/4,
+SmolLM2 31/31 prompt tokens with and without tools, against a Qwen3-4B
+control that moved), so it is current behavior, not a fixed historical
+quirk. Tracked upstream at ggml-org/llama.cpp#27129. The probe's own
+WARN was confirmed live on 2026-08-15 across ten served models,
+reproducing those three counts exactly on a different server build. The
+fix is a chat template with tool support, or a model whose bundled one
+has it.
+
+**The probe carries the real definitions for a reason.** It used to
+send one small synthetic tool, and on 2026-08-17 that made it report
+PASS against a server that then returned HTTP 400 on every actual
+request: the template could render a toy schema and threw on temur's
+own. So there is a third answer besides drop and PASS, and it is the
+one you get when a template cannot render what temur sends:
+
+```
+WARN: the server at http://127.0.0.1:8080/v1 rejected temur's tool definitions for "local-gguf" (HTTP 400: <the server's own message>): every turn that sends tools will fail the same way
+```
+
+Unlike the drop, that one will not be silent in use; every turn dies
+there. It is still a WARN, never a FAIL.
+
+One cost to expect: the second request makes the server prefill every
+tool definition, about 24KB on the full prompt profile. On a CPU-only
+local server that took 106 seconds the first time (measured 2026-08-18,
+4814 prompt tokens at 22.6 ms/token). Doctor says so before it goes
+quiet. It is the same prefill the session's first real turn would pay
+for the same bytes, and llama.cpp's prompt cache means a second run,
+including that first turn, comes back quickly.
 
 ## The offline demo
 
@@ -575,7 +674,14 @@ disables it, and a task the bound kills is recorded FAIL with a
 `TIMEOUT@<n>s` note), `EVAL_MIN` (default 0 = informational; a nonzero
 value makes the script exit 1 below that score), and
 `EVAL_TRANSCRIPT_DIR` (per-task transcripts are kept there for
-debugging).
+debugging). Also `CHAT_TEMPLATE_FILE`, with the warning above: the
+template in force is written into the run banner, the summary, and a
+header line on every archived `results.run<r>.txt`, so a results file
+found on its own still says what it was measured under.
+
+`scripts/offline_demo.sh` deliberately has NO template knob. It is a
+fixed acceptance demo on a known-good model, where the only thing a
+substitute template could do is break a proof.
 
 ## Troubleshooting
 

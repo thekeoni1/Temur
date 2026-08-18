@@ -5421,3 +5421,131 @@ Stage 2:
   amended: the tag is pushed and this project never retags, and editing
   it now would leave the released tree and main disagreeing about the
   same line for no gain.
+
+## T34 acceptance - recorded result (no release)
+
+Template interop: the three carry-forward items from the template
+experiment of 2026-08-17, plus the docs correction they force. Version
+stays 0.22.0; this ships as v0.23.0 in a later cycle. Four local
+commits, no push, no tag.
+
+### Provenance
+
+Everything here descends from an exploratory experiment run the day
+before, archived at
+`~/temur-eval-archive/template-experiment-2026-08-17/` (REPORT.md, E1
+through E4, `harness-diff.txt`, `E2/a1-hermes-root-cause.txt`). That
+experiment asked whether a substitute chat template makes llama.cpp
+keep the tools array for Phi-4-mini, found that it does and that the
+model then scores 4/9, and surfaced two temur-side defects on the way.
+It was verified end to end by the planning session on 2026-08-18. This
+milestone builds the three findings the report said would outlive it,
+and nothing else: no eval was re-run, and no published matrix score
+changed.
+
+### Conditions
+
+Offline except for keyless local llama.cpp. `ANTHROPIC_API_KEY` absent
+from the environment throughout, verified before the first edit; no
+call was made to any hosted API. Images already local, nothing pulled.
+Full `scripts/check.sh` (both paths, foreground under a pty, logs teed
+and kept in `~/temur-eval-archive/t34-gate-logs/`) after every phase,
+green first try in all four, with no pty-smoke flake at any point.
+
+### The HTTP 400 chain, and what each fix would have caught
+
+Worth recording as one chain, because three separate things had to line
+up for a silent failure this complete:
+
+1. `src/tools/skill.rs` declared `"section": {"type": ["string",
+   "number"]}` - legal JSON Schema, and the T28 lenient section
+   parameter's honest self-description.
+2. `SkillTool` is registered unconditionally, so that union type was in
+   EVERY tools array temur sent, on every request, whether or not any
+   skill directory existed.
+3. llama.cpp has no specialized handler for most models, so it renders
+   the chat template on every request to derive a parser. The shipped
+   Hermes-2-Pro template's `json_to_python_type()` macro opens with a
+   dict lookup keyed on the schema's `type`. A list is not hashable, so
+   the render throws, and the server answers HTTP 400 before the model
+   sees anything. Stock Jinja2 raises the same error: the template has
+   a `Union[...]` branch further down, but the dict lookup runs first.
+
+P1 breaks the chain at step 1, and the registry-wide pin test keeps any
+tool from re-introducing it at any schema depth in either prompt
+profile.
+
+P2 is the part that matters if this ever happens again with a different
+template. doctor's tools-drop probe sent one synthetic minimal tool, so
+against exactly that server it reported PASS (221 to 290 prompt tokens)
+while every real request 400d. Probing with the real registry schemas
+would have caught it on the first doctor run. It now does, and a
+rejection is its own WARN quoting the server's message.
+
+### Live smoke (keyless, local, no API)
+
+Server via `scripts/serve.sh` with `CHAT_TEMPLATE_FILE` set,
+Phi-4-mini-instruct Q4_K_M, llama.cpp `server-b10438`, ctx 8192,
+doctor run from an isolated `XDG_CONFIG_HOME` against a keyless local
+profile. Transcripts kept at
+`~/temur-eval-archive/t34-gate-logs/p3-smoke/`.
+
+- Qwen2.5-7B-Instruct substitute template: banner printed at bring-up
+  and again after health, `serve.sh status` reported the template as
+  SUBSTITUTE, and doctor PASSed "renders temur's tool definitions
+  (prompt_tokens 52 without tools, 6862 with)".
+- Template mismatch: asking a running server for a DIFFERENT template
+  FAILed naming both and the stop-then-restart remedy, which is the
+  T31 D4 check extended one level down.
+- Hermes-2-Pro template, the decisive one: doctor PASSed 221 to 7156
+  prompt tokens. In the archive, the same template returned HTTP 400 on
+  every request temur made. The union type really was the whole defect.
+
+No eval re-run. Scores are already measured and archived, and the docs
+cite the archive rather than restating it.
+
+### Unplanned finding: the probe now costs a real prefill
+
+Caught by the live smoke, not by any test. Sending the real definitions
+means the server must prefill about 24KB of tool text before it can
+report a single token of usage: measured 4814 prompt tokens at 22.6
+ms/token, 106 seconds wall clock, on this CPU-only machine at the full
+prompt profile. Under the 3-second keyless listing timeout that became
+a silent "NOTE: the server reported no usable prompt_tokens", which is
+the worst possible outcome - a check that looks like it ran.
+
+Fixed with a dedicated `TOOLS_DROP_PROBE_TIMEOUT_SECS` (300), a heads-up
+line printed before the probe goes quiet, and a distinct NOTE for the
+case where the bare request answers and the with-tools one does not, so
+it can never again be read as "no signal". The cost is not invented by
+the probe: it is exactly the prefill the session's first real turn pays
+for the same bytes, and llama.cpp's prompt cache means paying it here
+warms that turn. The re-run against the same server took 5 seconds.
+Queued: nobody has measured the spread on other hardware, and the 300s
+bound comes from one data point with headroom.
+
+### Deviations
+
+- **Template mismatch FAILs rather than WARNs.** The plan called it the
+  "same mismatch WARN class"; `serve.sh`'s existing model-mismatch check
+  (T31 D4) is a FAIL, and a running server with the wrong template
+  poisons a measurement exactly the way the wrong model does, with an
+  identical stop-then-restart remedy. Implemented as a FAIL for
+  consistency with the named precedent. One line to reverse.
+- **`serve.sh` mount inspection changed shape.** Not in the plan, but
+  forced by it: the already-running check used
+  `{{range .Mounts}}{{.Source}}{{end}}`, which concatenates every mount
+  source and would have silently broken the model comparison the moment
+  a template mount joined it. Mounts are now selected by destination.
+- **The probe timeout and its NOTE arm** are P2 work that landed in the
+  P3 commit, because the live smoke that found the defect is P3's.
+
+### Residuals
+
+- The unanswered-with-tools NOTE arm is covered by a canned server that
+  drops the connection, not by a real slow server. The real one was
+  observed live before the fix, not after.
+- gemma-3-4b's 0/9 remains unexplained and is queued in ROADMAP.md.
+- The substitute-template scores published in OFFLINE.md are one run
+  each, from the archive. They are captioned as not comparable to the
+  matrix, and no attempt was made to strengthen them.
