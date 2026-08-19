@@ -436,10 +436,133 @@ fn first_balanced_object(s: &str) -> Option<&str> {
     None
 }
 
+/// The tail phrases that read as "I am about to go do something", matched
+/// case-insensitively. Deliberately short and conservative: every entry
+/// announces work that has not started yet, none of them is a natural way
+/// to close a finished answer.
+const PROMISE_PHRASES: [&str; 7] = [
+    "please wait",
+    "one moment",
+    "give me a moment",
+    "hold on while",
+    "i will now",
+    "i'll now",
+    "i am now going to",
+];
+
+/// How much of the message end [`detect_promise_without_call`] reads,
+/// in characters (not bytes: the slice must land on a char boundary).
+///
+/// The tail rule is the whole reason this check is usable. "I will now
+/// summarize:" followed by an actual summary is a FINISHED answer, and it
+/// contains a promise phrase; the same phrase as the last thing in the
+/// message is a turn that stopped early. Only position separates them.
+const PROMISE_TAIL_CHARS: usize = 150;
+
+/// T35 (D2, dogfood 2026-08-14): does this message END by promising work
+/// it never started?
+///
+/// qwen3-4b closed a turn with "Please wait while I analyze it" and made
+/// zero tool calls. Nothing runs between turns, so the promise dangled
+/// forever and the operator sat waiting on a model that had already
+/// stopped. The nudge this feeds says exactly that.
+///
+/// Narrow by construction: the phrase table is fixed and short, and only
+/// the last [`PROMISE_TAIL_CHARS`] characters are examined. The caller
+/// adds the conditions that matter more than the wording, namely that the
+/// turn is ending and that it dispatched no tool at all.
+///
+/// Honest false-positive note, in the T31 style: a genuine final answer
+/// that happens to END on a table phrase ("...just let me know, and
+/// please wait for the build to finish") costs exactly one extra request.
+/// The nudge counts against `NUDGE_LIMIT`, so the cost is bounded, and it
+/// is paid only by answers that both end on one of seven phrases and made
+/// no tool call anywhere in the turn. The failure it prevents is
+/// unbounded: a turn that promises and stops waits forever.
+pub fn detect_promise_without_call(text: &str) -> bool {
+    let trimmed = text.trim_end();
+    if trimmed.is_empty() {
+        return false;
+    }
+    // Start of the last PROMISE_TAIL_CHARS characters, or 0 if shorter.
+    let start = trimmed
+        .char_indices()
+        .rev()
+        .take(PROMISE_TAIL_CHARS)
+        .last()
+        .map_or(0, |(i, _)| i);
+    let tail = trimmed[start..].to_lowercase();
+    PROMISE_PHRASES.iter().any(|p| tail.contains(p))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ---------------------------------------- T35 (D2): promise-then-stop
+
+    #[test]
+    fn dogfood_promise_phrase_fires_verbatim() {
+        // The 2026-08-14 dogfood message, exactly as qwen3-4b wrote it.
+        assert!(detect_promise_without_call("Please wait while I analyze it"));
+    }
+
+    #[test]
+    fn every_seeded_phrase_fires_and_is_case_insensitive() {
+        for p in PROMISE_PHRASES {
+            assert!(detect_promise_without_call(p), "{p}");
+            assert!(detect_promise_without_call(&p.to_uppercase()), "{p} upper");
+            assert!(
+                detect_promise_without_call(&format!("Sure, {p}.")),
+                "{p} in a sentence"
+            );
+        }
+    }
+
+    #[test]
+    fn trailing_whitespace_does_not_hide_the_phrase() {
+        assert!(detect_promise_without_call("Please wait  \n\n  "));
+    }
+
+    #[test]
+    fn a_promise_phrase_with_the_work_after_it_does_not_fire() {
+        // The tail rule: "I will now summarize:" followed by the actual
+        // summary is a FINISHED answer, not a stalled turn.
+        let text = format!(
+            "I will now summarize: {}",
+            "the parser handles every scalar shape the eval matrix produced, and \
+             the remaining gap is the timeout knob, which is read but never \
+             enforced anywhere in the harness. "
+                .repeat(2)
+        );
+        assert!(!detect_promise_without_call(&text));
+    }
+
+    #[test]
+    fn ordinary_final_answers_do_not_fire() {
+        for t in [
+            "The file has 42 lines.",
+            "Done. I created config.toml and verified it parses.",
+            "I cannot find that function anywhere in the tree.",
+            "",
+            "   \n  ",
+            // Past tense is not a promise.
+            "I waited for the build and it passed.",
+        ] {
+            assert!(!detect_promise_without_call(t), "{t:?}");
+        }
+    }
+
+    #[test]
+    fn tail_window_is_char_safe_on_multibyte_input() {
+        // A slice landing mid-codepoint would panic; the window is counted
+        // in chars for exactly this reason.
+        let text = format!("{} please wait", "\u{4f60}\u{597d}\u{4e16}\u{754c}".repeat(80));
+        assert!(detect_promise_without_call(&text));
+        let text = format!("please wait {}", "\u{4f60}\u{597d}\u{4e16}\u{754c}".repeat(80));
+        assert!(!detect_promise_without_call(&text), "out of the tail window");
+    }
 
     #[test]
     fn repair_json_table() {

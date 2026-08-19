@@ -821,3 +821,159 @@ fn nudges_capped_at_exactly_two() {
         .count();
     assert_eq!(nudge_notices, 2, "exactly two nudges per turn");
 }
+
+// --------------------------------------- T35 (D2): promise-then-stop nudge
+
+#[test]
+fn promised_work_without_a_call_is_nudged_then_the_model_acts() {
+    // The dogfood shape, verbatim (2026-08-14, qwen3-4b): the turn ends
+    // announcing analysis, having called nothing. Nothing runs between
+    // turns, so without the nudge the operator waits forever.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(
+                vec![text("Please wait while I analyze it")],
+                StopReason::EndTurn,
+            ),
+            msg(
+                vec![tool_use(
+                    "tu_1",
+                    "write",
+                    serde_json::json!({"filePath": "analyzed.txt", "content": "ok"}),
+                )],
+                StopReason::ToolUse,
+            ),
+            msg(vec![text("done")], StopReason::EndTurn),
+        ],
+    );
+    let events = collect_events(&mut session, "analyze the file");
+
+    assert_eq!(requests.borrow().len(), 3);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("analyzed.txt")).unwrap(),
+        "ok"
+    );
+    assert!(
+        notices(&events)
+            .iter()
+            .any(|n| n.contains("promised work without calling a tool")),
+        "{:?}",
+        notices(&events)
+    );
+    assert!(session.history().iter().any(|m| {
+        matches!(m.role, Role::User)
+            && m.content.iter().any(|b| matches!(
+                b,
+                ContentBlock::Text { text } if text.contains("Nothing runs between turns")
+            ))
+    }));
+}
+
+#[test]
+fn the_same_phrase_after_a_dispatched_tool_does_not_nudge() {
+    // The turn DID work. A closing "please wait" then reads as prose about
+    // work already done, not as a turn that stopped without starting, so
+    // the turn ends where the model ended it.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(
+                vec![tool_use(
+                    "tu_1",
+                    "write",
+                    serde_json::json!({"filePath": "did.txt", "content": "work"}),
+                )],
+                StopReason::ToolUse,
+            ),
+            msg(
+                vec![text("Please wait while I analyze it")],
+                StopReason::EndTurn,
+            ),
+        ],
+    );
+    let events = collect_events(&mut session, "do the work");
+
+    assert_eq!(requests.borrow().len(), 2, "no third request: no nudge");
+    assert!(
+        !notices(&events)
+            .iter()
+            .any(|n| n.contains("promised work without calling a tool")),
+        "{:?}",
+        notices(&events)
+    );
+}
+
+#[test]
+fn a_promise_phrase_followed_by_the_work_does_not_nudge() {
+    // The tail rule at loop level: the phrase is present but the substance
+    // comes after it, so the message is a finished answer.
+    let dir = tempfile::tempdir().unwrap();
+    let body = "the parser accepts every scalar shape in the matrix, and the one \
+                remaining gap is the timeout knob, which is read but never enforced. "
+        .repeat(3);
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![msg(
+            vec![text(&format!("I will now summarize: {body}"))],
+            StopReason::EndTurn,
+        )],
+    );
+    let events = collect_events(&mut session, "summarize");
+
+    assert_eq!(requests.borrow().len(), 1);
+    assert!(
+        !notices(&events)
+            .iter()
+            .any(|n| n.contains("promised work without calling a tool")),
+        "{:?}",
+        notices(&events)
+    );
+}
+
+#[test]
+fn a_plain_final_answer_does_not_nudge() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![msg(
+            vec![text("The file has 42 lines.")],
+            StopReason::EndTurn,
+        )],
+    );
+    let events = collect_events(&mut session, "how long is it");
+
+    assert_eq!(requests.borrow().len(), 1);
+    assert!(
+        !notices(&events)
+            .iter()
+            .any(|n| n.contains("promised work without calling a tool")),
+        "{:?}",
+        notices(&events)
+    );
+}
+
+#[test]
+fn promise_nudges_are_capped_at_two() {
+    // A model that only ever promises terminates: two nudges, then the
+    // third promise ends the turn instead of trading messages forever.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(vec![text("Please wait while I analyze it")], StopReason::EndTurn),
+            msg(vec![text("One moment")], StopReason::EndTurn),
+            msg(vec![text("I will now begin")], StopReason::EndTurn),
+        ],
+    );
+    let events = collect_events(&mut session, "analyze");
+
+    assert_eq!(requests.borrow().len(), 3);
+    let n = notices(&events)
+        .iter()
+        .filter(|n| n.contains("promised work without calling a tool"))
+        .count();
+    assert_eq!(n, 2, "{:?}", notices(&events));
+}

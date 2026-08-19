@@ -638,6 +638,10 @@ impl Session {
         // T31 (H1): the last DISPATCHED prose call, so a byte-identical
         // repeat is answered instead of executed again.
         let mut prose_guard = recover::ProseRepeatGuard::default();
+        // T35 (D2): did ANY tool run at any point this turn, structured or
+        // recovered from prose? A turn that promised work is only suspect
+        // when it never actually did any.
+        let mut any_tool_dispatched = false;
 
         loop {
             iterations += 1;
@@ -807,6 +811,7 @@ impl Session {
                         ));
                         break;
                     }
+                    any_tool_dispatched = true;
 
                     // Doom-loop guard on identical consecutive calls.
                     // Fingerprint format unchanged by T4.
@@ -965,6 +970,7 @@ impl Session {
                     // switch restores detect+nudge byte-identically.
                     let mut prose_call: Option<recover::ProseCall> = None;
                     let mut nudge = false;
+                    let mut promise = false;
                     let mut unknown_tool: Option<String> = None;
                     let mut tool_names: Vec<String> = Vec::new();
                     if matches!(other, Some(StopReason::EndTurn))
@@ -1002,6 +1008,19 @@ impl Session {
                             unknown_tool =
                                 recover::detect_unknown_tool_call(&text, &tool_names);
                         }
+                        // T35 (D2): last of the recovery predicates, and
+                        // the only one that looks at the whole turn rather
+                        // than this message. A reply that ENDS by promising
+                        // work, having dispatched no tool anywhere in the
+                        // turn, has stopped without starting: nothing runs
+                        // between turns, so the promise never resolves.
+                        if prose_call.is_none()
+                            && !nudge
+                            && unknown_tool.is_none()
+                            && !any_tool_dispatched
+                        {
+                            promise = recover::detect_promise_without_call(&text);
+                        }
                     }
                     self.history.push(RequestMessage {
                         role: Role::Assistant,
@@ -1035,6 +1054,10 @@ impl Session {
                             continue;
                         }
                         prose_guard.record(&call);
+                        // T35 (D2): a prose call that reaches execution is
+                        // a dispatch like any other, so a later promise in
+                        // the same turn is not "stopped without starting".
+                        any_tool_dispatched = true;
                         // No tool_use id exists, so the result goes back as
                         // PLAIN USER TEXT, wire-legal on both providers,
                         // request-body goldens untouched. No ToolEnd event:
@@ -1110,6 +1133,30 @@ impl Session {
                         ui(AgentEvent::Notice(format!(
                             "the model called a tool that does not exist (\"{bogus}\"); listed the available tools"
                         )));
+                        continue;
+                    }
+                    if promise {
+                        // Self-healing wording: say what is actually true
+                        // about the runtime, then give both acceptable ways
+                        // out. Counts against NUDGE_LIMIT like every other
+                        // corrective, so a model that keeps promising ends
+                        // the turn instead of promising forever.
+                        nudges += 1;
+                        self.history.push(RequestMessage {
+                            role: Role::User,
+                            content: vec![ContentBlock::Text {
+                                text: "Nothing runs between turns. Your reply said further \
+                                       work was coming but made no tool call, so nothing is \
+                                       happening and nothing will happen until you act. Call \
+                                       the tool now, or give the final answer if the work is \
+                                       already done."
+                                    .into(),
+                            }],
+                        });
+                        ui(AgentEvent::Notice(
+                            "the model promised work without calling a tool; asked it to act or answer"
+                                .into(),
+                        ));
                         continue;
                     }
                     match other {
