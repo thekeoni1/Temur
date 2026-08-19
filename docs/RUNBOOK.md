@@ -5618,3 +5618,82 @@ Stage 1:
   no v0.23.0 tag exists, and no release has been created. The decided
   tag message for stage 2 is exactly one line,
   "temur v0.23.0 - template interop (T34)".
+
+Rider before stage 2 (b007664, docs only):
+
+- The operator decided on 2026-08-18 not to file the two upstream
+  reports before this ship, so the three sites asserting a filing that
+  had not happened were softened to say the report is drafted and not
+  yet filed: docs/OFFLINE.md's Phi-4-mini per-model cause, the
+  CHANGELOG v0.23.0 entry, and the ROADMAP T34 row. The defect itself
+  is described exactly as before and is still live in the published
+  `tokenizer_config.json` as of 2026-08-18. Every
+  ggml-org/llama.cpp#27129 reference was left untouched, verified by
+  the diff carrying no added or removed line containing it: that is
+  the weaker "tracked upstream at" claim about an issue that exists
+  independently of temur, and it was already true.
+- The close-out paragraph above gained a dated CORRECTION rather than
+  a rewrite, since it had inverted the stage-1 instruction. Its quoted
+  pre-rider phrases are kept deliberately as the record of what was
+  corrected, which is why a grep for the old wording still finds them
+  in this file and nowhere else.
+- Full `scripts/check.sh` on the rider head: ALL CHECKS PASSED, exit 0,
+  all 48 "test result:" lines ok over 1631 passing assertions with zero
+  failures, all three TUI pty smokes OK, bare busybox container
+  printing "temur 0.23.0". Green first try. Log kept beside the T34
+  gate logs as `v0230-rider-check-2026-08-18.log`.
+- Em-dash differential: 0 added lines, 0 in the message. No code, no
+  schema, no script, no version change.
+
+Stage 2:
+
+- Prep plus rider pushed c12d9af..b007664; ci run 32172108474 on
+  headSha b007664 green in both jobs, but NOT on the first attempt.
+  Attempt 1: release-gate success in 12m30s
+  (18:38:17Z..18:50:47Z), while the `test` job hung in its
+  "Install 32-bit build and run packages" step, an apt-get update that
+  stalled mid-fetch at 18:38:59Z, emitted nothing for six hours, and
+  was cancelled by the GitHub job timeout at 2026-08-19T00:38:32Z. No
+  temur code ran in that job: the build, test and dependency-scan
+  steps are all recorded as skipped, never started. Attempt 2 of the
+  `test` job alone, on the unchanged commit, success in 2m37s
+  (00:39:40Z..00:42:17Z). This ENDS the consecutive-zero-rerun streak
+  at eleven cycles. The rerun was CI infrastructure, not a temur gate:
+  every local gate this cycle, and the release-gate job itself, was
+  green first try. Recorded as a rerun anyway rather than described
+  around.
+- Annotated tag v0.23.0 AT b007664, the rider head, tag object
+  358333de22b4406a32701327ac7def74c78e54f4. The message was verified
+  against the RAW object before the tag was pushed, not through
+  `git tag -l --format` (which appends its own newline): the object was
+  split on its first blank line and the remaining bytes piped through
+  `od`. They are exactly "temur v0.23.0 - template interop (T34)"
+  followed by one \n: 39 bytes, one line, the separator an ASCII
+  hyphen-minus (0x2d) confirmed at offset 14, a single trailing 0x0a
+  and no other newline, every byte below 0x80. The remote ref resolves
+  to the same object hash and `^{}` to b007664.
+- scripts/release.sh with NO SKIP_CHECK: green first try, exit 0, 4/4
+  artifacts gated and staged, leak grep clean over files and history,
+  install.sh/README skew gate clean at 0.23.0, all three TUI pty smokes
+  OK (the 180s bound was never approached and the hang signature never
+  appeared), bare busybox container printing "temur 0.23.0". Log kept
+  in the archive as `v0230-stage2-release-2026-08-18.log`.
+- Staged sha256s:
+  3c0fd5f8 aarch64, 9fc84227 armv7, d67c7aa4 i686, 9a6f6603 x86_64,
+  2f7dfb4c SHA256SUMS.
+- Private release created with 5 assets, not draft, not prerelease.
+  Repo isPrivate confirmed true BEFORE creating it and again AFTER.
+- Closing gate: the x86_64 asset and SHA256SUMS were re-downloaded
+  fresh from the release and both are `cmp`-identical to staged; the
+  downloaded x86_64 re-hashes to 9a6f6603..., and `sha256sum -c` on the
+  downloaded SHA256SUMS is OK. A second, FULL download of all five
+  assets is also `cmp`-identical to staged, all five, and
+  `sha256sum -c` over it passes 4/4. Installer matrix 6/6 twice, once
+  against the staged dir and once against that full download (pass +
+  corrupt + unlisted, on the GNU host and in the busybox container).
+- Local ~/.local/bin/temur refreshed from the freshly DOWNLOADED i686
+  asset rather than from the staged copy, so the chain runs published
+  to installed: it prints "temur 0.23.0", hashes d67c7aa4... which is
+  the published i686 entry in the downloaded SHA256SUMS, and is
+  `cmp`-identical to both the downloaded asset and the staged one. It
+  previously held the v0.22.0 i686 artifact, 2de2c566.
