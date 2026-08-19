@@ -450,6 +450,15 @@ All of the following, in order, before any tag/push/release:
 
 - `git status` clean and synced with origin/main.
 - `scripts/release.sh` green **at the exact HEAD being tagged**.
+- `scripts/metadata_drift.sh` run, and its outcome recorded in the ship
+  record (T35). It cross-checks the baked Anthropic context windows and
+  list prices in `src/init.rs` against models.dev and is REPORT-ONLY: it
+  never edits anything, and a DRIFT line does not block the ship, it
+  gets a recorded decision, because models.dev is community data rather
+  than an oracle. It is deliberately not part of `scripts/check.sh` or
+  `scripts/release.sh`, since a gate that reaches the network fails for
+  reasons unrelated to what it gates; "not run (offline)" is a
+  legitimate recorded outcome.
 - Installer test green: serve `/home/dev/dist/release/v<ver>/` locally
   (`python3 -m http.server`) and run `scripts/install.sh` with
   `TEMUR_BASE_URL` pointing at it, into a temp `HOME`; installed
