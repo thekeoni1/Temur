@@ -116,19 +116,18 @@ const TEMPLATES: [Template; 5] = [
 /// The fourth and fifth fields are the profile's baked
 /// `price_input_per_mtok` / `price_output_per_mtok` (T24), USD per
 /// million tokens at Anthropic's STANDARD list rate,
-/// knowledge-of-record 2026-08-07. They feed the `/status` cost estimate
-/// and nothing else. Sonnet carries a temporary introductory rate
-/// (2.0/10.0 through 2026-08-31); the standard 3.0/15.0 is baked
-/// deliberately, because a promotional rate goes silently stale the day
-/// it lapses and an estimate that reads low is worse than one that reads
-/// slightly high. Anyone on the intro rate can say so in their config.
-/// Same knowledge-of-that-date caveat as the windows above: list prices
-/// change, and nothing here re-checks them.
+/// knowledge-of-record 2026-08-19. They feed the `/status` cost estimate
+/// and nothing else. Sonnet moved 3.0/15.0 -> 2.0/10.0 in T35: the
+/// pricing page now records the $2/$10 launch rate as the standard
+/// price and states that the increase to $3/$15 scheduled for
+/// 2026-09-01 will not occur, so the older pair is no longer a rate
+/// anyone gets charged. Same knowledge-of-that-date caveat as the
+/// windows above: list prices change, and nothing here re-checks them.
 const ANTHROPIC_PROFILES: [(&str, &str, u64, f64, f64); 4] = [
     ("fable", "claude-fable-5", 1_000_000, 10.0, 50.0),
     ("haiku", "claude-haiku-4-5", 200_000, 1.0, 5.0),
     ("opus", "claude-opus-5", 1_000_000, 5.0, 25.0),
-    ("sonnet", "claude-sonnet-5", 1_000_000, 3.0, 15.0),
+    ("sonnet", "claude-sonnet-5", 1_000_000, 2.0, 10.0),
 ];
 
 /// A baked price as JSON. serde_json is the authority for the number's
@@ -1369,7 +1368,7 @@ mod tests {
         let t = &TEMPLATES[1]; // anthropic
         let rendered =
             render_config(t, "sonnet", Some("/home/u/.secrets/temur-anthropic-key"), None, None);
-        let expect = "{\n  \"profiles\": {\n    \"fable\":  { \"provider\": \"anthropic\", \"model\": \"claude-fable-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 1000000,\n                \"price_input_per_mtok\": 10.0, \"price_output_per_mtok\": 50.0 },\n    \"haiku\":  { \"provider\": \"anthropic\", \"model\": \"claude-haiku-4-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 200000,\n                \"price_input_per_mtok\": 1.0, \"price_output_per_mtok\": 5.0 },\n    \"opus\":   { \"provider\": \"anthropic\", \"model\": \"claude-opus-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 1000000,\n                \"price_input_per_mtok\": 5.0, \"price_output_per_mtok\": 25.0 },\n    \"sonnet\": { \"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 1000000,\n                \"price_input_per_mtok\": 3.0, \"price_output_per_mtok\": 15.0 }\n  },\n  \"profile\": \"sonnet\"\n}\n";
+        let expect = "{\n  \"profiles\": {\n    \"fable\":  { \"provider\": \"anthropic\", \"model\": \"claude-fable-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 1000000,\n                \"price_input_per_mtok\": 10.0, \"price_output_per_mtok\": 50.0 },\n    \"haiku\":  { \"provider\": \"anthropic\", \"model\": \"claude-haiku-4-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 200000,\n                \"price_input_per_mtok\": 1.0, \"price_output_per_mtok\": 5.0 },\n    \"opus\":   { \"provider\": \"anthropic\", \"model\": \"claude-opus-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 1000000,\n                \"price_input_per_mtok\": 5.0, \"price_output_per_mtok\": 25.0 },\n    \"sonnet\": { \"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\",\n                \"api_key_file\": \"/home/u/.secrets/temur-anthropic-key\",\n                \"context_window\": 1000000,\n                \"price_input_per_mtok\": 2.0, \"price_output_per_mtok\": 10.0 }\n  },\n  \"profile\": \"sonnet\"\n}\n";
         assert_eq!(rendered, expect);
     }
 
@@ -1410,11 +1409,11 @@ mod tests {
             "live 2026-08-04: haiku is the odd one out"
         );
         // T24, same reasoning: per-model USD-per-Mtok list rates,
-        // knowledge-of-record 2026-08-07, sonnet at the STANDARD rate and
-        // not its introductory one.
+        // knowledge-of-record 2026-08-19. Sonnet's 2.0/10.0 IS the
+        // standard rate as of T35, not an introductory one.
         assert_eq!(
             ANTHROPIC_PROFILES.map(|(_, _, _, pin, pout)| (pin, pout)),
-            [(10.0, 50.0), (1.0, 5.0), (5.0, 25.0), (3.0, 15.0)],
+            [(10.0, 50.0), (1.0, 5.0), (5.0, 25.0), (2.0, 10.0)],
             "fable / haiku / opus / sonnet"
         );
         let (active, resolved) = cfg.startup_selection(&profiles).expect("selection resolves");
@@ -1519,7 +1518,7 @@ mod tests {
         result.unwrap();
         let k = key.display();
         let expect = format!(
-            "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{\n    \"model\": \"qwen3-1.7b\",\n    \"context_window\": 8192\n  }},\n  \"profiles\": {{\n    \"fable\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-fable-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 1000000,\n      \"price_input_per_mtok\": 10.0,\n      \"price_output_per_mtok\": 50.0\n    }},\n    \"haiku\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-haiku-4-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 200000,\n      \"price_input_per_mtok\": 1.0,\n      \"price_output_per_mtok\": 5.0\n    }},\n    \"opus\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-opus-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 1000000,\n      \"price_input_per_mtok\": 5.0,\n      \"price_output_per_mtok\": 25.0\n    }},\n    \"sonnet\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-sonnet-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 1000000,\n      \"price_input_per_mtok\": 3.0,\n      \"price_output_per_mtok\": 15.0\n    }}\n  }}\n}}\n"
+            "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{\n    \"model\": \"qwen3-1.7b\",\n    \"context_window\": 8192\n  }},\n  \"profiles\": {{\n    \"fable\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-fable-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 1000000,\n      \"price_input_per_mtok\": 10.0,\n      \"price_output_per_mtok\": 50.0\n    }},\n    \"haiku\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-haiku-4-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 200000,\n      \"price_input_per_mtok\": 1.0,\n      \"price_output_per_mtok\": 5.0\n    }},\n    \"opus\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-opus-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 1000000,\n      \"price_input_per_mtok\": 5.0,\n      \"price_output_per_mtok\": 25.0\n    }},\n    \"sonnet\": {{\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-sonnet-5\",\n      \"api_key_file\": \"{k}\",\n      \"context_window\": 1000000,\n      \"price_input_per_mtok\": 2.0,\n      \"price_output_per_mtok\": 10.0\n    }}\n  }}\n}}\n"
         );
         assert_eq!(cfg, expect, "golden merge: only a profiles key appended");
         // The startup "profile" key was NOT invented: the base selection

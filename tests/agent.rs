@@ -2621,7 +2621,8 @@ fn status_shows_the_cost_estimate_when_keyed_priced_and_used() {
     let dir = tempfile::tempdir().unwrap();
     let mut session = session_with_usage(dir.path());
     let mut h = CmdHarness::new();
-    // Anthropic list rates for the sonnet tier, per million tokens.
+    // Illustrative list-style rates, per million tokens: the arithmetic
+    // is the subject here, not which tier they belong to.
     h.active_resolved.price_input_per_mtok = Some(3.0);
     h.active_resolved.price_output_per_mtok = Some(15.0);
     let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {

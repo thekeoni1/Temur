@@ -320,7 +320,7 @@ effective default model):
     "sonnet": { "provider": "anthropic", "model": "claude-sonnet-5",
                 "api_key_file": "/home/you/.secrets/temur-anthropic-key",
                 "context_window": 1000000,
-                "price_input_per_mtok": 3.0, "price_output_per_mtok": 15.0 }
+                "price_input_per_mtok": 2.0, "price_output_per_mtok": 10.0 }
   },
   "profile": "sonnet"
 }
@@ -337,12 +337,12 @@ existing profile, so re-run `temur init` into a scratch config (or edit
 the numbers by hand) if you want the current values.
 
 The baked prices are per model too, USD per million tokens at
-Anthropic's standard list rate, knowledge as of 2026-08-07. They feed
+Anthropic's standard list rate, knowledge as of 2026-08-19. They feed
 the `/status` cost estimate and nothing else; see "Cost estimate" below.
-Sonnet has a temporary introductory rate (2.0/10.0 through 2026-08-31)
-and the standard rate is baked deliberately, since a promotional number
-goes stale the day it lapses and an estimate that reads low is worse
-than one that reads a little high. Nothing re-checks list prices against
+Sonnet's 2.0/10.0 is the standard rate: it launched as an introductory
+rate through 2026-08-31, and Anthropic has since recorded it as the
+standard price and cancelled the increase to 3.0/15.0 that had been
+scheduled for 2026-09-01. Nothing re-checks list prices against
 the wire, so treat them the same way as the windows: edit them if they
 move, and only the anthropic template bakes any at all.
 
