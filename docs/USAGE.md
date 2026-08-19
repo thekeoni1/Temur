@@ -1111,6 +1111,26 @@ It never executes anything, it is capped like the other nudges, and it
 requires both a fence and an arguments key, so a `{"name": ...}`
 package.json fragment in a code block still says nothing.
 
+**A turn that promises work and then stops gets one nudge.** A model
+that ends its turn with "Please wait while I analyze it" and makes no
+tool call has stopped without starting: nothing runs between turns, so
+the promise never resolves and you wait on a model that is no longer
+doing anything.
+
+```
+  [!] the model promised work without calling a tool; asked it to act or answer
+```
+
+The check is narrow on purpose. It fires only when the turn made ZERO
+tool calls anywhere, and only when one of a few fixed phrases ("please
+wait", "one moment", "I will now", and a handful more) lands in the
+LAST part of the message. That last-part rule is what separates "I will
+now summarize:" followed by an actual summary, which is a finished
+answer, from the same words as the final thing written, which is a
+turn that stalled. A genuine answer that happens to end on one of those
+phrases costs one extra request and nothing more, since the nudge is
+capped like every other one.
+
 **An empty `workdir` means "not specified".** A model that filled
 bash's optional `workdir` in with `""` used to get `failed to spawn
 shell: No such file or directory (os error 2)`, and then parroted that

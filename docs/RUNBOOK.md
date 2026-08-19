@@ -5089,7 +5089,7 @@ P0 and P2 produced no commits by design.
 - The pre-existing `dead_code` warning at
   `src/tools/edit/matchers.rs:122` is untouched.
 
-## v0.21.0 acceptance - recorded result (stage 1 only, NOT released)
+## v0.21.0 acceptance - recorded result (recorded at stage 1, before its release)
 
 What shipped: T32 alone, eval harness round two plus a full matrix
 refresh. The T32 acceptance record above carries the per-phase detail,
@@ -5344,7 +5344,7 @@ P3 produced no commit by design.
   on how much it buys, not on whether the gap was real, and the
   no-corruption rule means the cost to every other model is zero.
 
-## v0.22.0 acceptance - recorded result (stage 1 only, NOT released)
+## v0.22.0 acceptance - recorded result (recorded at stage 1, before its release)
 
 What shipped: T33 alone, tolerant scalar coercion plus the eval
 harness's per-task bound. The T33 acceptance record above carries the
@@ -5559,7 +5559,7 @@ bound comes from one data point with headroom.
   each, from the archive. They are captioned as not comparable to the
   matrix, and no attempt was made to strengthen them.
 
-## v0.23.0 acceptance - recorded result (stage 1 only, NOT released)
+## v0.23.0 acceptance - recorded result (recorded at stage 1, before its release)
 
 What shipped: T34 alone, template interop. The T34 acceptance record
 above carries the per-phase detail, the HTTP 400 chain, the live smoke
@@ -5706,3 +5706,159 @@ Stage 2:
   the published i686 entry in the downloaded SHA256SUMS, and is
   `cmp`-identical to both the downloaded asset and the staged one. It
   previously held the v0.22.0 i686 artifact, 2de2c566.
+
+## T35 acceptance - recorded result (recorded at stage 1, before its release)
+
+2026-08-19. Small-items bundle, four items, four commits on 6ed4327,
+version stays 0.23.0 throughout and rides Unreleased. Ships later as
+v0.24.0.
+
+### Conditions
+
+Offline except two KEYLESS PUBLIC fetches, both reads of public web
+pages and neither an API call: Anthropic's pricing page (P1 evidence)
+and models.dev/api.json (P2 acceptance). `ANTHROPIC_API_KEY` absent
+from the environment, verified before the first edit and unset
+throughout. Full `scripts/check.sh` after every phase, foreground under
+a pty, teed and kept in `~/temur-eval-archive/t35-gate-logs/`. All four
+gates green FIRST TRY, 48/48 suites and 0 failures each, with no
+pty-smoke flake at any point.
+
+### P1: the sonnet price was stale, and the direction matters
+
+Evidence, read directly off Anthropic's pricing page rather than from
+memory: Claude Sonnet 5 is $2/$10 per MTok, and the page carries an
+explicit note that the $2/$10 launch pricing, announced as
+introductory through 2026-08-31, "is now the standard price" and that
+"the previously scheduled increase to $3/$15 per million input/output
+tokens on September 1, 2026 will not occur."
+
+T24's 3.0/15.0 was CORRECT when recorded (2026-08-07). The T24 doc
+comment argued the standard rate should be baked over the promotional
+one precisely because a promotional rate goes silently stale the day it
+lapses. The reasoning held; the world changed under it. The promotional
+rate became the standard one, so the conservative choice inverted: the
+baked pair now overstates every sonnet estimate by half, and an
+estimate that reads high is the failure T24 was willing to accept in
+the other direction only.
+
+Worth recording as a process note: the bundled model-reference skill
+consulted at the start of this phase still carried the OLD state in its
+cached table ($3.00 with a $2.00 intro). It was not treated as the
+authority; the pricing page was fetched and read. A cache that is
+stale in the same direction as the defect is exactly the thing that
+makes this class of drift survive.
+
+Moved in lockstep with the tuple: the wizard golden, the `--add`
+golden, the T24 per-model price assertion and its comment, the
+tests/cli.rs template golden, and the docs/USAGE.md recipe and prose.
+The T24 not-all-equal pin still holds (inputs 10/1/5/2, outputs
+50/5/25/10 all distinct). Fable 10/50, haiku 1/5, opus 5/25, all four
+context windows, and the 0.1x/1.25x cache multipliers were re-checked
+against the same page and are unchanged, so only sonnet moved.
+
+One site the plan did not enumerate: `tests/agent.rs` labelled its
+3.0/15.0 fixtures "Anthropic list rates for the sonnet tier". The
+values there are arbitrary (the test exercises the arithmetic, not the
+tier), so the COMMENT was corrected and the numbers left alone, which
+keeps the asserted dollar strings byte-identical. `src/cost.rs` and
+`src/config.rs` use 3.0/15.0 as generic fixtures without claiming a
+tier and were left untouched; `tests/cli.rs:1017` is the half-pair
+error fixture the plan called out and is unchanged.
+
+### P2: the drift check, and why it is report-only
+
+Nothing in the repo would have caught P1. `scripts/metadata_drift.sh`
+is the check that would have: it reads the baked windows and prices out
+of the ANTHROPIC_PROFILES const in `src/init.rs` at run time, compares
+them to models.dev, and prints one PASS, DRIFT or MISSING line per
+model.
+
+Two design commitments are worth recording. First, the script keeps NO
+copy of the baked table: a second copy is one more thing that goes
+stale, which is the exact defect being checked for, so it parses the
+const instead and treats a parse miss as a LOUD failure rather than a
+silent pass. A script that reports a clean run while checking nothing
+is worse than no script. Second, it is report-only and deliberately NOT
+wired into `check.sh` or `release.sh`: a gate that reaches the network
+fails for reasons unrelated to what it gates, and models.dev is
+community data, a cross-check rather than an oracle. A DRIFT does not
+block a ship; it gets a recorded decision. The RUNBOOK publish
+preflight above gained one line to that effect.
+
+Live transcript, run after P1 landed:
+
+```
+== metadata drift: baked (scripts/../src/init.rs) vs https://models.dev/api.json ==
+PASS: fable (claude-fable-5): context 1000000, input $10/MTok, output $50/MTok
+PASS: haiku (claude-haiku-4-5): context 200000, input $1/MTok, output $5/MTok
+PASS: opus (claude-opus-5): context 1000000, input $5/MTok, output $25/MTok
+PASS: sonnet (claude-sonnet-5): context 1000000, input $2/MTok, output $10/MTok
+
+all 4 baked profiles match models.dev
+```
+
+models.dev independently agrees with the corrected sonnet 2/10, a third
+confirmation alongside the pricing page and the cancelled-increase note.
+
+Seven arms exercised and archived: the live run above (exit 0); a true
+FETCH-FAIL against an unresolvable host (exit 3); PARSE-FAIL with the
+const renamed and again with one tier dropped so the declared length
+disagrees with the rows parsed (exit 1 each); the missing-file guard
+(exit 2); a DRIFT arm fed the pre-P1 values, which reports "context
+baked 900000 vs models.dev 1000000; input baked 3 vs models.dev 2;
+output baked 15 vs models.dev 10", so the script demonstrably catches
+the exact defect that motivated it; and a MISSING arm on an id absent
+from the feed.
+
+DEVIATION: the planned bad-URL probe does not exercise FETCH-FAIL.
+models.dev answers unknown paths with HTTP 200 and a non-JSON body, so
+`curl -f` stays quiet and the run lands in PARSE-FAIL instead. Still
+loud, still nonzero, and arguably the more useful arm to have proven,
+but it is not the arm the plan named, so FETCH-FAIL was exercised with
+an unresolvable host instead.
+
+### P3: the promise-then-stop nudge
+
+Dequeues the D2 entry from the T31 queue. The queue entry deferred this
+for a stated reason: detection is fuzzy by nature, and it wanted
+false-positive design before any code, specifically what distinguishes
+an announcement from a summary and what a wrong nudge costs.
+
+The answer this milestone gives is POSITION. Only the last 150
+characters of the message are read, so "I will now summarize:" followed
+by the actual summary does not fire while the same phrase as the final
+thing written does. That is ANDed with a whole-turn condition, zero
+tool calls dispatched anywhere in the turn, which is the condition that
+carries most of the weight: a turn that did real work and then wrote a
+closing "please wait" is not a turn that stopped without starting.
+Prose-call recovery counts as a dispatch, since a tool that ran because
+recovery executed it still ran.
+
+The cost of a wrong nudge is bounded at exactly one extra request,
+because the nudge counts against NUDGE_LIMIT. The failure it prevents
+is unbounded: the 2026-08-14 dogfood turn promised analysis, made no
+call, and nothing runs between turns, so the operator waited on a model
+that had already stopped. That asymmetry is the whole argument, and the
+honest false-positive note is in the doc comment rather than only here.
+
+The window is counted in CHARACTERS, not bytes, and there is a test
+pinning that, because a byte slice of a multibyte tail would panic
+rather than misjudge.
+
+### P4: the stale headings
+
+Three acceptance headings read "(stage 1 only, NOT released)": v0.21.0,
+v0.22.0 and v0.23.0. Each of those versions shipped at its own stage 2,
+so all three headings asserted a state that stopped being true, and a
+reader scanning headings would conclude three releases are still
+pending. Reworded to "(recorded at stage 1, before its release)", which
+stays true permanently and still says what the record is. The records
+under them are UNTOUCHED: only the headings moved, and this heading
+uses the new wording for the same reason.
+
+### End state
+
+Four commits ahead of 6ed4327, tree clean, version 0.23.0. Nothing
+pushed, no tag, no release. Em-dash differential 0/0 on every changed
+file and every commit message.

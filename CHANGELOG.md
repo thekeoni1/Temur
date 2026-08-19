@@ -4,6 +4,41 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **The baked Claude Sonnet 5 list price is corrected to $2/$10 per
+  million tokens.** temur baked $3/$15, which was right when it was
+  recorded (2026-08-07): the $2/$10 launch pricing was introductory
+  through 2026-08-31 and an increase to $3/$15 was scheduled for
+  2026-09-01, so the higher pair was the standard rate to estimate at.
+  Anthropic has since recorded $2/$10 as the standard price and
+  cancelled that increase, so the baked pair was overstating every
+  sonnet cost estimate by half. The other three tiers, all four context
+  windows, and the cache multipliers were re-checked against the same
+  page and are unchanged.
+
+- **`scripts/metadata_drift.sh` cross-checks the baked model metadata
+  against models.dev.** Report-only and not part of any gate: it reads
+  the baked windows and prices out of `src/init.rs`, compares them to
+  the community feed, and prints one PASS, DRIFT or MISSING line per
+  model. models.dev is a cross-check rather than an oracle, so a drift
+  is a prompt for a human to go read Anthropic's pricing page and
+  decide, and the RUNBOOK ship procedure records the outcome either
+  way. It exists because nothing in the repo would otherwise have
+  noticed the stale sonnet price above.
+
+- **A turn that promises work and then makes no tool call gets one
+  nudge.** A model ending its turn with "Please wait while I analyze
+  it" and zero tool calls has stopped without starting, and nothing
+  runs between turns, so the promise never resolves. temur now says so
+  and asks it to call the tool or give the final answer. Narrow by
+  construction: zero tool calls anywhere in the turn, plus one of seven
+  fixed phrases in the message TAIL, so "I will now summarize:"
+  followed by a summary does not fire. Capped like every other nudge.
+
+- Three RUNBOOK acceptance headings that read "(stage 1 only, NOT
+  released)" now read "(recorded at stage 1, before its release)": each
+  of those versions has long since shipped, so the headings asserted a
+  state that stopped being true. The records under them are untouched.
+
 ## v0.23.0 - 2026-08-18
 
 - **The `skill` tool's `section` argument is declared as a string
