@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.25.0 - 2026-08-23
+
 - **A rotating repertoire of tool calls no longer runs unbounded.**
   temur's three loop guards are each narrow by construction: the
   doom-loop guard needs three identical calls IN A ROW, the
