@@ -6253,3 +6253,96 @@ Stage 1:
   served model. Every number in that record is an archive replay plus
   loop-level MockProvider tests, and the thresholds 6 and 18 remain a
   judgement made against one archived run.
+
+Stage 2:
+
+- Prep pushed dcc045f..3ec0d2c; ci run 32663560022 on headSha 3ec0d2c
+  green in both jobs on attempt 1 (test 2m04s 20:09:53Z..20:11:57Z,
+  release-gate 7m16s 20:09:52Z..20:17:08Z).
+- Publish preflight, `scripts/metadata_drift.sh`, second real outing.
+  Output verbatim:
+
+  ```
+  == metadata drift: baked (scripts/../src/init.rs) vs https://models.dev/api.json ==
+  PASS: fable (claude-fable-5): context 1000000, input $10/MTok, output $50/MTok
+  PASS: haiku (claude-haiku-4-5): context 200000, input $1/MTok, output $5/MTok
+  PASS: opus (claude-opus-5): context 1000000, input $5/MTok, output $25/MTok
+  PASS: sonnet (claude-sonnet-5): context 1000000, input $2/MTok, output $10/MTok
+
+  all 4 baked profiles match models.dev
+  ```
+
+  Exit 0, four PASS, no DRIFT and no MISSING. The corrected sonnet
+  2.0/10.0 from T35 P1 is re-confirmed against the feed a second time,
+  six days after the correction and one day after its first check. No
+  decision was needed and the tag was not blocked.
+- Tag v0.25.0 created AT 3ec0d2c, the close-out head. Tag object
+  296802906dbc3d3e450e031f32e56b5bd21695ec, `^{}` resolving to
+  3ec0d2c. Message verified from the RAW tag object with `od` BEFORE
+  the push, not from `git tag -l` or any porcelain: the message bytes
+  are exactly
+
+  ```
+  74 65 6d 75 72 20 76 30 2e 32 35 2e 30 20 2d 20
+  66 75 74 69 6c 65 2d 63 61 6c 6c 20 6c 6f 6f 70
+  20 67 75 61 72 64 20 28 54 33 36 29 0a
+  ```
+
+  which is "temur v0.25.0 - futile-call loop guard (T36)" followed by a
+  single 0a and nothing else: 45 message bytes, one line, the
+  separator is 2d (ASCII hyphen-minus, not an en or em dash), and the
+  whole 198-byte object contains zero bytes >= 0x80. After the push the
+  remote ref matches the local object, and the remote `^{}` peels to
+  3ec0d2c. DO NOT RETAG.
+- `scripts/release.sh` run with NO SKIP_CHECK, green first try, exit 0,
+  wall clock 2m01s. The embedded `scripts/check.sh` gate demonstrably
+  ran in full inside it: 48 "test result:" lines all ok over 1667
+  passing assertions with zero failed and zero ignored, all three TUI
+  pty smokes OK (host, gnu, musl) inside the bound with the hang
+  signature never appearing, bare busybox printing "temur 0.25.0".
+  Leak grep clean, install.sh/README skew gate OK at 0.25.0, 4/4
+  targets gated and staged. Log archived as
+  `~/temur-eval-archive/t36-gate-logs/v0250-release-2026-08-23.log`.
+- The fast release run is the same residual disclosed at v0.24.0 and it
+  has the same cause, checked rather than assumed. The staged i686-musl
+  binary was built at 16:00:37, during the stage-1 gate, while the
+  three cross targets were compiled fresh at 16:19:50 to 16:20:00. The
+  close-out commit changed only `docs/RUNBOOK.md`, so every Rust input
+  was byte-identical and cargo correctly reused the i686 artifact. That
+  is cache reuse on an unchanged tree, not a skipped gate: SKIP_CHECK
+  was never set and the gate tally above is the full one.
+- Staged sha256s:
+  de47f435 aarch64, f9e06db1 armv7, a2dee2b2 i686, 83bc69cf x86_64,
+  cefcfeb9 SHA256SUMS.
+- Private release created with 5 assets, not draft, not prerelease.
+  Repo isPrivate confirmed true BEFORE creating it and again AFTER.
+- Closing gate: the x86_64 asset and SHA256SUMS were re-downloaded
+  fresh from the release and both are `cmp`-identical to staged; the
+  downloaded x86_64 re-hashes to 83bc69cf..., and `sha256sum -c` on the
+  downloaded SHA256SUMS is OK. A second, FULL download of all five
+  assets is also `cmp`-identical to staged, all five, and
+  `sha256sum -c` over it passes 4/4. Installer matrix 6/6 twice, once
+  against the staged dir and once against that full download (pass +
+  corrupt + unlisted, on the GNU host and in the busybox container),
+  16 assertions each time with zero failures: every refusal path exited
+  1, printed its own message ("CHECKSUM VERIFICATION FAILED", "not
+  listed in SHA256SUMS") and left nothing installed.
+- Matrix mechanics worth recording, since they are not obvious from the
+  earlier records: the host cases point `TEMUR_BASE_URL` at a `file://`
+  mirror, but busybox's `wget` rejects `file://` outright ("not an http
+  or ftp url"), so the container cases are served the same three
+  mirrors over loopback HTTP instead. The mirrors are what differ per
+  case, never the installer.
+- Local ~/.local/bin/temur refreshed from the freshly DOWNLOADED i686
+  asset rather than from the staged copy, so the chain runs published
+  to installed: it prints "temur 0.25.0", hashes a2dee2b2... which is
+  the published i686 entry in the downloaded SHA256SUMS, and is
+  `cmp`-identical to both the downloaded asset and the staged one. It
+  previously held the v0.24.0 i686 artifact, a1dfbe2a.
+- Both stage runs this cycle were run_attempt 1, as was the T36 P2
+  push, so v0.25.0 is the second consecutive zero-rerun cycle since the
+  streak restarted at v0.24.0.
+- Residual, unchanged and still open: the T36 guard has never fired
+  against a live served model. Shipping does not close that, and the
+  next honest step remains a llama.cpp re-run of the archived eval task
+  to watch the notice land at call 13 for real.
