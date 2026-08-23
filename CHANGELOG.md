@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.24.0 - 2026-08-23
+
 - **The baked Claude Sonnet 5 list price is corrected to $2/$10 per
   million tokens.** temur baked $3/$15, which was right when it was
   recorded (2026-08-07): the $2/$10 launch pricing was introductory
