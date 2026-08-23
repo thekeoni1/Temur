@@ -5951,3 +5951,81 @@ Stage 1:
   models.dev at stage-2 time and the point of it is that the answer can
   change. A DRIFT does not block the tag; it gets a recorded decision.
   "not run (offline)" stays a legitimate outcome.
+
+Stage 2:
+
+- Prep pushed 40807ff..b637cf9; ci run 32658383717 on headSha b637cf9
+  green in both jobs on attempt 1 (test 2m09s 18:32:56Z..18:35:05Z,
+  release-gate 7m25s 18:32:56Z..18:40:21Z). Both stage runs this cycle
+  were run_attempt 1, so v0.24.0 is the first zero-rerun cycle since
+  the streak ended at eleven on the v0.23.0 apt-get hang. The count
+  restarts honestly at one.
+- Publish preflight, first real outing of `scripts/metadata_drift.sh`
+  since T35 P2 added it. Run by hand at the tagged tree, exit 0,
+  output verbatim:
+
+```
+== metadata drift: baked (scripts/../src/init.rs) vs https://models.dev/api.json ==
+PASS: fable (claude-fable-5): context 1000000, input $10/MTok, output $50/MTok
+PASS: haiku (claude-haiku-4-5): context 200000, input $1/MTok, output $5/MTok
+PASS: opus (claude-opus-5): context 1000000, input $5/MTok, output $25/MTok
+PASS: sonnet (claude-sonnet-5): context 1000000, input $2/MTok, output $10/MTok
+
+all 4 baked profiles match models.dev
+```
+
+  Four PASS lines, no DRIFT, so there was no decision to record beyond
+  the run itself, and the corrected sonnet 2/10 from P1 is confirmed
+  against models.dev a second time, six days after the P1 transcript.
+  Kept in the archive as
+  `v0240-stage2-metadata-drift-2026-08-23.log`. The check reaches the
+  network by design and "not run (offline)" would have been a
+  legitimate outcome; it did not come up.
+- Annotated tag v0.24.0 AT b637cf9, the close-out head, tag object
+  c7b02fac3b85dff531aa487c3848206432088b16. The message was verified
+  against the RAW object before the tag was pushed, not through
+  `git tag -l --format` (which appends its own newline): the object was
+  split on its first blank line and the remaining bytes dumped with
+  `od -c`. They are exactly "temur v0.24.0 - small items bundle (T35)"
+  followed by one \n: 41 bytes, one line, the separator an ASCII
+  hyphen-minus (0x2d) and not an en or em dash, a single trailing 0x0a
+  and no other newline, and zero bytes at or above 0x80 anywhere in the
+  194-byte object. The remote ref resolves to the same object hash and
+  `^{}` to b637cf9. The v0.22.0 and v0.23.0 tag objects were re-checked
+  on the remote and are unchanged at d08b8ddf and 358333de.
+- scripts/release.sh with NO SKIP_CHECK: green first try, exit 0, 4/4
+  artifacts gated and staged, leak grep clean over files and history,
+  install.sh/README skew gate clean at 0.24.0, full check.sh inside it
+  reporting ALL CHECKS PASSED over 48 "test result:" lines and 1652
+  passing assertions with zero failures, all three TUI pty smokes OK
+  (the 180s bound was never approached and the hang signature never
+  appeared), bare busybox container printing "temur 0.24.0". Log kept
+  in the archive as `v0240-release-2026-08-23.log`.
+- Recorded because the number looks wrong: that release.sh run took
+  2m08s wall, shorter than the 3m14s the stage-1 check.sh took by
+  itself. It is cache reuse, not a skipped gate. The stage-1 gate had
+  already compiled both i686 artifacts from an identical source tree
+  (cc8f16d and b637cf9 differ only in docs/RUNBOOK.md, which is not a
+  compilation input), so cargo correctly rebuilt nothing for them: the
+  staged i686-musl binary is the one built at 14:00:27, while the three
+  cross targets were compiled fresh at 14:43:39 to 14:43:49. Every gate
+  still ran and the log carries the full tally, identical to stage 1's.
+- Staged sha256s:
+  81f74c05 aarch64, 96d960f4 armv7, a1dfbe2a i686, d8350d63 x86_64,
+  a88507ab SHA256SUMS.
+- Private release created with 5 assets, not draft, not prerelease.
+  Repo isPrivate confirmed true BEFORE creating it and again AFTER.
+- Closing gate: the x86_64 asset and SHA256SUMS were re-downloaded
+  fresh from the release and both are `cmp`-identical to staged; the
+  downloaded x86_64 re-hashes to d8350d63..., and `sha256sum -c` on the
+  downloaded SHA256SUMS is OK. A second, FULL download of all five
+  assets is also `cmp`-identical to staged, all five, and
+  `sha256sum -c` over it passes 4/4. Installer matrix 6/6 twice, once
+  against the staged dir and once against that full download (pass +
+  corrupt + unlisted, on the GNU host and in the busybox container).
+- Local ~/.local/bin/temur refreshed from the freshly DOWNLOADED i686
+  asset rather than from the staged copy, so the chain runs published
+  to installed: it prints "temur 0.24.0", hashes a1dfbe2a... which is
+  the published i686 entry in the downloaded SHA256SUMS, and is
+  `cmp`-identical to both the downloaded asset and the staged one. It
+  previously held the v0.23.0 i686 artifact, d67c7aa4.
