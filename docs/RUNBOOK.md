@@ -6169,3 +6169,87 @@ stop. Both the doc comment and USAGE.md say so in those terms.
   chosen against one archived run. If a legitimate workload ever trips
   the notice, that is the datum that should move them, and it should be
   recorded here rather than tuned quietly.
+
+## v0.25.0 acceptance - recorded result (recorded at stage 1, before its release)
+
+What shipped: T36 alone, the futile-call loop guard. The T36 acceptance
+record above carries the per-phase detail, the archive replay
+arithmetic and the residuals. This delta records the release mechanics
+rather than restating the milestone.
+
+Stage 1:
+
+- Two T36 commits pushed a898cc7..dcc045f (P1 the guard and its
+  loop-level tests, P2 the CHANGELOG, USAGE, ROADMAP dequeue and the
+  T36 acceptance record). On-push ci run 32662692190 on headSha dcc045f
+  green in both jobs, first try, both jobs run_attempt 1 (test 1m30s
+  19:53:49Z..19:55:19Z, release-gate 4m29s 19:53:48Z..19:58:17Z).
+- Both jobs again carry the GitHub-side annotation that actions/cache@v4
+  and actions/checkout@v4 (and actions/upload-artifact@v4 on the
+  release-gate job) target the deprecated Node.js 20 and are being
+  forced onto Node.js 24. Same runner deprecation notice recorded for
+  v0.24.0, not a temur failure and not new; both jobs concluded
+  success.
+- Three local prep commits: 56601f0 bump (the mechanical four-file
+  edit through scripts/bump_version.sh, Cargo.toml, the temur entry in
+  Cargo.lock with `untrusted` still at its own 0.9.0, the
+  scripts/install.sh VERSION line, and the five README tag pins),
+  cd190dd CHANGELOG cut to "## v0.25.0 - 2026-08-23" with a fresh empty
+  Unreleased above it and no entry text touched (two lines added, none
+  removed), and this close-out.
+- The lock-file version collision recorded last cycle did NOT recur,
+  and the reason is worth stating so the next sweep reads it correctly.
+  A repo-wide grep for the RETIRED version, 0.24.0, across the four
+  bumped files is zero: no third-party crate in the lock happens to sit
+  at that version. `darling`, `darling_core` and `darling_macro` still
+  carry their own `version = "0.23.0"` lines, which were the collision
+  last cycle and are now simply two releases behind the temur version
+  and unrelated to it. The temur lock entry is 0.25.0 and the whole
+  lock diff is one line.
+- Full `scripts/check.sh` on the prep head: ALL CHECKS PASSED, exit 0,
+  all 48 "test result:" lines ok over 1667 passing assertions with zero
+  failed and zero ignored, all three TUI pty smokes OK (host, gnu,
+  musl) with the hang signature never appearing, and the bare busybox
+  container printing "temur 0.25.0". Run wall clock 2m50s.
+- The assertion count moved 1652 to 1667 against v0.24.0, and the
+  arithmetic is exact rather than approximately right: T36 P1 added
+  five tests to tests/weak_model.rs, and that suite is run three times
+  per gate (host, container gnu-debug, container musl-release), so
+  5 x 3 = 15 is the whole delta. Nothing else changed count.
+- Log archived beside the T36 phase gate logs as
+  `~/temur-eval-archive/t36-gate-logs/v0250-stage1-check-2026-08-23.log`,
+  taken with `script` writing the typescript directly, so it keeps the
+  "Script started" and "Script done ... COMMAND_EXIT_CODE=0" footer and
+  the ANSI colour bytes that the piped phase logs in that directory do
+  not have.
+- Cross-checked against the T36 P2 phase gate on the same Rust tree:
+  normalizing away CR bytes, ANSI escapes, the version string, the
+  test-binary hashes, the per-suite timings and the typescript footer,
+  the two logs differ by exactly one trailing blank line and nothing
+  else. That is the expected result for a version-string-only delta.
+- As in previous cycles the gate ran on the CHANGELOG head, cd190dd,
+  rather than on this close-out commit. `scripts/check.sh` reads no
+  file under `docs/`, so this RUNBOOK-only delta changes no gate input
+  and re-running it against an otherwise identical tree would measure
+  the same thing twice. A commit can never contain the result of a gate
+  run on itself; the CHANGELOG head is the last commit that can change
+  one.
+- Em-dash differential across the three prep commits: 0 added lines,
+  0 in any of the three messages.
+- No tag and no release in this stage. Version 0.24.0 is now 0.25.0 in
+  the tree only.
+- Stage 2 is explicitly NOT YET RUN. Nothing is pushed beyond dcc045f,
+  no v0.25.0 tag exists, and no release has been created. The decided
+  tag message for stage 2 is exactly one line,
+  "temur v0.25.0 - futile-call loop guard (T36)".
+- Stage 2 runs `scripts/metadata_drift.sh` as the publish preflight for
+  the second time. Its first outing at v0.24.0 printed four PASS lines;
+  the check reaches models.dev at stage-2 time and the point of it is
+  that the answer can change, so a DRIFT does not block the tag, it
+  gets a recorded decision, and "not run (offline)" stays a legitimate
+  outcome.
+- Carried forward unchanged from the T36 record, because stage 1 did
+  nothing to close it: the guard has still never fired against a live
+  served model. Every number in that record is an archive replay plus
+  loop-level MockProvider tests, and the thresholds 6 and 18 remain a
+  judgement made against one archived run.
