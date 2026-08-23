@@ -5862,3 +5862,92 @@ uses the new wording for the same reason.
 Four commits ahead of 6ed4327, tree clean, version 0.23.0. Nothing
 pushed, no tag, no release. Em-dash differential 0/0 on every changed
 file and every commit message.
+
+## v0.24.0 acceptance - recorded result (recorded at stage 1, before its release)
+
+What shipped: T35 alone, the small-items bundle. The T35 acceptance
+record above carries the per-phase detail: the corrected sonnet list
+price, `scripts/metadata_drift.sh` and its seven exercised arms, the
+promise-then-stop nudge, and the docs sweep. This delta records the
+release mechanics rather than restating the milestone.
+
+Step 0, archive completion, no repo change:
+
+- The T35 record states that seven drift-check arms were exercised and
+  archived, but `t35-gate-logs/` held six. The missing-file guard, the
+  arm where `TEMUR_INIT_RS` points at a path that does not exist, had
+  no log. It was re-run at stage 1 and its output archived as
+  `p2-drift-missingfile.log`, so the archive now matches the record at
+  seven arms. The guard fired as recorded, exit 2, printing the path
+  and the pointer to set `TEMUR_INIT_RS` at the file holding
+  `ANTHROPIC_PROFILES`. The arm reaches no network: the guard runs
+  before the models.dev fetch, so the re-run is not a second live
+  outing and says nothing new about the feed. Nothing in the repo
+  changed; only the evaluation archive gained a file.
+
+Stage 1:
+
+- Four T35 commits pushed 612dfd1..40807ff (P1 the baked sonnet list
+  price corrected to 2.0/10.0, P2 `scripts/metadata_drift.sh` as a
+  report-only models.dev cross-check, P3 the nudge for a turn that
+  promises work and then stops, P4 the docs, the ROADMAP row, the D2
+  dequeue and the stale-headings sweep). On-push ci run 32656049907 on
+  headSha 40807ff green in both jobs, first try (test 2m29s
+  17:49:07Z..17:51:36Z, release-gate 7m47s 17:49:08Z..17:56:55Z).
+- Both jobs carry a GitHub-side annotation that actions/cache@v4 and
+  actions/checkout@v4 target the deprecated Node.js 20 and are being
+  forced onto Node.js 24. It is a runner deprecation notice, not a
+  temur failure and not new to this cycle, and both jobs concluded
+  success. Recorded so a later forced upgrade is not mistaken for a
+  regression introduced here.
+- Three local prep commits: c3f540b bump (the mechanical four-file
+  edit, Cargo.toml, the temur entry in Cargo.lock with `untrusted`
+  still 0.9.0, the scripts/install.sh VERSION line, and the five README
+  tag pins), cc8f16d CHANGELOG cut to "## v0.24.0 - 2026-08-23" with a
+  fresh empty Unreleased above it and no entry text touched (two lines
+  added, none removed), and this close-out.
+- One wrinkle in the bump worth recording so the next sweep does not
+  re-raise it: a repo-wide grep for 0.23.0 across the four bumped files
+  is not zero. Cargo.lock still carries three `version = "0.23.0"`
+  lines for `darling`, `darling_core` and `darling_macro`, which are
+  those crates' own versions and a coincidental collision with the
+  temur version being retired. The temur entry itself is 0.24.0 and the
+  whole lock diff is one line. Zero stray temur 0.23.0 remains.
+- Full `scripts/check.sh` on the prep head: ALL CHECKS PASSED, exit 0,
+  all 48 "test result:" lines ok over 1652 passing assertions with zero
+  failures, all three TUI pty smokes OK (host, gnu, musl) with the hang
+  signature never appearing, and the bare busybox container printing
+  "temur 0.24.0". Run wall clock 3m14s. The tallies are identical to
+  the T35 P4 phase gate on the same tree, which is the expected result
+  for a version-string-only delta: diffing the two logs with the
+  version string, the test-binary hashes and the per-suite timings
+  normalized away leaves no difference at all.
+- Log archived beside the T35 gate logs as
+  `v0240-stage1-check-2026-08-23.log`. Format note: this one was taken
+  with `script` writing the typescript directly, so it keeps the
+  "Script started" and "Script done ... COMMAND_EXIT_CODE=0" lines that
+  the earlier logs in that directory do not have. The exit code in the
+  footer is the gate's own, which is worth keeping; the earlier logs
+  record theirs only in this RUNBOOK.
+- As in previous cycles the gate ran on the CHANGELOG head, cc8f16d,
+  rather than on this close-out commit. `scripts/check.sh` reads no
+  file under `docs/`, so this RUNBOOK-only delta changes no gate input
+  and re-running it against an otherwise identical tree would measure
+  the same thing twice. A commit can never contain the result of a gate
+  run on itself; the CHANGELOG head is the last commit that can change
+  one.
+- Em-dash differential across the three prep commits: 0 added lines,
+  0 in any of the three messages.
+- No tag and no release in this stage. Version 0.23.0 is now 0.24.0 in
+  the tree only.
+- Stage 2 is explicitly NOT YET RUN. Nothing is pushed beyond 40807ff,
+  no v0.24.0 tag exists, and no release has been created. The decided
+  tag message for stage 2 is exactly one line,
+  "temur v0.24.0 - small items bundle (T35)".
+- Stage 2 runs the publish preflight added by T35 P2 for the first time
+  in anger: `scripts/metadata_drift.sh` by hand, with its outcome
+  recorded in the ship record. The expected result is four PASS lines,
+  matching the P1 live transcript above, but the check reaches
+  models.dev at stage-2 time and the point of it is that the answer can
+  change. A DRIFT does not block the tag; it gets a recorded decision.
+  "not run (offline)" stays a legitimate outcome.
