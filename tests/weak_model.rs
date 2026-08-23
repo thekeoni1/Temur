@@ -977,3 +977,221 @@ fn promise_nudges_are_capped_at_two() {
         .count();
     assert_eq!(n, 2, "{:?}", notices(&events));
 }
+
+// ---------------------------------------------------------------------------
+// T36: the futile-call guard. A rotating repertoire of tool calls passes the
+// doom-loop guard (no identical-consecutive pair), the alternating-pair guard
+// (no strict A,B,A,B,A,B) and ProseRepeatGuard (prose path only). What the
+// archived loop had that real work does not is calls returning byte-identical
+// results to calls already in context. Shapes below are the archived one
+// (~/temur-eval-archive/llama32-coercion-2026-08-16, task8.run1) and the
+// legitimate-work shapes the guard must leave alone.
+// ---------------------------------------------------------------------------
+
+/// One bash call per response, so dispatch number == request number.
+fn bash_call(cmd: &str) -> ResponseMessage {
+    msg(
+        vec![tool_use("tu_x", "bash", serde_json::json!({"command": cmd}))],
+        StopReason::ToolUse,
+    )
+}
+
+fn futile_notice(events: &[AgentEvent]) -> Option<String> {
+    notices(&events.to_vec())
+        .into_iter()
+        .find(|n| n.contains("repeated earlier calls with unchanged results"))
+}
+
+#[test]
+fn rotating_repertoire_notices_at_six_and_stops_at_eighteen() {
+    // The archived shape, minimised: three distinct calls cycling, each with
+    // an unchanging result. Dispatches 1-3 are first sightings; every one
+    // after is futile, so the count is dispatch-3. Notice at dispatch 9
+    // (count 6), stop at dispatch 21 (count 18). Exactly 21 responses are
+    // scripted: a 22nd request would panic the mock, pinning the stop
+    // structurally as well as by assertion.
+    let dir = tempfile::tempdir().unwrap();
+    let cycle = ["echo alpha", "echo beta", "echo gamma"];
+    let responses: Vec<ResponseMessage> = (0..21).map(|i| bash_call(cycle[i % 3])).collect();
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "keep going");
+
+    assert_eq!(requests.borrow().len(), 21);
+    // Neither existing guard is what fired.
+    assert!(!notices(&events).iter().any(|n| n.contains("alternated")));
+    assert!(!notices(&events)
+        .iter()
+        .any(|n| n.contains("repeated 3 times in a row")));
+
+    let notice = futile_notice(&events).expect("futile notice");
+    assert!(notice.starts_with("6 tool calls this turn"), "{notice}");
+    assert!(notices(&events).iter().any(|n| n
+        == "stopped: 18 tool calls this turn repeated earlier calls with unchanged results"));
+
+    // The notice fires exactly once, and rides the SAME user message as the
+    // results it is about: request 10 carries it as trailing text after the
+    // tool_result block for dispatch 9.
+    assert_eq!(
+        notices(&events)
+            .iter()
+            .filter(|n| n.contains("asked the model to use what it already has"))
+            .count(),
+        1
+    );
+    let reqs = requests.borrow();
+    let last = reqs[9].messages.last().unwrap();
+    assert!(matches!(&last.content[0], ContentBlock::ToolResult { .. }));
+    match &last.content[1] {
+        ContentBlock::Text { text } => {
+            assert!(text.starts_with("6 of the tool calls this turn re-ran a call"), "{text}");
+            assert!(text.contains("byte-identical results"));
+        }
+        other => panic!("expected trailing text block, got {other:?}"),
+    }
+    // Execution CONTINUED after the notice: dispatch 10 ran for real.
+    assert!(reqs.len() > 10);
+}
+
+#[test]
+fn changed_results_never_count_as_futile() {
+    // The same three fingerprints cycling, but every result differs (each
+    // command appends to its own counter file and prints the new count).
+    // Fingerprint-only counting would have tripped the notice long before
+    // dispatch 21; a progress discriminator must not.
+    let dir = tempfile::tempdir().unwrap();
+    let cycle = [
+        "echo x >> a.count; wc -l < a.count",
+        "echo x >> b.count; wc -l < b.count",
+        "echo x >> c.count; wc -l < c.count",
+    ];
+    let mut responses: Vec<ResponseMessage> = (0..21).map(|i| bash_call(cycle[i % 3])).collect();
+    responses.push(msg(vec![text("done")], StopReason::EndTurn));
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "count things");
+
+    assert_eq!(requests.borrow().len(), 22);
+    assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
+}
+
+#[test]
+fn reread_after_an_edit_never_counts_as_futile() {
+    // Edit-then-reread is the canonical legitimate repeat: the read
+    // fingerprint is byte-identical every time and the result is not,
+    // because the write in between changed the file. Twelve reads, so a
+    // fingerprint-only guard would have fired at the sixth.
+    let dir = tempfile::tempdir().unwrap();
+    let mut responses = vec![];
+    for i in 0..12 {
+        responses.push(msg(
+            vec![tool_use(
+                "tu_w",
+                "write",
+                serde_json::json!({"filePath": "notes.txt", "content": format!("revision {i}\n")}),
+            )],
+            StopReason::ToolUse,
+        ));
+        responses.push(msg(
+            vec![tool_use(
+                "tu_r",
+                "read",
+                serde_json::json!({"filePath": "notes.txt"}),
+            )],
+            StopReason::ToolUse,
+        ));
+    }
+    responses.push(msg(vec![text("done")], StopReason::EndTurn));
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "revise the file");
+
+    assert_eq!(requests.borrow().len(), 25);
+    assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
+}
+
+#[test]
+fn a_ten_file_edit_rotation_never_counts_as_futile() {
+    // The tension named in the ROADMAP entry: a model editing ten files
+    // really does rotate through the same few TOOLS. Distinct arguments mean
+    // distinct fingerprints, so nothing here is ever a repeat: twenty
+    // dispatches, no notice.
+    let dir = tempfile::tempdir().unwrap();
+    let mut responses = vec![];
+    for i in 0..10 {
+        responses.push(msg(
+            vec![tool_use(
+                "tu_w",
+                "write",
+                serde_json::json!({"filePath": format!("f{i}.txt"), "content": "header\n"}),
+            )],
+            StopReason::ToolUse,
+        ));
+        responses.push(msg(
+            vec![tool_use(
+                "tu_r",
+                "read",
+                serde_json::json!({"filePath": format!("f{i}.txt")}),
+            )],
+            StopReason::ToolUse,
+        ));
+    }
+    responses.push(msg(vec![text("all ten done")], StopReason::EndTurn));
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "edit ten files");
+
+    assert_eq!(requests.borrow().len(), 21);
+    assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
+}
+
+#[test]
+fn repeated_identical_failures_count_as_futile() {
+    // The archived loop's nineteen byte-identical range errors: an error
+    // result is what the model SEES, so an identical retry of a failing call
+    // is exactly as uninformative as an identical retry of a succeeding one.
+    //
+    // The rotation isolates that claim. Two `read` calls fail with the same
+    // error text every time; the third call succeeds with a DIFFERENT result
+    // every time and so never counts. Only the failures can reach the
+    // threshold, and they do it at dispatch 11 (each futile from its second
+    // sighting: dispatches 4, 5, 7, 8, 10, 11), not at dispatch 9.
+    let dir = tempfile::tempdir().unwrap();
+    let missing = |name: &str| {
+        msg(
+            vec![tool_use(
+                "tu_r",
+                "read",
+                serde_json::json!({"filePath": name}),
+            )],
+            StopReason::ToolUse,
+        )
+    };
+    let mut responses = vec![];
+    for i in 0..11 {
+        responses.push(match i % 3 {
+            0 => missing("missing-one.txt"),
+            1 => missing("missing-two.txt"),
+            _ => bash_call("echo x >> tick.count; wc -l < tick.count"),
+        });
+    }
+    responses.push(msg(vec![text("giving up")], StopReason::EndTurn));
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "try the impossible");
+
+    assert_eq!(requests.borrow().len(), 12);
+    // The reads really did come back as ERROR results, which is the whole
+    // point of hashing what the model sees rather than only successes.
+    assert!(events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolEnd { is_error: true, .. }))
+        .count()
+        >= 6);
+    // The consecutive-all-errored cap never gets near five: the succeeding
+    // call resets it every third batch.
+    assert!(!notices(&events).iter().any(|n| n.contains("consecutive batches")));
+    let notice = futile_notice(&events).expect("futile notice");
+    assert!(notice.starts_with("6 tool calls this turn"), "{notice}");
+    // Dispatch 11 is the sixth futile one, so the notice rides request 12.
+    let reqs = requests.borrow();
+    match &reqs[11].messages.last().unwrap().content[1] {
+        ContentBlock::Text { text } => assert!(text.contains("byte-identical results")),
+        other => panic!("expected trailing text block, got {other:?}"),
+    }
+}

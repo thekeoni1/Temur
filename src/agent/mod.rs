@@ -29,6 +29,48 @@ const EMPTY_RESPONSE_LIMIT: u32 = 3;
 /// Corrective nudges per turn for tool calls written as plain text.
 const NUDGE_LIMIT: u32 = 2;
 
+/// T36 futile-call guard: a dispatched call whose fingerprint AND result
+/// both repeat an earlier call from the SAME turn gained zero information.
+///
+/// The discriminator is lack of PROGRESS, not repetition. A model editing
+/// ten files legitimately rotates through the same few tools, so counting
+/// repetition alone would punish real work; what cannot be real work is
+/// re-running a call that already returned this exact result. temur is
+/// single-threaded: between two calls in one turn nothing the agent did
+/// can have changed the answer unless a call in between changed it, and
+/// then the result differs and this never counts.
+///
+/// The counter is GLOBAL to the turn, not consecutive: the archived loop
+/// rotated through six distinct calls, so any consecutive rule launders
+/// itself, and one timestamp-varying call in the rotation must not reset
+/// the count for the rest.
+///
+/// Evidence (`~/temur-eval-archive/llama32-coercion-2026-08-16`,
+/// `task8.run1`, captured 2026-08-16): 77 tool calls in one task with
+/// ZERO identical-consecutive pairs, cycling `read` offset `"0"` x19,
+/// `gunzip -c` x15, `read` offset `"1"` x14, `zcat` x9 plus `cat`,
+/// `gunzip` and `write`, ending at the context window on 440,983 input
+/// tokens. All three existing guards provably non-firing on that shape
+/// (verified 2026-08-17): no identical-consecutive pair for the doom-loop
+/// guard, no strict `A,B,A,B,A,B` six-window for the alternating-pair
+/// guard, and `ProseRepeatGuard` is the prose path only.
+///
+/// The honest false positive: a model deliberately POLLING an external
+/// condition (waiting on a file another process writes, a server coming
+/// up) whose answer has not changed yet. That is rare in this product
+/// (nothing runs between turns; only a tool the model itself called can
+/// change anything), and it is why the first response is a NOTICE that
+/// names the situation rather than a stop. The guard applies to
+/// structured `tool_use` dispatches; the prose path keeps its own
+/// `ProseRepeatGuard`.
+///
+/// The gap between the two thresholds is deliberate headroom: the notice
+/// needs a real chance to work before the hard stop, and a long
+/// legitimate turn with a few incidental re-reads must never come near
+/// 18.
+const FUTILE_NOTICE_THRESHOLD: u32 = 6;
+const FUTILE_STOP_THRESHOLD: u32 = 18;
+
 #[derive(thiserror::Error, Debug)]
 pub enum AgentError {
     #[error(transparent)]
@@ -642,6 +684,15 @@ impl Session {
         // recovered from prose? A turn that promised work is only suspect
         // when it never actually did any.
         let mut any_tool_dispatched = false;
+        // T36: per-turn futile-call state. The map is fingerprint ->
+        // hash of the result the model last saw for it; the counter is
+        // how many dispatches this turn returned a byte-identical result
+        // to one already in context. The counter NEVER resets within the
+        // turn (see FUTILE_NOTICE_THRESHOLD).
+        let mut futile_results: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+        let mut futile_count: u32 = 0;
+        let mut futile_notice_sent = false;
 
         loop {
             iterations += 1;
@@ -862,6 +913,11 @@ impl Session {
                             results.push(synth_interrupted(&id, &name, ui));
                             continue;
                         }
+                        // T36: the per-call fingerprint, in the same
+                        // `{name}:{input}` format the batch-joined doom-loop
+                        // fingerprint above uses. Taken before `input` moves
+                        // into execution.
+                        let futile_fingerprint = format!("{name}:{input}");
                         let (output, title, is_error) = match input_raw {
                             // T4 dispatch policy for arguments that failed to
                             // parse on the wire: execute only a LOSSLESS
@@ -903,6 +959,17 @@ impl Session {
                                 Err(e) => (e.to_string(), name.clone(), true),
                             },
                         };
+                        // T36: hash the result CONTENT the model sees:
+                        // the output for successes, the error text for
+                        // failures, so nineteen byte-identical range errors
+                        // count exactly like nineteen identical successes.
+                        let result_hash = hash_result(&output);
+                        match futile_results.get(&futile_fingerprint) {
+                            Some(prev) if *prev == result_hash => futile_count += 1,
+                            _ => {
+                                futile_results.insert(futile_fingerprint, result_hash);
+                            }
+                        }
                         ui(AgentEvent::ToolEnd {
                             name,
                             title,
@@ -936,6 +1003,29 @@ impl Session {
                     } else {
                         consecutive_failed_batches = 0;
                     }
+                    // T36: the futile-call notice rides the SAME user
+                    // message as the results it is about, appended AFTER
+                    // `all_errored` is decided so the failure cap above
+                    // still sees a batch of pure tool results. One notice
+                    // per turn; the stop below is what a model that
+                    // ignores it runs into.
+                    let futile_stop = futile_count >= FUTILE_STOP_THRESHOLD;
+                    if futile_count >= FUTILE_NOTICE_THRESHOLD && !futile_notice_sent && !futile_stop
+                    {
+                        futile_notice_sent = true;
+                        results.push(ContentBlock::Text {
+                            text: format!(
+                                "{futile_count} of the tool calls this turn re-ran a call \
+                                 already made in this same turn and returned byte-identical \
+                                 results. Nothing has changed, so those calls learned \
+                                 nothing. Their results are already above: use them, take a \
+                                 different action, or give the final answer."
+                            ),
+                        });
+                        ui(AgentEvent::Notice(format!(
+                            "{futile_count} tool calls this turn repeated earlier calls with unchanged results; asked the model to use what it already has"
+                        )));
+                    }
                     self.history.push(RequestMessage {
                         role: Role::User,
                         content: results,
@@ -943,6 +1033,12 @@ impl Session {
                     if consecutive_failed_batches >= CONSECUTIVE_TOOL_FAILURE_LIMIT {
                         ui(AgentEvent::Notice(format!(
                             "stopped: every tool call failed in {CONSECUTIVE_TOOL_FAILURE_LIMIT} consecutive batches"
+                        )));
+                        break;
+                    }
+                    if futile_stop {
+                        ui(AgentEvent::Notice(format!(
+                            "stopped: {futile_count} tool calls this turn repeated earlier calls with unchanged results"
                         )));
                         break;
                     }
@@ -1285,6 +1381,19 @@ impl Session {
             ui(AgentEvent::Notice(advisory));
         }
     }
+}
+
+/// T36: a 64-bit digest of the result text a tool call fed back, used
+/// only to compare a call's result against its own previous result inside
+/// one turn. `u64` explicitly rather than `usize`: pointers are 32 bits on
+/// the shipped target, and a 32-bit digest collides far too readily for a
+/// guard that stops turns. Never persisted, never compared across
+/// processes, so the hasher's unspecified stability is irrelevant.
+fn hash_result(output: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    output.hash(&mut h);
+    h.finish()
 }
 
 /// F10: the one builder for a synthesized interrupt answer — closes the
