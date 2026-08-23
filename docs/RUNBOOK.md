@@ -6029,3 +6029,143 @@ all 4 baked profiles match models.dev
   the published i686 entry in the downloaded SHA256SUMS, and is
   `cmp`-identical to both the downloaded asset and the staged one. It
   previously held the v0.23.0 i686 artifact, d67c7aa4.
+
+## T36 acceptance - recorded result (no release)
+
+The futile-call loop guard: one item, dequeued from the "Queued from
+T33" list in ROADMAP.md. Version stays 0.24.0; this ships as v0.25.0 in
+a later cycle. Two local commits, no push, no tag.
+
+### Conditions
+
+Offline throughout. `ANTHROPIC_API_KEY` absent from the environment,
+verified before the first edit and again at close; no call was made to
+any hosted API, and no model was served. Preconditions checked first:
+`main == origin/main == a898cc7` clean, version 0.24.0, `v0.24.0` still
+at `b637cf9` (tag object `c7b02fac`), no `v0.25*` tag. Full
+`scripts/check.sh` (both paths, foreground under a pty, logs teed and
+kept in `~/temur-eval-archive/t36-gate-logs/`) after each phase, green
+first try, with no pty-smoke flake.
+
+### Evidence, and why this was not theorised
+
+`~/temur-eval-archive/llama32-coercion-2026-08-16`, `task8.run1`,
+captured 2026-08-16 against Llama-3.2-3B. 77 tool calls in one turn,
+ending on temur's overflow-reworded truncation notice at 440,983 input
+tokens. The transcript is `task8.run1.txt`; the FULL call history, with
+arguments and result bodies, is in the session artifact at
+`task8.run1.artifacts/state/temur/sessions/work-1f92008dc8753ba3.json`,
+which is what the arithmetic below was computed from rather than from
+the summary lines.
+
+All three existing guards were verified non-firing on that shape on
+2026-08-17 and again here: zero identical-consecutive pairs (so the
+doom-loop guard never reached 3), no strict `A,B,A,B,A,B` anywhere in a
+six-deep window (the rotation is longer than two), and
+`ProseRepeatGuard` is the prose-recovery path, which this turn never
+entered.
+
+### The counted-vs-archived arithmetic
+
+Replaying the archived history through the guard as built:
+
+- 77 dispatched calls carrying just 9 distinct fingerprints:
+  `read` offset `"0"` limit `"10000"` x17, `gunzip -c` x15, `read`
+  offset `"1"` x14, `zcat` x9, `cat` x7, `gunzip` x7, `write` x5,
+  `read` offset `"0"` limit `"1"` x2, `gzip -c` x1. Those 77 calls
+  produced 7 distinct result bodies between them.
+- 67 of the 77 dispatches are futile by the definition built here
+  (fingerprint seen before AND byte-identical result). The first is
+  call 4.
+- The NOTICE threshold, 6, is reached at dispatched call **13**.
+- The STOP threshold, 18, is reached at dispatched call **28**. The
+  turn would have ended there, 49 calls earlier than it did.
+- Exactly one fingerprint in the run has more than one distinct result:
+  the `write`, whose first execution differed from its four repeats.
+  The guard correctly did not count that transition, which is the
+  edit-then-reread case appearing for real in the archive rather than
+  only in a test.
+
+The token cost avoided is an ESTIMATE, and worth stating as one. Per
+round-trip input counts were not preserved (the session file keeps the
+turn total, 440,983 input with 438,098 cache read, and
+`last_context_used` 8192), so the split was computed by scaling on
+history size: the sum of the serialized history-prefix bytes sent
+across requests 1 through 28 is 152,317 of 1,171,651 for the full 78
+requests, or 13.0%. Calls map one-to-one onto requests in this run, so
+stopping at call 28 costs roughly 57,000 of the 440,983 input tokens
+and avoids roughly 384,000. Treat the shape of that number, not its
+digits, as the finding: the loop was already past the notice at 13
+while it had spent almost nothing, which is the whole reason the notice
+is cheap enough to be the first response.
+
+### What was built, and the choices inside it
+
+- **The discriminator is lack of PROGRESS, not repetition**, which is
+  what the queue entry demanded before any code. A dispatched call is
+  futile when its per-call `{name}:{input}` fingerprint AND a `u64`
+  hash of its result text both repeat an earlier call from the same
+  turn. The soundness argument is that temur is single-threaded:
+  between two calls in one turn, nothing the agent did can have changed
+  the answer unless a call in between changed it, and then the result
+  differs and this never counts.
+- **The result hashed is what the MODEL sees**, the output text for
+  successes and the error text for failures. That is what makes the
+  nineteen byte-identical range errors count; a success-only hash would
+  have missed the largest single band in the archived run.
+- **The counter is global to the turn, never consecutive and never
+  reset.** A consecutive rule launders itself against a rotation, and
+  one timestamp-varying call dropped into the cycle must not clear the
+  count for the rest.
+- **The notice rides the same user message as the results it is
+  about**, appended as a trailing text block after the tool results,
+  which both providers already map cleanly. It is appended AFTER
+  `all_errored` is computed, deliberately: the T4 consecutive-failure
+  cap tests that every block in the batch is an errored tool result, so
+  appending first would have silently disabled that cap on any batch
+  carrying the notice.
+- **The gap between 6 and 18 is headroom, not a round number.** The
+  notice needs a real chance to work before the hard stop, and a long
+  legitimate turn with a few incidental re-reads must never come near
+  18.
+- **`u64` explicitly**, per the 32-bit rule: pointers and `usize` are
+  32 bits on the shipped target, and a 32-bit digest collides too
+  readily for something that stops turns. The hash is per-turn and
+  in-process only, never persisted or compared across runs.
+
+### The false positive, stated rather than hidden
+
+A model deliberately POLLING an external condition whose answer has not
+changed yet - waiting on a file another process writes, or a server
+coming up - produces exactly this signature. It is rare in this product
+because nothing runs between turns and only a tool the model itself
+called can change anything, but it is real, and it is the reason the
+first response at 6 is a NOTICE naming the situation rather than a
+stop. Both the doc comment and USAGE.md say so in those terms.
+
+### Deliberate non-changes
+
+- The doom-loop guard, the T4 alternating-pair guard and T31's
+  `ProseRepeatGuard` are untouched, code path and pinned wording both,
+  and their tests still pass unmodified.
+- The guard covers STRUCTURED `tool_use` dispatches only. The prose
+  path keeps `ProseRepeatGuard`, which already refuses to execute a
+  byte-identical prose resend, so there is nothing there for this guard
+  to add.
+- No new configuration knob. Like `DOOM_LOOP_THRESHOLD` and
+  `NUDGE_LIMIT` before it, this is hardcoded, and it is deliberately
+  NOT part of the `NUDGE_LIMIT` family: the two thresholds are
+  self-bounding by construction.
+
+### Residuals
+
+- **Never exercised against a live model.** Everything above is a
+  replay of an archived history plus loop-level MockProvider tests. The
+  guard has not yet fired in a real served-model run, and the honest
+  next step is a llama.cpp re-run of the same eval task to watch it
+  land at call 13 for real. Nothing in this build depends on that, but
+  the numbers in this record are simulated, not observed.
+- **The thresholds are a judgement, not a measurement.** 6 and 18 were
+  chosen against one archived run. If a legitimate workload ever trips
+  the notice, that is the datum that should move them, and it should be
+  recorded here rather than tuned quietly.

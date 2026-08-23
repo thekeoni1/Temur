@@ -1131,6 +1131,41 @@ turn that stalled. A genuine answer that happens to end on one of those
 phrases costs one extra request and nothing more, since the nudge is
 capped like every other one.
 
+**Tool calls that keep re-fetching what you already have get stopped.**
+The guards above are narrow on purpose, and a model can slip between
+all of them by ROTATING: call A, then B, then C, then A again, forever.
+No two consecutive calls are identical, no two alternate, and the turn
+runs until the context window ends it. One archived run did that for 77
+calls and 440,983 input tokens.
+
+Counting repeats would be the wrong fix, since a model editing ten
+files really does call the same few tools over and over. What temur
+counts instead is FUTILE calls: a call that repeats an earlier call
+from the same turn and gets back a byte-identical result. Nothing
+changed between the two, so the second one learned nothing. At six of
+those the model is told once, in the tool results themselves, that what
+it is re-fetching is already in front of it:
+
+```
+  [!] 6 tool calls this turn repeated earlier calls with unchanged results; asked the model to use what it already has
+```
+
+At eighteen the turn ends:
+
+```
+  [!] stopped: 18 tool calls this turn repeated earlier calls with unchanged results
+```
+
+Rereading a file you just wrote is never futile, because the result
+changed. Neither is a call with different arguments, however similar it
+looks. A failing call counts exactly like a succeeding one, since an
+identical error message is just as uninformative the second time. The
+honest false positive is the opposite case: if you ask a model to POLL
+for something outside temur, waiting on a file another process writes
+or a server coming up, an unchanged answer is the point. That is why
+six calls buy a notice and not a stop, and why the gap to eighteen is
+as wide as it is.
+
 **An empty `workdir` means "not specified".** A model that filled
 bash's optional `workdir` in with `""` used to get `failed to spawn
 shell: No such file or directory (os error 2)`, and then parroted that

@@ -4,6 +4,36 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **A rotating repertoire of tool calls no longer runs unbounded.**
+  temur's three loop guards are each narrow by construction: the
+  doom-loop guard needs three identical calls IN A ROW, the
+  alternating-pair guard needs a strict A,B,A,B,A,B, and the prose
+  repeat guard only looks at the last prose call. A model that cycles
+  through half a dozen different calls satisfies none of them. One did
+  exactly that for 77 calls in a single archived task, burning 440,983
+  input tokens before the context window ended it.
+
+  The new guard counts FUTILE calls rather than repeated ones, because
+  a model editing ten files legitimately rotates through the same few
+  tools. A call is futile when it repeats an earlier call from the same
+  turn AND gets back a byte-identical result: nothing changed, so
+  nothing was learned. Rereading a file you just edited is not futile,
+  because the result differs; nor is any call whose arguments differ.
+  At six futile calls temur tells the model once that the results it is
+  re-fetching are already in front of it, and at eighteen it stops the
+  turn:
+
+  ```
+  [!] stopped: 18 tool calls this turn repeated earlier calls with unchanged results
+  ```
+
+  Errors count the same as successes, since a repeated identical error
+  message teaches the model just as little. The one honest false
+  positive is a model deliberately polling for something outside temur
+  to change, which is why the first response is a notice and not a
+  stop. Re-run against the archived task, the notice lands at call 13
+  and the stop at call 28.
+
 ## v0.24.0 - 2026-08-23
 
 - **The baked Claude Sonnet 5 list price is corrected to $2/$10 per
