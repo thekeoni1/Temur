@@ -4,14 +4,21 @@
 #
 # The server is restarted PER TASK, not per cell. Six kernel OOM kills
 # during T37 established why: llama-server's memory climbs across
-# prompt-processing cycles within a single cell until the kernel kills it,
-# and that climb is server-side heap accumulation rather than KV sizing, so
-# a smaller context bounds where the climb STARTS without bounding the
-# climb. Restarting per task removes the mechanism instead of narrowing the
-# margin. Kills 5 and 6 ruled out build concurrency (kill 6 happened with
-# the heavy-job lock held and check.sh actively refusing) and ruled out any
-# OpenCode-specific cause (temur's surviving cell ended at anon 5.94 GiB,
-# just under the ~6.2 GiB line the kills cluster on).
+# prompt-processing cycles within a single cell until the kernel kills it.
+#
+# What the climb IS was never established. An earlier attribution, "server-
+# side heap accumulation rather than KV sizing", is retracted here as
+# unverified inference: nothing in T37 instrumented llama-server's
+# allocator, so that sentence stated a diagnosis the evidence did not
+# support. Two things were actually observed. A smaller context moves where
+# the climb STARTS without stopping it. Restarting per task holds anon flat
+# across a whole cell. Per-task restarts are therefore adopted on evidence
+# of effect, not on a mechanism.
+#
+# Two causes WERE ruled out. Kills 5 and 6 rule out build concurrency: kill
+# 6 happened with the heavy-job lock held and check.sh actively refusing to
+# start. And it is not OpenCode-specific: temur's surviving cell ended at
+# anon 5.94 GiB, just under the ~6.2 GiB line the kills cluster on.
 #
 # The cost is deliberate and disclosed: restarting forfeits llama.cpp's
 # cross-task prefix cache, so every task pays its own full prefill. That
