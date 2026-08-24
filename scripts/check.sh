@@ -163,6 +163,9 @@ cargo build --quiet
 echo "== tests (i686-gnu, run on host) =="
 cargo test --quiet
 
+echo "== T37 harness-compare prompt drift =="
+tests/harness_compare_drift.sh
+
 echo "== forbidden deps =="
 if cargo tree -i openssl-sys >/dev/null 2>&1; then
     echo "FAIL: openssl-sys in dependency graph"; exit 1
