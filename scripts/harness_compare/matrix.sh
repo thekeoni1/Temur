@@ -61,6 +61,17 @@ export ARCHIVE_DIR MODEL_LABEL CTX
 MODEL_GGUF=$(ls "$MODELS_DIR"/*"$MODEL_LABEL"*.gguf 2>/dev/null | head -1 || true)
 [ -n "$MODEL_GGUF" ] || { echo "FAIL: no gguf in $MODELS_DIR matching '$MODEL_LABEL'" >&2; exit 1; }
 
+# Heavy-job lock. A matrix run holds this box near its memory ceiling for
+# hours, and a cargo build starting alongside it took the llama.cpp server
+# out with the kernel OOM killer partway through a cell (T37). Stating the
+# rule in prose was not enough, so it is mechanical: check.sh refuses to
+# start while this pidfile names a live process. One direction only, since
+# matrix starts are deliberate and the gate is the thing that gets run
+# absent-mindedly.
+HEAVY_LOCK="${TEMUR_HEAVY_LOCK:-$HOME/.temur-heavy-job.pid}"
+printf '%s\n' "$$" > "$HEAVY_LOCK"
+trap 'rm -f "$HEAVY_LOCK"' EXIT INT TERM
+
 # Memory is reported as TWO figures because one number here is misleading,
 # and was: cgroup memory.peak counts anon PLUS page cache, and page cache is
 # reclaimable, so it is not the quantity the OOM killer acts on. Measured

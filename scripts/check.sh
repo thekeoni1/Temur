@@ -9,6 +9,22 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+# Refuse to run alongside a T37 harness-matrix run: that run sits near this
+# machine's memory ceiling for hours, and a cargo build starting beside it
+# OOM-killed the llama.cpp server mid-cell. CI never has this file, so its
+# behavior is unchanged.
+HEAVY_LOCK="${TEMUR_HEAVY_LOCK:-$HOME/.temur-heavy-job.pid}"
+if [ "${TEMUR_IGNORE_MATRIX_LOCK:-0}" != "1" ] && [ -f "$HEAVY_LOCK" ]; then
+    LOCK_PID=$(cat "$HEAVY_LOCK" 2>/dev/null || true)
+    if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+        echo "FAIL: a heavy job (pid $LOCK_PID) is running; refusing to share this box." >&2
+        echo "  Building here has OOM-killed its inference server mid-run before." >&2
+        echo "  Wait for it, or set TEMUR_IGNORE_MATRIX_LOCK=1 to override." >&2
+        exit 1
+    fi
+    echo "NOTE: stale heavy-job lock ($HEAVY_LOCK, pid ${LOCK_PID:-none}); ignoring"
+fi
+
 TDIR="${TEMUR_TARGET_DIR:-/home/dev/rustcode-target}"
 CHECK_TMP="${TEMUR_CHECK_TMP:-/tmp}"
 GNU_BIN=$TDIR/i686-unknown-linux-gnu/debug/temur
