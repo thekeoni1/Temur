@@ -28,23 +28,28 @@ ARCHIVE_DIR="${ARCHIVE_DIR:-$HOME/temur-eval-archive/t37-harness-compare}"
 MODELS_DIR="${MODELS_DIR:-$HOME/models}"
 LLAMA_IMAGE="${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b10438}"
 # ctx 12288, not 16384. 16384 was tried and the kernel OOM-killed
-# llama-server three times on this 7.98GB machine, the last time inside a
+# llama-server three times on this 7.61 GiB machine, the last time inside a
 # single temur cell even with --parallel 1. The authoritative evidence is
 # dmesg, which reports what the OOM killer actually acted on:
 #   Out of memory: Killed process ... (llama-server) anon-rss:6969312kB
 #   Out of memory: Killed process ... (llama-server) anon-rss:7065400kB
 #   Out of memory: Killed process ... (llama-server) anon-rss:7105452kB
 # Quoted in dmesg's own units, which are KiB: that is 6.65, 6.74 and 6.78
-# GiB against a 7.43 GiB machine. Every memory figure in T37 is GiB from
-# here on, because earlier prose mixed GiB and decimal GB for the same
-# readings and the numbers stopped agreeing with each other.
+# GiB against a 7.61 GiB machine (MemTotal 7979196 kB, and /proc/meminfo's
+# "kB" is KiB too).
 #
-# Two memory figures were misreported during T37 before this settled, and
-# both mistakes are recorded here so the next reader does not repeat them:
-# a 4.24GB reading was taken at STARTUP rather than under load, and a
-# 6.29GB reading was cgroup memory.peak, which counts anon PLUS reclaimable
-# page cache and is therefore not comparable to an anon-rss kill figure.
-# See cgroup_mem() below, which now reports both quantities by name.
+# FOUR memory figures were misreported during T37 before this settled, and
+# all four are recorded so the next reader does not repeat them:
+#   1. 4.24  was a STARTUP reading quoted as an operating figure.
+#   2. 6.29  was cgroup memory.peak, which counts anon PLUS reclaimable
+#            page cache, quoted as if comparable to an anon-rss kill.
+#   3. the kills were quoted as 6.97/7.07 by dividing KiB by 1e6.
+#   4. the machine was quoted as 7.43 GiB by converting the same KiB with
+#      x1000 and THEN dividing by 1024^3, a double conversion error.
+# The lesson is not "GiB not GB": it is that kB from the kernel is ALWAYS
+# KiB, in /proc/meminfo and dmesg alike, so one conversion rule covers
+# every one of these readings. See cgroup_mem(), which reports the two
+# distinct quantities by name so they cannot be conflated again.
 #
 # 12288 keeps enough headroom above OpenCode's ~7.2k-token system prompt
 # that the table measures capability rather than context exhaustion, which
@@ -59,11 +64,11 @@ MODEL_GGUF=$(ls "$MODELS_DIR"/*"$MODEL_LABEL"*.gguf 2>/dev/null | head -1 || tru
 # Memory is reported as TWO figures because one number here is misleading,
 # and was: cgroup memory.peak counts anon PLUS page cache, and page cache is
 # reclaimable, so it is not the quantity the OOM killer acts on. Measured
-# during T37, a cell recorded memory.peak 6.43GB at ctx 12288 and survived,
-# while the ctx 16384 kills were anon-rss 6.97GB and 7.05GB per dmesg. Both
-# numbers were real and they measure different things, so both are recorded
-# with their units named rather than one being passed off as "RSS".
-cgroup_mem() { # prints "peak=<GB>|anon=<GB>", or "unmeasured" fields, never a guess
+# during T37, a cell recorded memory.peak 6.43 GiB at ctx 12288 and
+# SURVIVED, which is above the 6.65 GiB anon-rss the kernel killed a server
+# at. Both numbers were real; they measure different things, so both are
+# recorded with their units named rather than one passed off as "RSS".
+cgroup_mem() { # prints "peak=<GiB>|anon=<GiB>"; fields read "unmeasured", never a guess
     cid=$(podman inspect "$CONTAINER" --format '{{.Id}}' 2>/dev/null || true)
     if [ -z "$cid" ]; then echo "peak=unmeasured|anon=unmeasured"; return; fi
     d=$(find /sys/fs/cgroup -maxdepth 8 -name memory.peak -path "*libpod-$cid.scope*" 2>/dev/null \
@@ -136,15 +141,30 @@ LEDGER="$ARCHIVE_DIR/$MODEL_LABEL/ledger.txt"
     echo "temur: $("${TEMUR_BIN:-$HOME/harnesses/temur/temur}" --version 2>&1)"
     echo "opencode: $("${OPENCODE_BIN:-$HOME/harnesses/opencode-glibc/opencode}" --version 2>&1)"
     echo "codex: $("${CODEX_BIN:-$HOME/harnesses/codex/codex}" --version 2>&1)"
-    echo "runs_requested: $RUNS"
+    echo "runs: $RUNS starting at ${RUN_START:-1}"
     echo "server_policy: fresh server per cell, liveness checked before and after"
     echo "--- per-cell ---"
-} > "$LEDGER"
-cat "$LEDGER"
+} >> "$LEDGER"
+# Appended, never truncated: re-invoking for a later run must not erase the
+# provenance of cells that already ran.
+tail -12 "$LEDGER"
 
-r=1
-while [ "$r" -le "$RUNS" ]; do
+# RUN_START exists because re-invoking this script used to restart at run 1
+# and truncate a completed cell's results file before the replacement had
+# produced anything. Hours of finished work are not something a re-run
+# should be able to destroy by default, so a cell that already carries a
+# SCORE line is skipped unless FORCE=1 says otherwise.
+r="${RUN_START:-1}"
+LAST=$((r + RUNS - 1))
+while [ "$r" -le "$LAST" ]; do
     for h in temur codex opencode; do
+        EXISTING="$ARCHIVE_DIR/$MODEL_LABEL/$h/run$r/results.txt"
+        if [ "${FORCE:-0}" != "1" ] && grep -q '^SCORE' "$EXISTING" 2>/dev/null; then
+            echo "---- $MODEL_LABEL / $h / run $r: SKIPPED, already scored ----"
+            echo "  $(grep '^SCORE' "$EXISTING")"
+            echo "  (FORCE=1 to re-run and overwrite)"
+            continue
+        fi
         echo "---- $MODEL_LABEL / $h / run $r ----"
         if ! start_server; then
             echo "  VOID: server would not start; cell not run" | tee -a "$LEDGER"
@@ -155,7 +175,7 @@ while [ "$r" -le "$RUNS" ]; do
         scripts/harness_compare/run.sh "$h" "$r" || rc=$?
         MEM=$(cgroup_mem)
         if server_alive; then
-            printf '%s run%s: ctx=%s slots=%s mem_%s (GB; peak=anon+cache, anon=rss-like) status=SCORED\n' \
+            printf '%s run%s: ctx=%s slots=%s mem_%s (GiB; peak=anon+cache, anon=rss-like) status=SCORED\n' \
                 "$h" "$r" "$CTX_SEEN" "$SLOTS" "$MEM" >> "$LEDGER"
             echo "  cell OK (mem $MEM GB)"
         else
@@ -167,7 +187,7 @@ while [ "$r" -le "$RUNS" ]; do
             {
                 echo "VOID CELL, NOT MATRIX DATA."
                 echo "The llama.cpp server was not alive at the end of this cell."
-                echo "harness=$h run=$r ctx=$CTX_SEEN mem_${MEM} (GB)"
+                echo "harness=$h run=$r ctx=$CTX_SEEN mem_${MEM} (GiB)"
                 echo "container: $(podman inspect "$CONTAINER" --format 'status={{.State.Status}} exit={{.State.ExitCode}}' 2>/dev/null)"
                 echo
                 echo "A dead server does not fail loudly, it fails plausibly:"
@@ -175,7 +195,7 @@ while [ "$r" -le "$RUNS" ]; do
                 echo "and burns the whole per-task timeout. Neither number is a"
                 echo "capability result, so this cell is quarantined, not scored."
             } > "$DEST/WHY-ABORTED.txt"
-            printf '%s run%s: ctx=%s mem_%s (GB) status=VOID-SERVER-DIED\n' \
+            printf '%s run%s: ctx=%s mem_%s (GiB) status=VOID-SERVER-DIED\n' \
                 "$h" "$r" "$CTX_SEEN" "$MEM" >> "$LEDGER"
             echo "  VOID: server died during the cell; quarantined to $DEST"
         fi
