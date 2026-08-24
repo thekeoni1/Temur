@@ -18,7 +18,8 @@
 #        ARCHIVE_DIR   where transcripts/results land
 #        TASK_TIMEOUT  seconds per task (default 1200, ENFORCED)
 #        BASE_URL      llama.cpp openai-compat base (default 127.0.0.1:8080/v1)
-#        CTX           context window advertised to temur (default 16384)
+#        CTX           context window, server and temur (default 12288)
+#        PER_TASK_SERVER  1 (default) restarts llama.cpp before every task
 #        TEMUR_BIN / OPENCODE_BIN / CODEX_BIN   harness binaries
 set -eu
 cd "$(dirname "$0")/../.."
@@ -28,9 +29,12 @@ RUN=${2:?usage: run.sh <temur|opencode|codex> <run-number>}
 
 TASK_TIMEOUT="${TASK_TIMEOUT:-1200}"
 BASE_URL="${BASE_URL:-http://127.0.0.1:8080/v1}"
-CTX="${CTX:-16384}"
+CTX="${CTX:-12288}"
 MAX_TOKENS="${MAX_TOKENS:-3072}"
 MODEL_LABEL="${MODEL_LABEL:-unknown-model}"
+MODELS_DIR="${MODELS_DIR:-$HOME/models}"
+# Normally exported by matrix.sh; derived here so run.sh also works alone.
+MODEL_GGUF="${MODEL_GGUF:-$(ls "$MODELS_DIR"/*"$MODEL_LABEL"*.gguf 2>/dev/null | head -1)}"
 ARCHIVE_DIR="${ARCHIVE_DIR:-$HOME/temur-eval-archive/t37-harness-compare}"
 TEMUR_BIN="${TEMUR_BIN:-$HOME/harnesses/temur/temur}"
 OPENCODE_BIN="${OPENCODE_BIN:-$HOME/harnesses/opencode-glibc/opencode}"
@@ -38,6 +42,8 @@ CODEX_BIN="${CODEX_BIN:-$HOME/harnesses/codex/codex}"
 
 # shellcheck disable=SC1091
 . scripts/harness_compare/tasks.sh
+# shellcheck disable=SC1091
+. scripts/harness_compare/server.sh
 
 # Guard against the failure this driver actually hit during development: an
 # adapter that forgets to cd runs the harness with the REPO as its working
@@ -165,20 +171,56 @@ run_task() {
     ( cd "$work" && git init -q . )
     t="$OUT/transcripts/task$n.run$RUN.txt"
     TIMED_OUT=0
+    CELL_VOID=0
     rc=0
+
+    # A FRESH server per task. SERVER_READY_SECS is recorded separately from
+    # the task duration on purpose: model load is identical infrastructure
+    # for every harness, so folding it into a harness's number would inflate
+    # all three equally and measure the machine. The harness's OWN prompt
+    # prefill stays inside the task duration, because that cost is the
+    # harness's and is precisely what this milestone measures.
+    if [ "${PER_TASK_SERVER:-1}" = "1" ]; then
+        if ! server_start "$MODEL_GGUF" "$CTX" "$MODEL_LABEL"; then
+            echo "  task$n: server would not start; cell is VOID" >&2
+            CELL_VOID=1; SECS=0; SERVER_READY_SECS=0
+            : > "$t"; : > "$t.plain"
+            return 0
+        fi
+    fi
+
     start=$(date +%s)
     "adapter_$HARNESS" || rc=$?
     SECS=$(( $(date +%s) - start ))
     if [ "$rc" -ne 0 ] && [ "$SECS" -ge "$TASK_TIMEOUT" ]; then TIMED_OUT=1; fi
     strip_ansi "$t" > "$t.plain" 2>/dev/null || : > "$t.plain"
+
+    # Liveness AFTER the task. With per-task restarts this should never
+    # fire; if it does, the accumulation survived the fix and the run must
+    # stop rather than quietly score a cell against a dying server.
+    TASK_MEM=$(cgroup_mem)
+    if [ "${PER_TASK_SERVER:-1}" = "1" ]; then
+        if ! server_alive; then
+            echo "  task$n: server DIED during the task; cell is VOID" >&2
+            CELL_VOID=1
+        fi
+        printf 'task%-2s %-16s ready=%ss dur=%ss %s\n' \
+            "$n" "$name" "${SERVER_READY_SECS:-0}" "$SECS" "$TASK_MEM" >> "$OUT/per-task-mem.txt"
+        server_stop
+    fi
 }
 
 # record <n> <name> <PASS|FAIL>
 record() {
     verdict=$3
     [ "$TIMED_OUT" = 1 ] && verdict=FAIL
+    # A task whose server was not healthy around it is not a measurement.
+    if [ "${CELL_VOID:-0}" = 1 ]; then
+        VOID_SEEN=1; verdict=FAIL
+    fi
     note=""
     [ "$TIMED_OUT" = 1 ] && note=" TIMEOUT@${TASK_TIMEOUT}s"
+    [ "${CELL_VOID:-0}" = 1 ] && note="$note VOID-SERVER"
     # Guardrail: a cell that cannot be shown to have used the LOCAL model is
     # not a result, it is a mistake, so it fails closed with a loud note.
     # OpenCode specifically will fall back to a HOSTED model when its
@@ -281,5 +323,13 @@ run_task "$n" large-tail "$PROMPT_9"
 [ "$(trimmed "$WORKROOT/task$n/tail.txt")" = "OMEGA-3141" ] \
     && record "$n" large-tail PASS || record "$n" large-tail FAIL
 
-echo "== $HARNESS run $RUN: $PASSES/9 =="
-printf 'SCORE\t%s\t%s\trun%s\t%s/9\n' "$MODEL_LABEL" "$HARNESS" "$RUN" "$PASSES" >> "$RESULTS"
+if [ "${VOID_SEEN:-0}" = 1 ]; then
+    # No SCORE line: a cell with a dead server anywhere in it must not be
+    # scorable, and the absence of the line is also what makes matrix.sh's
+    # already-scored skip guard re-run it rather than skip it.
+    echo "== $HARNESS run $RUN: VOID (server died during at least one task) =="
+    printf 'VOID\t%s\t%s\trun%s\tserver-died\n' "$MODEL_LABEL" "$HARNESS" "$RUN" >> "$RESULTS"
+else
+    echo "== $HARNESS run $RUN: $PASSES/9 =="
+    printf 'SCORE\t%s\t%s\trun%s\t%s/9\n' "$MODEL_LABEL" "$HARNESS" "$RUN" "$PASSES" >> "$RESULTS"
+fi

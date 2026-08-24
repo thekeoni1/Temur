@@ -1,30 +1,33 @@
 #!/bin/sh
 # T37 matrix runner: all three harnesses x N runs against one served model,
-# with a FRESH llama.cpp server per scored cell.
+# with a FRESH llama.cpp server per TASK (see server.sh for why).
 #
-# Per-cell server hygiene exists because a dead server does not produce an
-# obvious failure, it produces a plausible-looking score. Measured during
-# T37: against a dead server temur fails a task in ~6s while Codex, which
-# retries connections without bound, burns the entire 1200s per-task
-# timeout. Identical cause, opposite-looking results, and the Codex cell
-# reads as a capability finding. So every cell gets a fresh server, a
-# liveness check before it, and a liveness check after it; a cell whose
-# server died at any point is VOID and is quarantined rather than scored.
+# Server hygiene exists because a dead server does not produce an obvious
+# failure, it produces a plausible-looking score. Measured during T37:
+# against a dead server temur fails a task in ~6s while Codex, which retries
+# connections without bound, burns the entire 1200s per-task timeout.
+# Identical cause, opposite-looking results, and the Codex cell reads as a
+# capability finding. So liveness is checked around every task, and a cell
+# in which any server died is VOID and quarantined rather than scored.
 #
-# The model is chosen here and the server is started here, but the CHOICE of
-# gguf is still verified against the label (the T31 D4 lesson: a stale or
-# mismatched server silently measures the wrong thing).
+# The gguf actually mounted is verified against the label on every start
+# (the T31 D4 lesson: a stale or mismatched server silently measures the
+# wrong thing).
 #
 # Usage: scripts/harness_compare/matrix.sh <model-label> [runs]
 # Env:   CTX (default 12288, the T37 Decision C amended value)
-#        MODELS_DIR, LLAMA_IMAGE, ARCHIVE_DIR
+#        RUN_START, FORCE, MODELS_DIR, LLAMA_IMAGE, ARCHIVE_DIR
 set -eu
 cd "$(dirname "$0")/../.."
 
 MODEL_LABEL=${1:?usage: matrix.sh <model-label> [runs]}
 RUNS=${2:-2}
 CONTAINER="${CONTAINER_NAME:-temur-llama}"
-ARCHIVE_DIR="${ARCHIVE_DIR:-$HOME/temur-eval-archive/t37-harness-compare}"
+# v2 subtree: the per-CELL-server artifacts in t37-harness-compare/ are the
+# record of attempts 1-6 and are not overwritten. Everything scored under
+# the per-TASK methodology lands here instead, so the two procedures can
+# never be silently mixed in one table.
+ARCHIVE_DIR="${ARCHIVE_DIR:-$HOME/temur-eval-archive/t37-harness-compare-v2-pertask}"
 MODELS_DIR="${MODELS_DIR:-$HOME/models}"
 LLAMA_IMAGE="${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b10438}"
 # ctx 12288, not 16384. 16384 was tried and the kernel OOM-killed
@@ -72,75 +75,13 @@ HEAVY_LOCK="${TEMUR_HEAVY_LOCK:-$HOME/.temur-heavy-job.pid}"
 printf '%s\n' "$$" > "$HEAVY_LOCK"
 trap 'rm -f "$HEAVY_LOCK"' EXIT INT TERM
 
-# Memory is reported as TWO figures because one number here is misleading,
-# and was: cgroup memory.peak counts anon PLUS page cache, and page cache is
-# reclaimable, so it is not the quantity the OOM killer acts on. Measured
-# during T37, a cell recorded memory.peak 6.43 GiB at ctx 12288 and
-# SURVIVED, which is above the 6.65 GiB anon-rss the kernel killed a server
-# at. Both numbers were real; they measure different things, so both are
-# recorded with their units named rather than one passed off as "RSS".
-cgroup_mem() { # prints "peak=<GiB>|anon=<GiB>"; fields read "unmeasured", never a guess
-    cid=$(podman inspect "$CONTAINER" --format '{{.Id}}' 2>/dev/null || true)
-    if [ -z "$cid" ]; then echo "peak=unmeasured|anon=unmeasured"; return; fi
-    d=$(find /sys/fs/cgroup -maxdepth 8 -name memory.peak -path "*libpod-$cid.scope*" 2>/dev/null \
-        | grep -v conmon | head -1)
-    if [ -z "$d" ]; then echo "peak=unmeasured|anon=unmeasured"; return; fi
-    d=$(dirname "$d")
-    pk=$(awk '{printf "%.2f", $1/1073741824}' "$d/memory.peak" 2>/dev/null || echo unmeasured)
-    an=$(awk '/^anon /{printf "%.2f", $2/1073741824}' "$d/memory.stat" 2>/dev/null || echo unmeasured)
-    [ -n "$an" ] || an=unmeasured
-    echo "peak=${pk}|anon=${an}"
-}
-
-server_alive() { curl -s -o /dev/null --max-time 10 "http://127.0.0.1:8080/health" 2>/dev/null; }
-
-start_server() {
-    podman rm -f "$CONTAINER" >/dev/null 2>&1 || true
-    podman run -d --name "$CONTAINER" -p 127.0.0.1:8080:8080 \
-        -v "$MODEL_GGUF":/model.gguf:ro "$LLAMA_IMAGE" \
-        -m /model.gguf -c "$CTX" --parallel 1 --jinja --host 0.0.0.0 --port 8080 >/dev/null
-    i=0
-    until server_alive; do
-        i=$((i + 1))
-        [ "$i" -ge 60 ] && { echo "FAIL: server unhealthy after ~120s" >&2
-                             podman logs --tail 15 "$CONTAINER" >&2 || true; return 1; }
-        sleep 2
-    done
-    # Verify what is ACTUALLY mounted, never what was intended.
-    mounted=$(podman inspect "$CONTAINER" \
-        --format '{{range .Mounts}}{{if eq .Destination "/model.gguf"}}{{.Source}}{{end}}{{end}}' 2>/dev/null)
-    case "$mounted" in
-        *"$MODEL_LABEL"*) ;;
-        *) echo "FAIL: mounted $mounted does not match label '$MODEL_LABEL'" >&2; return 1 ;;
-    esac
-    # The load_model line is written at ~0.08s but is not necessarily
-    # readable through `podman logs` the moment /health first answers, so
-    # this read RACED and came back empty on the first T37 cells. An empty
-    # read must never satisfy the guard below: "could not verify" is not
-    # "verified fine", so retry briefly and then FAIL CLOSED.
-    SLOTS=""; CTX_SEEN=""
-    i=0
-    while [ "$i" -lt 15 ]; do
-        SLOTS=$(podman logs "$CONTAINER" 2>&1 | grep -o 'n_slots = [0-9]*' | tail -1 | grep -o '[0-9]*' || true)
-        CTX_SEEN=$(podman logs "$CONTAINER" 2>&1 | grep -o 'n_ctx_slot = [0-9]*' | tail -1 | grep -o '[0-9]*' || true)
-        [ -n "$SLOTS" ] && [ -n "$CTX_SEEN" ] && break
-        i=$((i + 1)); sleep 1
-    done
-    if [ -z "$SLOTS" ] || [ -z "$CTX_SEEN" ]; then
-        echo "FAIL: could not read n_slots/n_ctx_slot from the server log" >&2
-        echo "  Refusing to run a scored cell against an unverified server." >&2
-        return 1
-    fi
-    # KV is sized for n_slots x n_ctx_slot; extra slots multiply it for
-    # nothing, and that multiplication is what caused the first two kills.
-    if [ "$SLOTS" -gt 1 ]; then
-        echo "FAIL: server has n_slots = $SLOTS; expected 1" >&2; return 1
-    fi
-    if [ "$CTX_SEEN" != "$CTX" ]; then
-        echo "FAIL: server reports n_ctx_slot = $CTX_SEEN but CTX is $CTX" >&2; return 1
-    fi
-    return 0
-}
+# Server lifecycle lives in server.sh and is driven PER TASK by run.sh.
+# matrix.sh no longer starts a per-cell server: six OOM kills established
+# that llama-server's memory climbs across prompt-processing cycles WITHIN a
+# cell, so a per-cell server is the mechanism that had to go.
+# shellcheck disable=SC1091
+. scripts/harness_compare/server.sh
+export MODEL_GGUF
 
 mkdir -p "$ARCHIVE_DIR/$MODEL_LABEL" "$ARCHIVE_DIR/aborted-blocks"
 LEDGER="$ARCHIVE_DIR/$MODEL_LABEL/ledger.txt"
@@ -153,7 +94,7 @@ LEDGER="$ARCHIVE_DIR/$MODEL_LABEL/ledger.txt"
     echo "opencode: $("${OPENCODE_BIN:-$HOME/harnesses/opencode-glibc/opencode}" --version 2>&1)"
     echo "codex: $("${CODEX_BIN:-$HOME/harnesses/codex/codex}" --version 2>&1)"
     echo "runs: $RUNS starting at ${RUN_START:-1}"
-    echo "server_policy: fresh server per cell, liveness checked before and after"
+    echo "server_policy: fresh server per TASK, liveness checked around each"
     echo "--- per-cell ---"
 } >> "$LEDGER"
 # Appended, never truncated: re-invoking for a later run must not erase the
@@ -177,38 +118,34 @@ while [ "$r" -le "$LAST" ]; do
             continue
         fi
         echo "---- $MODEL_LABEL / $h / run $r ----"
-        if ! start_server; then
-            echo "  VOID: server would not start; cell not run" | tee -a "$LEDGER"
-            continue
-        fi
-        echo "  server: $CTX_SEEN, n_slots=$SLOTS"
         rc=0
         scripts/harness_compare/run.sh "$h" "$r" || rc=$?
-        MEM=$(cgroup_mem)
-        if server_alive; then
-            printf '%s run%s: ctx=%s slots=%s mem_%s (GiB; peak=anon+cache, anon=rss-like) status=SCORED\n' \
-                "$h" "$r" "$CTX_SEEN" "$SLOTS" "$MEM" >> "$LEDGER"
-            echo "  cell OK (mem $MEM GB)"
+        CELLDIR="$ARCHIVE_DIR/$MODEL_LABEL/$h/run$r"
+        if grep -q '^SCORE' "$CELLDIR/results.txt" 2>/dev/null; then
+            printf '%s run%s: ctx=%s %s\n' "$h" "$r" "$CTX" \
+                "$(grep '^SCORE' "$CELLDIR/results.txt" | cut -f5) status=SCORED" >> "$LEDGER"
+            [ -f "$CELLDIR/per-task-mem.txt" ] && sed 's/^/    /' "$CELLDIR/per-task-mem.txt" >> "$LEDGER"
+            echo "  cell OK"
         else
-            # The server died mid-cell. Whatever the results file says, it
-            # is not a measurement of this harness.
+            # run.sh writes no SCORE line when a server died anywhere in the
+            # cell. With per-task restarts this should not happen; the ruling
+            # is to stop and report rather than re-run into the same wall.
             DEST="$ARCHIVE_DIR/aborted-blocks/${MODEL_LABEL}-${h}-run${r}-serverdied-$(date +%H%M%S)"
             mkdir -p "$DEST"
-            mv "$ARCHIVE_DIR/$MODEL_LABEL/$h/run$r" "$DEST/" 2>/dev/null || true
+            mv "$CELLDIR" "$DEST/" 2>/dev/null || true
             {
                 echo "VOID CELL, NOT MATRIX DATA."
-                echo "The llama.cpp server was not alive at the end of this cell."
-                echo "harness=$h run=$r ctx=$CTX_SEEN mem_${MEM} (GiB)"
-                echo "container: $(podman inspect "$CONTAINER" --format 'status={{.State.Status}} exit={{.State.ExitCode}}' 2>/dev/null)"
-                echo
-                echo "A dead server does not fail loudly, it fails plausibly:"
-                echo "temur fails a task in ~6s while Codex retries without bound"
-                echo "and burns the whole per-task timeout. Neither number is a"
-                echo "capability result, so this cell is quarantined, not scored."
+                echo "harness=$h run=$r ctx=$CTX"
+                echo "A server died during at least one task despite per-task"
+                echo "restarts. That means the accumulation this methodology was"
+                echo "adopted to remove has survived it. STOP AND REPORT rather"
+                echo "than re-running: a cell that only sometimes completes is a"
+                echo "sampling bias waiting to be published."
             } > "$DEST/WHY-ABORTED.txt"
-            printf '%s run%s: ctx=%s mem_%s (GiB) status=VOID-SERVER-DIED\n' \
-                "$h" "$r" "$CTX_SEEN" "$MEM" >> "$LEDGER"
-            echo "  VOID: server died during the cell; quarantined to $DEST"
+            printf '%s run%s: ctx=%s status=VOID-SERVER-DIED\n' "$h" "$r" "$CTX" >> "$LEDGER"
+            echo "  VOID: quarantined to $DEST"
+            echo "  STOPPING: per-task restarts did not remove the accumulation." >&2
+            exit 1
         fi
         [ "$rc" -eq 0 ] || echo "  (run.sh exited $rc)"
     done
