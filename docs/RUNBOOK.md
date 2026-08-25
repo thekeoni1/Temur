@@ -6696,3 +6696,142 @@ the prep commits and the gate; this records the release itself.
   futile-call guard has never fired against a live served model, and
   the 67-recovery cell in T37 shows only that it correctly stayed
   silent through legitimate work.
+
+## T38 acceptance - recovery-disabled control (recorded 2026-08-25, before its release)
+
+Two phases: a driver change, then a measurement. Offline throughout;
+no API key, no hosted provider, no frontier model. No product code was
+touched, and no test.
+
+### What this milestone is
+
+`docs/COMPARISON.md` (T37) asserted that without prose-call recovery
+temur would score what OpenCode and Codex score on Qwen2.5-Coder-3B.
+That was an inference from "17/18 with zero native calls", not a
+measurement. T38 measures it.
+
+### The correction the T37 queue entry needed
+
+The queue entry called this "one env knob and one cell". Both halves
+were wrong, and the T37 milestone is the one that wrote them.
+
+The PRODUCT knob was never missing: `prose_tool_calls` has existed
+since T19 P3, is container-default true, and `false` restores
+detect+nudge byte-identically. What was missing was a way for the
+comparison DRIVER to set it. And one cell was not enough: a control
+run only where the feature carries the score cannot show the feature
+is inert where it does not, so the native-call model has to run too.
+Four cells in the end.
+
+### Conditions
+
+`TEMUR_BIN` = `~/harnesses/temur/temur`, sha256
+`83bc69cfb8be5c4021a1b26a6d530985d7f3a35e0ce558b00cdba82476b22a68`,
+verified against the published `temur-v0.25.0-x86_64-unknown-linux-musl`
+in the release's own SHA256SUMS BEFORE any run. Server
+`ghcr.io/ggml-org/llama.cpp:server-b10438`, digest
+`sha256:190813e82f33a82f506e66826f367004a3159f8b8139b11d07566437aecdac93`,
+the same one T37 pinned. Models `32f00144...` (Qwen2.5-Coder-3B) and
+`3605803b...` (Qwen3-4B-Instruct-2507). Context 12288, `--parallel 1
+--jinja`, fresh server per TASK, heavy-job lock held, nothing else
+running on the box. Identical to T37 by construction: the control is
+the T37 driver with one config field added.
+
+### The preflight that had to come first
+
+`Config` has no `deny_unknown_fields`, so a clean config parse would
+have proven nothing about whether the shipped 0.25.0 binary honours
+`prose_tool_calls` or silently ignores it. One `TASK_ONLY=1` probe
+against the real model settled it before the matrices ran: the model
+wrote its call as a fenced JSON blob, temur emitted two "wrote a tool
+call as plain text" notices and ZERO recovery notices, and the task
+failed. That is the control shape, so the knob is live.
+
+### Results
+
+Qwen2.5-Coder-3B, all four columns under identical conditions:
+
+| Harness | run 1 | run 2 | spread | cell wall clock |
+| --- | --- | --- | --- | --- |
+| temur 0.25.0, recovery on | 8/9 | 9/9 | 1 | 9.4 / 16.1 min |
+| temur 0.25.0, recovery off | 0/9 | 0/9 | 0 | 7.0 / 7.0 min |
+| codex-cli 0.149.0 | 0/9 | 0/9 | 0 | 19.2 / 19.7 min |
+| opencode 1.18.21 | 0/9 | 0/9 | 0 | 18.7 / 18.4 min |
+
+Qwen3-4B-Instruct-2507 control: 9/9 and 9/9, 12.3 and 11.8 min,
+against recovery-on's 9/9 and 9/9 at 13.0 and 12.4 min.
+
+Spread 0 in all four control cells, so the third-run-on-spread-2 rule
+never fired. No VOID cells. Max server anon 1.80 GiB (Coder-3B) and
+3.50 (Qwen3-4B), inside the T37 ranges.
+
+Per-cell transcript counts, asserted rather than assumed:
+
+| Cell | nudges | recovery notices | native dispatches | native after a nudge |
+| --- | --- | --- | --- | --- |
+| Coder-3B run 1 | 18 | 0 | 0 | never |
+| Coder-3B run 2 | 18 | 0 | 0 | never |
+| Qwen3-4B run 1 | 0 | 0 | 17 | n/a |
+| Qwen3-4B run 2 | 0 | 0 | 15 | n/a |
+
+### What the control adds beyond confirming the inference
+
+**The nudge converts nothing on this model.** Every one of the
+eighteen Coder-3B control tasks emitted exactly two nudges and ended,
+`NUDGE_LIMIT` being 2, and across 36 nudges the model never answered
+with a native call. So there is no nudge-attributable component in the
+control score. Had the score been nonzero it would have been
+nudge-attributable rather than noise, execution being the only other
+path to a pass; the point is worth recording because it is the
+interpretation that would have applied, not because it was needed.
+
+**The 0/9 is not a crash, a timeout or a dead server.** The control
+cells are the fastest cells in the whole comparison, 7.0 minutes
+against temur's own 9.4 and 16.1, because a turn that nudges twice and
+stops does less work than a turn that executes. Nothing reached the
+1200s per-task bound.
+
+**The feature is inert where native calls work.** The Qwen3-4B control
+was the half that could have embarrassed the design, and it did not:
+9/9 twice with zero nudges and zero recoveries. Anything other than
+9/9 there would have been a finding, because it would have meant the
+config flip changes behaviour on a path that never uses it.
+
+### Why the counters can be trusted
+
+The first version of the analysis script counted native dispatches at
+the ToolStart line and undercounted, because ToolStart prints without
+a preceding newline and its `→` lands appended to the `> ` prompt when
+the call is the first thing in a turn. Counting moved to the ToolEnd
+line, which always begins its own line. The corrected script was then
+validated on data whose answer was already published: run against the
+archived recovery-ON Coder-3B cells it reproduces T37's 20 and 67
+recovery notices and zero native calls exactly. Only then was it
+trusted on the new cells.
+
+### Deliberate non-changes
+
+No product code, no test, no task wording. `scripts/harness_compare/tasks.sh`
+and `tests/harness_compare_drift.sh` have a zero-line diff, so every
+published score stays comparable. The T37 tables are untouched and the
+control is published beside them rather than merged into them.
+`HARNESSES` defaults to the T37 three in the T37 order, so an unset
+value reproduces the published matrices unchanged.
+
+### Honest limits
+
+Qwen2.5-Coder-3B does two things at once: it emits prose calls, and it
+ignores correction. The control therefore says nothing about a model
+that writes prose calls but DOES respond to a nudge, where the split
+between execution and correction would actually be visible. One model
+is one model, and this is still temur's own task suite on temur's own
+machine.
+
+### Artifacts
+
+Control cells beside the T37 ones under
+`~/temur-eval-archive/t37-harness-compare-v2-pertask/<model>/temur-noprose/run{1,2}/`,
+with ledger lines carrying the harness name and `results.txt` headers
+carrying `prose_tool_calls=`. Conditions, per-cell reports, the
+analysis script and the preflight probe under
+`~/temur-eval-archive/t38-recovery-control/`.

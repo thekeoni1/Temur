@@ -4,6 +4,24 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **The claim that temur's small-model score rests on prose-call
+  recovery is now measured, not inferred.** `docs/COMPARISON.md` said
+  that without the feature temur would score what OpenCode and Codex
+  score. A control run says so directly: the same 0.25.0 binary with
+  `"prose_tool_calls": false` scores 0/9 twice on Qwen2.5-Coder-3B,
+  beside 8/9 and 9/9 with the feature on, and 0/9 twice for each
+  competitor. Detection and the corrective nudge stay on in the
+  control, so exactly one thing is removed. Two things the control
+  adds that the inference could not: the nudge alone converts nothing
+  on this model, zero native tool calls across 36 nudges; and the 0/9
+  is not a crash or a timeout, since the control cells are the fastest
+  in the table. On Qwen3-4B, where the model calls tools natively, the
+  control scores 9/9 twice and the feature is simply inert.
+- The comparison driver gains a `temur-noprose` harness and a
+  `HARNESSES` list. The default is the same three harnesses in the
+  same order, so existing runs are unchanged. No product code changed:
+  the `prose_tool_calls` config field has existed since v0.8.0.
+
 ## v0.26.0 - 2026-08-25
 
 - **A measured comparison against OpenCode and Codex CLI**, in

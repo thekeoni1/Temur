@@ -99,6 +99,14 @@ Codex's t7 failure reproduced in both runs and in two earlier
 observations: it writes the `rm` inside a fenced bash block instead of
 calling its exec tool, then reports success while the file survives.
 
+### Control: recovery disabled
+
+The recovery-disabled control described under Qwen2.5-Coder-3B below
+scores 9/9 and 9/9 here, with zero nudges and zero recoveries, which is
+the expected result and the reason for spending a cell on it: where the
+model calls tools natively, prose-call recovery never engages, and
+removing it changes nothing.
+
 ### A methodology observation, not a harness result
 
 An earlier procedure used one long-lived server per cell. Moving to
@@ -154,10 +162,58 @@ both templates: `t37-harness-compare-v2-pertask/probes/`.
 
 **So temur's 17/18 on this model rests wholly on prose-call recovery**,
 a feature that executes a tool call the model wrote as text: 20
-recoveries in run 1, 67 in run 2, zero native calls in either. Without
-it temur scores what the others score. Same model, sha, server,
-context, and prompts; the harness is the entire difference between 0/9
-and 9/9.
+recoveries in run 1, 67 in run 2, zero native calls in either. Same
+model, sha, server, context, and prompts; the harness is the entire
+difference between 0/9 and 9/9.
+
+### Control: the same temur with recovery disabled
+
+The sentence above used to end "without it temur scores what the others
+score", which was an inference. It is now a measurement (run 2026-08-25,
+same conditions as the table above).
+
+The control's exact shape matters, so it is stated rather than
+summarised. `temur-noprose` is the **same 0.25.0 binary**, invoked by
+the same adapter with the same flags in the same working directory,
+reading the same config template with **one field added**:
+`"prose_tool_calls": false`. That switch turns off *execution* of a tool
+call the model wrote as prose. **Detection stays on and the corrective
+nudge stays on.** Exactly one thing is removed.
+
+| Harness | run 1 | run 2 | spread | task wall clock |
+| --- | --- | --- | --- | --- |
+| temur 0.25.0, recovery on | 8/9 | 9/9 | 1 | 9 / 16 min |
+| temur 0.25.0, recovery off | 0/9 | 0/9 | 0 | 7 / 7 min |
+| codex-cli 0.149.0 | 0/9 | 0/9 | 0 | 19 / 20 min |
+| opencode 1.18.21 | 0/9 | 0/9 | 0 | 19 / 18 min |
+
+The inference was right, and the control turned out to be a clean one:
+all eighteen control tasks failed, and the recovery-notice count was
+zero in every one of them, asserted over the transcripts rather than
+assumed from the config.
+
+Two further things the control settles, both of them about temur rather
+than about the competitors.
+
+**The nudge converts nothing on this model.** Every one of the eighteen
+tasks emitted exactly two "you wrote a tool call as plain text" notices
+and then ended the turn, `NUDGE_LIMIT` being 2. Across 36 nudges the
+model never once answered with a native tool call: native structured
+dispatches in the control cells number **zero**. A nonzero control score
+would have been nudge-attributable rather than noise, because with
+execution off the nudge is the only remaining path to a pass; there is
+simply nothing to attribute, because the score is zero.
+
+**The 0/9 is not a crash, a timeout or a dead server.** The control
+cells are the fastest cells in the whole table, 7 minutes against
+temur's own 9 and 16, precisely because a turn that nudges twice and
+stops does less work than a turn that executes. Nothing hit the 1200s
+per-task bound and no cell went VOID.
+
+What the control does not establish: anything about a model that emits
+prose calls *and* responds to correction. Qwen2.5-Coder-3B does neither
+of the two things that could rescue the control cell, and one model is
+one model.
 
 ## Prompt size
 
@@ -248,6 +304,12 @@ table here, not across the two documents.
 ## Reproducing
 
     scripts/harness_compare/matrix.sh <model-label> 2
+
+The recovery-disabled control is a fourth harness name rather than an
+environment knob, so its cells, ledger lines and scores stay separate
+from temur's by construction:
+
+    HARNESSES=temur-noprose scripts/harness_compare/matrix.sh <model-label> 2
 
 Artifacts, including per-cell ledgers, transcripts, gate logs and every
 probe quoted above, are archived outside the repository under
