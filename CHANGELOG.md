@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.27.0 - 2026-08-25
+
 - **The claim that temur's small-model score rests on prose-call
   recovery is now measured, not inferred.** `docs/COMPARISON.md` said
   that without the feature temur would score what OpenCode and Codex
