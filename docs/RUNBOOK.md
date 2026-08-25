@@ -6922,3 +6922,74 @@ ones that make the published comparison weaker.
   are a clean negative rather than an absence of evidence, since the
   only notice line appearing anywhere in them is the 36 prose-call
   nudges.
+
+## v0.27.0 ship record - shipped private
+
+Stage 2 ran clean, in the greenlit order, with no deviation and
+nothing retagged.
+
+- The three prep commits pushed f51b4a8..046d975. On-push ci run
+  32875892636 on headSha 046d975 green in both jobs, run_attempt 1
+  (test 2m41s 17:06:12Z..17:08:53Z, release-gate 8m51s
+  17:06:12Z..17:15:03Z).
+- `scripts/metadata_drift.sh` fourth outing, run as the publish
+  preflight: 4/4 PASS against models.dev, no drift. fable
+  1000000/$10/$50, haiku 200000/$1/$5, opus 1000000/$5/$25, sonnet
+  1000000/$2/$10. Nothing to decide, so nothing was decided.
+- Annotated tag v0.27.0 AT 046d975, tag object
+  `4b88cb19a6caf1665113c9a2e3f3f8b702cb0cd1`. The message was verified
+  against the RAW tag object with `od -c` before the push, not against
+  `git tag -l`: the object's body is exactly
+  `temur v0.27.0 - recovery control run (T38)\n`, one line, ASCII
+  hyphen-minus, no em-dash. The remote ref resolves to the same tag
+  object. CI is branch-only, so the tag push started no workflow.
+- `scripts/release.sh` with NO SKIP_CHECK, so `check.sh` ran again
+  inside it: ALL CHECKS PASSED, then leak grep clean over files and
+  history, install.sh/README skew OK at 0.27.0, and 4/4 targets gated
+  and staged. Wall clock 2m26s. The bare busybox container printed
+  "temur 0.27.0" in that embedded gate run too.
+- Staged sha256s at `/home/dev/dist/release/v0.27.0/`:
+
+      b5c66d88...  aarch64-unknown-linux-musl      6200680 B
+      a68b5c7d...  armv7-unknown-linux-musleabihf  5532648 B
+      3642f989...  i686-unknown-linux-musl         6166932 B
+      d962af97...  x86_64-unknown-linux-musl       7497072 B
+      9755b593...  SHA256SUMS                          428 B
+
+- Private release published with 5 assets, `isDraft` false,
+  `isPrerelease` false, target main. Repository `isPrivate` true
+  confirmed BEFORE creating the release and again AFTER, and the
+  release remains reachable only to the account.
+- Closing gate: the x86_64 asset and SHA256SUMS were re-downloaded
+  fresh and both are `cmp`-identical to staged; the downloaded x86_64
+  re-hashes to d962af97..., and `sha256sum -c` on the downloaded
+  SHA256SUMS is OK. A second, FULL download of all five assets is also
+  `cmp`-identical to staged, all five, and `sha256sum -c` over it
+  passes 4/4.
+- Installer matrix 6/6 twice, once against the staged dir and once
+  against that full fresh download: pass, corrupt and unlisted, each on
+  the GNU host and in the busybox container, with no case differing
+  between the two sources.
+- Local ~/.local/bin/temur refreshed from the freshly DOWNLOADED i686
+  asset rather than from the staged copy, so the chain runs published
+  to installed: it prints "temur 0.27.0" and hashes 3642f989..., which
+  is the published i686 entry in the downloaded SHA256SUMS and is
+  identical to the staged i686 sha as well. It previously held the
+  v0.26.0 i686 artifact, f71fa66e.
+- Every run this cycle was run_attempt 1 (the T38 push 32872948560, the
+  prep push 32875892636, and the acceptance push below), so v0.27.0 is
+  the FOURTH consecutive zero-rerun cycle since the streak restarted at
+  v0.24.0.
+- Residuals, unchanged by shipping and all of them named in the T38
+  acceptance record, the stage-1 delta and `docs/COMPARISON.md`: no
+  wall-clock cause, no OOM mechanism, A-record matches rather than SNI,
+  the unidentified `oom` file, home turf until a neutral suite exists,
+  the T36 guard still never fired live, and T38's own limit, that the
+  control model both writes prose calls and ignores correction so
+  nothing is known about a model that does the first but not the
+  second.
+
+What v0.27.0 does NOT change: no product code shipped in it. The
+binary differs from v0.26.0 only by its version string. The milestone
+was a measurement and a comparison-driver change, and the release
+exists so the measured control has a versioned artifact behind it.
