@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.26.0 - 2026-08-25
+
 - **A measured comparison against OpenCode and Codex CLI**, in
   `docs/COMPARISON.md`: the same nine tasks, byte-identical, driving
   the same local model on the same machine, plus a footprint table.
