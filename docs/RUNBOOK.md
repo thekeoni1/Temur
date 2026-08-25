@@ -6835,3 +6835,90 @@ with ledger lines carrying the harness name and `results.txt` headers
 carrying `prose_tool_calls=`. Conditions, per-cell reports, the
 analysis script and the preflight probe under
 `~/temur-eval-archive/t38-recovery-control/`.
+
+## v0.27.0 acceptance - recorded result (recorded at stage 1, before its release)
+
+What shipped: T38 alone, the recovery-disabled control run. The T38
+acceptance record above carries the conditions, the preflight, the
+per-cell counts and the limits; `docs/COMPARISON.md` carries the
+published control tables. This delta records the release mechanics
+rather than restating the milestone.
+
+Stage 1:
+
+- Two T38 commits pushed 769d323..f51b4a8 (237e792 P1, the
+  `temur-noprose` harness and the `HARNESSES` list; f51b4a8 P2+P3, the
+  measurement and the docs). On-push ci run 32872948560 on headSha
+  f51b4a8 green in both jobs, first try, run_attempt 1 (test 1m13s
+  16:36:15Z..16:37:28Z, release-gate 4m31s 16:36:16Z..16:40:47Z).
+  Fourth consecutive zero-rerun cycle.
+- Three local prep commits: d08252f bump (the mechanical four-file edit
+  through `scripts/bump_version.sh`: Cargo.toml, the temur entry in
+  Cargo.lock with `untrusted` still at its own 0.9.0, the
+  scripts/install.sh VERSION line, and the five README tag pins),
+  a30eb71 CHANGELOG cut to "## v0.27.0 - 2026-08-25" with a fresh empty
+  Unreleased above it and no entry text touched, and this close-out.
+- No rider. The stage-1 greenlight offered an optional CLAUDE.md
+  scope-line reword with a matching README sentence, conditional on the
+  operator supplying wording. No wording was supplied, so nothing was
+  written; a scope reword invented here would be the build agent
+  editing its own instruction set on its own authority.
+- Lock-file version collision check: a grep for the RETIRED version,
+  0.26.0, across the four bumped files is zero in all four. `darling`,
+  `darling_core` and `darling_macro` still carry their own
+  `version = "0.23.0"` and `ratatui` its own `0.29.0`, unrelated to the
+  temur version. The temur lock entry is 0.27.0 and the whole lock diff
+  is one line.
+- Full `scripts/check.sh` on the prep head: ALL CHECKS PASSED, exit 0,
+  wall clock 3m27s, all three TUI pty smokes OK (host, gnu, musl) with
+  the hang signature never appearing, and the bare busybox container
+  printing "temur 0.27.0".
+- The assertion count is UNCHANGED at 1667 over 48 "N passed" lines,
+  and that is the right result rather than a missed count: T38 added no
+  Rust tests and no gate stage. Its work was a shell driver and a
+  measurement. The counting convention is the same one the v0.26.0
+  record pinned: 1667/48 counts every "N passed" occurrence in the log,
+  where a narrower start-of-line pattern reads 944 over the same
+  unchanged gate.
+- Deviation, recorded rather than tidied: the two eval matrices ran
+  DETACHED under `nohup`, not in the foreground. The foreground rule
+  exists for `scripts/check.sh`, and every gate in this milestone ran
+  foreground under a pty and teed; a matrix is hours of measurement
+  with its own archived log and its own heavy-job lock, and T37 ran the
+  same way. Recorded because the shape of the rule matters more than
+  the exception to it.
+
+What stage 2 still has to do: tag v0.27.0 AT the close-out commit with
+the message exactly "temur v0.27.0 - recovery control run (T38)",
+verified against the object rather than against `git tag -l`; run
+`release.sh` with no SKIP_CHECK; `metadata_drift.sh` fourth outing with
+its result recorded whichever way it lands; confirm `isPrivate` before
+and after publishing; the closing gate on the downloaded artifact;
+ship record; refresh `~/.local/bin/temur`. Do not retag.
+
+### Residuals carried into v0.27.0
+
+One T37 residual is CLOSED by this milestone: temur's Coder-3B result
+is no longer read off transcripts alone, it is measured against a
+control. Every other one is carried forward unclosed, including the
+ones that make the published comparison weaker.
+
+- The wall-clock differences between harnesses are still reported and
+  still unattributed. T38 adds a fourth column of durations and
+  attributes none of them either.
+- The OOM mechanism under a per-cell server was never established, only
+  its observed remedy.
+- The off-box connection findings are A-record matches, not SNI
+  captures.
+- The stray `oom` file remains unidentified and was not reproduced.
+- It is still temur's own task suite on temur's own machine. The
+  neutral-suite item (Terminal-Bench adapter) is untouched and stays
+  queued.
+- NEW, from T38 itself: the control model both writes prose calls and
+  ignores correction, so nothing is known about a model that writes
+  prose calls but does respond to a nudge.
+- Still open from T36: the futile-call loop guard has never fired
+  against a live model. It did not fire here either, and the T38 cells
+  are a clean negative rather than an absence of evidence, since the
+  only notice line appearing anywhere in them is the 36 prose-call
+  nudges.
