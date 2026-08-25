@@ -6604,3 +6604,95 @@ notices, so the guard correctly stayed silent through legitimate work
 at a volume no earlier run had reached. It has still never fired
 against a live served model in a real doom loop, and 6 and 18 remain a
 judgement made against one archived run.
+
+## v0.26.0 ship record - shipped private
+
+Stage 2, run on 2026-08-25. The stage-1 delta above records the push,
+the prep commits and the gate; this records the release itself.
+
+- Three prep commits pushed 52edeef..6d1f553 (bump, CHANGELOG cut,
+  close-out). On-push ci run 32850932138 on headSha 6d1f553 green in
+  both jobs, run_attempt 1 (test 2m34s 13:02:01Z..13:04:35Z,
+  release-gate 7m40s 13:02:01Z..13:09:41Z).
+- `scripts/metadata_drift.sh` preflight, THIRD real outing, captured
+  verbatim rather than summarised:
+
+      PASS: fable (claude-fable-5): context 1000000, input $10/MTok, output $50/MTok
+      PASS: haiku (claude-haiku-4-5): context 200000, input $1/MTok, output $5/MTok
+      PASS: opus (claude-opus-5): context 1000000, input $5/MTok, output $25/MTok
+      PASS: sonnet (claude-sonnet-5): context 1000000, input $2/MTok, output $10/MTok
+      all 4 baked profiles match models.dev
+
+  Exit 0, no DRIFT line, so there was no decision to record this cycle.
+  The sonnet 2/10 correction from T35 P1 is re-confirmed for the third
+  time running.
+- Annotated tag v0.26.0 created AT 6d1f553, tag object
+  982e33f9717e0bbe3a784e910b4fdb712917eaa0, and verified from the RAW
+  object with `git cat-file tag v0.26.0 | od -c` BEFORE pushing, not
+  from `git tag -l --format`, which appends a newline of its own. The
+  dump shows the header naming object 6d1f553c..., type commit, tag
+  v0.26.0, then a blank line and exactly one message line:
+
+      temur v0.26.0 - harness comparison (T37)
+
+  terminated by a single `\n` with nothing after it, and the separator
+  is an ASCII hyphen (`-`, one byte) rather than any dash the prose
+  sweeps look for.
+- `scripts/release.sh` run with NO SKIP_CHECK, green first try,
+  09:10:14 to 09:12:44, exit 0. check.sh ran in full inside it and the
+  tally proves it: 1667 passing assertions over 48 "N passed"
+  occurrences with zero failed and zero ignored, all three TUI pty
+  smokes OK (host, gnu, musl) with the hang signature never appearing,
+  bare busybox printing "temur 0.26.0". Leak grep clean,
+  install.sh/README skew gate OK at 0.26.0, 4/4 targets gated and
+  staged. Log archived as
+  `~/temur-eval-archive/t37-harness-compare-v2-pertask/t37-gate-logs/v0260-release-2026-08-25.log`.
+- The fast release run is the same residual disclosed at v0.24.0 and
+  v0.25.0, with the same cause, checked rather than assumed. The staged
+  i686-musl binary still carries mtime 07:45:53, from the stage-1 gate,
+  while the three cross targets were compiled fresh and finished at
+  09:12:34 (aarch64), 09:12:42 (armv7) and 09:12:43 (x86_64). The
+  close-out commit changed only `docs/RUNBOOK.md`, so every Rust input
+  was byte-identical and cargo correctly reused the i686 artifact. Two
+  details that look wrong at a glance and are not: the log contains no
+  "Compiling" lines because release.sh builds with `cargo build
+  --quiet`, and the three cross-target mtimes do not follow the printed
+  target order because release.sh passes all four targets to ONE cargo
+  invocation, so their codegen tails overlap and finish interleaved.
+  SKIP_CHECK was never set and the gate tally above is the full one.
+- Staged sha256s, all four plus the sums file:
+  64ee0a8d aarch64, a9da0650 armv7, f71fa66e i686, 89ba589f x86_64,
+  55bfa58b SHA256SUMS.
+- Private release created with 5 assets, not draft, not prerelease,
+  title "temur v0.26.0 - harness comparison (T37)", notes = the
+  CHANGELOG v0.26.0 section verbatim. Repo isPrivate confirmed true
+  BEFORE creating it and again AFTER.
+- Closing gate: the x86_64 asset and SHA256SUMS were re-downloaded
+  fresh from the release and both are `cmp`-identical to staged; the
+  downloaded x86_64 re-hashes to 89ba589f..., and `sha256sum -c` on the
+  downloaded SHA256SUMS is OK. A second, FULL download of all five
+  assets is also `cmp`-identical to staged, all five, and
+  `sha256sum -c` over it passes 4/4.
+- Installer matrix 6/6 twice, once against the staged dir and once
+  against that full fresh download: pass, corrupt and unlisted, each on
+  the GNU host and in the busybox container, with no case differing
+  between the two sources.
+- Local ~/.local/bin/temur refreshed from the freshly DOWNLOADED i686
+  asset rather than from the staged copy, so the chain runs published
+  to installed: it prints "temur 0.26.0" and hashes f71fa66e..., which
+  is the published i686 entry in the downloaded SHA256SUMS and is
+  identical to the staged i686 sha as well. It previously held the
+  v0.25.0 i686 artifact, a2dee2b2.
+- Both stage runs this cycle were run_attempt 1, as was the T37 push,
+  so v0.26.0 is the third consecutive zero-rerun cycle since the streak
+  restarted at v0.24.0.
+- Residuals, unchanged by shipping and all of them named in the
+  stage-1 delta and in `docs/COMPARISON.md`: no wall-clock cause, no
+  established OOM mechanism, network peers matched by A record rather
+  than captured SNI, the unidentified `oom` file, the comparison still
+  on temur's home turf until a neutral suite exists, and temur's
+  Coder-3B result read off transcripts rather than measured against a
+  recovery-disabled control. The T36 residual also still stands: the
+  futile-call guard has never fired against a live served model, and
+  the 67-recovery cell in T37 shows only that it correctly stayed
+  silent through legitimate work.
