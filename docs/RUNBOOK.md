@@ -6496,3 +6496,111 @@ ledgers, transcripts, per-task memory lines, gate logs under
 `network.txt` with the raw `ss` captures. The retired per-cell block
 survives under `t37-harness-compare/` with its aborted cells
 quarantined in `aborted-blocks/`, each carrying a `WHY-ABORTED.txt`.
+
+## v0.26.0 acceptance - recorded result (recorded at stage 1, before its release)
+
+What shipped: T37 alone, the harness comparison. The T37 acceptance
+record above carries the per-phase detail, the OOM arc, the memory
+corrections and the residuals; `docs/COMPARISON.md` carries the
+published tables. This delta records the release mechanics rather than
+restating the milestone.
+
+Stage 1:
+
+- Nine T37 commits pushed e01ecb7..52edeef (P1 the driver, four P2
+  commits for server hygiene, the memory-units and run-number riders,
+  per-task restarts and the mechanical heavy-job lock, then the
+  retraction of the unverified OOM mechanism and the `/health` 200
+  fix, P3 `TASK_ONLY` with the prompt-size correction, P4 the docs).
+  On-push ci run 32843422650 on headSha 52edeef green in both jobs,
+  first try, run_attempt 1 (test 1m14s 11:39:18Z..11:40:32Z,
+  release-gate 4m07s 11:39:18Z..11:43:25Z). Third consecutive
+  zero-rerun cycle.
+- Both jobs again carry the GitHub-side annotation that
+  actions/cache@v4 and actions/checkout@v4 (and
+  actions/upload-artifact@v4 on the release-gate job) target the
+  deprecated Node.js 20 and are being forced onto Node.js 24. Same
+  runner deprecation notice recorded for v0.24.0 and v0.25.0, not a
+  temur failure and not new; both jobs concluded success.
+- Three local prep commits: 73d7a80 bump (the mechanical four-file
+  edit through scripts/bump_version.sh, Cargo.toml, the temur entry in
+  Cargo.lock with `untrusted` still at its own 0.9.0, the
+  scripts/install.sh VERSION line, and the five README tag pins),
+  d2cf30c CHANGELOG cut to "## v0.26.0 - 2026-08-25" with a fresh empty
+  Unreleased above it and no entry text touched (two lines added, none
+  removed), and this close-out.
+- Lock-file version collision check: a grep for the RETIRED version,
+  0.25.0, across the four bumped files is zero in all four. `darling`,
+  `darling_core` and `darling_macro` still carry their own
+  `version = "0.23.0"` lines, three releases behind the temur version
+  now and unrelated to it. The temur lock entry is 0.26.0 and the whole
+  lock diff is one line.
+- Full `scripts/check.sh` on the prep head: ALL CHECKS PASSED, exit 0,
+  wall clock 3m28s, all three TUI pty smokes OK (host, gnu, musl) with
+  the hang signature never appearing, and the bare busybox container
+  printing "temur 0.26.0".
+- The assertion count is UNCHANGED at 1667 over 48 "N passed"
+  occurrences, zero failed and zero ignored, and unchanged is the
+  correct result rather than a missed count: T37 added no Rust tests.
+  Its only new gate work is `tests/harness_compare_drift.sh`, which
+  check.sh runs as its own stage, "== T37 harness-compare prompt
+  drift ==", and which contributes no cargo assertions at all.
+  One counting note, so the next sweep does not read a regression into
+  it. The 1667/48 figure counts every "N passed" occurrence in the log.
+  A narrower pattern, lines matching "test result: ok", finds 30 lines
+  summing to 944 in this log, in the v0.25.0 stage-1 log, and in the
+  T37 P4 phase-gate log alike. The two numbers are two conventions over
+  the same unchanged gate, not two measurements, and the wider one is
+  what previous acceptance records used.
+- Log archived beside the T37 gate logs as
+  `~/temur-eval-archive/t37-harness-compare-v2-pertask/t37-gate-logs/v0260-stage1-check-2026-08-25.log`.
+- Archive consolidation, ordered at P4 verification: the five p1- and
+  p2-era gate logs were copied from the top-level
+  `~/temur-eval-archive/t37-gate-logs/` into the nested
+  `t37-harness-compare-v2-pertask/t37-gate-logs/`, so the archive the
+  T37 acceptance section names is self-complete. Nine logs there now,
+  all distinct; their identical 21477-byte size is the fixed-format
+  gate output, and the md5s and the "Script done on" timestamps differ.
+- One leftover container was found and removed. The T37 llama-server
+  (`temur-llama`, ctx 12288) was still up ten hours after the last
+  probe. The gate above ran green with it still holding its memory,
+  which is worth recording rather than hiding; it was stopped and
+  removed afterwards, and the end state carries no containers.
+
+What stage 2 still has to do, none of it run yet: push the three prep
+commits, tag AT the close-out with a one-line message verified against
+the raw object, run release.sh with no SKIP_CHECK, the third outing of
+the metadata_drift.sh preflight, stage and record the four sha256s,
+confirm a private release of five assets with isPrivate true before and
+after, re-download and cmp at the closing gate, run the installer
+matrix, write the ship record, take the final ci run green, and refresh
+~/.local/bin/temur. Nothing is tagged, nothing is published, and main
+is ahead of origin by exactly these three commits.
+
+Residuals carried forward unclosed, all of them from T37 itself:
+
+- The wall-clock differences between harnesses are uninstrumented and
+  COMPARISON.md attributes no cause to them.
+- The OOM mechanism was never established. Per-task restarts were
+  adopted because they held anon memory flat across a whole cell, which
+  is evidence of effect and not a diagnosis.
+- The network peers are A-record matches, not captured SNI, and the
+  published table says so in those words.
+- The stray `oom` file is still unidentified. The detector was armed at
+  14:53 on 2026-08-24 and ran clean through both full matrices, three
+  phase gates and every probe; its only two DETECTED entries are its
+  own self-test, stamped at the moment of arming.
+- The comparison remains on temur's home turf until a neutral suite
+  exists. The Terminal-Bench adapter is queued at tier 2.
+- temur's Qwen2.5-Coder-3B score resting wholly on prose-call recovery
+  is read off the transcripts, not measured against a control. The
+  recovery-disabled run is queued, and the knob it needs does not exist
+  yet, which is the work.
+
+The T36 residual also stands, and T37 is the first evidence that bears
+on it without closing it. One Coder-3B cell ran 67 prose-call
+recoveries and scored 9/9 with the futile-call guard emitting zero
+notices, so the guard correctly stayed silent through legitimate work
+at a volume no earlier run had reached. It has still never fired
+against a live served model in a real doom loop, and 6 and 18 remain a
+judgement made against one archived run.
