@@ -6346,3 +6346,153 @@ Stage 2:
   against a live served model. Shipping does not close that, and the
   next honest step remains a llama.cpp re-run of the archived eval task
   to watch the notice land at call 13 for real.
+
+## T37 acceptance - harness comparison (recorded 2026-08-24, before its release)
+
+Ran as five phases against RELEASED competitor builds, offline except
+the installs and the local server. No API key, no hosted provider, no
+frontier model anywhere in it.
+
+### What was pinned
+
+temur 0.25.0 (x86_64 static-pie for every run, verified with `file` on
+the binary the driver actually invokes), opencode 1.18.21 glibc asset,
+codex-cli 0.149.0. Server `ghcr.io/ggml-org/llama.cpp:server-b10438`,
+digest `sha256:190813e82f33a82f506e66826f367004a3159f8b8139b11d07566437aecdac93`.
+Models `3605803b...` (Qwen3-4B-Instruct-2507-Q4_K_M) and `32f00144...`
+(Qwen2.5-Coder-3B-Instruct-Q4_K_M). Context 12288, `--parallel 1
+--jinja`, one x86-64 host with 7.61 GiB RAM for all three harnesses.
+
+Prompts are byte-identical by construction, not by care:
+`scripts/harness_compare/tasks.sh` is GENERATED from
+`weak_model_eval.sh`, and `tests/harness_compare_drift.sh` compares raw
+source bytes on every `check.sh` run.
+
+### Results
+
+Qwen3-4B: temur 9/9 + 9/9, codex 8/9 + 8/9 (t7 both runs), opencode
+7/9 + 6/9. Qwen2.5-Coder-3B: temur 8/9 + 9/9, codex 0/9 + 0/9,
+opencode 0/9 + 0/9. Spreads 0 or 1 throughout, so the
+third-run-on-spread-2 rule never fired. No VOID cells in either
+published matrix. Max server anon 3.50-3.79 GiB (Qwen3-4B) and
+1.80-1.83 (Coder-3B).
+
+The Coder-3B result is the milestone's real finding and it is about
+harnesses: the model emits ZERO native tool calls against this server
+build, in any transcript, under any harness. temur's 17/18 rests wholly
+on prose-call recovery (20 recoveries in run 1, 67 in run 2, zero
+native calls). Verified at the wire with no harness involved. The
+template is NOT the cause, the opposite sign from T34: it renders
+`tools` and demands `<tool_call>` tags, and the model emitted its
+PLACEHOLDER syntax literally instead of complying.
+
+### The OOM arc, and the mechanism that was never established
+
+Six kernel OOM kills of llama-server, all under a per-CELL server. The
+authoritative record is dmesg, in its own units, which are KiB:
+anon-rss 6969312, 7065400 and 7105452 kB are 6.65, 6.74 and 6.78 GiB
+against a 7.61 GiB machine.
+
+Diagnosis went through three wrong stops before landing: "ctx too
+large", then "an OpenCode-specific cause", then "build concurrency".
+Kill 6 settled the last one by happening with the heavy-job lock held
+and `check.sh` actively refusing to start. What was finally observed is
+that memory climbs across prompt-processing cycles WITHIN a cell, that
+lowering the context moves where the climb starts without stopping it,
+and that restarting per task holds anon flat.
+
+What the climb IS was never established. An attribution of "server-side
+heap accumulation rather than KV sizing" was written into a comment and
+is RETRACTED (commit b0fd802): nothing here instrumented the allocator.
+Per-task restarts are adopted on evidence of effect, not on a
+diagnosis. The disclosed cost is the forfeited cross-task prefix cache.
+
+### Named lesson: "could not verify" is not "verified fine"
+
+Three separate fail-open bugs in one milestone, all the same shape:
+
+1. An archive-path guard that resolved a non-existent relative path to
+   a literal matching no absolute prefix, so it passed everything.
+2. An `n_slots` read that raced podman's log flush; the empty result
+   satisfied `[ -n "$SLOTS" ] && [ "$SLOTS" -gt 1 ]`.
+3. `server_alive()` using `curl -s -o /dev/null`, which exits 0 on the
+   503 `{"error":"Loading model"}` this build returns while the gguf
+   loads, so a still-loading server was reportable as ready (commit
+   23b1489).
+
+Each was caught by something else failing, never by the guard itself.
+Contamination was swept before fixing the third: zero transcripts
+across all 108 recorded tasks contain a 503 or "Loading model", so no
+published cell was affected; 15 of the 108 recorded `ready=0s`, which
+is the window where it could have bitten.
+
+### Four memory misreports, and the one rule that covers them
+
+1. 4.24 GiB was a STARTUP reading quoted as an operating figure.
+2. 6.29 GiB was cgroup `memory.peak`, which counts anon PLUS
+   reclaimable page cache, quoted as comparable to an anon-rss kill.
+3. The kills were quoted as 6.97/7.07 by dividing KiB by 1e6.
+4. The machine was quoted as 7.43 GiB by converting KiB with x1000 and
+   THEN dividing by 1024^3, a double conversion.
+
+The lesson is not "GiB not GB". Kernel `kB` is ALWAYS KiB, in
+`/proc/meminfo` and dmesg alike, so one rule covers every reading.
+`cgroup_mem()` now reports peak and anon by name so they cannot be
+conflated again.
+
+### A retracted causal story
+
+"OpenCode's prompt tax explains its wall clock" is withdrawn. Measured
+server-side, Codex and OpenCode carry near-identical first requests
+(7413 and 7276 tokens) and very different wall clocks. The wall-clock
+cause was not instrumented and `COMPARISON.md` does not attribute one.
+Character-count figures of "20,751 vs 9,711" quoted earlier had no
+artifact behind them and are withdrawn rather than restored from
+memory.
+
+### Deviations from the plan, in their own words
+
+**Run-1 promotion.** The Qwen3-4B run-1 cells were carried over from an
+earlier block rather than re-run from scratch after the methodology
+changed, and the planning session accepted that. It is a deviation
+because those cells were produced under a procedure the rest of the
+matrix does not use.
+
+**Per-model reporting skipped twice.** Qwen3-4B v2 and P3 were both
+referenced as done by a later phase before either got its own report.
+Nothing was wrong in the artifacts either time, but the rule exists so
+that a phase is verified before the next one leans on it.
+
+### The T36 guard, first real exposure
+
+Run 2 on Coder-3B made 67 prose-call recoveries and produced ZERO
+futile-call notices while scoring 9/9. That is the guard's first
+meaningful exposure to heavy productive repetition and it did not fire,
+which is evidence against false positives under exactly the shape most
+likely to cause them. The standing residual is unchanged: the guard has
+still never fired against a real doom loop in a live session.
+
+### The stray `oom` file: unidentified, not reproduced
+
+A zero-byte `oom` file appeared at the repository root three times, all
+three inside OpenCode cells. A polling detector was armed on
+2026-08-24 at 14:53 and has since covered both full matrices, two
+complete gates and every probe run. It caught nothing but its own
+self-test. The file has not recurred and is absent now.
+
+Unresolved, and recorded as unresolved. The OpenCode association is
+weakened rather than supported, since OpenCode has run four further
+cells under watch without producing it. The harm path is closed
+independently: staging is by explicit path, never `git add -A`, so a
+stray root file cannot be swept into a commit if it returns.
+
+### Artifacts
+
+`~/temur-eval-archive/t37-harness-compare-v2-pertask/` holds per-cell
+ledgers, transcripts, per-task memory lines, gate logs under
+`t37-gate-logs/`, and every probe quoted in `COMPARISON.md` under
+`probes/`: `footprint.txt`, `prompt-sizes.txt`,
+`native-toolcall-probe.txt` with both chat templates, and
+`network.txt` with the raw `ss` captures. The retired per-cell block
+survives under `t37-harness-compare/` with its aborted cells
+quarantined in `aborted-blocks/`, each carrying a `WHY-ABORTED.txt`.

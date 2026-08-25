@@ -74,6 +74,12 @@ record it was; it is not re-measured per release. The current
 per-release matrix, covering every model tested and dated to the pass
 that produced it, lives in [docs/OFFLINE.md](docs/OFFLINE.md).
 
+How temur compares against released builds of OpenCode and Codex CLI,
+driving the same local model on the same machine, is in
+[docs/COMPARISON.md](docs/COMPARISON.md). It was built by temur's side
+against tasks from temur's own eval suite, it says so up front, and it
+publishes the cells temur loses.
+
 The same harness floor is active on every provider, hosted
 included: tool output
 over the per-result cap keeps its true head and tail around a

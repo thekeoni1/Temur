@@ -4,6 +4,21 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **A measured comparison against OpenCode and Codex CLI**, in
+  `docs/COMPARISON.md`: the same nine tasks, byte-identical, driving
+  the same local model on the same machine, plus a footprint table.
+  Headline, on Qwen2.5-Coder-3B: the model emits NO native tool calls
+  at all against this server build, in any transcript, under any of the
+  three harnesses. It writes the call as prose. temur scores 8/9 and
+  9/9 because it executes a tool call written as text; OpenCode and
+  Codex score 0/9 twice each. Same model, sha, server and prompts, so
+  the harness is the whole difference. On Qwen3-4B, where the model
+  does call tools natively, the spread is narrower: temur 9/9 twice,
+  Codex 8/9 twice, OpenCode 7/9 and 6/9.
+  The page leads with the home-turf disclosure, pins every version and
+  sha, and states what it did not establish, including the cause of the
+  wall-clock differences.
+
 ## v0.25.0 - 2026-08-23
 
 - **A rotating repertoire of tool calls no longer runs unbounded.**
