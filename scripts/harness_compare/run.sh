@@ -164,8 +164,14 @@ EOF
 
 # --- run one task -----------------------------------------------------------
 
+# TASK_ONLY=<n> runs exactly one task and skips the rest, for probes that
+# need a single real request from a harness (prompt sizing, cold start)
+# rather than a whole scored cell. Scoring runs never set it, so the
+# matrix is unaffected; `record` honours it too so a skipped task is
+# absent from results rather than recorded as a failure it never had.
 run_task() {
     n=$1; name=$2; prompt=$3
+    if [ -n "${TASK_ONLY:-}" ] && [ "$n" != "$TASK_ONLY" ]; then return 0; fi
     work="$WORKROOT/task$n"
     mkdir -p "$work"
     ( cd "$work" && git init -q . )
@@ -212,6 +218,7 @@ run_task() {
 
 # record <n> <name> <PASS|FAIL>
 record() {
+    if [ -n "${TASK_ONLY:-}" ] && [ "$1" != "$TASK_ONLY" ]; then return 0; fi
     verdict=$3
     [ "$TIMED_OUT" = 1 ] && verdict=FAIL
     # A task whose server was not healthy around it is not a measurement.

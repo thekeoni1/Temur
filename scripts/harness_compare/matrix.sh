@@ -54,10 +54,14 @@ LLAMA_IMAGE="${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b10438}"
 # every one of these readings. See cgroup_mem(), which reports the two
 # distinct quantities by name so they cannot be conflated again.
 #
-# 12288 keeps enough headroom above OpenCode's ~7.2k-token system prompt
-# that the table measures capability rather than context exhaustion, which
-# was Decision C's actual requirement. Verified: a full three-harness run 1
-# completed at 12288 with every server alive at the end of its cell.
+# 12288 keeps enough headroom above the competitors' first requests, which
+# are the large ones (measured server-side: codex 7413 tokens, opencode
+# 7276, temur 2761), so that the table measures capability rather than
+# context exhaustion. That was Decision C's actual requirement. The
+# rationale was first written as an OpenCode-specific figure; it is not
+# OpenCode-specific, and codex carries the largest prompt of the three.
+# Verified: a full three-harness run 1 completed at 12288 with every
+# server alive at the end of its cell.
 CTX="${CTX:-12288}"
 export ARCHIVE_DIR MODEL_LABEL CTX
 
