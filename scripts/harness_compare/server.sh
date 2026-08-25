@@ -28,8 +28,18 @@
 LLAMA_IMAGE="${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b10438}"
 CONTAINER="${CONTAINER_NAME:-temur-llama}"
 
+# Alive means "answers /health with 200", not "answers at all". While the
+# gguf is still loading this build replies 503 {"error":"Loading model"},
+# and a bare `curl -o /dev/null` succeeds on that: the request completed,
+# so the shell sees exit 0 and a loading server is reported ready. That is
+# the same fail-open shape as two other bugs caught in T37 (a path guard
+# that passed when it could not resolve, and an n_slots read that passed
+# when it read nothing). "Could not verify" is not "verified fine", so the
+# status code is checked explicitly.
 server_alive() {
-    curl -s -o /dev/null --max-time 10 http://127.0.0.1:8080/health 2>/dev/null
+    _code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+        http://127.0.0.1:8080/health 2>/dev/null || true)
+    [ "$_code" = "200" ]
 }
 
 server_stop() {
