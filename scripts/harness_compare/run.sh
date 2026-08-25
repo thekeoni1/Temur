@@ -4,6 +4,16 @@
 # same byte-identical prompts (scripts/harness_compare/tasks.sh, pinned by
 # tests/harness_compare_drift.sh).
 #
+# T38 adds a FOURTH harness value, `temur-noprose`: the same temur binary
+# invoked the same way, with one config field flipped
+# (`"prose_tool_calls": false`). That is T19 P3's off switch, and it turns
+# off EXECUTION of a tool call the model wrote as prose while leaving
+# detection and the corrective nudge on. It is a harness NAME rather than
+# an env knob on purpose: cell directories, the ledger, the already-scored
+# skip guard and the summary then all separate the two temur
+# configurations by construction instead of by an operator remembering
+# which env the cell ran under.
+#
 # What this measures and what it does not. It measures pass/fail by
 # FILESYSTEM assertion, wall clock, and request count where the harness or
 # the wire exposes it. Model prose is never evidence. It does not measure
@@ -13,7 +23,7 @@
 # temur's own eval. See docs/COMPARISON.md.
 #
 # Usage: scripts/harness_compare/run.sh <harness> <run-number>
-#          harness = temur | opencode | codex
+#          harness = temur | temur-noprose | opencode | codex
 # Env:   MODEL_LABEL   name recorded in results (default: the served gguf)
 #        ARCHIVE_DIR   where transcripts/results land
 #        TASK_TIMEOUT  seconds per task (default 1200, ENFORCED)
@@ -24,8 +34,34 @@
 set -eu
 cd "$(dirname "$0")/../.."
 
-HARNESS=${1:?usage: run.sh <temur|opencode|codex> <run-number>}
-RUN=${2:?usage: run.sh <temur|opencode|codex> <run-number>}
+HARNESS=${1:?usage: run.sh <temur|temur-noprose|opencode|codex> <run-number>}
+RUN=${2:?usage: run.sh <temur|temur-noprose|opencode|codex> <run-number>}
+
+# Fail closed on an unknown harness, HERE: before any archive directory is
+# created, any config is written and any model is loaded. A typo that fell
+# through to `"adapter_$HFN"` would die at a "not found" only after a
+# server start, having already made a cell directory that looks like an
+# attempt.
+case "$HARNESS" in
+    temur|temur-noprose|opencode|codex) ;;
+    *)
+        echo "FAIL: unknown harness '$HARNESS'" >&2
+        echo "  expected one of: temur temur-noprose opencode codex" >&2
+        exit 1 ;;
+esac
+# Harness names index shell functions, and `temur-noprose` is not a legal
+# function name, so the function suffix is the name with hyphens folded to
+# underscores. The NAME keeps its hyphen everywhere it is data: archive
+# paths, results, ledger.
+HFN=$(printf '%s' "$HARNESS" | tr '-' '_')
+
+# The one bit under test. Recorded in the results header for every temur
+# cell so a transcript or a score can never be attributed to the wrong
+# configuration after the fact.
+case "$HARNESS" in
+    temur-noprose) PROSE_TOOL_CALLS=false ;;
+    *)             PROSE_TOOL_CALLS=true ;;
+esac
 
 TASK_TIMEOUT="${TASK_TIMEOUT:-1200}"
 BASE_URL="${BASE_URL:-http://127.0.0.1:8080/v1}"
@@ -69,7 +105,19 @@ esac
 OUT="$ARCHIVE_DIR/$MODEL_LABEL/$HARNESS/run$RUN"
 mkdir -p "$OUT/transcripts" "$OUT/work"
 RESULTS="$OUT/results.txt"
-: > "$RESULTS"
+# Provenance header. Comment-prefixed so every existing consumer, all of
+# which key on a leading SCORE or VOID or on the tab-separated task rows,
+# reads it as before. `prose_tool_calls` is emitted for the temur harnesses
+# only, where it means something.
+{
+    printf '# harness=%s\n' "$HARNESS"
+    printf '# model=%s\n' "$MODEL_LABEL"
+    printf '# run=%s\n' "$RUN"
+    printf '# ctx=%s\n' "$CTX"
+    case "$HARNESS" in
+        temur|temur-noprose) printf '# prose_tool_calls=%s\n' "$PROSE_TOOL_CALLS" ;;
+    esac
+} > "$RESULTS"
 
 WORKROOT="$OUT/work"
 PASSES=0
@@ -102,6 +150,12 @@ adapter_temur() {
         "$TEMUR_BIN" --plain ) > "$t" 2>&1
 }
 
+# The control. Byte-identical invocation to adapter_temur: same binary,
+# same flags, same env, same cwd. The ONLY difference between the two
+# harnesses lives in setup_temur_noprose's config file, which is the point
+# of the control and is why this delegates rather than copying the command.
+adapter_temur_noprose() { adapter_temur; }
+
 adapter_opencode() {
     # -m pins the model EXPLICITLY. Without a resolvable provider config
     # OpenCode silently falls back to a hosted model (observed: "big-pickle",
@@ -123,6 +177,15 @@ adapter_codex() {
 setup_temur() {
     mkdir -p "$OUT/cfg/temur" "$OUT/state"
     printf '{"provider":"openai-compat","max_tokens":%s,"prompt_profile":"compact","openai_compat":{"model":"local-gguf","context_window":%s,"base_url":"%s"}}\n' \
+        "$MAX_TOKENS" "$CTX" "$BASE_URL" > "$OUT/cfg/temur/config.json"
+}
+
+setup_temur_noprose() {
+    mkdir -p "$OUT/cfg/temur" "$OUT/state"
+    # setup_temur's template with ONE added field. `prose_tool_calls`
+    # false is T19 P3's documented off switch (docs/USAGE.md): a prose
+    # tool call is still detected and still nudged, it is never executed.
+    printf '{"provider":"openai-compat","max_tokens":%s,"prompt_profile":"compact","prose_tool_calls":false,"openai_compat":{"model":"local-gguf","context_window":%s,"base_url":"%s"}}\n' \
         "$MAX_TOKENS" "$CTX" "$BASE_URL" > "$OUT/cfg/temur/config.json"
 }
 
@@ -196,7 +259,7 @@ run_task() {
     fi
 
     start=$(date +%s)
-    "adapter_$HARNESS" || rc=$?
+    "adapter_$HFN" || rc=$?
     SECS=$(( $(date +%s) - start ))
     if [ "$rc" -ne 0 ] && [ "$SECS" -ge "$TASK_TIMEOUT" ]; then TIMED_OUT=1; fi
     strip_ansi "$t" > "$t.plain" 2>/dev/null || : > "$t.plain"
@@ -250,8 +313,12 @@ record() {
 # Fixtures and assertions mirror weak_model_eval.sh's run_round; the PROMPTS
 # come from tasks.sh and are pinned byte-identical to it.
 
-"setup_$HARNESS"
-echo "== $HARNESS run $RUN | model $MODEL_LABEL | ctx $CTX | timeout ${TASK_TIMEOUT}s =="
+"setup_$HFN"
+BANNER_PROSE=""
+case "$HARNESS" in
+    temur|temur-noprose) BANNER_PROSE=" | prose_tool_calls $PROSE_TOOL_CALLS" ;;
+esac
+echo "== $HARNESS run $RUN | model $MODEL_LABEL | ctx $CTX | timeout ${TASK_TIMEOUT}s$BANNER_PROSE =="
 
 n=1; run_task "$n" write-file "$PROMPT_1"
 [ "$(trimmed "$WORKROOT/task$n/hello.txt")" = "hello-eval" ] \

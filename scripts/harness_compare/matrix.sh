@@ -17,11 +17,32 @@
 # Usage: scripts/harness_compare/matrix.sh <model-label> [runs]
 # Env:   CTX (default 12288, the T37 Decision C amended value)
 #        RUN_START, FORCE, MODELS_DIR, LLAMA_IMAGE, ARCHIVE_DIR
+#        HARNESSES  space-separated harness list, default "temur codex
+#                   opencode" which is byte-identical to the T37 behaviour.
+#                   `temur-noprose` (T38) is the recovery-disabled control:
+#                   same binary, same invocation, `prose_tool_calls` false.
 set -eu
 cd "$(dirname "$0")/../.."
 
 MODEL_LABEL=${1:?usage: matrix.sh <model-label> [runs]}
 RUNS=${2:-2}
+# Default is exactly the T37 three, in the T37 order, so an unset
+# HARNESSES reproduces the published matrices unchanged.
+HARNESSES="${HARNESSES:-temur codex opencode}"
+# Fail closed on an unknown name BEFORE anything expensive or stateful
+# happens: before the heavy-job lock is taken, before the ledger is
+# appended to, and long before a server starts. A matrix that dies on a
+# typo three cells in has already burned an hour and written a ledger that
+# has to be read carefully afterwards.
+for h in $HARNESSES; do
+    case "$h" in
+        temur|temur-noprose|opencode|codex) ;;
+        *)
+            echo "FAIL: unknown harness '$h' in HARNESSES" >&2
+            echo "  expected names from: temur temur-noprose opencode codex" >&2
+            exit 1 ;;
+    esac
+done
 CONTAINER="${CONTAINER_NAME:-temur-llama}"
 # v2 subtree: the per-CELL-server artifacts in t37-harness-compare/ are the
 # record of attempts 1-6 and are not overwritten. Everything scored under
@@ -97,13 +118,14 @@ LEDGER="$ARCHIVE_DIR/$MODEL_LABEL/ledger.txt"
     echo "temur: $("${TEMUR_BIN:-$HOME/harnesses/temur/temur}" --version 2>&1)"
     echo "opencode: $("${OPENCODE_BIN:-$HOME/harnesses/opencode-glibc/opencode}" --version 2>&1)"
     echo "codex: $("${CODEX_BIN:-$HOME/harnesses/codex/codex}" --version 2>&1)"
+    echo "harnesses: $HARNESSES"
     echo "runs: $RUNS starting at ${RUN_START:-1}"
     echo "server_policy: fresh server per TASK, liveness checked around each"
     echo "--- per-cell ---"
 } >> "$LEDGER"
 # Appended, never truncated: re-invoking for a later run must not erase the
 # provenance of cells that already ran.
-tail -12 "$LEDGER"
+tail -13 "$LEDGER"
 
 # RUN_START exists because re-invoking this script used to restart at run 1
 # and truncate a completed cell's results file before the replacement had
@@ -113,7 +135,7 @@ tail -12 "$LEDGER"
 r="${RUN_START:-1}"
 LAST=$((r + RUNS - 1))
 while [ "$r" -le "$LAST" ]; do
-    for h in temur codex opencode; do
+    for h in $HARNESSES; do
         EXISTING="$ARCHIVE_DIR/$MODEL_LABEL/$h/run$r/results.txt"
         if [ "${FORCE:-0}" != "1" ] && grep -q '^SCORE' "$EXISTING" 2>/dev/null; then
             echo "---- $MODEL_LABEL / $h / run $r: SKIPPED, already scored ----"
