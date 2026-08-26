@@ -145,6 +145,15 @@ adapter_temur() {
     # The cd is load-bearing: temur resolves the model's relative paths
     # against its OWN cwd, and this driver runs from the repo root, so
     # without it the tasks write into the checkout instead of the work dir.
+    #
+    # `--plain` reads ONE LINE PER TURN, and that is safe HERE only because
+    # every prompt in tasks.sh is a single line, pinned by
+    # tests/harness_compare_drift.sh. Do not copy this invocation to a suite
+    # with multi-line prompts: T39 did exactly that against Terminal-Bench,
+    # where 12 of 16 instructions are multi-line, and temur received only the
+    # first line as its task while the rest arrived as separate user messages
+    # after the turn had ended. The whole first temur matrix was invalid. A
+    # multi-line prompt needs one-shot `-p "$prompt"` instead.
     ( cd "$work" && printf '%s\n' "$prompt" | timeout -s KILL "$TASK_TIMEOUT" env \
         XDG_CONFIG_HOME="$OUT/cfg" XDG_STATE_HOME="$OUT/state" \
         "$TEMUR_BIN" --plain ) > "$t" 2>&1

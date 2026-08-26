@@ -293,6 +293,149 @@ proof of a hostname; SNI was not captured. temur was probed
 identically, and the claim is publishable because of that rather than
 in spite of it.
 
+## Terminal-Bench 2 (neutral suite)
+
+Everything above this section uses tasks written for temur's own eval.
+This section does not. It is the first result here on an
+externally authored suite.
+
+**Headline: pass rate does not separate the three harnesses at this
+model. Timeouts and wall clock do.**
+
+### Conditions
+
+Harbor 0.22.0 driving `terminal-bench/terminal-bench-2` (89 tasks),
+run 2026-08-25 and 2026-08-26 on the same box as every other table
+here. Model Qwen3-4B-Instruct-2507 Q4_K_M on
+`ghcr.io/ggml-org/llama.cpp:server-b10438`, ctx 12288, `--parallel 1`,
+a fresh server per cell, one trial at a time. Harness versions pinned:
+temur 0.27.0 (x86_64 static musl, sha256 `d962af97...`, verified
+against the published SHA256SUMS and re-verified by the adapter on
+every cell), codex 0.149.1, opencode 1.18.23. Harbor installs the
+latter two with `@latest` by default, which is drift rather than a
+measurement, so both were pinned explicitly.
+
+A 16-task subset was **pre-registered before any score was seen**, by a
+mechanical rule: exclude every task requesting 4096 MB or more, then
+take all remaining easy tasks followed by medium tasks in ascending
+agent timeout, ties by name, until 16. The rule is a resource rule and
+applies uniformly, so one easy task (`overfull-hbox`, 4096 MB) is
+excluded and the subset holds 3 easy and 13 medium. The subset file is
+`subset.txt`, sha256 `57160ac7b535027acc7e7385577405e8e4de8a62b78e3f307c45558cc6fc7362`,
+hashed into the run ledger before the first cell.
+
+Each task carries its own agent budget from the suite, median 900s.
+That budget is the suite's, and it was not changed: Terminal-Bench
+defines a task as its instruction plus its budget, so a harness that
+cannot finish inside the budget has not solved it, and raising the
+clock would make these cells incomparable to anyone else's.
+
+### Result
+
+Pass rate over all 16 subset tasks, timeouts counted as failures.
+
+| harness | run 1 | run 2 | reproducible pass |
+|---|---|---|---|
+| temur 0.27.0 | 1/16 | 1/16 | yes |
+| codex 0.149.1 | 1/16 | 0/16 | no |
+| opencode 1.18.23 | 1/16 | 1/16 | yes |
+
+Spread was at most 1, below the threshold that would have triggered a
+third run.
+
+| harness / run | pass | fail | timeout | ctx-exhausted | VOID |
+|---|---|---|---|---|---|
+| temur r1 | 1 | 11 | 3 | 1 | 0 |
+| temur r2 | 1 | 12 | 1 | 2 | 0 |
+| codex r1 | 1 | 9 | 4 | 2 | 0 |
+| codex r2 | 0 | 10 | 5 | 1 | 0 |
+| opencode r1 | 1 | 15 | 0 | 0 | 0 |
+| opencode r2 | 1 | 15 | 0 | 0 | 0 |
+
+`ctx-exhausted` is a cell that died when a request exceeded the pinned
+12288 window. It is a scored failure like any other, and it is not
+specific to one harness: temur hits it 3 times and codex 3 times.
+
+Exactly one task was solved by anyone, `modernize-scientific-stack`,
+and all three solve it:
+
+| harness | run 1 | run 2 |
+|---|---|---|
+| temur | 343s | 379s |
+| opencode | 570s | 545s |
+| codex | 640s | timeout at 800s |
+
+**Wall clock**, 32 cells each: temur 2.89h, opencode 3.80h, codex
+6.14h. Typical non-solving temur cells finish in 128 to 251s where
+codex takes 266 to 566s. No cause is attributed here; the requests
+were not instrumented server-side, and this page has retracted one
+wall-clock explanation already.
+
+**Install time sits outside the measured budget.** Harbor times agent
+setup as its own phase, so none of it comes out of the task clock.
+Measured: temur 4.2s, which copies one 7.2 MB static binary and
+nothing else; opencode 119.8s and codex 182.1s, each installing curl,
+bash, Node and npm and then fetching the harness over the network.
+That is a real property of what each ships, and it costs wall clock
+and a network dependency rather than score.
+
+### The first temur matrix was invalid, and is disclosed
+
+The first 32 temur cells were thrown away. The adapter written for
+this suite piped each task instruction into `temur --plain`, which is
+the line REPL and reads one line per turn. 12 of the 16 subset
+instructions are multi-line, so temur received only the first line as
+its task and every later line arrived as a separate user message after
+the previous turn had ended. Measured on one cell, a 21-line
+instruction became 20 user messages, two of them empty because the
+instruction had blank lines and one of them a bare code fence.
+codex and opencode each received the whole instruction in one message,
+so for 12 of 16 tasks this was not an equal-footing comparison.
+
+Under that defect temur scored 0/16 twice. Repaired, it scores 1/16
+twice. A product finding derived from those cells, that temur's
+timeouts were turns which asserted completion without acting, was
+**withdrawn**: it was an artifact of the adapter, and the signal it
+rested on falls from 52% of turns to 14% once the instruction arrives
+whole.
+
+Two details of the repair matter for reading the table. The four
+single-line tasks were delivered correctly even by the broken adapter,
+verified per cell, so their original results were sound. And codex and
+opencode were **not** re-run, because their delivery was never broken;
+their rows are from the original matrix, with the same pins, model,
+server and subset.
+
+### Instrumentation, per harness
+
+Turn and tool-call counts come from each harness's own transcript
+format and count different things. They are published per harness and
+are **not** comparable across harnesses.
+
+- **temur**: a turn is one model round trip, read from the session
+  file. Repaired cells, median 6 turns and 5 tool calls.
+- **codex**: a turn is one whole agentic turn which may hold many
+  calls, read from `turn.completed`. Median 1 turn and 10 tool calls,
+  and a cell that times out mid-turn emits no `turn.completed` at all,
+  so its token counts read as zero while real work happened.
+- **opencode**: a turn is one step within a session. Median 1 step and
+  0 tool calls, which is its signature here: it stops early rather than
+  running out of clock, and never once hit a timeout in 32 cells.
+
+One limitation, stated because it bounds what the temur column can
+say: temur writes its session file at exit, and the suite enforces its
+budget with a hard kill, so a timed-out temur cell leaves no session
+behind. 4 of 32 repaired cells have none, and all four are timeouts.
+The temur medians above are therefore over non-timeout cells.
+
+### What this section does not establish
+
+It does not rank the harnesses. At 1/16, 1/16 and 0-to-1/16 with a
+single unreproduced cell between them, the suite did not discriminate
+them at this model. It says nothing about frontier models or hosted
+providers. And it covers 16 of 89 tasks, chosen by a rule that skews
+easy to medium, so the harder two thirds of the suite are unmeasured.
+
 ## Not comparable to OFFLINE.md
 
 `docs/OFFLINE.md` carries temur's own small-model results. Those

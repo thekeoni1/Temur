@@ -78,7 +78,9 @@ How temur compares against released builds of OpenCode and Codex CLI,
 driving the same local model on the same machine, is in
 [docs/COMPARISON.md](docs/COMPARISON.md). It was built by temur's side
 against tasks from temur's own eval suite, it says so up front, and it
-publishes the cells temur loses.
+publishes the cells temur loses. The same page carries a
+Terminal-Bench 2 row, which is a suite temur did not write, on a
+subset fixed by rule before any score was seen.
 
 The same harness floor is active on every provider, hosted
 included: tool output

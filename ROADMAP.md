@@ -422,6 +422,18 @@ it.
   history, the 77 calls are 9 distinct fingerprints and 67 futile
   dispatches; the notice lands at call 13 and the stop at call 28.
 
+### CORRECTION 2026-08-26
+
+A "Queued from T39 (2026-08-25)" entry stood here for one day claiming
+that temur loses Terminal-Bench tasks through turns that assert
+completion while calling no tool, and that the T36 futile-call guard
+could not see the shape by construction. **That entry is removed.** It
+described an artifact of the T39 harness adapter, which delivered each
+task instruction one line per turn, so the model was answering
+fragments rather than narrating false progress. With the instruction
+delivered whole the signal falls from 52% of turns to 14%. The T36
+guard was never the issue.
+
 ### Queued from T34 (2026-08-18)
 
 - **gemma-3-4b's 0/9 is still unexplained.** The other two
@@ -449,6 +461,41 @@ it.
   from a single data point with headroom rather than from a
   distribution. If a second machine or a slower model ever runs doctor
   against a local server, record what it cost.
+
+### Queued from T39 (2026-08-26)
+
+- **An unattended agent has no way to compact.** temur watches its own
+  context fill, says so, and then dies on the next request. Measured on
+  Terminal-Bench with one-shot `-p`: the advisory fires at roughly
+  11,942 of 12,288 tokens telling the user to run `/compact` or start a
+  new session, and the run then ends on an HTTP 400 from the server,
+  request 13,523 tokens against a 12,288 window. In one-shot there is
+  no user to type either remedy. The advisory is correct and useless at
+  the same time. Candidate: auto-compact in one-shot when the advisory
+  threshold fires, or an explicit `--auto-compact`. Note the wall is
+  not temur-specific, codex hits it at the same context size in 3 of
+  its 32 cells, so what is missing is the unattended remedy rather than
+  headroom. Evidence: `~/temur-eval-archive/t39-terminal-bench/`,
+  F4 in its `PRODUCT-FINDINGS.md`.
+
+- **A killed run loses its whole session.** temur writes
+  `sessions/<id>.json` at exit, so a run stopped by a hard kill leaves
+  nothing: no transcript, nothing for `--continue` to resume, nothing
+  to inspect afterwards. 4 of 32 Terminal-Bench cells have no session
+  file and all four are the cells whose budget expired. This bit the
+  measurement as well as the user: turns and tool calls are
+  unavailable for exactly the cells where they would be most
+  interesting. Candidate: append as the turn proceeds rather than
+  writing once at exit. A SIGTERM handler alone would not be enough,
+  since SIGKILL cannot be trapped. F5 in the same archive.
+
+- **temur addresses a user who is not there.** On a single-line
+  Terminal-Bench task the model ended its turn asking permission to
+  proceed and received EOF instead of an answer. Same family as the
+  item above it: one-shot and piped runs have no interlocutor, and
+  anything deferred to a next turn never happens. Smaller than the
+  other two and possibly a prompt-profile sentence rather than code.
+  F1 in the same archive.
 
 ### T0 - Identity + honest gate
 - Rename `opencode-rust` → `temur`: package name, `--version`, binary name,

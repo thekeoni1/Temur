@@ -6426,6 +6426,34 @@ across all 108 recorded tasks contain a 503 or "Loading model", so no
 published cell was affected; 15 of the 108 recorded `ready=0s`, which
 is the window where it could have bitten.
 
+A fourth joined the family in T39, and it is the same shape with the
+SIGN FLIPPED. The first three passed bad data as good. This one
+discarded good data as bad.
+
+4. The T39 Terminal-Bench cell runner classified a cell by checking the
+   agent exception BEFORE the reward. Harbor raises `AgentTimeoutError`
+   when an agent exhausts the task's agent budget, but it still runs
+   the verifier and still writes `reward.txt`. So a legitimate scored
+   failure was quarantined as `VOID-AGENT-EXCEPTION`.
+
+The direction is what makes it worth recording. A guard that discards
+real results is not conservative, it is biased, and here the bias ran
+one way: on a 4B CPU model the timeout is the most common way a task is
+lost, so voiding timeouts would have made every harness look better the
+more often it ran out of clock. The fix is a precedence rule --
+**the reward is the measurement, the exception is metadata** -- with
+VOID reserved for cells that are not measurements at all: the server
+died, or no verifier verdict exists.
+
+It was caught on the first cell of the matrix, by the VOID monitor
+firing when a VOID was not expected. Nothing needed re-running: each
+cell archives its own job directory, so the verdict is derived data and
+`reclassify.py` rebuilt it from the stored `reward.txt` and
+`result.json`. The general point is worth keeping separate from the
+bug: **derive verdicts from archived evidence, never only at write
+time**, and a classification error costs a script run instead of hours
+of model time.
+
 ### Four memory misreports, and the one rule that covers them
 
 1. 4.24 GiB was a STARTUP reading quoted as an operating figure.
@@ -6692,10 +6720,11 @@ the prep commits and the gate; this records the release itself.
   than captured SNI, the unidentified `oom` file, the comparison still
   on temur's home turf until a neutral suite exists, and temur's
   Coder-3B result read off transcripts rather than measured against a
-  recovery-disabled control. The T36 residual also still stands: the
-  futile-call guard has never fired against a live served model, and
-  the 67-recovery cell in T37 shows only that it correctly stayed
-  silent through legitimate work.
+  recovery-disabled control. The T36 residual also still stands here:
+  the futile-call guard had not fired against a live served model at
+  the time of writing, and the 67-recovery cell in T37 shows only that
+  it correctly stayed silent through legitimate work. (It fired live
+  for the first time later, in T39, on 2026-08-26.)
 
 ## T38 acceptance - recovery-disabled control (recorded 2026-08-25, before its release)
 
@@ -6917,11 +6946,12 @@ ones that make the published comparison weaker.
 - NEW, from T38 itself: the control model both writes prose calls and
   ignores correction, so nothing is known about a model that writes
   prose calls but does respond to a nudge.
-- Still open from T36: the futile-call loop guard has never fired
-  against a live model. It did not fire here either, and the T38 cells
-  are a clean negative rather than an absence of evidence, since the
-  only notice line appearing anywhere in them is the 36 prose-call
-  nudges.
+- ~~Still open from T36: the futile-call loop guard has never fired
+  against a live model.~~ CLOSED 2026-08-26 in T39: the guard fired
+  live once, the notice arm, on Terminal-Bench `prove-plus-comm`. It
+  did not fire in the T38 cells, and those remain a clean negative
+  rather than an absence of evidence, since the only notice line
+  appearing anywhere in them is the 36 prose-call nudges.
 
 ## v0.27.0 ship record - shipped private
 
@@ -6993,3 +7023,179 @@ What v0.27.0 does NOT change: no product code shipped in it. The
 binary differs from v0.26.0 only by its version string. The milestone
 was a measurement and a comparison-driver change, and the release
 exists so the measured control has a versioned artifact behind it.
+
+## T39 acceptance - Terminal-Bench row (recorded 2026-08-26, before its release)
+
+A bridge, a matrix, an invalidation and a repair. Offline throughout
+except for package installs into task containers; no API key, no
+hosted provider, no frontier model. **No product code was touched and
+no test.** Everything outside `docs/` and one comment in
+`scripts/harness_compare/run.sh` lived in `~/tb-bridge/` and
+`~/temur-eval-archive/`.
+
+### What this milestone is
+
+Every table in `docs/COMPARISON.md` before this one uses tasks written
+for temur's own eval, which the page discloses. T39 puts temur on an
+externally authored suite for the first time: Terminal-Bench 2, driven
+by Harbor 0.22.0.
+
+### Bring-up, and what the environment actually required
+
+Harbor documents Docker. This box has rootless podman and no docker.
+Harbor's docker environment never touches the API socket: it shells
+out to the `docker` CLI and to `docker compose`, so enabling
+`podman.socket` alone is not enough. Both client binaries were
+installed **user-level, no elevation**, and pointed at the podman
+socket. `python3-venv` was also absent, so the venv was bootstrapped
+with `--without-pip` plus `get-pip.py`. Proof the stack works with no
+model at all: the oracle agent, which replays a task's reference
+solution, scored reward 1.0 in 33s.
+
+Host reachability took the most probing. Under rootless podman the
+compose gateway is not the host, so `10.89.0.1` fails; slirp's
+`10.0.2.2` fails; a loopback-only bind is unreachable from the task
+container. What works is `host.containers.internal`, which on WSL2
+resolves to `10.255.255.254`, a `/32` on the host's own `lo`. Binding
+llama-server there is reachable from containers and, verified, not
+exposed on the LAN-facing interface, which is narrower than binding
+`0.0.0.0` and needs no `--network=host`.
+
+Two competitor findings came out of reading Harbor's own adapters.
+Harbor installs codex and opencode with `@latest`, so an unpinned run
+measures whatever npm served that day; both were pinned. And codex
+0.149.1 could not talk to llama.cpp at all at first, opening
+`ws://.../v1/responses` and getting 404 five times. The cause is not a
+version change: Harbor writes only a top-level `openai_base_url`, so
+codex falls back to its built-in `openai` provider, whose
+`ModelProviderInfo` advertises `supports_websockets`. Defining the
+provider explicitly with `wire_api = "responses"` and
+`supports_websockets = false` fixed it. T37 never hit this because it
+defined its own provider.
+
+### The subset ruling
+
+A full pass is 89 tasks by 3 harnesses by 2 runs, projected at 6 to 9
+serial days on a suite that is 96% medium-or-hard for a 4B model, for
+a table of zeros. The operator rejected it and ruled a **pre-registered
+mechanical subset** instead: exclude everything requesting 4096 MB or
+more, then all remaining easy tasks and medium tasks in ascending
+agent timeout, ties by name, until 16.
+
+The exclusion was ruled to apply **uniformly**, as a resource rule
+rather than a difficulty filter, because a pre-registered rule that
+carves an exception for one named task stops being mechanical. That
+drops one easy task, `overfull-hbox` at 4096 MB, so the subset holds 3
+easy and 13 medium and the dataset's easy count of 4 is not a
+miscount. The subset was written to the archive and its sha256 hashed
+into the ledger before the first cell ran.
+
+### Two driver bugs, and they are fail-open entries four and five
+
+Both are in the same family as T37's three, and the pair is
+instructive because their signs are opposite.
+
+**Four, a guard that discarded real results.** The cell runner
+classified a cell by checking the agent exception before the reward.
+Harbor raises `AgentTimeoutError` when a task's budget expires but
+still runs the verifier and still writes `reward.txt`, so a legitimate
+scored failure was being quarantined as VOID. The direction is what
+makes it worth recording: discarding real results is not conservative,
+it is biased, and biased one way, since a harness would have looked
+better the more often it ran out of clock. 21 of 96 cells would have
+been silently dropped. Fixed by a precedence rule, the reward is the
+measurement and the exception is metadata, with VOID reserved for
+cells that are not measurements at all. Caught on the first cell of
+the matrix by a monitor firing on an unexpected VOID.
+
+**Five, an absent check that read as success.** The adapter piped each
+task instruction into `temur --plain`, which reads one line per turn.
+12 of the 16 subset instructions are multi-line, so temur received the
+first line as its task and every later line as a separate user message
+after the previous turn had ended. One 21-line instruction became 20
+user messages, two empty because the instruction had blank lines and
+one a bare code fence. Every check in the rig passed: a transcript
+existed, a reward was written, the server stayed alive, no exception
+was raised. **Nothing anywhere asserted that the agent had received
+the task.**
+
+The bring-up gate did not catch it because that gate ran `fix-git`,
+whose instruction is a single line. The one task chosen to prove the
+harness was the one task the defect could not touch. A bring-up gate
+has to exercise the property it claims to prove, and a single-case
+gate proves a single case.
+
+Generalised, and now the standing rule for any harness comparison:
+**assert delivery, not just completion.** `instrument.py` emits a
+`user_text_messages` count per cell from the session file, which must
+be exactly 1; the invalid cells read 16 to 20.
+
+### The invalid matrix and the repair
+
+The first 96-cell matrix ran clean by every mechanical measure, 15h10m
+and zero VOID, and its temur third was worthless. Under the defect
+temur scored 0/16 twice and read as last. Repaired with one-shot
+`-p`, it scores 1/16 twice and its pass reproduces, which codex's does
+not. Timeouts fell from 12 to 4 and wall clock from 4.98h to 2.89h.
+
+Approval semantics are unchanged by the switch, verified in
+`src/main.rs`: one-shot never installs an approver, and the plain REPL
+installs one only when stdin and stdout are both terminals, which they
+are not under Harbor.
+
+A product finding published in the interim, that temur's timeouts were
+turns which asserted completion without acting, was **withdrawn**. It
+was an artifact: the zero-tool-call figure falls from 52% of turns to
+14% once the instruction arrives whole, and the ROADMAP entry built on
+it was removed with a dated correction. It was reported four times
+before it was caught.
+
+Only temur's 32 cells were re-run. codex and opencode were never
+mis-delivered and their rows stand as originally measured, which is
+recorded on the page rather than left implicit. The four single-line
+tasks were verified sound under the old adapter too.
+
+### What the row says
+
+Pass rate does not separate the three harnesses at this model: 1/16,
+1/16 and 0-to-1/16, one solved task, and all three solve it. Timeouts
+and wall clock do separate them. No cause is attributed to the wall
+clock, since nothing here instrumented the requests server-side and
+this page has retracted one such story already.
+
+### First live firing of the T36 guard
+
+On `prove-plus-comm` the futile-call loop guard fired once, the notice
+arm at threshold 6 rather than the stop arm at 18, telling the model
+that 6 of its calls that turn had re-run earlier calls for
+byte-identical results. The cell then finished normally at 447s. n=1,
+and not a rate, but the guard is no longer unexercised against a live
+model and it behaved as designed. It fired in none of the 32 invalid
+cells, which is consistent with the defect: a model answering one
+short fragment per turn has little chance to repeat a call within a
+turn.
+
+Incidental, and worth knowing for any future analysis: the guard
+injects its notice as a **user-role** message, which briefly looked
+like a second instruction delivery against the new delivery check.
+
+### Residuals
+
+- `fix-git` took 943s and timed out in one repaired run against 548s,
+  524s and 269s in the other three samples. It is a single-line task,
+  delivered correctly by both adapters, so the defect cannot explain
+  it. **No mechanism is established and none is asserted.**
+- codex and opencode were not re-run during the repair, so any drift
+  between the two sittings is uncontrolled, though no pin, model,
+  server or subset changed between them.
+- 16 of 89 tasks, skewed easy to medium by the rule. The harder two
+  thirds are unmeasured and would very likely be zero for all three.
+- opencode's signature, 0 timeouts and a median of 0 tool calls across
+  32 cells, is not root-caused. It may be a configuration artifact
+  rather than a capability limit.
+- One operator error during the repair: the llama-server container was
+  removed while the final cell was still running. That cell wrote no
+  verdict, its partial directory was deleted and it was re-run on a
+  fresh server. The post-task liveness check would have caught it as
+  VOID; the mistake was upstream of the guard. Logged in the archive
+  ledger.

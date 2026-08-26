@@ -4,6 +4,52 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **temur now has a row on a suite it did not write.** Every
+  comparison table before this one used tasks from temur's own eval,
+  which the page discloses. `docs/COMPARISON.md` gains a
+  Terminal-Bench 2 section: Harbor 0.22.0, a 16-task subset
+  pre-registered by a mechanical rule before any score was seen, the
+  same local Qwen3-4B and pinned llama.cpp server as the other tables,
+  two runs each for temur, codex and opencode. The headline is that
+  pass rate does not separate the three harnesses at this model, 1/16
+  against 1/16 against 0-to-1/16 with exactly one task solved and all
+  three solving it. Timeouts and wall clock do separate them, and no
+  cause is attributed to the wall clock.
+
+- **The first temur matrix on that suite was invalid and is disclosed
+  on the page rather than quietly replaced.** The adapter written for
+  Terminal-Bench piped each instruction into `temur --plain`, the line
+  REPL, which reads one line per turn; 12 of the 16 instructions are
+  multi-line, so temur received only the first line as its task while
+  the competitors received the whole thing. temur's 32 cells were
+  re-run with one-shot `-p`; the competitors' were not, because their
+  delivery was never broken. A product finding derived from the
+  invalid cells was withdrawn, and the ROADMAP entry built on it was
+  removed with a dated correction.
+
+- **The futile-call loop guard has now fired against a live model.**
+  Open since v0.25.0. It fired once on Terminal-Bench
+  `prove-plus-comm`, the notice arm rather than the stop arm, and the
+  cell finished normally afterwards. One firing is not a rate, but the
+  guard is no longer unexercised.
+
+- **Two harness properties of the competitors, from reading Harbor's
+  own adapters.** Harbor installs codex and opencode with `@latest`,
+  so an unpinned comparison measures whatever npm served that day;
+  both are pinned here. And agent install runs outside the measured
+  task budget, which is worth knowing when reading the wall clock:
+  4.2s for temur, which copies one static binary, against 119.8s and
+  182.1s for harnesses that install Node and npm first.
+
+- Three findings queued from the run rather than built: an unattended
+  agent has no way to compact and dies at the context wall it warned
+  about; a killed run loses its whole session file; and temur can end
+  a turn asking a user who is not there. See ROADMAP.
+
+- `scripts/harness_compare/run.sh` gains a comment recording why
+  `--plain` is safe for that driver, whose nine prompts are all single
+  line, and dangerous for any suite whose prompts are not.
+
 ## v0.27.0 - 2026-08-25
 
 - **The claim that temur's small-model score rests on prose-call
