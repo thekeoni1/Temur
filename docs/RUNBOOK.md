@@ -7199,3 +7199,66 @@ like a second instruction delivery against the new delivery check.
   fresh server. The post-task liveness check would have caught it as
   VOID; the mistake was upstream of the guard. Logged in the archive
   ledger.
+
+## v0.28.0 acceptance - recorded result (recorded at stage 1, before its release)
+
+What shipped: T39 alone, the Terminal-Bench row. The T39 acceptance
+record above carries the bring-up, the subset ruling, both driver
+bugs, the invalid matrix and the repair; `docs/COMPARISON.md` carries
+the published table. This delta records the release mechanics rather
+than restating the milestone.
+
+Stage 1:
+
+- One T39 commit pushed 7468da4..4358f01, docs only plus one comment
+  in `scripts/harness_compare/run.sh`. No product code, no test.
+- **CI DEVIATION, and it is GitHub's rather than this repository's.**
+  The push landed and `git ls-remote` confirms origin/main at
+  4358f012cc22e8f5efb9aa71a6b0d5fa6e86cd4f, but GitHub created NO
+  workflow run for that head. Checked and ruled out on this side:
+  the repository is neither archived nor disabled, Actions is enabled
+  with `allowed_actions: all`, both workflows report `state=active`,
+  `ci.yml` triggers on push to main, and both workflow files are
+  present in the pushed tree. Every prior push in this repository
+  produced a run at attempt 1. Actions minutes could not be checked
+  from here because the token lacks the `user` scope. The ruling was
+  to hold rather than paper over it: no `workflow_dispatch`, no
+  re-push, no empty commit, since a dispatched run would record a
+  different trigger than the one being tested. A monitor polls for the
+  backfilled run. Stage 2 does not start until a green run exists for
+  4358f01, whether backfilled or created by the stage-2 prep push
+  covering the combined range. The zero-rerun count is unaffected
+  either way: an absent run is not a rerun, and whichever run arrives
+  will be attempt 1.
+- Three local prep commits, none pushed: 1c6386e bump (the mechanical
+  four-file edit through `scripts/bump_version.sh`: Cargo.toml, the
+  temur entry in Cargo.lock with `untrusted` still at its own 0.9.0,
+  the scripts/install.sh VERSION line, and the five README tag pins),
+  a451f9d CHANGELOG cut to "## v0.28.0 - 2026-08-26" with a fresh empty
+  Unreleased above it and no entry text touched, and this close-out.
+- Lock-file version collision check: a grep for the RETIRED version,
+  0.27.0, across the four bumped files is zero in all four. The temur
+  lock entry is 0.28.0 and the whole lock diff is one line.
+- `scripts/metadata_drift.sh` run by hand, its FIFTH outing: 4 of 4
+  PASS, every baked profile matching models.dev on context window and
+  on both prices (fable, haiku, opus, sonnet).
+- The full gate runs on THIS commit, the close-out head, per the
+  stage-1 ruling. That ordering means this record cannot carry its own
+  gate result, since the head the gate runs against does not exist
+  until this commit does. The result and the teed log path are in the
+  stage-1 report to the operator and are carried into the ship record.
+  Earlier cycles gated the prep head instead and could quote the
+  result inline; the difference is deliberate and is noted so the two
+  shapes are not read as the same procedure.
+
+**Stage 2 has explicitly NOT been run.** No tag exists for v0.28.0,
+local or remote, no release has been created, and nothing beyond
+4358f01 has been pushed.
+
+What stage 2 still has to do: confirm a green ci run for 4358f01,
+push the three prep commits and confirm their run, tag v0.28.0 AT the
+close-out commit with the message
+"temur v0.28.0 - terminal-bench row (T39)" verified against the raw
+tag object rather than the formatted view, run `release.sh` with no
+SKIP_CHECK, confirm five assets on a private release, run the closing
+gate and the installer matrix, and record the result.
