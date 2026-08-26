@@ -74,9 +74,14 @@ enforced by the OS, not just by these rules. Do not try to escalate around them.
   not have blanket sudo; if something needs elevation, stop and ask rather than working
   around it. Report results per stage.
 - Test before proceeding; don't stack unverified changes.
-- Scope (REVISED 2026-07-03): the v1 minimal slice (agent loop + seven tools,
-  Anthropic-only, line REPL) is **complete and live-verified**. The project is now a
-  **general OpenCode clone for 32-bit Linux** for any task: no single workflow is an
-  acceptance gate. Post-v1 milestones and the OPEN prioritization question are in
-  `ROADMAP.md`. Still: build one milestone at a time; ask before reordering priorities
-  or flipping defaults (thinking off, model claude-sonnet-5).
+- Scope (REVISED 2026-08-26): v1 shipped 2026-07 and the project has
+  been through thirty-nine milestones since (v0.28.0). It is a
+  **zero-runtime-dependency AI agent for 32-bit Linux, bring your own
+  model**: local llama.cpp models are the primary target, hosted
+  providers (Anthropic, OpenAI-compatible) are supported, and no single
+  workflow is an acceptance gate. Milestone history and the queue are
+  in `ROADMAP.md`; ship procedure and acceptance records are in
+  `docs/RUNBOOK.md`. Still: build one milestone at a time; measure
+  before claiming; ask before reordering priorities or flipping
+  defaults (thinking off, hosted default claude-sonnet-5, local
+  default Qwen3-4B-Instruct-2507).
