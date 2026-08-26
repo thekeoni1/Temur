@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.28.0 - 2026-08-26
+
 - **temur now has a row on a suite it did not write.** Every
   comparison table before this one used tasks from temur's own eval,
   which the page discloses. `docs/COMPARISON.md` gains a
