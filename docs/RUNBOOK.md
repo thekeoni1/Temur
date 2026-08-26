@@ -7262,3 +7262,68 @@ close-out commit with the message
 tag object rather than the formatted view, run `release.sh` with no
 SKIP_CHECK, confirm five assets on a private release, run the closing
 gate and the installer matrix, and record the result.
+
+## v0.28.0 ship record - shipped private
+
+Stage 2 ran in the greenlit order with nothing retagged and nothing
+rerun. Every CI run this cycle was `run_attempt` 1, making v0.28.0 the
+**fifth consecutive zero-rerun cycle** since the streak restarted at
+v0.24.0.
+
+- Prep push 4358f01..e5c42f2. On-push ci run 33003905547 on headSha
+  e5c42f2 green in both jobs, first try, run_attempt 1 (test 1m15s,
+  release-gate 4m27s). Registered within seconds, which is worth
+  recording beside the stage-1 deviation: the earlier absence of a run
+  for 4358f01 was a transient GitHub delay, and that run backfilled
+  green at attempt 1 (32991743995, created 2026-08-26T17:01:04Z,
+  roughly four and a half hours after its push).
+- Tag `v0.28.0` created AT the close-out commit
+  e5c42f25b510f462a4a60060b22d0ac93c2a9fcd. Tag object
+  5ee4eebdb98afb0b896adcbd33ba61c793a80a7b. The message was verified
+  against the RAW tag object rather than the formatted view, because
+  the formatted view is not the artifact: `git cat-file -p` piped
+  through `od -c` shows one line, `temur v0.28.0 - terminal-bench row
+  (T39)`, ASCII hyphen-minus 0x2d, no em-dash, and a byte-for-byte
+  `cmp` against the expected string is identical. The pushed remote tag
+  object matches the local one and dereferences to the same commit.
+- `scripts/release.sh` with NO SKIP_CHECK, teed. Full gate inside it
+  reported ALL CHECKS PASSED, zero FAIL lines, all three TUI pty
+  smokes OK, exit 0. 4 of 4 artifacts gated and staged.
+- Staged sha256s, which are also the published ones:
+  - aarch64 `3f28bda4682a40f011db0bee34c7799c34e872ff417ba8f4f4d6ba9516a392ca`
+  - armv7   `459ba7a8fb476aae00fbad92a0822d73560f4a08e539d72bab7adf2a2d463559`
+  - i686    `35a714717013ef866e013aa81dc0fcc79f6fd879e57cd4e828df4ee40b629168`
+  - x86_64  `813d539fb464187955233207ca098819c245e46483291ffdf2f872e31c52cd2a`
+  - SHA256SUMS itself `64f2df6c15e9eeb27e6207bd81333d4729fcf62ffb2b503993f5dc3bba7d051a`
+- Private release created with five assets, `isDraft` false and
+  `isPrerelease` false. Repository visibility confirmed PRIVATE both
+  BEFORE and AFTER publishing.
+- Closing gate: x86_64, i686 and SHA256SUMS re-downloaded from the
+  published release and `cmp`-identical to the staged copies, then
+  independently re-hashed to the same sums, then `sha256sum -c`
+  verified against the downloaded SHA256SUMS rather than the local one.
+- Installer matrix 6/6 TWICE: once against the staged directory and
+  once against a fresh full download of all five assets. Pass,
+  corrupted-artifact and unlisted-artifact cases on the GNU host and
+  inside busybox in both runs.
+- `~/.local/bin/temur` refreshed from the published i686 asset:
+  reports `temur 0.28.0`, and its sha256
+  `35a714717013ef866e013aa81dc0fcc79f6fd879e57cd4e828df4ee40b629168`
+  equals the published i686 entry exactly.
+
+One process note, recorded because it nearly caused a false alarm. The
+release-log watcher used to spot a pty-smoke hang reported one, and
+there was none: `release.sh` had already exited 0. The watcher tested
+for liveness with a `ps` grep whose own command line contained the
+literal string it was searching for, so it matched itself and never
+saw the process end. The release was verified from the log's own
+`Script done ... COMMAND_EXIT_CODE="0"` line before anything was
+reported. A liveness check that can match itself is not a liveness
+check.
+
+What v0.28.0 does NOT change: no product code shipped in it. The
+binary differs from v0.27.0 only by its version string. The milestone
+was a measurement on an externally authored suite, a comparison-driver
+comment, and the documentation of a matrix that had to be thrown away
+and re-run. Every residual named in the T39 acceptance record is
+carried forward unclosed.
