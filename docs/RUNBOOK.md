@@ -474,6 +474,14 @@ the four binaries + SHA256SUMS, and a live verification of the README
 one-liner into a temp `HOME` (live download, live checksum, live
 install, version match). Record the result here.
 
+**Pass `--title` (T40).** The release title must equal the annotated
+tag message. Omitting `--title` makes gh default to the bare tag name,
+which is what v0.21.0 through v0.28.0 shipped with; those are NOT
+retitled. `release.sh` prints the exact `gh release create` invocation
+at the end of its run, reading the title back from the annotated tag,
+so create the tag BEFORE the final `release.sh` run and copy the
+command it prints rather than typing one.
+
 ## T7 release acceptance - recorded result
 
 2026-07-23: **v0.1.0 published and live-verified.** Annotated tag `v0.1.0`
@@ -7327,3 +7335,118 @@ was a measurement on an externally authored suite, a comparison-driver
 comment, and the documentation of a matrix that had to be thrown away
 and re-run. Every residual named in the T39 acceptance record is
 carried forward unclosed.
+
+## T40 acceptance - unattended runs (recorded 2026-08-27, before its release)
+
+Two product findings from T39 and desktop experiment 1, both seen on
+both boxes, dequeued together because they are the same failure from
+two directions: an unattended run cannot save itself, and cannot leave
+a record of having tried. Offline throughout, no API key, no hosted
+provider. Three commits, one per phase, full `check.sh` at each.
+
+### What shipped
+
+**P1, auto-compaction.** The context advisory assumed a reader. In
+one-shot `-p` there is none, so temur printed advice and died on the
+next request. `auto_compact` makes the session compact ITSELF at the
+next safe point and continue the turn.
+
+The safe point is the top of the next round-trip, after tool results
+are appended and before the request is built. NOT the advisory site:
+that fires immediately after a response whose `tool_use` blocks are
+still unanswered, and cutting there would strand them.
+
+The finding that changed the design: `/compact`'s verbatim tail
+(`compact_tail_start`) walks back to the last user message with no
+`tool_result`, which mid-turn IS the task prompt. The whole turn would
+be tail, so a mid-turn `/compact` frees nothing, which is exactly the
+case the T39 cells died in. The planning session ruled a separate rule
+for auto-compaction and left `/compact` untouched:
+
+```
+[ task prompt verbatim ] + [ summary pair ] + [ last 2 round-trips ]
+```
+
+Five invariants pinned as unit tests beside the five existing tail
+tests: (a) the compacted history opens with the current turn's prompt,
+byte-identical; (b) every retained `tool_use` has its `tool_result`
+and no orphan results survive; (c) the cut lands on a pair boundary;
+(d) exactly K round-trips are retained however long the turn; (e) a
+turn with fewer than K+1 round-trips is not compacted at all. A sixth
+pins that a history which is not whole pairs (a `PauseTurn` append) is
+declined fail-closed, and a seventh pins that the two compaction rules
+stay distinct on the same history.
+
+Bounded at 3 per turn; the fourth crossing prints the T20 advisory
+byte-identical and lets the request go out as it would have. A failed
+summary call names the error and continues uncompacted, and cannot
+retry inside the turn because the advisory latch stays set.
+
+Enablement is `auto_compact: Option<bool>` on the base config, no
+profile-level field. Effective value: explicit wins, else one-shot `-p`
+true, plain REPL and TUI false. Nothing to validate on a `bool`, so
+there is no validation arm and no validation test.
+
+**P2, per-round-trip persistence.** The session file was written once,
+after `turn()` returned. It is now written after each assistant message
+(before its tools run) and again before each following request, which
+covers the tool-results append and every recovery-nudge path through
+one site. `save_after_turn` stays as the final save and delegates to
+the session, which is what lets the save-failure notice stay once per
+PROCESS: one latch, not two. Turn-end bytes are unchanged, pinned by
+comparing a completed turn's file against a single end-of-turn save.
+
+**P3.** `release.sh` prints the `gh release create` invocation with
+`--title` read back from the annotated tag; docs.
+
+### Gate log
+
+| Phase | Commit | Tests | check.sh |
+| --- | --- | --- | --- |
+| baseline | `c1b88b1` | 723 | (not re-run) |
+| P1 | `9761604` | 739 | ALL CHECKS PASSED, first try |
+| P2 | `2bb84e1` | 744 | PASSED on the second run; see below |
+| P3 | this commit | 744 | ALL CHECKS PASSED |
+
+The P2 first run is worth recording because it is exactly what the
+container stage exists to catch. The mid-turn-persistence test used a
+tool call running `python3` to read the session file while the tool was
+still executing. That passes on the host and fails in the i386 Debian
+container, which has no python. Rewritten to `cp` the file and parse
+the copy back in Rust, which needs only coreutils. Host-green was not
+evidence; the container was.
+
+### Residuals
+
+- **Nothing has fired against a live model.** Every arm here is pinned
+  against `MockProvider`. The next dogfood or eval run on 0.29.0 is
+  the first chance to see an auto-compaction in the wild, and the
+  thing to watch for is whether the summary a small local model writes
+  is good enough to continue a task from. That is a model-quality
+  question the tests cannot answer.
+- **The resume seam does not auto-compact.** A `--continue -p` over a
+  seed that is ALREADY past the threshold latches the advisory at the
+  resume seam (`main.rs`), before the turn starts, so the turn-loop
+  trigger never fires and the run dies exactly as F4 described. The
+  safe point and invariant (e) both assume a turn in progress, so
+  extending this is a design change, not a patch. Filed as an open
+  item, not fixed here.
+- **A too-short turn prints two contradictory notices.** The
+  "compacting automatically" notice is emitted at the advisory site,
+  before the safe point discovers there is nothing to fold, and the
+  ordinary advisory follows it. Prescribed by the plan's notice
+  ordering; the fix (test foldability at the advisory site) is one
+  line and was not taken unilaterally.
+- **The compaction notice counts messages, which understates what
+  auto-compaction does.** It reuses `/compact`'s wording, so a fold of
+  7 messages into 7 reports "7 message(s) summarized into 7" while
+  having replaced several round-trips of tool output with a summary.
+  The saving is in bytes, not message count.
+- **`release.sh` cannot pass `--title` itself**, because it stages and
+  gates but never publishes; `gh release create` is an operator step.
+  It prints the invocation with the title read back from the tag
+  instead. The plan asked for the flag to be passed; this is the
+  closest the script can get without taking over publishing.
+- **The ROADMAP milestone table has no T39 row.** Noticed while adding
+  T40's; the table ends at T38 and v0.28.0 shipped without one. Not
+  invented here.

@@ -4,6 +4,42 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **An unattended run can now survive filling its own context.** temur
+  watched the window fill, printed advice to run `/compact`, and then
+  died on the next request with an HTTP 400. In one-shot `-p` there is
+  nobody to read that advice. With `auto_compact` on, the session
+  compacts itself at the next safe point and carries on with the turn.
+  The default follows the invocation, because the question is whether
+  anyone is there to act: on in one-shot `-p`, off in the plain REPL
+  and the TUI, and an explicit `true`/`false` wins in every mode.
+
+  Auto-compaction keeps its own history shape, distinct from
+  `/compact`, which is untouched. `/compact`'s verbatim tail reaches
+  back to the last plain user message, which mid-turn is the task
+  prompt, so the whole turn would be tail and the compaction would free
+  nothing. Auto-compaction cuts inside the turn instead: the task
+  prompt verbatim, a summary of the work so far, then the last two
+  round-trips. The prompt survives byte-identical because in a one-shot
+  run it is the only statement of the task. The cut always lands on a
+  `tool_use`/`tool_result` boundary, a turn too short to fold is left
+  alone, and the whole thing is bounded at three compactions per turn,
+  after which the ordinary advisory prints and the request goes out as
+  it would have.
+
+- **A killed run no longer loses its whole session.** The session file
+  was written once, after the turn returned, so a hard kill during a
+  long agentic turn left nothing: no transcript, nothing for
+  `--continue`, nothing to inspect. In T39, 4 of 32 Terminal-Bench
+  cells had no session file and all four were the cells whose budget
+  expired, so the runs most worth reading were the ones that left no
+  trace. temur now writes after every round-trip, both when the
+  assistant message is appended (before its tools run) and before the
+  following request, so a `SIGKILL` costs at most the request in
+  flight. A `SIGTERM` handler would not have sufficed, since `SIGKILL`
+  cannot be trapped. Behaviour at turn end is unchanged, and the
+  save-failure notice stays once per process rather than once per
+  round-trip. Replay runs still write nothing.
+
 ## v0.28.0 - 2026-08-26
 
 - **temur now has a row on a suite it did not write.** Every

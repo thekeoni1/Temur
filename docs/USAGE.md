@@ -164,7 +164,7 @@ what you want to keep:
 
 ## Sessions
 
-Every live run saves the conversation after each turn, under
+Every live run saves the conversation after every round-trip, under
 `$XDG_STATE_HOME/temur/sessions/` (fallback
 `~/.local/state/temur/sessions/`; state, not config, because transcripts
 carry tool output and grow to megabytes). Each working directory has a
@@ -188,7 +188,21 @@ The saved history is provider-neutral, so a session recorded against
 one provider resumes against another. Saves are atomic (write, fsync,
 rename) and the FORMAT contains no timestamps, so a power cut at any
 instant leaves the previous complete file, resumable on a clock-less
-device. The `/sessions` listing order (newest first) comes from
+device.
+
+The save happens *within* a turn, not only at the end of one. An
+agentic turn can run for many minutes across many tool calls, and until
+v0.29.0 a hard kill during one lost all of it: the file was written
+once, after `turn()` returned. Now the session is written after each
+assistant message (before its tools run, which is where a long turn
+spends its time) and again before each following request, so a
+`SIGKILL` costs at most the single request that was in flight. This
+matters most where nobody is watching: 4 of 32 Terminal-Bench cells in
+T39 had no session file at all, and they were exactly the cells whose
+budget expired, so the runs that most needed inspecting were the ones
+with nothing to inspect. A `SIGTERM` handler would not have helped;
+`SIGKILL` cannot be trapped. Replay runs (`--mock`) still write
+nothing. The `/sessions` listing order (newest first) comes from
 filesystem mtimes, which is display-only metadata read at list time: on
 a clock-less device every file sorts equal and the listing falls back
 to name order, and nothing else depends on it. Past the size cap the
@@ -209,6 +223,60 @@ summarizes the conversation and continues in a fraction of the window;
 a new session starts clean. The same advisory also fires immediately
 at `--continue`/`--resume`/`/resume` when the restored session is
 already past the threshold.
+
+### Auto-compaction for unattended runs
+
+The advisory assumes a reader. One-shot `-p` has none: the estimate
+crosses the threshold, temur prints advice nobody will act on, and the
+next request is rejected by the server for exceeding the window. That
+is how T39's Terminal-Bench cells died on two different machines, and
+`auto_compact` is the answer:
+
+```json
+"auto_compact": true
+```
+
+When it is on and the advisory would fire, the session compacts itself
+at the next safe point and carries on with the turn. The default
+follows the invocation, because the question is whether anyone is there
+to act on the advice:
+
+| Mode | Default | Why |
+| --- | --- | --- |
+| one-shot `-p` | on | nobody can type `/compact` |
+| plain REPL | off | the advisory plus `/compact` already work |
+| TUI | off | same |
+
+An explicit `true` or `false` wins in every mode: `true` enables the
+same mechanism interactively, `false` restores advisory-only behaviour
+in one-shot. It is a base-config key, deliberately not a per-profile
+one, because whether an unattended run may spend a summary call to
+survive is a property of how temur was invoked and not of which model
+answered, so a `/model` switch must not change it.
+
+Auto-compaction keeps a different shape from `/compact`, for a reason
+worth stating. `/compact`'s verbatim tail runs back to the last plain
+user message, which *mid-turn* is the task prompt itself, so the whole
+turn would be tail and the compaction would free nothing. Auto-
+compaction instead cuts inside the turn:
+
+```
+[ the task prompt, verbatim ] + [ summary of the work so far ] + [ the last 2 round-trips ]
+```
+
+The prompt survives byte-identical because in a one-shot run it is the
+only statement of the task, and a model handed a paraphrase of its
+assignment does the wrong job. The cut always lands on a
+`tool_use`/`tool_result` boundary, so no tool call is ever separated
+from its result. A turn with fewer than three completed round-trips has
+nothing to fold and is left alone, with the ordinary advisory instead.
+
+It is bounded at three compactions per turn; a fourth crossing prints
+the ordinary advisory and lets the request go out as it would have,
+which may still be rejected, and that is the honest outcome. A failed
+summary call names the error and continues uncompacted. Compaction
+happens between round-trips, never in the middle of one, so a response
+whose tool calls are still unanswered is never cut.
 
 Requests are append-only by design (pinned by a prefix-stability test
 suite), which is what makes provider prompt caching effective: the
@@ -789,7 +857,14 @@ included) and exits. The contract that makes it scriptable:
   a provider or startup error, 130 when interrupted with Ctrl+C (the
   shell convention for SIGINT).
 - Live one-shots save the session exactly like interactive runs, so
-  `--continue -p` chains work.
+  `--continue -p` chains work. The save happens after every round-trip,
+  so a killed one-shot still leaves a resumable transcript of the work
+  it got through.
+- **Auto-compaction is on by default here**, and only here: a one-shot
+  run has nobody to act on the context advisory, so it compacts itself
+  and continues rather than dying on the next request. Set
+  `"auto_compact": false` to restore advisory-only behaviour. See
+  [Auto-compaction for unattended runs](#auto-compaction-for-unattended-runs).
 
 Redirect stdout and the chrome stays on your terminal. Real run:
 

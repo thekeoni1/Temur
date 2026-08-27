@@ -195,3 +195,29 @@ printf '%s' "$SUMMARY"
 echo ""
 set -- $TARGETS; N=$#
 echo "== RELEASE $TAG: $N/$N ARTIFACTS GATED == (ARM verified at build level per ROADMAP T7; hardware smoke pending hardware)"
+
+# --- the publish command -----------------------------------------------------
+#
+# This script stages and gates; the operator publishes. Printing the exact
+# invocation here is what keeps the RELEASE TITLE equal to the TAG MESSAGE:
+# v0.21 through v0.28 shipped with bare titles ("v0.24.0") because --title was
+# omitted and gh defaulted to the tag name. Old releases are NOT retitled.
+echo ""
+echo "== next step: publish =="
+if TAG_SUBJECT=$(git tag -l --format='%(contents:subject)' "$TAG" 2>/dev/null) \
+        && [ -n "$TAG_SUBJECT" ]; then
+    echo "  (title below is the annotated tag message of $TAG, read back just now)"
+    TITLE="$TAG_SUBJECT"
+else
+    echo "  NOTE: tag $TAG does not exist yet. Create the annotated tag FIRST,"
+    echo "  then re-run this script so the title is read from it rather than typed."
+    TITLE="temur $TAG - <name> (T<n>)"
+fi
+echo "  run from inside the repo worktree (gh resolves the repo from git):"
+echo ""
+echo "    gh release create $TAG \\"
+echo "      --title \"$TITLE\" \\"
+echo "      --notes-file <notes> \\"
+echo "      $STAGE/temur-$TAG-* $STAGE/SHA256SUMS"
+echo ""
+echo "  <notes> = the CHANGELOG section for $VERSION, written to a file first."
