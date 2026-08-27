@@ -78,6 +78,7 @@ fn session_with(
         prose_tool_calls: true,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     (
         Session::new(Box::new(provider), Registry::standard(), cfg),
@@ -452,6 +453,7 @@ fn iteration_limit_stops_runaway_turns() {
         prose_tool_calls: true,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
     let mut events = vec![];
@@ -523,6 +525,7 @@ fn session_with_window(
         prose_tool_calls: true,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     Session::new(Box::new(provider), Registry::standard(), cfg)
 }
@@ -646,6 +649,7 @@ fn resumed_with_window(
         prose_tool_calls: true,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     let mut file = saved(
         vec![user_msg("old prompt"), assistant_msg(vec![text("old answer")])],
@@ -916,6 +920,7 @@ fn resumed_with(
         prose_tool_calls: true,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     let (seed, notices) = store::prepare_seed(file);
     (
@@ -1166,6 +1171,7 @@ fn interrupt_session(
         prose_tool_calls: true,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     Session::new(
         Box::new(InterruptingProvider {
@@ -4146,6 +4152,7 @@ fn priced_session(
             output_per_mtok: 15.0,
         }),
         cost_advisory_step_usd: step,
+        auto_compact: false,
     };
     match seed {
         Some(s) => Session::resume(Box::new(provider), Registry::standard(), cfg, s),
@@ -4383,6 +4390,7 @@ fn skill_session(
         prose_tool_calls: true,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     let registry =
         Registry::standard_with_skills(vec![skill_root.join(".temur/skills")]);
@@ -4511,4 +4519,317 @@ fn a_small_context_window_is_what_turns_a_full_skill_into_an_index() {
     assert!(indexed.starts_with("<skill_index"), "{}", &indexed[..60]);
     assert!(indexed.chars().count() <= 8_000, "the index fits the scaled cap");
     assert!(indexed.contains("over this session's 8000-char tool output limit"), "{indexed}");
+}
+
+// ---- T40: auto-compaction of an unattended turn ----
+
+fn session_auto_compact(
+    dir: &std::path::Path,
+    responses: Vec<ResponseMessage>,
+    context_window: Option<u64>,
+    max_tokens: u32,
+    auto_compact: bool,
+) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
+    let requests = Rc::new(RefCell::new(vec![]));
+    let provider = MockProvider {
+        responses: RefCell::new(responses),
+        requests: requests.clone(),
+    };
+    let cfg = SessionConfig {
+        model: "local-test".into(),
+        max_tokens,
+        system: None,
+        thinking: false,
+        cwd: dir.to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window,
+        max_tokens_source: None,
+        prose_tool_calls: true,
+        cost_rates: None,
+        cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact,
+    };
+    (
+        Session::new(Box::new(provider), Registry::standard(), cfg),
+        requests,
+    )
+}
+
+/// A round-trip that calls bash with a distinct command, so the T36 futile
+/// guard never sees a repeat.
+fn rt(n: u32, used: u64) -> ResponseMessage {
+    msg_with_usage(
+        vec![tool_use(
+            &format!("tu_{n}"),
+            "bash",
+            serde_json::json!({"command": format!("echo {n}")}),
+        )],
+        StopReason::ToolUse,
+        serde_json::json!({"input_tokens": used, "output_tokens": 0}),
+    )
+}
+
+fn summary_response(body: &str) -> ResponseMessage {
+    msg_with_usage(
+        vec![text(body)],
+        StopReason::EndTurn,
+        serde_json::json!({"input_tokens": 50, "output_tokens": 10}),
+    )
+}
+
+fn texts_of(m: &RequestMessage) -> Vec<&str> {
+    m.content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn auto_compact_folds_the_middle_and_keeps_prompt_and_last_two_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    // window 1000, max_tokens 100: only the 80% arm can fire (the tight arm
+    // would need used > 900). Round-trip 4 crosses at exactly 800.
+    let (mut session, requests) = session_auto_compact(
+        dir.path(),
+        vec![
+            rt(1, 100),
+            rt(2, 100),
+            rt(3, 100),
+            rt(4, 800), // crosses
+            summary_response("WORK SO FAR"),
+            rt(5, 100),
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 100, "output_tokens": 0}),
+            ),
+        ],
+        Some(1000),
+        100,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+
+    // The advisory site said what it was about to do; the safe point said
+    // what it did.
+    assert!(
+        n.iter().any(|x| x == "context: ~800 of 1000 tokens used; compacting automatically"),
+        "auto-compact notice: {n:?}"
+    );
+    assert!(
+        n.iter().any(|x| x.starts_with("compacted: 9 message(s) summarized into 7")),
+        "outcome notice: {n:?}"
+    );
+    assert!(
+        !n.iter().any(|x| x.contains("/compact frees the window")),
+        "the plain advisory must NOT also fire for one crossing: {n:?}"
+    );
+
+    let reqs = requests.borrow();
+    // 7 provider calls: 4 round-trips, the summary call, then 2 more.
+    assert_eq!(reqs.len(), 7, "one extra call for the summary");
+
+    // The summary call itself: tools omitted entirely, instruction appended.
+    let summary_req = &reqs[4];
+    assert!(summary_req.tools.is_empty(), "no tool_use possible in a summary call");
+    let last = summary_req.messages.last().unwrap();
+    assert!(
+        texts_of(last).iter().any(|t| t.contains("You are running low on context")),
+        "auto-compact instruction, not /compact's: {:?}",
+        texts_of(last)
+    );
+
+    // The FIRST request built on the compacted history: prompt, summary
+    // pair, then round-trips 3 and 4 verbatim.
+    let m = &reqs[5].messages;
+    assert_eq!(m.len(), 7, "prompt + summary pair + 2 round-trips");
+    assert_eq!(texts_of(&m[0]), vec!["the task"], "prompt verbatim");
+    assert_eq!(m[1].role, Role::Assistant);
+    assert!(texts_of(&m[1])[0].contains("WORK SO FAR"), "the model's summary");
+    assert_eq!(m[2].role, Role::User);
+    // Round-trips 3 and 4 survived whole; 1 and 2 were folded away.
+    let ids: Vec<&str> = m
+        .iter()
+        .flat_map(|x| x.content.iter())
+        .filter_map(|b| match b {
+            ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, vec!["tu_3", "tu_4"], "the last two round-trips, verbatim");
+    for pair in m.windows(2) {
+        assert_ne!(pair[0].role, pair[1].role, "alternation holds on the wire");
+    }
+    // And the turn ran to completion on the compacted history.
+    assert_eq!(reqs[6].messages.len(), 9);
+}
+
+#[test]
+fn auto_compact_fires_on_the_tight_arm_too() {
+    let dir = tempfile::tempdir().unwrap();
+    // window 1000, max_tokens 800: used 250 leaves 750 < 800. Far below 80%,
+    // so only the remaining-window arm can be firing here.
+    let (mut session, requests) = session_auto_compact(
+        dir.path(),
+        vec![
+            rt(1, 100),
+            rt(2, 100),
+            rt(3, 250), // tight arm
+            summary_response("S"),
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 100, "output_tokens": 0}),
+            ),
+        ],
+        Some(1000),
+        800,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert!(
+        n.iter().any(|x| x == "context: ~250 of 1000 tokens used; compacting automatically"),
+        "{n:?}"
+    );
+    assert!(n.iter().any(|x| x.starts_with("compacted: 7 message(s) summarized into 7")), "{n:?}");
+    assert_eq!(requests.borrow().len(), 5);
+}
+
+#[test]
+fn auto_compact_is_bounded_at_three_then_advises() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_auto_compact(
+        dir.path(),
+        vec![
+            rt(1, 100),
+            rt(2, 100),
+            rt(3, 800), // cross 1
+            summary_response("S1"),
+            rt(4, 800), // cross 2
+            summary_response("S2"),
+            rt(5, 800), // cross 3
+            summary_response("S3"),
+            rt(6, 800), // cross 4: over the bound
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 100, "output_tokens": 0}),
+            ),
+        ],
+        Some(1000),
+        100,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    let compacting = n.iter().filter(|x| x.ends_with("compacting automatically")).count();
+    let compacted = n.iter().filter(|x| x.starts_with("compacted: ")).count();
+    let advised = n.iter().filter(|x| x.contains("/compact frees the window")).count();
+    assert_eq!(compacting, 3, "three compactions announced: {n:?}");
+    assert_eq!(compacted, 3, "three compactions performed: {n:?}");
+    assert_eq!(advised, 1, "the fourth crossing advises instead: {n:?}");
+    // The fourth crossing is the ONLY plain advisory, and it is byte-identical
+    // to what a session without auto-compaction would have printed.
+    assert!(n.iter().any(|x| x
+        == "context: ~800 of 1000 tokens used; /compact frees the window by summarizing the conversation, or start a new session"));
+    // 10 responses = 7 turn round-trips + 3 summary calls.
+    assert_eq!(requests.borrow().len(), 10);
+}
+
+#[test]
+fn auto_compact_failure_is_named_and_the_turn_continues_uncompacted() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_auto_compact(
+        dir.path(),
+        vec![
+            rt(1, 100),
+            rt(2, 100),
+            rt(3, 800),               // crosses
+            summary_response("   "),  // whitespace only: fail-closed
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 100, "output_tokens": 0}),
+            ),
+        ],
+        Some(1000),
+        100,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert!(
+        n.iter().any(|x| x
+            == "auto-compact failed (the model returned an empty summary); continuing without compacting"),
+        "{n:?}"
+    );
+    assert!(!n.iter().any(|x| x.starts_with("compacted: ")), "nothing was compacted: {n:?}");
+    // History untouched by the failed attempt: prompt + 3 whole round-trips,
+    // then the final assistant message.
+    assert_eq!(session.history().len(), 8);
+    let reqs = requests.borrow();
+    // The request after the failure went out on the UNCOMPACTED history.
+    assert_eq!(reqs[4].messages.len(), 7);
+}
+
+#[test]
+fn auto_compact_leaves_a_turn_with_too_few_round_trips_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    // Crossing on round-trip 1: one completed round-trip is nothing to fold.
+    let (mut session, requests) = session_auto_compact(
+        dir.path(),
+        vec![
+            rt(1, 800),
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 100, "output_tokens": 0}),
+            ),
+        ],
+        Some(1000),
+        100,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert!(!n.iter().any(|x| x.starts_with("compacted: ")), "nothing to fold: {n:?}");
+    assert!(
+        n.iter().any(|x| x.contains("/compact frees the window")),
+        "the advisory is emitted instead: {n:?}"
+    );
+    // No summary call was spent.
+    assert_eq!(requests.borrow().len(), 2);
+}
+
+#[test]
+fn auto_compact_off_keeps_todays_advisory_byte_identical() {
+    let dir = tempfile::tempdir().unwrap();
+    let responses = || {
+        vec![
+            rt(1, 100),
+            rt(2, 100),
+            rt(3, 800),
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 100, "output_tokens": 0}),
+            ),
+        ]
+    };
+    let (mut session, requests) =
+        session_auto_compact(dir.path(), responses(), Some(1000), 100, false);
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert_eq!(
+        n,
+        vec![
+            "context: ~800 of 1000 tokens used; /compact frees the window by summarizing the conversation, or start a new session"
+                .to_string()
+        ],
+        "the REPL/TUI arm is exactly what it was before T40"
+    );
+    // No summary call, no compaction: 4 responses, 4 requests.
+    assert_eq!(requests.borrow().len(), 4);
+    assert_eq!(session.history().len(), 8);
 }

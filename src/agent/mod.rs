@@ -108,6 +108,11 @@ pub struct SessionConfig {
     /// T26: dollar step between mid-session cost advisories; `0` disables
     /// them. Already validated (see `Config::cost_advisory_step_usd`).
     pub cost_advisory_step_usd: f64,
+    /// T40: compact the session automatically at the next safe point when
+    /// the context advisory fires, instead of only advising. Already
+    /// resolved against the invocation mode (see
+    /// `Config::auto_compact_enabled`), so the core sees a plain `bool`.
+    pub auto_compact: bool,
 }
 
 impl SessionConfig {
@@ -134,6 +139,11 @@ impl SessionConfig {
             // VALIDATED value, which is where a bad step becomes a startup
             // error instead of a silent fallback.
             cost_advisory_step_usd: crate::config::DEFAULT_COST_ADVISORY_STEP_USD,
+            // The interactive default. main.rs overwrites this with the
+            // mode-resolved value; a session built straight from a Config
+            // (tests, embedders) gets the conservative arm: advise, never
+            // spend a summary call nobody asked for.
+            auto_compact: false,
         }
     }
 }
@@ -210,6 +220,43 @@ Files: files read, created, or modified, with paths\n\
 Next steps: what remains to be done\n\
 Be specific: name files, commands, and values. The full conversation is about \
 to be discarded; anything not in the summary is lost.";
+
+/// T40: the most auto-compactions one turn may perform. A bound, not a
+/// target: each one is a real provider call, and a turn that needs a fourth
+/// is not going to be rescued by it. On the fourth need the plain advisory
+/// is emitted instead, byte-identical to today, and the request goes out as
+/// it would have, which may 400, and that is the honest outcome.
+const MAX_AUTO_COMPACTIONS_PER_TURN: u32 = 3;
+
+/// T40: how many completed round-trips the auto-compaction tail keeps
+/// verbatim. Two is the immediate working state (the last tool call and
+/// its result, plus the one before it for context), small enough that the
+/// summary does the real work.
+const AUTO_COMPACT_TAIL_ROUND_TRIPS: usize = 2;
+
+/// T40 auto-compaction's summary instruction: a sibling of
+/// [`COMPACT_INSTRUCTION`], not a reuse. Two differences matter. The
+/// conversation is NOT about to be discarded (the task prompt and the last
+/// round-trips survive verbatim), so promising that would be a lie a small
+/// model acts on; and this fires MID-TASK, so what a continuation needs is
+/// working state, not a conversation recap.
+const AUTO_COMPACT_INSTRUCTION: &str = "You are running low on context. Summarize the \
+work done so far on this task so that it can continue from the summary alone. Reply \
+with ONLY the summary, under these exact headings:\n\
+State: what has been done and what is true right now\n\
+Files: files read, created, or modified, with paths\n\
+Findings: what has been learned that the remaining work depends on\n\
+Remaining: what still has to be done\n\
+Be specific: name files, commands, and values. The middle of this conversation is \
+about to be replaced by this summary; the original task and the most recent steps \
+are kept.";
+
+/// T40: the user half of the summary pair. The summary is spoken by the
+/// ASSISTANT (it is the assistant's own account of its work), so the wire's
+/// alternation rule needs a user message before the retained tail resumes.
+/// It does double duty as the instruction to carry on.
+const AUTO_COMPACT_RESUME: &str = "That summary replaces the earlier steps of this \
+task. Continue the task from it and from the most recent steps below.";
 
 /// What [`Session::compact`] did. The command layer words the notices; the
 /// variants carry only facts.
@@ -448,6 +495,58 @@ impl Session {
         if self.history.is_empty() {
             return CompactOutcome::Nothing;
         }
+        let summary = match self.summarize(COMPACT_INSTRUCTION) {
+            Ok(s) => s,
+            Err(outcome) => return outcome,
+        };
+        let before = self.history.len();
+        self.history = compacted_history(&summary, &self.history);
+        let after = self.history.len();
+        self.last_context_used = None;
+        self.context_warned = false;
+        CompactOutcome::Compacted { before, after }
+    }
+
+    /// T40 auto-compaction: the same fail-closed summary call as
+    /// [`Session::compact`], merged by [`auto_compacted_history`] instead.
+    /// Called from the turn loop at the safe point, never by a command.
+    ///
+    /// `turn_start` is the index of the CURRENT turn's user prompt, which
+    /// the caller captured when it pushed it. `CompactOutcome::Nothing`
+    /// means the turn is too short to fold (invariant (e)); the caller
+    /// advises instead and counts it against the bound.
+    pub fn auto_compact(&mut self, turn_start: usize) -> CompactOutcome {
+        let Some(tail_start) =
+            auto_compact_tail_start(&self.history, turn_start, AUTO_COMPACT_TAIL_ROUND_TRIPS)
+        else {
+            return CompactOutcome::Nothing;
+        };
+        let summary = match self.summarize(AUTO_COMPACT_INSTRUCTION) {
+            Ok(s) => s,
+            Err(outcome) => return outcome,
+        };
+        let before = self.history.len();
+        self.history = auto_compacted_history(&summary, &self.history, turn_start, tail_start);
+        let after = self.history.len();
+        // Same reset as `/compact`: the estimate described the old
+        // conversation, and the advisory re-arms so a turn that fills the
+        // window AGAIN can compact again, up to the bound.
+        self.last_context_used = None;
+        self.context_warned = false;
+        CompactOutcome::Compacted { before, after }
+    }
+
+    /// The summary provider call shared by `/compact` (T20) and T40
+    /// auto-compaction. ONE call: the current history plus `instruction` as
+    /// a final user message, tools omitted entirely (no `tool_use`
+    /// possible), on the session's own model, `max_tokens`, and system
+    /// prompt. Cancel works like a turn: the provider stack polls the same
+    /// token.
+    ///
+    /// FAIL-CLOSED: every `Err` arm carries the outcome the caller returns
+    /// unchanged, and no arm touches history: the replacement is the
+    /// caller's job, and only after a completed, non-empty summary.
+    fn summarize(&mut self, instruction: &str) -> Result<String, CompactOutcome> {
         // Alternation-safe instruction: history normally ends with an
         // assistant message and the instruction is a new user message; when
         // it already ends with a user message (dangling prompt after a
@@ -456,7 +555,7 @@ impl Session {
         // consecutive user messages.
         let mut messages = self.history.clone();
         let instruction = ContentBlock::Text {
-            text: COMPACT_INSTRUCTION.to_string(),
+            text: instruction.to_string(),
         };
         match messages.last_mut() {
             Some(m) if m.role == Role::User => m.content.push(instruction),
@@ -484,11 +583,11 @@ impl Session {
             if let Ok(msg) = &result {
                 self.accrue_usage(&msg.usage);
             }
-            return CompactOutcome::Cancelled;
+            return Err(CompactOutcome::Cancelled);
         }
         let msg = match result {
             Ok(m) => m,
-            Err(e) => return CompactOutcome::Failed(e.to_string()),
+            Err(e) => return Err(CompactOutcome::Failed(e.to_string())),
         };
         self.accrue_usage(&msg.usage);
         // Concatenated Text blocks only; Thinking blocks are ignored.
@@ -503,14 +602,11 @@ impl Session {
             .join("\n");
         let summary = summary.trim();
         if summary.is_empty() {
-            return CompactOutcome::Failed("the model returned an empty summary".into());
+            return Err(CompactOutcome::Failed(
+                "the model returned an empty summary".into(),
+            ));
         }
-        let before = self.history.len();
-        self.history = compacted_history(summary, &self.history);
-        let after = self.history.len();
-        self.last_context_used = None;
-        self.context_warned = false;
-        CompactOutcome::Compacted { before, after }
+        Ok(summary.to_string())
     }
 
     /// Flip adaptive thinking for THIS session (`/thinking`); the config
@@ -534,6 +630,18 @@ impl Session {
     /// versa, and every existing re-arm point (provider switch, `/clear`,
     /// seed load, `/compact`) resets both.
     pub fn context_advisory(&mut self) -> Option<String> {
+        let (used, window) = self.context_trigger()?;
+        Some(context_advisory_text(used, window))
+    }
+
+    /// The advisory TRIGGER, factored out of [`Session::context_advisory`]
+    /// for T40: the firing CONDITION and the latch, without the wording.
+    /// Returns `(used, window)` on the round-trip that crosses, `None`
+    /// otherwise, and sets the latch exactly where the advisory used to set
+    /// it, so a caller that auto-compacts and a caller that advises are
+    /// latch-equivalent, and the two can never both speak about one
+    /// crossing.
+    fn context_trigger(&mut self) -> Option<(u64, u64)> {
         if self.context_warned {
             return None;
         }
@@ -545,9 +653,7 @@ impl Session {
             return None;
         }
         self.context_warned = true;
-        Some(format!(
-            "context: ~{used} of {window} tokens used; /compact frees the window by summarizing the conversation, or start a new session"
-        ))
+        Some((used, window))
     }
 
     /// The mid-session cost advisory (T26). Fires when the session estimate
@@ -667,6 +773,10 @@ impl Session {
                 text: user_input.to_string(),
             }],
         });
+        // T40: where this turn's prompt sits. Auto-compaction keeps exactly
+        // this message verbatim and folds what follows, so the index is
+        // captured at the one moment it is unambiguous.
+        let turn_start = self.history.len() - 1;
 
         let mut turn_usage = Usage::default();
         let mut iterations: u32 = 0;
@@ -693,6 +803,11 @@ impl Session {
             std::collections::HashMap::new();
         let mut futile_count: u32 = 0;
         let mut futile_notice_sent = false;
+        // T40 per-turn auto-compaction state: whether a crossing is waiting
+        // to be acted on at the next safe point, and how many compactions
+        // this turn has already spent against MAX_AUTO_COMPACTIONS_PER_TURN.
+        let mut compact_pending = false;
+        let mut auto_compactions: u32 = 0;
 
         loop {
             iterations += 1;
@@ -702,6 +817,45 @@ impl Session {
                     self.cfg.max_iterations
                 )));
                 break;
+            }
+
+            // T40 SAFE POINT. Not at the advisory site: that fires right
+            // after a response whose `tool_use` blocks are still unanswered,
+            // and cutting there would strand them. Here, the previous
+            // round-trip's results are appended and this request is not yet
+            // built, so history is a clean run of completed pairs.
+            if compact_pending {
+                compact_pending = false;
+                match self.auto_compact(turn_start) {
+                    CompactOutcome::Compacted { before, after } => {
+                        auto_compactions += 1;
+                        ui(AgentEvent::Notice(compacted_notice_text(before, after)));
+                    }
+                    // Invariant (e): too few round-trips to fold. Say what
+                    // would have been said and count the crossing, so a turn
+                    // cannot spin here.
+                    CompactOutcome::Nothing => {
+                        auto_compactions += 1;
+                        if let (Some(used), Some(window)) =
+                            (self.last_context_used, self.cfg.context_window)
+                        {
+                            ui(AgentEvent::Notice(context_advisory_text(used, window)));
+                        }
+                    }
+                    // The summary call failed. The latch stays SET, so this
+                    // cannot retry inside the turn; the request goes out on
+                    // the uncompacted history, which may 400.
+                    CompactOutcome::Failed(reason) => {
+                        auto_compactions += 1;
+                        ui(AgentEvent::Notice(format!(
+                            "auto-compact failed ({reason}); continuing without compacting"
+                        )));
+                    }
+                    CompactOutcome::Cancelled => {
+                        ui(AgentEvent::Notice("turn interrupted".into()));
+                        break;
+                    }
+                }
             }
 
             let req = ChatRequest {
@@ -753,8 +907,16 @@ impl Session {
                     msg.usage.input_tokens.unwrap_or(0) + msg.usage.output_tokens.unwrap_or(0),
                 );
             }
-            if let Some(advisory) = self.context_advisory() {
-                ui(AgentEvent::Notice(advisory));
+            // T20 advisory / T40 auto-compaction: ONE crossing, one of two
+            // responses. The latch lives in the trigger, so exactly one of
+            // these arms can ever speak about a given crossing.
+            if let Some((used, window)) = self.context_trigger() {
+                if self.cfg.auto_compact && auto_compactions < MAX_AUTO_COMPACTIONS_PER_TURN {
+                    compact_pending = true;
+                    ui(AgentEvent::Notice(auto_compact_notice_text(used, window)));
+                } else {
+                    ui(AgentEvent::Notice(context_advisory_text(used, window)));
+                }
             }
             // T26: the spend advisory sits beside the context one, and for
             // the same reason: an agentic turn is many round-trips, and a
@@ -1415,6 +1577,29 @@ fn synth_interrupted(id: &str, name: &str, ui: &mut dyn FnMut(AgentEvent)) -> Co
     }
 }
 
+/// The T20 context advisory, verbatim. One definition, two callers: the
+/// advisory itself and T40's bound arm, which must be byte-identical to it.
+fn context_advisory_text(used: u64, window: u64) -> String {
+    format!(
+        "context: ~{used} of {window} tokens used; /compact frees the window by summarizing the conversation, or start a new session"
+    )
+}
+
+/// T40: the notice emitted where the advisory would have been, when
+/// auto-compaction takes the crossing instead. Same two facts, different
+/// second clause: nothing is being asked of the reader.
+fn auto_compact_notice_text(used: u64, window: u64) -> String {
+    format!("context: ~{used} of {window} tokens used; compacting automatically")
+}
+
+/// The `/compact` success notice (T20), shared with T40 auto-compaction so
+/// one compaction reads the same however it was triggered.
+pub fn compacted_notice_text(before: usize, after: usize) -> String {
+    format!(
+        "compacted: {before} message(s) summarized into {after}; the next request rebuilds the provider's cached prefix (one-time cost)"
+    )
+}
+
 /// T20 verbatim-tail boundary: the index of the LAST user message that
 /// contains no ToolResult block. Everything from there to the end of history
 /// is kept verbatim (the last user-initiated exchange), which can never
@@ -1429,6 +1614,74 @@ fn compact_tail_start(history: &[RequestMessage]) -> Option<usize> {
                 .iter()
                 .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
     })
+}
+
+/// T40 auto-compaction boundary, DISTINCT from [`compact_tail_start`] and
+/// deliberately so. `/compact`'s rule walks back to the last plain user
+/// message, which mid-turn IS the current task prompt: the whole turn would
+/// be "tail" and the compaction would free nothing: exactly the case T39
+/// F4 died in. This rule instead cuts inside the turn.
+///
+/// Returns the index where the retained tail of the last `k` round-trips
+/// begins, or `None` when there is nothing to fold (invariant (e): a turn
+/// with fewer than `k + 1` completed round-trips is left alone).
+///
+/// A completed round-trip inside a turn is exactly TWO messages (the
+/// assistant response and the user message answering its `tool_use` blocks),
+/// so at the safe point `history[turn_start + 1..]` is a run of such
+/// pairs and cutting `2 * k` back from the end always lands on an assistant
+/// message: invariants (b) and (c) hold by arithmetic, not by inspection.
+/// An ODD count means the run is not pairs after all (a `PauseTurn` append,
+/// say), and the fail-closed answer is to not compact at all.
+fn auto_compact_tail_start(
+    history: &[RequestMessage],
+    turn_start: usize,
+    k: usize,
+) -> Option<usize> {
+    let after = history.len().checked_sub(turn_start + 1)?;
+    if after % 2 != 0 {
+        return None;
+    }
+    if after / 2 < k + 1 {
+        return None;
+    }
+    Some(history.len() - 2 * k)
+}
+
+/// T40 merge: the history after a successful auto-compaction.
+///
+/// `[ task prompt verbatim ] + [ assistant summary, user resume ] + [ tail ]`
+///
+/// Alternation-safe by construction on both wires: the prompt is a user
+/// message, the summary an assistant one, the resume a user one, and the
+/// tail always opens with an assistant message (see
+/// [`auto_compact_tail_start`]).
+///
+/// The prompt is cloned VERBATIM (invariant (a)) and never merged into or
+/// prefixed: in a one-shot run it is the only statement of the task, and a
+/// model handed a paraphrase of its assignment does the wrong job.
+fn auto_compacted_history(
+    summary: &str,
+    history: &[RequestMessage],
+    turn_start: usize,
+    tail_start: usize,
+) -> Vec<RequestMessage> {
+    let mut out = Vec::with_capacity(3 + history.len() - tail_start);
+    out.push(history[turn_start].clone());
+    out.push(RequestMessage {
+        role: Role::Assistant,
+        content: vec![ContentBlock::Text {
+            text: format!("{COMPACT_SUMMARY_HEADER}\n{summary}"),
+        }],
+    });
+    out.push(RequestMessage {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: AUTO_COMPACT_RESUME.to_string(),
+        }],
+    });
+    out.extend(history[tail_start..].iter().cloned());
+    out
 }
 
 /// T20 merge: the new history after a successful compact. Alternation-safe
@@ -1586,6 +1839,157 @@ mod tests {
             other => panic!("merged first message: {other:?}"),
         }
         assert_eq!(merged[1], assistant_text("reply"));
+    }
+
+    // ---- T40 auto-compaction history rule (invariants a-e) ----
+
+    /// [prompt][A1][U1][A2][U2][A3][U3]: three completed round-trips, the
+    /// minimum that folds at K=2.
+    fn turn_history(round_trips: usize) -> Vec<RequestMessage> {
+        let mut h = vec![user_text("the task")];
+        for i in 1..=round_trips {
+            h.push(assistant_tool_use(&format!("tu_{i}")));
+            h.push(user_tool_result(&format!("tu_{i}")));
+        }
+        h
+    }
+
+    #[test]
+    fn auto_compact_keeps_the_turn_prompt_byte_identical() {
+        // Invariant (a): in a one-shot run the prompt is the only statement
+        // of the task, so it is cloned, never merged into or prefixed.
+        let h = turn_history(3);
+        let tail = auto_compact_tail_start(&h, 0, 2).unwrap();
+        let merged = auto_compacted_history("S", &h, 0, tail);
+        assert_eq!(merged[0], h[0]);
+        match &merged[0].content[..] {
+            [ContentBlock::Text { text }] => assert_eq!(text, "the task"),
+            other => panic!("prompt must survive verbatim and alone: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_compact_tail_pairs_every_tool_use_with_its_result() {
+        // Invariant (b): no tool_use in the retained tail is unanswered, and
+        // no tool_result answers a tool_use that was folded away.
+        let h = turn_history(4);
+        let tail = auto_compact_tail_start(&h, 0, 2).unwrap();
+        let merged = auto_compacted_history("S", &h, 0, tail);
+        let uses: Vec<&str> = merged
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        let results: Vec<&str> = merged
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(uses, results, "every tool_use answered, no orphan results");
+        assert_eq!(uses, vec!["tu_3", "tu_4"], "the last two round-trips");
+    }
+
+    #[test]
+    fn auto_compact_cuts_at_a_pair_boundary() {
+        // Invariant (c): the retained tail always OPENS with the assistant
+        // message of a round-trip, never mid-pair. That is also what keeps
+        // the merge alternation-safe after the user-role resume message.
+        for rt in 3..8 {
+            let h = turn_history(rt);
+            let tail = auto_compact_tail_start(&h, 0, 2).unwrap();
+            assert_eq!(h[tail].role, Role::Assistant, "round_trips={rt}");
+            let merged = auto_compacted_history("S", &h, 0, tail);
+            for pair in merged.windows(2) {
+                assert_ne!(pair[0].role, pair[1].role, "roles alternate (round_trips={rt})");
+            }
+            assert_eq!(merged[0].role, Role::User, "history opens on a user message");
+        }
+    }
+
+    #[test]
+    fn auto_compact_retains_exactly_k_round_trips() {
+        // Invariant (d). Beyond the K+1 minimum the retained count does not
+        // grow with the turn: a longer turn folds more, never keeps more.
+        for rt in 3..8 {
+            let h = turn_history(rt);
+            let tail = auto_compact_tail_start(&h, 0, 2).unwrap();
+            assert_eq!(h.len() - tail, 4, "2 round-trips = 4 messages (round_trips={rt})");
+            let merged = auto_compacted_history("S", &h, 0, tail);
+            // prompt + summary pair + 2 round-trips, whatever the turn length.
+            assert_eq!(merged.len(), 7, "round_trips={rt}");
+        }
+    }
+
+    #[test]
+    fn auto_compact_leaves_a_turn_with_too_few_round_trips_alone() {
+        // Invariant (e): fewer than K+1 completed round-trips is nothing to
+        // fold: the tail would be the whole turn.
+        for rt in 0..3 {
+            assert_eq!(auto_compact_tail_start(&turn_history(rt), 0, 2), None, "round_trips={rt}");
+        }
+        assert!(auto_compact_tail_start(&turn_history(3), 0, 2).is_some());
+    }
+
+    #[test]
+    fn auto_compact_declines_a_history_that_is_not_whole_pairs() {
+        // Fail-closed: an odd message count after the prompt means the run is
+        // not round-trip pairs (a PauseTurn append, say). Cutting arithmetic
+        // would be wrong there, so nothing is cut.
+        let mut h = turn_history(3);
+        h.push(assistant_text("paused"));
+        assert_eq!(auto_compact_tail_start(&h, 0, 2), None);
+    }
+
+    #[test]
+    fn auto_compact_summary_is_spoken_by_the_assistant_and_carries_the_marker() {
+        let h = turn_history(3);
+        let tail = auto_compact_tail_start(&h, 0, 2).unwrap();
+        let merged = auto_compacted_history("SUMMARY BODY", &h, 0, tail);
+        assert_eq!(merged[1].role, Role::Assistant);
+        match &merged[1].content[..] {
+            [ContentBlock::Text { text }] => {
+                assert!(text.starts_with(COMPACT_SUMMARY_HEADER));
+                assert!(text.ends_with("\nSUMMARY BODY"));
+            }
+            other => panic!("summary message: {other:?}"),
+        }
+        assert_eq!(merged[2].role, Role::User);
+        match &merged[2].content[..] {
+            [ContentBlock::Text { text }] => assert_eq!(text, AUTO_COMPACT_RESUME),
+            other => panic!("resume message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_compact_honours_a_turn_start_after_earlier_history() {
+        // A REPL session with pre-turn history: everything before the
+        // CURRENT turn's prompt is folded away too.
+        let mut h = vec![user_text("older"), assistant_text("older reply")];
+        let turn_start = h.len();
+        h.extend(turn_history(3));
+        let tail = auto_compact_tail_start(&h, turn_start, 2).unwrap();
+        let merged = auto_compacted_history("S", &h, turn_start, tail);
+        assert_eq!(merged.len(), 7);
+        match &merged[0].content[..] {
+            [ContentBlock::Text { text }] => assert_eq!(text, "the task"),
+            other => panic!("the CURRENT turn's prompt leads: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_two_compaction_rules_stay_distinct() {
+        // The whole point of T40's rule: /compact's boundary walks back to
+        // the task prompt mid-turn (freeing nothing), and the auto rule cuts
+        // inside the turn instead.
+        let h = turn_history(4);
+        assert_eq!(compact_tail_start(&h), Some(0), "/compact keeps the whole turn");
+        assert_eq!(auto_compact_tail_start(&h, 0, 2), Some(5), "auto cuts inside it");
     }
 
     #[test]

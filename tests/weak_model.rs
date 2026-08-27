@@ -101,6 +101,7 @@ fn session_with_prose(
         prose_tool_calls,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     (
         Session::new(Box::new(provider), Registry::standard(), cfg),

@@ -1084,6 +1084,7 @@ fn agent_turn_round_trips_tool_calls_as_tool_messages() {
         prose_tool_calls: true,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
     session.turn("do the smoke task", &mut |_| {}).unwrap();

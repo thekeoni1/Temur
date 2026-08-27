@@ -516,6 +516,10 @@ fn repl(
     // before the first prompt rather than an advisory that never fires.
     session_cfg.cost_rates = temur::cost::CostRates::for_profile(&resolved);
     session_cfg.cost_advisory_step_usd = cfg.cost_advisory_step_usd()?;
+    // T40: resolved HERE because the default depends on the invocation mode,
+    // which only main.rs knows. One-shot -p has nobody to act on a context
+    // advisory, so it compacts itself; the REPL and TUI keep the advisory.
+    session_cfg.auto_compact = cfg.auto_compact_enabled(oneshot.is_some());
     session_cfg.system = Some(system);
     let registry =
         Registry::standard_with_skills(skill_dirs).with_profile(current_prompt_profile);

@@ -409,9 +409,7 @@ fn compact(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
             // Honest about the cost: the provider cache prefix was built on
             // the old history and the next request rebuilds it. That is the
             // deliberate one-time trade for a small window.
-            let mut out = vec![notice(format!(
-                "compacted: {before} message(s) summarized into {after}; the next request rebuilds the provider's cached prefix (one-time cost)"
-            ))];
+            let mut out = vec![notice(crate::agent::compacted_notice_text(before, after))];
             if let Some(path) = ctx.persist_path.as_deref() {
                 let snap = ctx.session.snapshot();
                 let file = session_store::SessionFileRef {

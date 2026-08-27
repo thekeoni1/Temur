@@ -465,6 +465,7 @@ fn headless_end_to_end_through_the_ui_seam() {
         prose_tool_calls: true,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
 
@@ -651,6 +652,7 @@ fn headless_submission_clears_a_stale_token() {
         prose_tool_calls: true,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
     // The stale Esc: set after the (zeroth) turn ended, before submission.
@@ -714,6 +716,7 @@ fn headless_coalesced_enter_esc_interrupt_survives() {
         prose_tool_calls: true,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     let mut session = Session::new(Box::new(BlockUntilCancelled), Registry::standard(), cfg);
 
@@ -769,6 +772,7 @@ fn headless_esc_interrupts_a_blocked_turn_end_to_end() {
         prose_tool_calls: true,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     let mut session = Session::new(Box::new(BlockUntilCancelled), Registry::standard(), cfg);
 
@@ -922,6 +926,7 @@ fn headless_command_flow_status_leaves_title_alone() {
         prose_tool_calls: true,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     let mut session = Session::new(
         Box::new(BlockUntilCancelled), // never called: only commands run
@@ -1065,6 +1070,7 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
         prose_tool_calls: true,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
 
@@ -1321,6 +1327,7 @@ fn headless_markdown_fixture_renders_in_final_frame() {
         prose_tool_calls: true,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
 
@@ -1597,6 +1604,7 @@ fn headless_tab_completion_submits_the_completed_command() {
         prose_tool_calls: true,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     let mut session = Session::new(
         Box::new(BlockUntilCancelled), // never called: only commands run
@@ -1973,6 +1981,7 @@ fn approval_turn(answer: KeyCode) -> (tempfile::TempDir, Vec<String>) {
         prose_tool_calls: true,
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
     session.set_key_guard(

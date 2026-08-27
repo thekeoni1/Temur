@@ -115,6 +115,16 @@ pub struct Config {
     /// repeat it. It rides the same gate as the `/status` estimate, so an
     /// unpriced, keyless, or local selection never sees it whatever the value.
     pub cost_advisory_step_usd: Option<f64>,
+    /// T40: when the context advisory would fire, compact the session
+    /// automatically and continue the turn instead of only printing advice.
+    /// `None` takes the per-mode default from
+    /// [`Config::auto_compact_enabled`]; `Some(v)` is `v` in every mode.
+    ///
+    /// Base config only this cycle: there is deliberately no profile-level
+    /// `auto_compact`. Whether an unattended run may spend a summary call to
+    /// survive is a property of HOW temur was invoked, not of which model
+    /// answered, so a `/model` switch must not change it.
+    pub auto_compact: Option<bool>,
 }
 
 /// One named profile: a nickname bundling provider + model + endpoint +
@@ -271,6 +281,7 @@ impl Default for Config {
             allow_bash_without_key_sandbox: false,
             prose_tool_calls: true,
             cost_advisory_step_usd: None,
+            auto_compact: None,
         }
     }
 }
@@ -327,6 +338,18 @@ impl Config {
                 "cost_advisory_step_usd must be a finite non-negative number (0 disables the advisory)".into(),
             )),
         }
+    }
+
+    /// Resolve the effective auto-compaction setting (T40). Infallible by
+    /// type: a `bool` has nothing to validate, so unlike
+    /// [`Config::cost_advisory_step_usd`] this is not a `Result`.
+    ///
+    /// An explicit value wins in every mode. Absent, the default is the
+    /// answer to "is anyone here to act on the advisory?": one-shot `-p`
+    /// has nobody, so it compacts itself; the plain REPL and the TUI have a
+    /// user and keep the advisory plus `/compact`.
+    pub fn auto_compact_enabled(&self, oneshot: bool) -> bool {
+        self.auto_compact.unwrap_or(oneshot)
     }
 
     /// Resolve and validate EVERY named profile eagerly. Called at startup so
@@ -732,6 +755,26 @@ mod tests {
             c.cost_advisory_step_usd().unwrap(),
             DEFAULT_COST_ADVISORY_STEP_USD
         );
+    }
+
+    #[test]
+    fn auto_compact_defaults_per_mode_and_an_explicit_value_wins() {
+        // Absent: the default IS the invocation mode: one-shot has nobody
+        // to act on an advisory, the REPL and TUI do.
+        let c = Config::default();
+        assert!(!c.auto_compact_enabled(false), "REPL/TUI default off");
+        assert!(c.auto_compact_enabled(true), "one-shot -p default on");
+        // Explicit true enables the same mechanism in an interactive session.
+        let c: Config = serde_json::from_str(r#"{"auto_compact":true}"#).unwrap();
+        assert!(c.auto_compact_enabled(false));
+        assert!(c.auto_compact_enabled(true));
+        // Explicit false restores advisory-only behaviour in one-shot.
+        let c: Config = serde_json::from_str(r#"{"auto_compact":false}"#).unwrap();
+        assert!(!c.auto_compact_enabled(false));
+        assert!(!c.auto_compact_enabled(true));
+        // Unknown-field tolerance is unchanged by the new key.
+        let c: Config = serde_json::from_str(r#"{"auto_compact":true,"nope":1}"#).unwrap();
+        assert_eq!(c.auto_compact, Some(true));
     }
 
     #[test]
