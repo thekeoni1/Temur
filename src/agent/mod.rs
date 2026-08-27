@@ -432,9 +432,15 @@ impl Session {
     ///
     /// Advisory-only when `auto_compact` is off, byte-identical to before.
     pub fn resume_seam_context_action(&mut self, ui: &mut dyn FnMut(AgentEvent)) {
-        let Some((used, window)) = self.context_trigger() else {
+        let Some((used, window)) = self.context_crossing() else {
             return;
         };
+        // The seam consumes the latch unconditionally, exactly as the
+        // advisory always did here. Rider 2's "do not consume" rule is
+        // about a crossing that is NOT YET actionable; this one always is,
+        // because the seam folds the whole pre-turn history and has no
+        // minimum to meet.
+        self.context_warned = true;
         if !self.cfg.auto_compact {
             ui(AgentEvent::Notice(context_advisory_text(used, window)));
             return;
@@ -849,18 +855,22 @@ impl Session {
     /// versa, and every existing re-arm point (provider switch, `/clear`,
     /// seed load, `/compact`) resets both.
     pub fn context_advisory(&mut self) -> Option<String> {
-        let (used, window) = self.context_trigger()?;
+        let (used, window) = self.context_crossing()?;
+        self.context_warned = true;
         Some(context_advisory_text(used, window))
     }
 
-    /// The advisory TRIGGER, factored out of [`Session::context_advisory`]
-    /// for T40: the firing CONDITION and the latch, without the wording.
-    /// Returns `(used, window)` on the round-trip that crosses, `None`
-    /// otherwise, and sets the latch exactly where the advisory used to set
-    /// it, so a caller that auto-compacts and a caller that advises are
-    /// latch-equivalent, and the two can never both speak about one
-    /// crossing.
-    fn context_trigger(&mut self) -> Option<(u64, u64)> {
+    /// The advisory CONDITION, with no side effect: `(used, window)` when
+    /// the latch is open and either arm crosses, `None` otherwise.
+    ///
+    /// Split from the latch by T40 rider 2. Consuming the latch at the
+    /// moment of DETECTION was wrong under auto-compaction: a crossing that
+    /// arrives before the turn has enough round-trips to fold is not yet
+    /// actionable, and burning the once-per-session latch on it locked
+    /// auto-compaction out of that session entirely. Detection and
+    /// consumption are now separate decisions, and the caller makes the
+    /// second one.
+    fn context_crossing(&self) -> Option<(u64, u64)> {
         if self.context_warned {
             return None;
         }
@@ -871,7 +881,6 @@ impl Session {
         if !(eighty || tight) {
             return None;
         }
-        self.context_warned = true;
         Some((used, window))
     }
 
@@ -1149,23 +1158,33 @@ impl Session {
             // T20 advisory / T40 auto-compaction: ONE crossing, one of two
             // responses. The latch lives in the trigger, so exactly one of
             // these arms can ever speak about a given crossing.
-            if let Some((used, window)) = self.context_trigger() {
-                // T40 rider: foldability is decided HERE, not at the safe
-                // point, so the turn never announces a compaction it then
-                // does not perform. All three conditions or the advisory.
-                if self.cfg.auto_compact
-                    && auto_compactions < MAX_AUTO_COMPACTIONS_PER_TURN
-                    && auto_compact_will_fold(
-                        self.history.len(),
-                        turn_start,
-                        AUTO_COMPACT_TAIL_ROUND_TRIPS,
-                    )
-                {
+            if let Some((used, window)) = self.context_crossing() {
+                // T40 rider 2: three outcomes, and only two of them consume
+                // the once-per-session latch.
+                let at_bound = auto_compactions >= MAX_AUTO_COMPACTIONS_PER_TURN;
+                if !self.cfg.auto_compact || at_bound {
+                    // Nobody is going to compact this: advise, and latch, as
+                    // temur always did.
+                    self.context_warned = true;
+                    ui(AgentEvent::Notice(context_advisory_text(used, window)));
+                } else if auto_compact_will_fold(
+                    self.history.len(),
+                    turn_start,
+                    AUTO_COMPACT_TAIL_ROUND_TRIPS,
+                ) {
+                    // Actionable now. Foldability is decided HERE, not at the
+                    // safe point, so the turn never announces a compaction it
+                    // then does not perform.
+                    self.context_warned = true;
                     compact_pending = true;
                     ui(AgentEvent::Notice(auto_compact_notice_text(used, window)));
-                } else {
-                    ui(AgentEvent::Notice(context_advisory_text(used, window)));
                 }
+                // Otherwise: crossed, but the turn has too few round-trips to
+                // fold yet. Say NOTHING and consume NOTHING. Rider 1 spent the
+                // latch here and thereby locked auto-compaction out of the
+                // whole session, which is exactly the state the 4096-window
+                // smoke run ended in. The check simply repeats after the next
+                // round-trip and fires at the first foldable one.
             }
             // T26: the spend advisory sits beside the context one, and for
             // the same reason: an agentic turn is many round-trips, and a

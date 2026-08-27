@@ -4813,10 +4813,12 @@ fn auto_compact_leaves_a_turn_with_too_few_round_trips_alone() {
         dir.path(),
         vec![
             rt(1, 800),
+            // Still over at turn end, so the latch is the only thing that
+            // could suppress an advisory afterwards.
             msg_with_usage(
                 vec![text("done")],
                 StopReason::EndTurn,
-                serde_json::json!({"input_tokens": 100, "output_tokens": 0}),
+                serde_json::json!({"input_tokens": 800, "output_tokens": 0}),
             ),
         ],
         Some(1000),
@@ -4824,13 +4826,16 @@ fn auto_compact_leaves_a_turn_with_too_few_round_trips_alone() {
         true,
     );
     let n = notices(&collect_events(&mut session, "the task"));
-    assert!(!n.iter().any(|x| x.starts_with("compacted: ")), "nothing to fold: {n:?}");
-    assert!(
-        n.iter().any(|x| x.contains("/compact frees the window")),
-        "the advisory is emitted instead: {n:?}"
-    );
-    // No summary call was spent.
+    assert!(n.is_empty(), "not yet actionable: say nothing at all: {n:?}");
+    // No summary call was spent...
     assert_eq!(requests.borrow().len(), 2);
+    // ...and, the rider-2 rule, the once-per-session latch was NOT consumed
+    // by a crossing nobody could act on. Before rider 2 this crossing spent
+    // the latch and locked auto-compaction out of the whole session.
+    assert!(
+        session.context_advisory().is_some(),
+        "the latch must still be open after a non-actionable crossing"
+    );
 }
 
 #[test]
@@ -5308,10 +5313,11 @@ fn the_seam_is_silent_below_the_threshold_whatever_auto_compact_says() {
 }
 
 #[test]
-fn a_turn_too_short_to_fold_advises_once_and_never_announces() {
-    // The rider's notice-order fix. Before it, this turn printed
-    // "compacting automatically" and then the ordinary advisory, which read
-    // as a contradiction.
+fn a_turn_too_short_to_fold_says_nothing_at_all() {
+    // Rider 1 printed "compacting automatically" and then the ordinary
+    // advisory, which read as a contradiction. Rider 2 goes further: a
+    // crossing nobody can act on yet is not news, so it is not reported and
+    // it does not spend the latch.
     let dir = tempfile::tempdir().unwrap();
     let (mut session, requests) = session_auto_compact(
         dir.path(),
@@ -5328,30 +5334,27 @@ fn a_turn_too_short_to_fold_advises_once_and_never_announces() {
         true,
     );
     let n = notices(&collect_events(&mut session, "the task"));
-    assert_eq!(
-        n,
-        vec![
-            "context: ~800 of 1000 tokens used; /compact frees the window by summarizing the conversation, or start a new session"
-                .to_string()
-        ],
-        "exactly one notice, and it is the advisory: {n:?}"
-    );
+    assert!(n.is_empty(), "silent, not contradictory: {n:?}");
     assert_eq!(requests.borrow().len(), 2, "no summary call was spent");
 }
 
 #[test]
-fn the_announcement_waits_until_the_turn_is_long_enough_to_fold() {
-    // Round-trip 2 crosses: at the advisory site the turn has 1 completed
-    // round-trip and the safe point will have 2, still under K+1 = 3. So it
-    // advises. Round-trip 3 would fold, but the latch has already fired,
-    // which is the pre-existing once-per-session rule and not new here.
+fn a_crossing_that_stays_over_compacts_at_the_first_foldable_round_trip() {
+    // Rider 2's pin, and the shape the live 4096-window smoke run hit: the
+    // threshold is crossed on round-trip 1 and never goes back under.
+    //
+    // Round-trips 1 and 2 cannot fold (K+1 = 3 needed), so they are silent
+    // and spend nothing. Round-trip 3 can, so it announces and compacts.
+    // Under rider 1 the crossing at round-trip 1 consumed the latch and
+    // NOTHING ever compacted: the session was locked out for good.
     let dir = tempfile::tempdir().unwrap();
     let (mut session, requests) = session_auto_compact(
         dir.path(),
         vec![
-            rt(1, 100),
+            rt(1, 800),
             rt(2, 800),
-            rt(3, 100),
+            rt(3, 800),
+            summary_response("STATE SO FAR"),
             msg_with_usage(
                 vec![text("done")],
                 StopReason::EndTurn,
@@ -5362,13 +5365,33 @@ fn the_announcement_waits_until_the_turn_is_long_enough_to_fold() {
         100,
         true,
     );
-    let n = notices(&collect_events(&mut session, "the task"));
-    assert!(
-        n.iter().all(|x| !x.ends_with("compacting automatically")),
-        "never announced: {n:?}"
+    let events = collect_events(&mut session, "the task");
+    let n = notices(&events);
+
+    // Exactly one announcement, and it is the third round-trip's.
+    assert_eq!(
+        n.iter().filter(|x| x.ends_with("compacting automatically")).count(),
+        1,
+        "one announcement, at the first foldable crossing: {n:?}"
     );
-    assert_eq!(n.len(), 1, "one advisory, nothing else: {n:?}");
-    assert_eq!(requests.borrow().len(), 4, "no summary call was spent");
+    assert_eq!(n[0], "context: ~800 of 1000 tokens used; compacting automatically");
+    assert!(n[1].starts_with("compacted: "), "and it compacted: {n:?}");
+    assert!(
+        !n.iter().any(|x| x.contains("/compact frees the window")),
+        "the advisory never fires on a path that compacts: {n:?}"
+    );
+
+    let reqs = requests.borrow();
+    // Requests 1-3 are the round-trips; request 4 IS the summary call, so
+    // the compaction lands before the turn's next real request, 5.
+    assert_eq!(reqs.len(), 5);
+    assert!(reqs[3].tools.is_empty(), "request 4 is the summary call");
+    assert_eq!(
+        reqs[4].messages.len(),
+        7,
+        "request 5 runs on the compacted history: prompt + summary pair + 2 round-trips"
+    );
+    assert_eq!(texts_of(&reqs[4].messages[0]), vec!["the task"], "prompt verbatim");
 }
 
 #[test]

@@ -7407,7 +7407,8 @@ comparing a completed turn's file against a single end-of-turn save.
 | P1 | `9761604` | 739 | ALL CHECKS PASSED, first try | `t40-gates/p1-9761604.log` |
 | P2 | `2bb84e1` | 744 | PASSED on the second run; see below | `t40-gates/p2-2bb84e1.log` (first run: `p2-first-run-FAILED-python3.log`) |
 | P3 | `b135242` | 744 | ALL CHECKS PASSED | `t40-gates/p3-b135242.log` |
-| rider | this commit | 753 | ALL CHECKS PASSED | `t40-gates/rider.log` |
+| rider | `2539507` | 753 | ALL CHECKS PASSED | `t40-gates/rider.log` |
+| rider 2 | this commit | 753 | ALL CHECKS PASSED | `t40-gates/rider2.log` |
 
 Gate logs live in `~/temur-eval-archive/t40-gates/`, adopted this cycle;
 earlier milestones did not archive them.
@@ -7465,6 +7466,82 @@ round-trip into a summary plus its resume message costs more than it
 saves. The notice says so rather than claiming a saving.
 
 **T39 has its ROADMAP row**, added a cycle late and marked as such.
+
+### Rider 2 (2026-08-27)
+
+**The latch rule from rider 1 was wrong, and the live smoke found it.**
+Rider 1 had the advisory site consume the once-per-session latch on
+every crossing, including one the turn could not yet act on. With
+auto-compaction on, a turn that crosses before it has K+1 round-trips
+therefore spent the latch on a silent non-event and locked
+auto-compaction out of that session for good. The 4096-window smoke run
+ended in exactly that state: one advisory at round-trip 1, then nothing
+for the rest of a 900-second run.
+
+The rule now: with `auto_compact` effective, a crossing that is not yet
+foldable emits NOTHING and consumes NOTHING, and the check simply
+repeats on each following round-trip until the first foldable one. The
+latch is consumed only where something is actually reported, which is
+(a) `auto_compact` off, (b) the per-turn bound after three compactions,
+and (c) the resume seam, which always folds and so is always
+actionable. `context_trigger` split into a side-effect-free
+`context_crossing` plus an explicit latch write at each decision site.
+
+**F6, the prompt floor.** Measured on this box against the running
+container (Qwen3-4B-Instruct-2507 Q4_K_M, llama.cpp `server-b10438`,
+`context_window` 12288, one request per profile, prompt `"x"`, figures
+are the reported input tokens):
+
+| Prompt profile | Floor | Left of a 12288 window |
+| --- | --- | --- |
+| full (default) | 6,991 tokens | ~5,297 |
+| compact | 2,763 tokens | ~9,525 |
+
+System prompt plus eight tool definitions and nothing else. The full
+profile spends 57% of a 12288 window before the task is read, which is
+part of why both boxes show ctx-exhausted temur cells. It also makes a
+4096 `context_window` unusable rather than merely tight: the floor
+exceeds the window, so the advisory fires on the empty session, which
+is what the smoke's run 1 demonstrated.
+
+Recorded as a finding, not fixed here. Candidates: pick the compact
+profile automatically below a `context_window` threshold, and report
+the floor in `doctor`. Queued on the ROADMAP under "Queued from T40".
+
+One measurement note worth keeping: an earlier reading of the full
+profile gave 6,951 rather than 6,991, taken at `context_window` 4096
+instead of 12288. The window feeds `Registry::set_context_window`,
+which scales the per-result output cap, and that cap is quoted in the
+tool descriptions, so the configured window slightly changes the size
+of the prompt that reports it. The two numbers are the same
+measurement under different windows, not a discrepancy.
+
+### The OOM mechanism, incidentally established
+
+The T40 smoke OOM-killed the local server, and in doing so produced
+something T37 wanted and never got. T37 adopted fresh-server-per-task
+after six kernel OOM kills on OBSERVED EFFECT, explicitly without a
+mechanism, and "OOM mechanism unestablished" has been an open residual
+since v0.26.0. The kill line here names it:
+
+```
+oom-kill:constraint=CONSTRAINT_NONE ... task=llama-server
+Out of memory: Killed process (llama-server) total-vm:13559204kB, anon-rss:6875376kB
+```
+
+`CONSTRAINT_NONE` is a global OOM, not a cgroup limit: llama-server at
+ctx 12288 reached 6.87 GB resident on a box with 7 GB total, growing as
+the KV cache filled, and the kernel took the largest process. No cargo
+build was competing (the `check.sh` heavy lock was set for the duration
+and nothing else was running), so the build-beside-inference hypothesis
+is not needed to explain it. The server alone does not fit at that
+context size on this box.
+
+Consequence for T40: a `context_window` of 10000 is not runnable here,
+since it needs a server ctx above 10000 and 12288 is what died. The
+smoke was rerun on the compact prompt profile at a smaller window
+instead. Evidence: `~/temur-eval-archive/t40-smoke/run2-oom-dmesg.txt`
+and `box-memory.txt`.
 
 ### Residuals
 

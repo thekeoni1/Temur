@@ -4,6 +4,14 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **Known limit, measured not fixed:** temur's own request floor is
+  6,991 prompt tokens on the default (full) prompt profile and 2,763 on
+  the compact profile, being the system prompt plus eight tool
+  definitions. On a 12288-token window the default leaves ~5.3k for the
+  task, and a `context_window` below about 8k is unusable on the full
+  profile because the floor exceeds it. Set `"prompt_profile":
+  "compact"` on small windows.
+
 - **An unattended run can now survive filling its own context.** temur
   watched the window fill, printed advice to run `/compact`, and then
   died on the next request with an HTTP 400. In one-shot `-p` there is
@@ -33,9 +41,13 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   The seam now compacts too, using the ordinary `/compact` rule, since
   before a turn begins the whole restored history is what should fold.
 
-- A turn too short to fold prints the ordinary advisory and nothing
-  else, rather than announcing a compaction and then not performing
-  one.
+- A turn too short to fold yet says nothing and keeps its once-per-
+  session context latch, rather than spending it on a crossing nobody
+  can act on. Spending it there locked auto-compaction out of the whole
+  session: a run whose very first round-trip crossed the threshold
+  would advise once and then never compact, which is the opposite of
+  what the feature is for. The check now repeats each round-trip and
+  compacts at the first one with enough history to fold.
 
 - The auto path reports what it did in round-trips and bytes
   (`compacted: 4 round-trip(s) summarized, 2 kept, ~2847 -> ~1132

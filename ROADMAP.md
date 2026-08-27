@@ -464,6 +464,25 @@ guard was never the issue.
   distribution. If a second machine or a slower model ever runs doctor
   against a local server, record what it cost.
 
+### Queued from T40 (2026-08-27)
+
+- **temur's own request floor is most of a small window.** Measured
+  against the local llama.cpp server (Qwen3-4B, one request per
+  profile, `context_window` 12288, prompt `"x"`): the FULL prompt
+  profile costs **6,991 prompt tokens** before the task is considered
+  at all, and the COMPACT profile **2,763**. System prompt plus eight
+  tool definitions, nothing else. At ctx 12288 the full profile
+  therefore leaves ~5.3k tokens for the entire task, which is part of
+  why both boxes show ctx-exhausted temur cells: the window was
+  substantially spent before the first instruction. It also means a
+  4096-token `context_window` is not merely tight but unusable, since
+  the floor exceeds the whole window and the advisory fires on the
+  empty session (seen live in the T40 smoke, run 1). Candidates, NOT
+  built: select the compact profile automatically when
+  `context_window` is below a threshold, and report the floor in
+  `doctor` so it is visible before a run rather than inferred from a
+  failure. F6 in the T40 RUNBOOK record.
+
 ### Queued from T39 (2026-08-26)
 
 - ~~**An unattended agent has no way to compact.**~~ SHIPPED in T40
