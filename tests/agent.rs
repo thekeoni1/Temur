@@ -4579,6 +4579,17 @@ fn summary_response(body: &str) -> ResponseMessage {
     )
 }
 
+/// "compacted: N round-trip(s) summarized, K kept, ~B -> ~A bytes" -> (B, A)
+fn parse_compaction_bytes(notice: &str) -> (u64, u64) {
+    let tail = notice.rsplit(", ~").next().unwrap();
+    let nums: Vec<u64> = tail
+        .trim_end_matches(" bytes")
+        .split(" -> ~")
+        .map(|p| p.parse().unwrap())
+        .collect();
+    (nums[0], nums[1])
+}
+
 fn texts_of(m: &RequestMessage) -> Vec<&str> {
     m.content
         .iter()
@@ -4621,10 +4632,18 @@ fn auto_compact_folds_the_middle_and_keeps_prompt_and_last_two_round_trips() {
         n.iter().any(|x| x == "context: ~800 of 1000 tokens used; compacting automatically"),
         "auto-compact notice: {n:?}"
     );
+    // The rider's wording: round-trips and bytes. Round-trips 1 and 2 were
+    // folded, 3 and 4 kept, and the history actually got smaller.
+    let outcome = n
+        .iter()
+        .find(|x| x.starts_with("compacted: "))
+        .expect("outcome notice");
     assert!(
-        n.iter().any(|x| x.starts_with("compacted: 9 message(s) summarized into 7")),
-        "outcome notice: {n:?}"
+        outcome.starts_with("compacted: 2 round-trip(s) summarized, 2 kept, ~"),
+        "outcome notice: {outcome}"
     );
+    let (before_b, after_b) = parse_compaction_bytes(outcome);
+    assert!(after_b < before_b, "this fold shrank the history: {outcome}");
     assert!(
         !n.iter().any(|x| x.contains("/compact frees the window")),
         "the plain advisory must NOT also fire for one crossing: {n:?}"
@@ -4696,7 +4715,18 @@ fn auto_compact_fires_on_the_tight_arm_too() {
         n.iter().any(|x| x == "context: ~250 of 1000 tokens used; compacting automatically"),
         "{n:?}"
     );
-    assert!(n.iter().any(|x| x.starts_with("compacted: 7 message(s) summarized into 7")), "{n:?}");
+    // One round-trip folded, two kept. Worth pinning that the byte figures
+    // are REPORTED rather than assumed to improve: folding a single short
+    // round-trip into a summary plus its resume message can grow the
+    // history, and the notice says so instead of claiming a saving.
+    let outcome = n
+        .iter()
+        .find(|x| x.starts_with("compacted: "))
+        .expect("outcome notice");
+    assert!(
+        outcome.starts_with("compacted: 1 round-trip(s) summarized, 2 kept, ~"),
+        "outcome notice: {outcome}"
+    );
     assert_eq!(requests.borrow().len(), 5);
 }
 
@@ -5085,4 +5115,294 @@ fn a_failing_save_is_noticed_once_per_process_not_once_per_round_trip() {
         .filter(|n| n.starts_with("session save failed:"))
         .count();
     assert_eq!(failures2, 0, "already noticed");
+}
+
+// ---- T40 rider: resume seam, notice order, outcome wording ----
+
+/// A resumed session with a real history and a requests handle, so the seam
+/// can be driven and the first post-seam request inspected.
+fn resumed_auto_compact(
+    dir: &std::path::Path,
+    history: Vec<RequestMessage>,
+    last_context_used: Option<u64>,
+    responses: Vec<ResponseMessage>,
+    context_window: Option<u64>,
+    max_tokens: u32,
+    auto_compact: bool,
+) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
+    let requests = Rc::new(RefCell::new(vec![]));
+    let provider = MockProvider {
+        responses: RefCell::new(responses),
+        requests: requests.clone(),
+    };
+    let cfg = SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens,
+        system: None,
+        thinking: false,
+        cwd: dir.to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window,
+        max_tokens_source: None,
+        prose_tool_calls: true,
+        cost_rates: None,
+        cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact,
+    };
+    let mut file = saved(history, vec![]);
+    file.last_context_used = last_context_used;
+    let (seed, _) = store::prepare_seed(file);
+    (
+        Session::resume(Box::new(provider), Registry::standard(), cfg, seed),
+        requests,
+    )
+}
+
+/// Two exchanges plus a tool round-trip: enough that /compact's rule has a
+/// real tail (the last plain user message) and a real head to fold.
+fn seeded_history() -> Vec<RequestMessage> {
+    vec![
+        user_msg("first task"),
+        assistant_msg(vec![text("first answer")]),
+        user_msg("second task"),
+        assistant_msg(vec![tool_use("tu_1", "bash", serde_json::json!({"command": "echo 1"}))]),
+        RequestMessage {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tu_1".into(),
+                content: "1".into(),
+                is_error: false,
+            }],
+        },
+        assistant_msg(vec![text("second answer")]),
+    ]
+}
+
+#[test]
+fn the_resume_seam_compacts_instead_of_advising_when_auto_compact_is_on() {
+    // The F4 gap the rider closes: before this, the seam set the advisory
+    // latch before the turn began, so --continue -p could never
+    // auto-compact and died on request 1 exactly as measured.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = resumed_auto_compact(
+        dir.path(),
+        seeded_history(),
+        Some(900), // 900 of 1000: over the 80% arm at load
+        vec![
+            summary_response("PRIOR WORK"),
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 100, "output_tokens": 0}),
+            ),
+        ],
+        Some(1000),
+        100,
+        true,
+    );
+    let mut events = vec![];
+    session.resume_seam_context_action(&mut |e| events.push(e));
+    let n = notices(&events);
+
+    assert_eq!(
+        n[0], "context: ~900 of 1000 tokens used; compacting automatically",
+        "the seam announces, it does not advise: {n:?}"
+    );
+    assert!(
+        n[1].starts_with("compacted: "),
+        "and reports the outcome: {n:?}"
+    );
+    assert!(
+        !n.iter().any(|x| x.contains("/compact frees the window")),
+        "no advisory once the compaction succeeded: {n:?}"
+    );
+    // Exactly one provider call so far: the summary.
+    assert_eq!(requests.borrow().len(), 1);
+
+    // The seam uses /compact's rule, so the tail is the last plain user
+    // message onward, with the summary prepended INSIDE it.
+    session.turn("next", &mut |_| {}).unwrap();
+    let reqs = requests.borrow();
+    let m = &reqs[1].messages;
+    assert_eq!(m[0].role, Role::User);
+    let head = texts_of(&m[0]);
+    assert!(head[0].contains("PRIOR WORK"), "summary leads the tail: {head:?}");
+    assert_eq!(head[1], "second task", "the tail's own prompt follows it");
+    // ...and the new turn's prompt is last.
+    assert_eq!(texts_of(m.last().unwrap()), vec!["next"]);
+    for pair in m.windows(2) {
+        assert_ne!(pair[0].role, pair[1].role, "alternation holds after the seam");
+    }
+}
+
+#[test]
+fn the_resume_seam_still_only_advises_when_auto_compact_is_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = resumed_auto_compact(
+        dir.path(),
+        seeded_history(),
+        Some(900),
+        vec![],
+        Some(1000),
+        100,
+        false,
+    );
+    let mut events = vec![];
+    session.resume_seam_context_action(&mut |e| events.push(e));
+    assert_eq!(
+        notices(&events),
+        vec![
+            "context: ~900 of 1000 tokens used; /compact frees the window by summarizing the conversation, or start a new session"
+                .to_string()
+        ],
+        "byte-identical to the pre-rider seam"
+    );
+    assert_eq!(requests.borrow().len(), 0, "no summary call was spent");
+}
+
+#[test]
+fn a_failed_seam_compaction_names_it_and_falls_back_to_the_advisory() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = resumed_auto_compact(
+        dir.path(),
+        seeded_history(),
+        Some(900),
+        vec![summary_response("   ")], // whitespace only: fail-closed
+        Some(1000),
+        100,
+        true,
+    );
+    let before = session.history().len();
+    let mut events = vec![];
+    session.resume_seam_context_action(&mut |e| events.push(e));
+    let n = notices(&events);
+    assert_eq!(n[0], "context: ~900 of 1000 tokens used; compacting automatically");
+    assert_eq!(
+        n[1],
+        "auto-compact failed (the model returned an empty summary); continuing without compacting"
+    );
+    assert!(n[2].contains("/compact frees the window"), "the reader still gets the advisory");
+    assert_eq!(session.history().len(), before, "history untouched");
+}
+
+#[test]
+fn the_seam_is_silent_below_the_threshold_whatever_auto_compact_says() {
+    let dir = tempfile::tempdir().unwrap();
+    for on in [true, false] {
+        let (mut session, requests) = resumed_auto_compact(
+            dir.path(),
+            seeded_history(),
+            Some(100), // nowhere near either arm
+            vec![],
+            Some(1000),
+            100,
+            on,
+        );
+        let mut events = vec![];
+        session.resume_seam_context_action(&mut |e| events.push(e));
+        assert!(notices(&events).is_empty(), "auto_compact={on}");
+        assert_eq!(requests.borrow().len(), 0, "auto_compact={on}");
+    }
+}
+
+#[test]
+fn a_turn_too_short_to_fold_advises_once_and_never_announces() {
+    // The rider's notice-order fix. Before it, this turn printed
+    // "compacting automatically" and then the ordinary advisory, which read
+    // as a contradiction.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_auto_compact(
+        dir.path(),
+        vec![
+            rt(1, 800), // crosses on round-trip 1: nothing to fold
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 100, "output_tokens": 0}),
+            ),
+        ],
+        Some(1000),
+        100,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert_eq!(
+        n,
+        vec![
+            "context: ~800 of 1000 tokens used; /compact frees the window by summarizing the conversation, or start a new session"
+                .to_string()
+        ],
+        "exactly one notice, and it is the advisory: {n:?}"
+    );
+    assert_eq!(requests.borrow().len(), 2, "no summary call was spent");
+}
+
+#[test]
+fn the_announcement_waits_until_the_turn_is_long_enough_to_fold() {
+    // Round-trip 2 crosses: at the advisory site the turn has 1 completed
+    // round-trip and the safe point will have 2, still under K+1 = 3. So it
+    // advises. Round-trip 3 would fold, but the latch has already fired,
+    // which is the pre-existing once-per-session rule and not new here.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_auto_compact(
+        dir.path(),
+        vec![
+            rt(1, 100),
+            rt(2, 800),
+            rt(3, 100),
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 100, "output_tokens": 0}),
+            ),
+        ],
+        Some(1000),
+        100,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert!(
+        n.iter().all(|x| !x.ends_with("compacting automatically")),
+        "never announced: {n:?}"
+    );
+    assert_eq!(n.len(), 1, "one advisory, nothing else: {n:?}");
+    assert_eq!(requests.borrow().len(), 4, "no summary call was spent");
+}
+
+#[test]
+fn the_outcome_line_reports_round_trips_and_bytes_not_message_counts() {
+    // Why the wording changed: this fold replaces 4 round-trips of tool
+    // output with a summary, and the old line called it "9 into 7".
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_auto_compact(
+        dir.path(),
+        vec![
+            rt(1, 100),
+            rt(2, 100),
+            rt(3, 100),
+            rt(4, 100),
+            rt(5, 100),
+            rt(6, 800),
+            summary_response("S"),
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 100, "output_tokens": 0}),
+            ),
+        ],
+        Some(1000),
+        100,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    let outcome = n.iter().find(|x| x.starts_with("compacted: ")).unwrap();
+    assert!(
+        outcome.starts_with("compacted: 4 round-trip(s) summarized, 2 kept, ~"),
+        "{outcome}"
+    );
+    let (before_b, after_b) = parse_compaction_bytes(outcome);
+    assert!(after_b < before_b, "a real fold shrinks it: {outcome}");
+    assert!(before_b > 0 && after_b > 0, "both figures are real: {outcome}");
 }

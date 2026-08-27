@@ -580,14 +580,14 @@ fn repl(
     for n in &pending_notices {
         ui.event(&AgentEvent::Notice(n.clone()));
     }
-    // T20 resume-time context advisory: when the RESTORED estimate already
-    // crosses the threshold, say so now. Resume is the zero-waste moment to
+    // T20 resume-time context action: when the RESTORED estimate already
+    // crosses the threshold, act now. Resume is the zero-waste moment to
     // compact, and this one call site covers the plain REPL, the TUI, and
     // one-shot -p with --continue/--resume (whose UI routes it to stderr).
+    // T40 rider: what "act" means (advise, or compact and continue) is the
+    // session's decision, not main.rs's.
     if pending_loaded.is_some() {
-        if let Some(advisory) = session.context_advisory() {
-            ui.event(&AgentEvent::Notice(advisory));
-        }
+        session.resume_seam_context_action(&mut |ev| ui.event(&ev));
     }
 
     // F4: plain-REPL SIGINT — the first Ctrl+C interrupts the running turn

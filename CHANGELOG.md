@@ -26,6 +26,25 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   after which the ordinary advisory prints and the request goes out as
   it would have.
 
+- Auto-compaction also fires at the resume seam. A `--continue -p` over
+  a session that is already past the threshold used to advise at load,
+  which set the advisory latch before the turn began and left the run
+  unable to compact at all: the one invocation the feature exists for.
+  The seam now compacts too, using the ordinary `/compact` rule, since
+  before a turn begins the whole restored history is what should fold.
+
+- A turn too short to fold prints the ordinary advisory and nothing
+  else, rather than announcing a compaction and then not performing
+  one.
+
+- The auto path reports what it did in round-trips and bytes
+  (`compacted: 4 round-trip(s) summarized, 2 kept, ~2847 -> ~1132
+  bytes`) instead of borrowing `/compact`'s message counts, which could
+  read "7 message(s) summarized into 7" for a fold that had in fact
+  replaced several round-trips of tool output. The figures are
+  measured: a small fold can grow the history, and the line says so.
+  `/compact`'s own outcome line is unchanged.
+
 - **A killed run no longer loses its whole session.** The session file
   was written once, after the turn returned, so a hard kill during a
   long agentic turn left nothing: no transcript, nothing for

@@ -284,6 +284,54 @@ pub struct PersistTarget {
     pub max_bytes: u64,
 }
 
+/// The non-success arms are identical on both paths, so they convert
+/// rather than being re-listed at every call site.
+impl From<CompactOutcome> for AutoCompactOutcome {
+    fn from(o: CompactOutcome) -> Self {
+        match o {
+            CompactOutcome::Nothing => AutoCompactOutcome::Nothing,
+            CompactOutcome::Cancelled => AutoCompactOutcome::Cancelled,
+            CompactOutcome::Failed(e) => AutoCompactOutcome::Failed(e),
+            // Unreachable: the auto paths build their own success arm, with
+            // the counts a message tally cannot give them.
+            CompactOutcome::Compacted { before, after } => AutoCompactOutcome::Compacted {
+                folded: before.saturating_sub(after),
+                kept: after,
+                before_bytes: 0,
+                after_bytes: 0,
+            },
+        }
+    }
+}
+
+/// What an AUTO-compaction did (T40, reworded by the rider). Distinct from
+/// [`CompactOutcome`] because the auto path measures a different thing:
+/// `/compact` reports message counts, which for a mid-turn fold can read
+/// "7 message(s) summarized into 7" while several round-trips of tool
+/// output have in fact been replaced by a summary. Round-trips and bytes
+/// say what actually happened.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AutoCompactOutcome {
+    /// Nothing to fold: too few round-trips (invariant (e)), or an empty
+    /// history. No provider call was made.
+    Nothing,
+    /// The user interrupted the summary call; history untouched.
+    Cancelled,
+    /// Provider error or empty summary; history untouched.
+    Failed(String),
+    /// History replaced.
+    Compacted {
+        /// Round-trips folded into the summary.
+        folded: usize,
+        /// Round-trips kept verbatim.
+        kept: usize,
+        /// Serialized history size before and after. `u64`: this is a byte
+        /// count, and `usize` is 32-bit on the shipped target.
+        before_bytes: u64,
+        after_bytes: u64,
+    },
+}
+
 /// What [`Session::compact`] did. The command layer words the notices; the
 /// variants carry only facts.
 #[derive(Debug, PartialEq, Eq)]
@@ -371,6 +419,52 @@ impl Session {
     /// Holding a clone never requires holding the session itself.
     pub fn cancel_token(&self) -> CancelToken {
         self.cancel.clone()
+    }
+
+    /// T40 rider: the whole resume-seam context action, in one call.
+    ///
+    /// Before the rider this seam only ever advised, and that silently
+    /// disabled auto-compaction for `--continue -p`: the seam set the
+    /// advisory latch before the turn began, so the turn-loop trigger never
+    /// fired and the run died exactly as T39 F4 described. The seam is now
+    /// the one place that decides, for every caller (startup
+    /// `--continue`/`--resume`, and `/resume`).
+    ///
+    /// Advisory-only when `auto_compact` is off, byte-identical to before.
+    pub fn resume_seam_context_action(&mut self, ui: &mut dyn FnMut(AgentEvent)) {
+        let Some((used, window)) = self.context_trigger() else {
+            return;
+        };
+        if !self.cfg.auto_compact {
+            ui(AgentEvent::Notice(context_advisory_text(used, window)));
+            return;
+        }
+        ui(AgentEvent::Notice(auto_compact_notice_text(used, window)));
+        match self.auto_compact_on_resume() {
+            AutoCompactOutcome::Compacted {
+                folded,
+                kept,
+                before_bytes,
+                after_bytes,
+            } => ui(AgentEvent::Notice(auto_compacted_notice_text(
+                folded,
+                kept,
+                before_bytes,
+                after_bytes,
+            ))),
+            AutoCompactOutcome::Failed(reason) => {
+                ui(AgentEvent::Notice(format!(
+                    "auto-compact failed ({reason}); continuing without compacting"
+                )));
+                ui(AgentEvent::Notice(context_advisory_text(used, window)));
+            }
+            // Nothing to fold, or the user interrupted the summary call.
+            // Either way the restored history stands and the advisory is
+            // what a reader needs.
+            AutoCompactOutcome::Nothing | AutoCompactOutcome::Cancelled => {
+                ui(AgentEvent::Notice(context_advisory_text(used, window)));
+            }
+        }
     }
 
     /// T40 P2: install (or clear) the persist target. Called before every
@@ -601,25 +695,64 @@ impl Session {
     /// the caller captured when it pushed it. `CompactOutcome::Nothing`
     /// means the turn is too short to fold (invariant (e)); the caller
     /// advises instead and counts it against the bound.
-    pub fn auto_compact(&mut self, turn_start: usize) -> CompactOutcome {
+    pub fn auto_compact(&mut self, turn_start: usize) -> AutoCompactOutcome {
         let Some(tail_start) =
             auto_compact_tail_start(&self.history, turn_start, AUTO_COMPACT_TAIL_ROUND_TRIPS)
         else {
-            return CompactOutcome::Nothing;
+            return AutoCompactOutcome::Nothing;
         };
+        // Measured before the call, while the old history is still here.
+        let before_bytes = history_bytes(&self.history);
+        let folded = round_trips(&self.history[turn_start + 1..tail_start]);
+        let kept = round_trips(&self.history[tail_start..]);
         let summary = match self.summarize(AUTO_COMPACT_INSTRUCTION) {
             Ok(s) => s,
-            Err(outcome) => return outcome,
+            Err(outcome) => return outcome.into(),
         };
-        let before = self.history.len();
         self.history = auto_compacted_history(&summary, &self.history, turn_start, tail_start);
-        let after = self.history.len();
         // Same reset as `/compact`: the estimate described the old
         // conversation, and the advisory re-arms so a turn that fills the
         // window AGAIN can compact again, up to the bound.
         self.last_context_used = None;
         self.context_warned = false;
-        CompactOutcome::Compacted { before, after }
+        AutoCompactOutcome::Compacted {
+            folded,
+            kept,
+            before_bytes,
+            after_bytes: history_bytes(&self.history),
+        }
+    }
+
+    /// T40 rider: the RESUME SEAM arm of auto-compaction.
+    ///
+    /// Before a turn begins there is no turn to cut inside, so the in-turn
+    /// rule does not apply and neither does its invariant (e): the whole
+    /// restored history is exactly what should fold. This therefore uses
+    /// the EXISTING `/compact` rule wholesale, and only the outcome wording
+    /// is the auto path's.
+    ///
+    /// Resume is also the zero-waste moment to do it: no provider cache
+    /// prefix is warm yet, so the one-time cost `/compact` pays to rebuild
+    /// it is not paid here at all.
+    pub fn auto_compact_on_resume(&mut self) -> AutoCompactOutcome {
+        if self.history.is_empty() {
+            return AutoCompactOutcome::Nothing;
+        }
+        let before_bytes = history_bytes(&self.history);
+        let total = round_trips(&self.history);
+        let kept = match compact_tail_start(&self.history) {
+            Some(i) => round_trips(&self.history[i..]),
+            None => 0,
+        };
+        match self.compact() {
+            CompactOutcome::Compacted { .. } => AutoCompactOutcome::Compacted {
+                folded: total - kept,
+                kept,
+                before_bytes,
+                after_bytes: history_bytes(&self.history),
+            },
+            other => other.into(),
+        }
     }
 
     /// The summary provider call shared by `/compact` (T20) and T40
@@ -913,14 +1046,26 @@ impl Session {
             if compact_pending {
                 compact_pending = false;
                 match self.auto_compact(turn_start) {
-                    CompactOutcome::Compacted { before, after } => {
+                    AutoCompactOutcome::Compacted {
+                        folded,
+                        kept,
+                        before_bytes,
+                        after_bytes,
+                    } => {
                         auto_compactions += 1;
-                        ui(AgentEvent::Notice(compacted_notice_text(before, after)));
+                        ui(AgentEvent::Notice(auto_compacted_notice_text(
+                            folded,
+                            kept,
+                            before_bytes,
+                            after_bytes,
+                        )));
                     }
-                    // Invariant (e): too few round-trips to fold. Say what
-                    // would have been said and count the crossing, so a turn
-                    // cannot spin here.
-                    CompactOutcome::Nothing => {
+                    // Invariant (e). Since the rider, the advisory site
+                    // tests foldability BEFORE announcing, so reaching this
+                    // arm means the history stopped being whole pairs after
+                    // the flag was set (a PauseTurn append). Rare, and still
+                    // fail-closed: advise, count it, never spin.
+                    AutoCompactOutcome::Nothing => {
                         auto_compactions += 1;
                         if let (Some(used), Some(window)) =
                             (self.last_context_used, self.cfg.context_window)
@@ -931,13 +1076,13 @@ impl Session {
                     // The summary call failed. The latch stays SET, so this
                     // cannot retry inside the turn; the request goes out on
                     // the uncompacted history, which may 400.
-                    CompactOutcome::Failed(reason) => {
+                    AutoCompactOutcome::Failed(reason) => {
                         auto_compactions += 1;
                         ui(AgentEvent::Notice(format!(
                             "auto-compact failed ({reason}); continuing without compacting"
                         )));
                     }
-                    CompactOutcome::Cancelled => {
+                    AutoCompactOutcome::Cancelled => {
                         ui(AgentEvent::Notice("turn interrupted".into()));
                         break;
                     }
@@ -1005,7 +1150,17 @@ impl Session {
             // responses. The latch lives in the trigger, so exactly one of
             // these arms can ever speak about a given crossing.
             if let Some((used, window)) = self.context_trigger() {
-                if self.cfg.auto_compact && auto_compactions < MAX_AUTO_COMPACTIONS_PER_TURN {
+                // T40 rider: foldability is decided HERE, not at the safe
+                // point, so the turn never announces a compaction it then
+                // does not perform. All three conditions or the advisory.
+                if self.cfg.auto_compact
+                    && auto_compactions < MAX_AUTO_COMPACTIONS_PER_TURN
+                    && auto_compact_will_fold(
+                        self.history.len(),
+                        turn_start,
+                        AUTO_COMPACT_TAIL_ROUND_TRIPS,
+                    )
+                {
                     compact_pending = true;
                     ui(AgentEvent::Notice(auto_compact_notice_text(used, window)));
                 } else {
@@ -1694,12 +1849,40 @@ fn auto_compact_notice_text(used: u64, window: u64) -> String {
     format!("context: ~{used} of {window} tokens used; compacting automatically")
 }
 
-/// The `/compact` success notice (T20), shared with T40 auto-compaction so
-/// one compaction reads the same however it was triggered.
+/// The `/compact` success notice (T20). The auto path has its own wording
+/// (see [`auto_compacted_notice_text`]); this one is unchanged.
 pub fn compacted_notice_text(before: usize, after: usize) -> String {
     format!(
         "compacted: {before} message(s) summarized into {after}; the next request rebuilds the provider's cached prefix (one-time cost)"
     )
+}
+
+/// T40 rider: the auto path's outcome line. Round-trips and bytes, because
+/// message counts understate a mid-turn fold to the point of reading as a
+/// no-op.
+pub fn auto_compacted_notice_text(
+    folded: usize,
+    kept: usize,
+    before_bytes: u64,
+    after_bytes: u64,
+) -> String {
+    format!(
+        "compacted: {folded} round-trip(s) summarized, {kept} kept, ~{before_bytes} -> ~{after_bytes} bytes"
+    )
+}
+
+/// One model response is one round-trip, so counting assistant messages
+/// counts round-trips. Works for either compaction rule, which is why the
+/// seam and the in-turn path can share one outcome line.
+fn round_trips(history: &[RequestMessage]) -> usize {
+    history.iter().filter(|m| m.role == Role::Assistant).count()
+}
+
+/// Serialized size of a history, for the outcome line. A failure to
+/// serialize cannot happen for data that came off the wire, and reporting
+/// `0` is better than failing a compaction over a notice.
+fn history_bytes(history: &[RequestMessage]) -> u64 {
+    serde_json::to_string(history).map_or(0, |s| s.len() as u64)
 }
 
 /// T20 verbatim-tail boundary: the index of the LAST user message that
@@ -1740,14 +1923,32 @@ fn auto_compact_tail_start(
     turn_start: usize,
     k: usize,
 ) -> Option<usize> {
-    let after = history.len().checked_sub(turn_start + 1)?;
-    if after % 2 != 0 {
-        return None;
-    }
-    if after / 2 < k + 1 {
+    if !auto_compact_folds(history.len(), turn_start, k) {
         return None;
     }
     Some(history.len() - 2 * k)
+}
+
+/// The foldability test of [`auto_compact_tail_start`], on a LENGTH rather
+/// than a slice, so the advisory site can ask it about a history that does
+/// not exist yet.
+fn auto_compact_folds(history_len: usize, turn_start: usize, k: usize) -> bool {
+    match history_len.checked_sub(turn_start + 1) {
+        Some(after) => after % 2 == 0 && after / 2 >= k + 1,
+        None => false,
+    }
+}
+
+/// T40 rider: will the NEXT safe point have enough to fold?
+///
+/// Asked at the advisory site, where the response just received and the
+/// tool results answering it are not in history yet but will be by the time
+/// the safe point runs: two more messages, one more round-trip. Testing it
+/// HERE is what keeps a turn from announcing "compacting automatically" and
+/// then printing the ordinary advisory instead, which read as a
+/// contradiction.
+fn auto_compact_will_fold(history_len: usize, turn_start: usize, k: usize) -> bool {
+    auto_compact_folds(history_len + 2, turn_start, k)
 }
 
 /// T40 merge: the history after a successful auto-compaction.
@@ -2036,6 +2237,35 @@ mod tests {
             assert_eq!(auto_compact_tail_start(&turn_history(rt), 0, 2), None, "round_trips={rt}");
         }
         assert!(auto_compact_tail_start(&turn_history(3), 0, 2).is_some());
+    }
+
+    #[test]
+    fn will_fold_predicts_the_safe_point_one_round_trip_ahead() {
+        // At the advisory site the current response and its results are not
+        // in history yet. K=2 needs 3 completed round-trips at the safe
+        // point, so the site must say yes from 2 completed onward.
+        for (completed, expected) in [(0, false), (1, false), (2, true), (3, true)] {
+            let h = turn_history(completed);
+            assert_eq!(
+                auto_compact_will_fold(h.len(), 0, 2),
+                expected,
+                "{completed} completed round-trips at the advisory site"
+            );
+            // And it agrees with what the safe point will actually find.
+            let at_safe_point = turn_history(completed + 1);
+            assert_eq!(
+                auto_compact_tail_start(&at_safe_point, 0, 2).is_some(),
+                expected,
+                "prediction must match the safe point ({completed} + 1)"
+            );
+        }
+    }
+
+    #[test]
+    fn round_trips_counts_model_responses() {
+        assert_eq!(round_trips(&turn_history(0)), 0, "a bare prompt");
+        assert_eq!(round_trips(&turn_history(3)), 3);
+        assert_eq!(round_trips(&[]), 0);
     }
 
     #[test]

@@ -271,6 +271,24 @@ assignment does the wrong job. The cut always lands on a
 from its result. A turn with fewer than three completed round-trips has
 nothing to fold and is left alone, with the ordinary advisory instead.
 
+On resume it works differently, and deliberately. When
+`--continue`/`--resume` (or `/resume`) restores a session that is
+already past the threshold, there is no turn to cut inside yet, so the
+whole restored history is what folds and the ordinary `/compact` rule
+is used instead. Resume is also the cheapest moment to do it: no
+provider cache prefix is warm, so the one-time rebuild `/compact`
+normally pays for is not paid at all.
+
+A successful compaction reports what it did in round-trips and bytes:
+
+```
+[!] context: ~11942 of 12288 tokens used; compacting automatically
+[!] compacted: 9 round-trip(s) summarized, 2 kept, ~48211 -> ~9820 bytes
+```
+
+Those byte figures are measured, not promised. Folding a single short
+round-trip can cost more than it saves, and the line will say so.
+
 It is bounded at three compactions per turn; a fourth crossing prints
 the ordinary advisory and lets the request go out as it would have,
 which may still be rejected, and that is the honest outcome. A failed

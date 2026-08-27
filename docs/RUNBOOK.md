@@ -7401,12 +7401,16 @@ comparing a completed turn's file against a single end-of-turn save.
 
 ### Gate log
 
-| Phase | Commit | Tests | check.sh |
-| --- | --- | --- | --- |
-| baseline | `c1b88b1` | 723 | (not re-run) |
-| P1 | `9761604` | 739 | ALL CHECKS PASSED, first try |
-| P2 | `2bb84e1` | 744 | PASSED on the second run; see below |
-| P3 | this commit | 744 | ALL CHECKS PASSED |
+| Phase | Commit | Tests | check.sh | Gate log |
+| --- | --- | --- | --- | --- |
+| baseline | `c1b88b1` | 723 | (not re-run) | - |
+| P1 | `9761604` | 739 | ALL CHECKS PASSED, first try | `t40-gates/p1-9761604.log` |
+| P2 | `2bb84e1` | 744 | PASSED on the second run; see below | `t40-gates/p2-2bb84e1.log` (first run: `p2-first-run-FAILED-python3.log`) |
+| P3 | `b135242` | 744 | ALL CHECKS PASSED | `t40-gates/p3-b135242.log` |
+| rider | this commit | 753 | ALL CHECKS PASSED | `t40-gates/rider.log` |
+
+Gate logs live in `~/temur-eval-archive/t40-gates/`, adopted this cycle;
+earlier milestones did not archive them.
 
 The P2 first run is worth recording because it is exactly what the
 container stage exists to catch. The mid-turn-persistence test used a
@@ -7416,6 +7420,52 @@ container, which has no python. Rewritten to `cp` the file and parse
 the copy back in Rust, which needs only coreutils. Host-green was not
 evidence; the container was.
 
+### The rider (2026-08-27)
+
+Four of the six residuals below were ruled on and closed in a single
+rider commit; the wording each produced is now pinned.
+
+**The resume seam compacts.** This was the real gap. A `--continue -p`
+over a seed already past the threshold fired the advisory at the seam,
+which SET THE LATCH before the turn began, so the turn-loop trigger
+never fired and the run died exactly as F4 described. Auto-compaction
+was silently disabled for the one invocation it was built for. The
+ruling: compact at the seam using the existing `/compact` rule, since
+before a turn begins the whole pre-turn history is precisely what
+should fold and invariant (e), which assumes a turn in progress, does
+not apply. Resume is also the zero-waste moment: no provider cache
+prefix is warm, so the one-time rebuild `/compact` pays for is not paid
+here at all. The decision moved into the session
+(`resume_seam_context_action`), so startup resume and `/resume` share
+it; advisory-only behaviour when `auto_compact` is off is
+byte-identical to before.
+
+**One notice, never two.** Foldability is now tested at the advisory
+site, one round-trip ahead of the safe point, rather than discovered at
+the safe point after the turn has already announced a compaction. A
+turn too short to fold prints the ordinary advisory and nothing else.
+The `Nothing` arm at the safe point survives for the case the
+prediction cannot cover (a `PauseTurn` append making the run stop being
+whole pairs) and is still fail-closed.
+
+**The outcome line stopped lying by omission.** The auto path reused
+`/compact`'s message-count wording, which for a real fold could read
+"7 message(s) summarized into 7" while several round-trips of tool
+output had been replaced by a summary. It now reports round-trips and
+serialized bytes:
+
+```
+compacted: 4 round-trip(s) summarized, 2 kept, ~2847 -> ~1132 bytes
+```
+
+`/compact`'s own line is unchanged. Worth recording that the byte
+figures are REPORTED, not assumed to improve: a test pins a small fold
+that GROWS the history (651 -> 722 bytes), because folding one short
+round-trip into a summary plus its resume message costs more than it
+saves. The notice says so rather than claiming a saving.
+
+**T39 has its ROADMAP row**, added a cycle late and marked as such.
+
 ### Residuals
 
 - **Nothing has fired against a live model.** Every arm here is pinned
@@ -7424,29 +7474,8 @@ evidence; the container was.
   thing to watch for is whether the summary a small local model writes
   is good enough to continue a task from. That is a model-quality
   question the tests cannot answer.
-- **The resume seam does not auto-compact.** A `--continue -p` over a
-  seed that is ALREADY past the threshold latches the advisory at the
-  resume seam (`main.rs`), before the turn starts, so the turn-loop
-  trigger never fires and the run dies exactly as F4 described. The
-  safe point and invariant (e) both assume a turn in progress, so
-  extending this is a design change, not a patch. Filed as an open
-  item, not fixed here.
-- **A too-short turn prints two contradictory notices.** The
-  "compacting automatically" notice is emitted at the advisory site,
-  before the safe point discovers there is nothing to fold, and the
-  ordinary advisory follows it. Prescribed by the plan's notice
-  ordering; the fix (test foldability at the advisory site) is one
-  line and was not taken unilaterally.
-- **The compaction notice counts messages, which understates what
-  auto-compaction does.** It reuses `/compact`'s wording, so a fold of
-  7 messages into 7 reports "7 message(s) summarized into 7" while
-  having replaced several round-trips of tool output with a summary.
-  The saving is in bytes, not message count.
 - **`release.sh` cannot pass `--title` itself**, because it stages and
   gates but never publishes; `gh release create` is an operator step.
   It prints the invocation with the title read back from the tag
   instead. The plan asked for the flag to be passed; this is the
   closest the script can get without taking over publishing.
-- **The ROADMAP milestone table has no T39 row.** Noticed while adding
-  T40's; the table ends at T38 and v0.28.0 shipped without one. Not
-  invented here.
