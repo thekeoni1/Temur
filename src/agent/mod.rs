@@ -172,6 +172,13 @@ pub struct Session {
     /// T6 cooperative interruption. The UI holds a clone (via
     /// [`Session::cancel_token`]) and sets it; the provider stack polls it.
     cancel: CancelToken,
+    /// T40 P2: where this session writes itself. `None` = never persist.
+    persist: Option<PersistTarget>,
+    /// T40 P2: the save-failure notice is once per PROCESS, not per write.
+    /// It lives here rather than in the caller because mid-turn writes and
+    /// the end-of-turn write must share one latch: a full disk should say
+    /// so once, not once per round-trip.
+    save_failure_notified: bool,
 }
 
 /// The cost-advisory latch value for a session holding `usage` under `cfg`:
@@ -258,6 +265,25 @@ are kept.";
 const AUTO_COMPACT_RESUME: &str = "That summary replaces the earlier steps of this \
 task. Continue the task from it and from the most recent steps below.";
 
+/// T40 P2: where and how a session persists ITSELF. `None` on the session
+/// means never persist, which is what the `--mock` replay paths and any
+/// embedder without a session file get.
+///
+/// The provider/model/cwd fields describe what the NEXT write records, and
+/// the REPL refreshes them before every turn: a session saved after a
+/// `/model` switch must describe what is actually active.
+pub struct PersistTarget {
+    pub path: std::path::PathBuf,
+    pub provider: String,
+    pub model: String,
+    pub cwd_display: String,
+    pub name: Option<String>,
+    /// Byte cap for the file on disk, checked by `session_store::save`
+    /// against the SERIALIZED length. `u64` end to end: this is a file
+    /// size, and `usize` is 32-bit on the shipped target.
+    pub max_bytes: u64,
+}
+
 /// What [`Session::compact`] did. The command layer words the notices; the
 /// variants carry only facts.
 #[derive(Debug, PartialEq, Eq)]
@@ -331,6 +357,9 @@ impl Session {
             context_warned: false,
             cost_latch,
             cancel,
+            // T40 P2: installed by the caller that owns a session file.
+            persist: None,
+            save_failure_notified: false,
         }
     }
 
@@ -342,6 +371,63 @@ impl Session {
     /// Holding a clone never requires holding the session itself.
     pub fn cancel_token(&self) -> CancelToken {
         self.cancel.clone()
+    }
+
+    /// T40 P2: install (or clear) the persist target. Called before every
+    /// turn by the caller that owns the session file, so a `/model` switch,
+    /// a `/resume`, or a `/new` between turns is reflected in what the next
+    /// write records.
+    pub fn set_persist_target(&mut self, target: Option<PersistTarget>) {
+        self.persist = target;
+    }
+
+    /// T40 P2: write the session file NOW, reflecting history so far.
+    ///
+    /// Called after every round-trip inside a turn (once when the assistant
+    /// message is appended, once when its tool results are), and once more
+    /// at turn end. Before T40 the only write was the one at turn end, so a
+    /// SIGKILL during a long agentic turn lost the whole turn; now it loses
+    /// at most one request.
+    ///
+    /// Never fatal, exactly as the turn-end save was never fatal: the
+    /// in-memory conversation is intact and the next write retries. The
+    /// failure notice is latched once per process (see
+    /// `save_failure_notified`) so a full disk does not shout on every
+    /// round-trip.
+    pub fn persist_now(&mut self, ui: &mut dyn FnMut(AgentEvent)) {
+        let Some(target) = self.persist.as_ref() else {
+            return;
+        };
+        let file = crate::session_store::SessionFileRef {
+            version: crate::session_store::FORMAT_VERSION,
+            provider: &target.provider,
+            model: &target.model,
+            cwd: &target.cwd_display,
+            history: &self.history,
+            session_usage: self.session_usage,
+            todos: &self.tool_ctx.todos,
+            last_context_used: self.last_context_used,
+            name: target.name.as_deref(),
+        };
+        let mut trim_notices: Vec<String> = Vec::new();
+        let result = crate::session_store::save(&target.path, &file, target.max_bytes, &mut |n| {
+            trim_notices.push(n)
+        });
+        match result {
+            Ok(()) => {
+                for n in trim_notices {
+                    ui(AgentEvent::Notice(n));
+                }
+            }
+            Err(e) => {
+                if !self.save_failure_notified {
+                    self.save_failure_notified = true;
+                    ui(AgentEvent::Notice(format!(
+                        "session save failed: {e} — continuing; will retry next turn"
+                    )));
+                }
+            }
+        }
     }
 
     /// Install the key-file guard (T18), called once at startup right after
@@ -858,6 +944,14 @@ impl Session {
                 }
             }
 
+            // T40 P2: the file on disk is current before every request goes
+            // out. One site covers every path that loops back here: the
+            // tool-results append, all of the recovery nudges, and a
+            // just-completed auto-compaction. Combined with the write after
+            // each assistant append below, a SIGKILL costs at most the one
+            // request that was in flight.
+            self.persist_now(ui);
+
             let req = ChatRequest {
                 model: self.cfg.model.clone(),
                 max_tokens: self.cfg.max_tokens,
@@ -1003,6 +1097,11 @@ impl Session {
                         role: Role::Assistant,
                         content: content.clone(),
                     });
+                    // T40 P2: the assistant half of this round-trip is now
+                    // real history. Persist before the tools run, which is
+                    // where a long turn spends its time and where a SIGKILL
+                    // used to cost the whole turn.
+                    self.persist_now(ui);
                     let calls: Vec<(String, String, serde_json::Value, Option<String>)> = content
                         .iter()
                         .filter_map(|b| match b {
@@ -1149,6 +1248,7 @@ impl Session {
                             role: Role::User,
                             content: results,
                         });
+                        self.persist_now(ui);
                         ui(AgentEvent::Notice("turn interrupted".into()));
                         break;
                     }
@@ -1211,6 +1311,7 @@ impl Session {
                         role: Role::Assistant,
                         content,
                     });
+                    self.persist_now(ui);
                 }
                 other => {
                     // Text-tool-call recovery (T4 + T19 P3): an EndTurn
@@ -1284,6 +1385,7 @@ impl Session {
                         role: Role::Assistant,
                         content,
                     });
+                    self.persist_now(ui);
                     if let Some(call) = prose_call {
                         // T31 (H1): a byte-identical repeat of the call
                         // just dispatched is NOT run again. Re-running it

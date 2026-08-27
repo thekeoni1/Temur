@@ -4833,3 +4833,256 @@ fn auto_compact_off_keeps_todays_advisory_byte_identical() {
     assert_eq!(requests.borrow().len(), 4);
     assert_eq!(session.history().len(), 8);
 }
+
+// ---- T40 P2: per-round-trip persistence ----
+
+/// A provider that reads the session file on every call, so the test can see
+/// what was on disk BETWEEN round-trips rather than only at turn end.
+struct WatchingProvider {
+    responses: RefCell<Vec<ResponseMessage>>,
+    path: std::path::PathBuf,
+    /// History length observed on disk at each request, `None` = no file yet.
+    seen: Rc<RefCell<Vec<Option<usize>>>>,
+}
+
+impl Provider for WatchingProvider {
+    fn stream(
+        &self,
+        _req: &ChatRequest,
+        _on_event: &mut dyn FnMut(StreamEvent),
+        _cancel: &CancelToken,
+    ) -> Result<ResponseMessage, ProviderError> {
+        let observed = temur::session_store::load(&self.path)
+            .ok()
+            .map(|f| f.history.len());
+        self.seen.borrow_mut().push(observed);
+        Ok(self.responses.borrow_mut().remove(0))
+    }
+}
+
+fn persist_target(path: &std::path::Path) -> temur::agent::PersistTarget {
+    temur::agent::PersistTarget {
+        path: path.to_path_buf(),
+        provider: "anthropic".into(),
+        model: "claude-sonnet-5".into(),
+        cwd_display: "/tmp".into(),
+        name: None,
+        max_bytes: 1_000_000,
+    }
+}
+
+fn watching_session(
+    dir: &std::path::Path,
+    path: &std::path::Path,
+    responses: Vec<ResponseMessage>,
+) -> (Session, Rc<RefCell<Vec<Option<usize>>>>) {
+    let seen = Rc::new(RefCell::new(vec![]));
+    let provider = WatchingProvider {
+        responses: RefCell::new(responses),
+        path: path.to_path_buf(),
+        seen: seen.clone(),
+    };
+    let cfg = SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens: 32_000,
+        system: None,
+        thinking: false,
+        cwd: dir.to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+        max_tokens_source: None,
+        prose_tool_calls: true,
+        cost_rates: None,
+        cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
+    };
+    let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
+    session.set_persist_target(Some(persist_target(path)));
+    (session, seen)
+}
+
+#[test]
+fn the_session_file_grows_with_every_round_trip_not_only_at_turn_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.json");
+    let (mut session, seen) = watching_session(
+        dir.path(),
+        &path,
+        vec![
+            rt(1, 10),
+            rt(2, 10),
+            rt(3, 10),
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 10, "output_tokens": 5}),
+            ),
+        ],
+    );
+    session.turn("go", &mut |_| {}).unwrap();
+
+    // Request 1 sees the prompt alone; every later request sees the two
+    // messages the previous round-trip added. Before T40 P2 this was
+    // [None, None, None, None]: nothing reached disk until the turn ended.
+    assert_eq!(
+        *seen.borrow(),
+        vec![Some(1), Some(3), Some(5), Some(7)],
+        "history on disk grows 1 -> 3 -> 5 -> 7 across the turn"
+    );
+
+    // And the file at turn end is the whole turn.
+    let on_disk = temur::session_store::load(&path).unwrap();
+    assert_eq!(on_disk.history.len(), 8);
+    assert_eq!(on_disk.history, session.history());
+}
+
+#[test]
+fn the_assistant_half_of_a_round_trip_reaches_disk_before_its_tools_run() {
+    // The SIGKILL window T40 P2 closes: a long tool call used to lose the
+    // assistant message that asked for it. The tool itself is the observer.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.json");
+    let marker = dir.path().join("observed.txt");
+    let (mut session, _) = watching_session(
+        dir.path(),
+        &path,
+        vec![
+            msg_with_usage(
+                vec![tool_use(
+                    "tu_1",
+                    "bash",
+                    // Portable on purpose: the container suites have cp,
+                    // not python. The copy is parsed back here in Rust.
+                    serde_json::json!({
+                        "command": format!("cp {} {}", path.display(), marker.display())
+                    }),
+                )],
+                StopReason::ToolUse,
+                serde_json::json!({"input_tokens": 10, "output_tokens": 5}),
+            ),
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 10, "output_tokens": 5}),
+            ),
+        ],
+    );
+    session.turn("go", &mut |_| {}).unwrap();
+    let mid_turn = temur::session_store::load(&marker)
+        .expect("the session file existed while the tool was still running");
+    assert_eq!(
+        mid_turn.history.len(),
+        2,
+        "while the tool ran, disk already held prompt + the assistant message"
+    );
+}
+
+#[test]
+fn no_persist_target_writes_nothing_at_all() {
+    // What `--mock` gets: main.rs leaves persist_path None, so the session
+    // has no target and a whole turn touches no file.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.json");
+    let (mut session, seen) = watching_session(
+        dir.path(),
+        &path,
+        vec![
+            rt(1, 10),
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 10, "output_tokens": 5}),
+            ),
+        ],
+    );
+    session.set_persist_target(None);
+    session.turn("go", &mut |_| {}).unwrap();
+    assert_eq!(*seen.borrow(), vec![None, None], "no file at any point");
+    assert!(!path.exists(), "replay mode never persists");
+}
+
+#[test]
+fn the_end_of_turn_file_is_what_it_would_have_been_before_p2() {
+    // The mid-turn writes leave no residue: the last one wins and says
+    // exactly what a single end-of-turn save would have said.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.json");
+    let (mut session, _) = watching_session(
+        dir.path(),
+        &path,
+        vec![msg_with_usage(
+            vec![text("hi")],
+            StopReason::EndTurn,
+            serde_json::json!({"input_tokens": 10, "output_tokens": 5}),
+        )],
+    );
+    session.turn("go", &mut |_| {}).unwrap();
+    let after_turn = std::fs::read(&path).unwrap();
+
+    // Save the same state once, the way turn end always did.
+    let reference = dir.path().join("reference.json");
+    let snap = session.snapshot();
+    let file = temur::session_store::SessionFileRef {
+        version: temur::session_store::FORMAT_VERSION,
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        cwd: "/tmp",
+        history: snap.history,
+        session_usage: snap.session_usage,
+        todos: snap.todos,
+        last_context_used: snap.last_context_used,
+        name: None,
+    };
+    temur::session_store::save(&reference, &file, 1_000_000, &mut |_| {}).unwrap();
+    assert_eq!(
+        after_turn,
+        std::fs::read(&reference).unwrap(),
+        "byte-identical to a single end-of-turn save"
+    );
+}
+
+#[test]
+fn a_failing_save_is_noticed_once_per_process_not_once_per_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    // A path under a FILE cannot be written, so every save fails.
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"x").unwrap();
+    let path = blocker.join("s.json");
+    let (mut session, _) = watching_session(
+        dir.path(),
+        &path,
+        vec![
+            rt(1, 10),
+            rt(2, 10),
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 10, "output_tokens": 5}),
+            ),
+            msg_with_usage(
+                vec![text("done again")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 10, "output_tokens": 5}),
+            ),
+        ],
+    );
+    let mut events = vec![];
+    session.turn("go", &mut |e| events.push(e)).unwrap();
+    let failures = notices(&events)
+        .iter()
+        .filter(|n| n.starts_with("session save failed:"))
+        .count();
+    assert_eq!(failures, 1, "one notice for a turn of many failed writes");
+
+    // Still once across a LATER turn: the latch is per process, and the
+    // turn completed normally despite every write failing.
+    let mut events2 = vec![];
+    session.turn("again", &mut |e| events2.push(e)).unwrap();
+    let failures2 = notices(&events2)
+        .iter()
+        .filter(|n| n.starts_with("session save failed:"))
+        .count();
+    assert_eq!(failures2, 0, "already noticed");
+}

@@ -604,7 +604,6 @@ fn repl(
     // after read_input returns and before the turn is dispatched (the
     // clear also resets the SIGINT flag — F4).
     let plain_cancel = session.cancel_token();
-    let mut save_failure_notified = false;
     // T8 command state: what the NEXT save records — a /model switch
     // updates these, so a session saved after switching describes what is
     // actually active (the advisory mismatch notice on a later resume under
@@ -619,6 +618,16 @@ fn repl(
     // `temur --continue -p`.
     if let Some(prompt) = &oneshot {
         plain_cancel.clear();
+        // T40 P2: the session persists itself mid-turn now, so the target is
+        // installed BEFORE the turn rather than passed to the save after it.
+        session.set_persist_target(persist_target(
+            persist_path.as_ref(),
+            &provider_name,
+            &current_model,
+            &cwd_display,
+            session_name.as_deref(),
+            session_max_bytes,
+        ));
         let result = session.turn(prompt, &mut |ev| ui.event(&ev));
         // Read the token right after the turn, before anything else can
         // touch it: set means a Ctrl+C landed THIS turn (T6 semantics), and
@@ -627,17 +636,7 @@ fn repl(
         if let Err(e) = &result {
             ui.event(&AgentEvent::Notice(format!("provider error: {e}")));
         }
-        save_after_turn(
-            persist_path.as_ref(),
-            &session,
-            &provider_name,
-            &current_model,
-            &cwd_display,
-            session_name.as_deref(),
-            session_max_bytes,
-            ui.as_mut(),
-            &mut save_failure_notified,
-        );
+        save_after_turn(&mut session, ui.as_mut());
         ui.finish();
         return Ok(ExitCode::from(temur::ui::oneshot::exit_code(
             result.is_ok(),
@@ -719,6 +718,16 @@ fn repl(
             }
             continue;
         }
+        // T40 P2: refreshed every turn, so a `/model`, `/resume`, or `/new`
+        // between turns is reflected in what the mid-turn writes record.
+        session.set_persist_target(persist_target(
+            persist_path.as_ref(),
+            &provider_name,
+            &current_model,
+            &cwd_display,
+            session_name.as_deref(),
+            session_max_bytes,
+        ));
         if let Err(e) = session.turn(&line, &mut |ev| ui.event(&ev)) {
             // Provider-level failure: surface through the UI seam and keep
             // the session alive. (Behavior note, docs/TUI.md: in the plain
@@ -728,17 +737,7 @@ fn repl(
         // Save in BOTH arms — power-cut philosophy: a provider-error turn's
         // dangling user message is real history, and the resume seam is what
         // handles it (prepare_seed drops a trailing unanswered prompt).
-        save_after_turn(
-            persist_path.as_ref(),
-            &session,
-            &provider_name,
-            &current_model,
-            &cwd_display,
-            session_name.as_deref(),
-            session_max_bytes,
-            ui.as_mut(),
-            &mut save_failure_notified,
-        );
+        save_after_turn(&mut session, ui.as_mut());
     }
     drop(ui); // TUI: joins the render thread and restores the terminal
     if !use_tui {
@@ -747,53 +746,39 @@ fn repl(
     Ok(ExitCode::SUCCESS)
 }
 
-/// Post-turn session save, shared by the REPL loop and one-shot mode (T14).
-/// Never fatal: the in-memory conversation is intact and every later turn
-/// retries. The failure is noticed once per process so a full disk doesn't
-/// shout on every turn.
+/// T40 P2: the persist target for the NEXT turn, from the state main.rs
+/// owns and mutates between turns (`/model`, `/resume`, `/new`). `None`
+/// whenever there is no session file, which is what `--mock` gets.
 #[allow(clippy::too_many_arguments)]
-fn save_after_turn(
+fn persist_target(
     persist_path: Option<&std::path::PathBuf>,
-    session: &Session,
     provider_name: &str,
     model: &str,
     cwd_display: &str,
     session_name: Option<&str>,
     session_max_bytes: u64,
-    ui: &mut dyn Ui,
-    save_failure_notified: &mut bool,
-) {
-    let Some(path) = persist_path else { return };
-    let snap = session.snapshot();
-    let file = temur::session_store::SessionFileRef {
-        version: temur::session_store::FORMAT_VERSION,
-        provider: provider_name,
-        model,
-        cwd: cwd_display,
-        history: snap.history,
-        session_usage: snap.session_usage,
-        todos: snap.todos,
-        last_context_used: snap.last_context_used,
-        name: session_name,
-    };
-    let mut trim_notices: Vec<String> = Vec::new();
-    match temur::session_store::save(path, &file, session_max_bytes, &mut |n| {
-        trim_notices.push(n)
-    }) {
-        Ok(()) => {
-            for n in trim_notices {
-                ui.event(&AgentEvent::Notice(n));
-            }
-        }
-        Err(e) => {
-            if !*save_failure_notified {
-                *save_failure_notified = true;
-                ui.event(&AgentEvent::Notice(format!(
-                    "session save failed: {e} — continuing; will retry next turn"
-                )));
-            }
-        }
-    }
+) -> Option<temur::agent::PersistTarget> {
+    persist_path.map(|path| temur::agent::PersistTarget {
+        path: path.clone(),
+        provider: provider_name.to_string(),
+        model: model.to_string(),
+        cwd_display: cwd_display.to_string(),
+        name: session_name.map(str::to_string),
+        max_bytes: session_max_bytes,
+    })
+}
+
+/// Post-turn session save, shared by the REPL loop and one-shot mode (T14).
+/// Never fatal: the in-memory conversation is intact and every later turn
+/// retries. The failure is noticed once per process so a full disk doesn't
+/// shout on every turn.
+///
+/// T40 P2: the write itself moved into the session, which now also writes
+/// mid-turn. This stays as the FINAL save so behaviour at turn end is
+/// unchanged, and it shares the session's once-per-process failure latch
+/// rather than keeping a second one.
+fn save_after_turn(session: &mut Session, ui: &mut dyn temur::ui::Ui) {
+    session.persist_now(&mut |ev| ui.event(&ev));
 }
 
 /// First-run guidance (T14), printed to stderr instead of the raw credential
