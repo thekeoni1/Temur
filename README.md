@@ -80,7 +80,8 @@ driving the same local model on the same machine, is in
 against tasks from temur's own eval suite, it says so up front, and it
 publishes the cells temur loses. The same page carries a
 Terminal-Bench 2 row, which is a suite temur did not write, on a
-subset fixed by rule before any score was seen.
+subset fixed by rule before any score was seen, and a GPU desktop row
+running that same subset on a second machine.
 
 The same harness floor is active on every provider, hosted
 included: tool output

@@ -436,6 +436,99 @@ them at this model. It says nothing about frontier models or hosted
 providers. And it covers 16 of 89 tasks, chosen by a rule that skews
 easy to medium, so the harder two thirds of the suite are unmeasured.
 
+## GPU desktop (Terminal-Bench 2 subset)
+
+The section above ran on one CPU-only box. This one runs the same
+16-task subset on a second machine with a GPU, so the suite has now
+been driven on two boxes with different hardware postures.
+
+**Headline: pass rate does not separate the three harnesses at this
+model here either. Wall clock does, and no cause is attributed to it.**
+
+### Conditions
+
+Run 2026-08-27 on DESKTOP-6O763EN: GTX 1070 Ti 8 GB, driver 580.97
+(CUDA 13.0), WSL2 Ubuntu 26.04. Model
+`Qwen3-4B-Instruct-2507-Q4_K_M.gguf`, sha256 `3605803b...`, served by
+`ghcr.io/ggml-org/llama.cpp:server-cuda-b10438`, image digest
+`sha256:b5e13ddf...`, ctx 12288, `-ngl 99 --parallel 1 --jinja`, a
+fresh server per cell. All 96 cells offloaded 37/37 layers to the GPU;
+peak VRAM 4362 MiB of 8192; zero server deaths.
+
+The same pre-registered 16-task subset as above, sha256 `57160ac7...`,
+and the suite's own per-task agent budgets, median 900s, unchanged.
+Harness pins: temur 0.28.0 (x86_64 static musl, sha256 `813d539f...`,
+re-verified by the adapter on every cell), codex 0.149.1, opencode
+1.18.23.
+
+### Result
+
+Pass rate over all 16 subset tasks, timeouts counted as failures, the
+same rule as the CPU section.
+
+| harness | run | pass | fail | ctx-exhausted | exc | void | wall clock |
+|---|---|---|---|---|---|---|---|
+| temur 0.28.0 | run 1 | 2/16 | 12 | 2 | 0 | 0 | 0.39 h |
+| temur 0.28.0 | run 2 | 1/16 | 14 | 1 | 0 | 0 | 0.38 h |
+| opencode 1.18.23 | run 1 | 1/16 | 15 | 0 | 0 | 0 | 1.29 h |
+| opencode 1.18.23 | run 2 | 2/16 | 12 | 1 | 0 | 1 | 1.51 h |
+| codex 0.149.1 | run 1 | 1/16 | 11 | 1 | 2 | 1 | 1.55 h |
+| codex 0.149.1 | run 2 | 0/16 | 11 | 2 | 3 | 0 | 1.62 h |
+
+Wall clock per harness over 32 cells each: **temur 0.77 h, opencode
+2.80 h, codex 3.16 h.** Spread between each harness's two runs was 1
+pass, below the threshold that would have triggered a third run.
+
+`exc` is a harness-level exception scored as a failure; here all five
+are `codex exec` itself exiting non-zero. `void` is a cell with no
+verdict, excluded from the scored denominator rather than counted as a
+failure. Both VOIDs are agent-setup timeouts, and both landed on the
+same task, `git-leak-recovery`, which was already the slowest setup on
+this suite.
+
+Two tasks were solved by anyone:
+
+| task | temur | opencode | codex |
+|---|---|---|---|
+| `modernize-scientific-stack` | run 1, run 2 | run 1, run 2 | none |
+| `prove-plus-comm` | run 1 | run 2 | run 1 |
+
+Server throughput on this GPU, warm, from the server's own timings at
+a 2087-token prompt: prompt processing 935.2 tok/s mean, generation
+50.2 tok/s mean.
+
+For reference, the CPU box's repaired temur row from the section above
+is 1/16, 1/16, 2.89 h. **Two variables differ at once**, the GPU and
+the machine, so nothing about either box is inferred from the pair;
+the build, model, binary source, subset, ctx and budget are identical
+between them.
+
+### The earlier GPU run is archive-only
+
+An experiment 1 ran on this box on 2026-08-26/27 against llama.cpp b8580,
+which was forced by the then-installed 560.94 driver. Its codex column
+was not a measurement of codex: all 32 codex cells failed identically
+at the first request because that build rejected codex's Responses-API
+tool type with `HTTP 400 'type' of tool must be 'function'`. On
+b10438 that failure does not occur in any of the 96 cells, and codex
+completes turns, runs shell commands and solves a task. Experiment 1
+is therefore kept as an archive record and none of its numbers are
+published here.
+
+### What this section does not establish
+
+It does not rank the harnesses, for the same reason as the CPU
+section: at 2/16 down to 0/16 with one pass of spread, the suite did
+not discriminate them at this model. It says nothing about frontier
+models or hosted providers, and it covers 16 of 89 tasks. Per-harness
+turn and tool-call instrumentation was collected but is **not
+published here**, because the three harnesses count different things
+and one of the parsers has a known hole; the figures and that caveat
+live in the archive.
+
+Full report, cell tree and ledger:
+`~/temur-eval-archive/desktop-exp2/`.
+
 ## Not comparable to OFFLINE.md
 
 `docs/OFFLINE.md` carries temur's own small-model results. Those

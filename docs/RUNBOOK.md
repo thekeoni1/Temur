@@ -6620,6 +6620,12 @@ Residuals carried forward unclosed, all of them from T37 itself:
 - The OOM mechanism was never established. Per-task restarts were
   adopted because they held anon memory flat across a whole cell, which
   is evidence of effect and not a diagnosis.
+  **CLOSED 2026-08-27 by the T40 smoke**, which OOM-killed a server on
+  the main box and captured the kill line: `CONSTRAINT_NONE` global OOM,
+  `llama-server` at 6.87 GB resident on a 7 GB box at ctx 12288, with no
+  build competing. The server alone does not fit at that context size,
+  so the remedy adopted here was treating a real memory ceiling. See the
+  T40 acceptance record.
 - The network peers are A-record matches, not captured SNI, and the
   published table says so in those words.
 - The stray `oom` file is still unidentified. The detector was armed at
@@ -7487,7 +7493,7 @@ and (c) the resume seam, which always folds and so is always
 actionable. `context_trigger` split into a side-effect-free
 `context_crossing` plus an explicit latch write at each decision site.
 
-**F6, the prompt floor.** Measured on this box against the running
+**F6 (T40), the prompt floor.** Measured on this box against the running
 container (Qwen3-4B-Instruct-2507 Q4_K_M, llama.cpp `server-b10438`,
 `context_window` 12288, one request per profile, prompt `"x"`, figures
 are the reported input tokens):
@@ -7543,14 +7549,73 @@ smoke was rerun on the compact prompt profile at a smaller window
 instead. Evidence: `~/temur-eval-archive/t40-smoke/run2-oom-dmesg.txt`
 and `box-memory.txt`.
 
+### The live smoke
+
+Run 2026-08-27 against a local llama.cpp server on this box, keyless,
+Qwen3-4B-Instruct-2507 Q4_K_M. Three attempts; the third is the valid
+one. Full record, transcripts, session files and workdirs:
+`~/temur-eval-archive/t40-smoke/README.md`.
+
+| attempt | config | compaction | task completed |
+| --- | --- | --- | --- |
+| 1 | window 4096, full profile | never fired | no, killed at 900s |
+| 2 | window 10000, full profile | announced, then the server died | no, server OOM |
+| 3a | window 6000, compact profile, auto | 9 round-trips to 2 kept, 8188 to 3073 bytes | YES |
+| 3b | window 6000, compact profile, auto | 10 round-trips to 2 kept, 8002 to 3147 bytes | no |
+| 3c | window 6000, compact profile, control | none, advisory only | yes |
+
+Attempt 1 is the run that found the rider-1 latch bug: the floor
+exceeds a 4096 window, so the crossing arrived at round-trip 1 with
+nothing to fold, spent the latch, and locked auto-compaction out for
+the rest of a 900-second run. Attempt 2 reached the threshold honestly
+at ~8166 of 10000 and announced, and the kernel then OOM-killed the
+server mid-summary-call; temur reported `auto-compact failed (network:
+io: Connection refused); continuing without compacting` and left
+history untouched, which is the fail-closed arm working live.
+
+**Did the model continue the task from its own summary? Yes, in both
+auto runs of attempt 3, and it separates cleanly from surviving
+history.** In 3a the verbatim tail retained only Mars, Jupiter and
+Saturn; Mercury, Venus and Earth existed nowhere but the summary, and
+the final `summary.txt` was correct for all six. In 3b the tail
+retained only Uranus and Neptune, while Earth, Mars, Jupiter and
+Saturn survived only in the summary, and the model listed all six
+correctly. `AUTO_COMPACT_INSTRUCTION`'s "name files, commands, and
+values" does work on a 4B.
+
+Three limits on what that proves, stated because the result reads
+stronger than it is:
+
+- **The control also finished.** At this window and task size it never
+  needed to compact, so the pair does not show auto-compaction
+  RESCUING a run that would otherwise die. Showing the rescue needs a
+  task that genuinely exhausts the window.
+- **The payloads were guessable.** Planets in canonical order, so a
+  model that lost them could re-derive them by pattern. What is
+  directly established is that the summary CONTAINED the values and
+  the turn used them, not that recall was the only path.
+- **3b did not finish the task**, 1 of 2. It compacted cleanly and
+  preserved the data, then ended the turn with "Now creating
+  summary.txt with the complete list of files and their first lines."
+  and no tool call. See the D2 coverage gap queued on the ROADMAP.
+
+Two incidental observations from the failed attempts, both worth more
+than the runs they came from:
+
+- **P2 confirmed live.** Attempt 1 was killed mid-turn and left 25
+  messages on disk, the whole transcript of the work it had done. That
+  is T39 F5 demonstrably not happening, against a real model rather
+  than `MockProvider`.
+- **The OOM mechanism, established.** T37 adopted fresh-server-per-task
+  on observed effect and left the cause unattributed, and it has been
+  an open residual since v0.26.0. Attempt 2's kill line names it:
+  `CONSTRAINT_NONE` global OOM, `llama-server` at 6.87 GB resident on a
+  7 GB box at ctx 12288, with the `check.sh` heavy lock set and no
+  build competing. The server alone does not fit at that context size
+  on this box. That residual is now CLOSED.
+
 ### Residuals
 
-- **Nothing has fired against a live model.** Every arm here is pinned
-  against `MockProvider`. The next dogfood or eval run on 0.29.0 is
-  the first chance to see an auto-compaction in the wild, and the
-  thing to watch for is whether the summary a small local model writes
-  is good enough to continue a task from. That is a model-quality
-  question the tests cannot answer.
 - **`release.sh` cannot pass `--title` itself**, because it stages and
   gates but never publishes; `gh release create` is an operator step.
   It prints the invocation with the title read back from the tag

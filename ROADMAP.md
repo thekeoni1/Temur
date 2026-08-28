@@ -481,7 +481,25 @@ guard was never the issue.
   built: select the compact profile automatically when
   `context_window` is below a threshold, and report the floor in
   `doctor` so it is visible before a run rather than inferred from a
-  failure. F6 in the T40 RUNBOOK record.
+  failure. **F6 (T40)** in the RUNBOOK; finding numbers restart per
+  record, and an unqualified "F6" already means three different things
+  across this file and the RUNBOOK, so cite it with its milestone.
+
+- **The promise guard exempts the case auto-compaction lives in.** T35
+  D2 nudges a turn that ends by promising work, but only when NO tool
+  ran all turn: a turn that promised and never acted is suspect, one
+  that worked and then promised is not. A long tool-using turn that
+  ends with future-tense intent and no call therefore falls straight
+  through, and that is exactly the shape of a compacted turn, which is
+  long and tool-heavy by definition. First live instance is T40 smoke
+  run 3b: after a clean compaction the model wrote "Now creating
+  summary.txt with the complete list of files and their first lines."
+  and ended the turn without the call, leaving the task unfinished
+  while reporting success. 1 of 2 auto runs. Candidate, NOT built:
+  extend the D2 predicate to fire on a promise in the FINAL message
+  regardless of earlier tool use, which is a narrower condition than
+  the current whole-turn one and should not touch the cases T35 tuned.
+  Evidence: `~/temur-eval-archive/t40-smoke/README.md`.
 
 ### Queued from T39 (2026-08-26)
 

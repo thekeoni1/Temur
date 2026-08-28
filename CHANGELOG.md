@@ -4,6 +4,15 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- `docs/COMPARISON.md` gains a GPU desktop row: the same pre-registered
+  16-task Terminal-Bench 2 subset, same model, build and pins, run on a
+  second machine with a GTX 1070 Ti. Pass rate does not separate the
+  three harnesses there either (temur 2/16 and 1/16, opencode 1/16 and
+  2/16, codex 1/16 and 0/16); wall clock does, and no cause is
+  attributed to it. The earlier run on that box is disclosed as
+  archive-only, because its codex column was a build failure rather
+  than a measurement.
+
 - **Known limit, measured not fixed:** temur's own request floor is
   6,991 prompt tokens on the default (full) prompt profile and 2,763 on
   the compact profile, being the system prompt plus eight tool
