@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.29.0 - 2026-08-27
+
 - `docs/COMPARISON.md` gains a GPU desktop row: the same pre-registered
   16-task Terminal-Bench 2 subset, same model, build and pins, run on a
   second machine with a GTX 1070 Ti. Pass rate does not separate the
