@@ -7214,6 +7214,96 @@ like a second instruction delivery against the new delivery check.
   VOID; the mistake was upstream of the guard. Logged in the archive
   ledger.
 
+## v0.29.0 ship record - shipped private
+
+2026-08-27. **T40, unattended runs, shipped private at tag `v0.29.0`.**
+Stage 2 ran to completion with no rerun and no deviation.
+
+Prep push and CI:
+
+- Three prep commits pushed 10efd09..cb26f50. CI run **33131706921,
+  attempt 1**, both jobs green: `test` 2m05s, `release-gate` 7m47s.
+  With the stage-1 run (**33131058803, attempt 1**, `test` 1m20s,
+  `release-gate` 4m23s) that is **two runs, both attempt 1**: a
+  zero-rerun cycle.
+
+Tag:
+
+- Annotated tag `v0.29.0` at `cb26f509`, tag object
+  `246cd39936d0c728538dcf2cca470cac4e5c372f`. The message was verified
+  against the RAW object rather than the formatted view, before the
+  push: `git cat-file -p` piped through `od -c` gives exactly
+  `temur v0.29.0 - unattended runs (T40)\n`, 38 bytes, one line, no
+  non-ASCII, and the hyphen is a plain `-` (0x2d). The remote tag
+  object matches the local one and dereferences to `cb26f509`.
+
+Release build:
+
+- `release.sh` with **no SKIP_CHECK**, green first try; the embedded
+  `check.sh` reached `== ALL CHECKS PASSED ==` and the pty smoke did
+  not hang this cycle. 4/4 artifacts gated and staged.
+- **The T40 P3 change worked as designed on its first real use.** The
+  new "next step: publish" block read the title back from the
+  annotated tag and printed
+  `--title "temur v0.29.0 - unattended runs (T40)"`. That exact
+  invocation was used, and the published release title equals the tag
+  message byte for byte, which is what v0.21.0 through v0.28.0 did not
+  do. Those are still not retitled.
+
+Staged sha256s:
+
+| artifact | sha256 |
+| --- | --- |
+| aarch64-unknown-linux-musl | `31e2f531...97d4d` |
+| armv7-unknown-linux-musleabihf | `efc70ff2...03543` |
+| i686-unknown-linux-musl | `f46b2cef...71cc5` |
+| x86_64-unknown-linux-musl | `24345248...ee80e` |
+| SHA256SUMS (own hash) | `23400299...cab9d` |
+
+Release:
+
+- Private release created with **5 assets**, `isDraft=false`,
+  `isPrerelease=false`, title `temur v0.29.0 - unattended runs (T40)`.
+  Repo visibility confirmed **PRIVATE before and after** publishing
+  (`isPrivate=true` both times).
+
+Closing gate:
+
+- x86_64, i686 and SHA256SUMS re-downloaded from the release into a
+  scratch dir. Independent sha256 of each downloaded artifact equals
+  its staged value; `sha256sum -c` OK on both binaries; `cmp` against
+  the staged files reports all three **byte-identical**.
+- One procedure note, the same one v0.7.0 recorded for
+  `gh release create`: `gh release download` also resolves the repo
+  from git, so it must run from inside the worktree or be given `-R`.
+  The first attempt from the scratch dir failed with "not a git
+  repository" and was rerun with `-R thekeoni1/Temur` and `-D`.
+- Installer matrix **6/6 twice** (pass / corrupt / unlisted, on the GNU
+  host and inside busybox), logs at
+  `~/temur-eval-archive/t40-gates/v0.29.0-installer-run1.log` and
+  `-run2.log`.
+
+Installed binary:
+
+- `~/.local/bin/temur` refreshed from the staged i686 musl build:
+  `temur 0.29.0`, sha256
+  `f46b2cefeaebaedc18214d24d6452aaef1c214f5ff86789e9cce2ae916271cc5`,
+  equal to the published i686 entry AND to the independently
+  re-downloaded artifact.
+
+Gate logs for this cycle are archived under
+`~/temur-eval-archive/t40-gates/`: the five per-commit gates, the
+stage-1 gate at 0.29.0, the `release.sh` log, and both installer runs.
+
+Residuals carried into this ship, all named in the T40 acceptance
+record: the control-finished and guessable-payload limits on the live
+smoke, smoke run 3b failing its task through the D2 coverage gap (now
+queued), `release.sh` still not publishing and therefore printing the
+invocation rather than passing `--title` itself, and F6 (T40), the
+prompt floor, recorded rather than fixed. The `CLAUDE.md` scope line
+naming v0.28.0 is stale as of this ship and is deliberately left for a
+ruling.
+
 ## v0.29.0 acceptance - recorded result (recorded at stage 1, before its release)
 
 What shipped: T40 alone, unattended runs. The T40 acceptance record
