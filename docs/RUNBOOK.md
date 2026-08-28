@@ -7214,6 +7214,67 @@ like a second instruction delivery against the new delivery check.
   VOID; the mistake was upstream of the guard. Logged in the archive
   ledger.
 
+## v0.29.0 acceptance - recorded result (recorded at stage 1, before its release)
+
+What shipped: T40 alone, unattended runs. The T40 acceptance record
+above carries the phases, the two riders, the live smoke and the
+findings; this delta records the release mechanics rather than
+restating the milestone.
+
+Stage 1:
+
+- Six T40 commits pushed c1b88b1..10efd09: three phases (P1
+  auto-compaction, P2 per-round-trip persistence, P3 release title and
+  docs) and three riders (resume seam and notice order; the latch rule
+  and F6; the smoke record, the D2 gap and the GPU desktop table).
+  Product code in P1, P2 and rider 2; docs only in P3 and riders 1
+  and 3.
+- CI run 33131058803 at 10efd094, **attempt 1**, both jobs green:
+  `test` 1m20s, `release-gate` 4m23s. No rerun this cycle. The
+  workflow-run gap that v0.28.0 hit did not recur; the run was created
+  on the push as every cycle before that one.
+- Three local prep commits, none pushed: f9ed2c6 bump (the mechanical
+  four-file edit through `scripts/bump_version.sh`: Cargo.toml, the
+  temur entry in Cargo.lock with `untrusted` still at its own 0.9.0,
+  the scripts/install.sh VERSION line, and the five README tag pins),
+  373d0a5 CHANGELOG cut to "## v0.29.0 - 2026-08-27" with a fresh empty
+  Unreleased above it and no entry text touched, and this close-out.
+- Lock-file version collision check: a grep for the RETIRED version,
+  0.28.0, across the four bumped files is zero in all four. The temur
+  lock entry is 0.29.0 and the whole lock diff is one line. The
+  0.28.0 strings that remain elsewhere in the tree are historical and
+  correct: the harness pin rows in `docs/COMPARISON.md` name the binary
+  that was actually measured, and the CHANGELOG, ROADMAP and RUNBOOK
+  sections are dated records.
+- `scripts/metadata_drift.sh` run by hand, its SIXTH outing: 4 of 4
+  PASS, every baked profile matching models.dev on context window and
+  on both prices (fable, haiku, opus, sonnet).
+- The full gate runs on THIS commit, the close-out head, per the
+  stage-1 ruling, so this record cannot carry its own gate result. The
+  result and the teed log path are in the stage-1 report to the
+  operator and are carried into the ship record. Gate logs for this
+  milestone are archived under `~/temur-eval-archive/t40-gates/`, a
+  practice adopted this cycle.
+
+One item deliberately left alone, flagged rather than changed: the
+scope line in `CLAUDE.md` names v0.28.0 and "thirty-nine milestones".
+It is stale the moment v0.29.0 ships, but it is not one of the four
+files the bump owns and the close-out is RUNBOOK-only, so it is left
+for a ruling rather than edited in passing.
+
+**Stage 2 has explicitly NOT been run.** No tag exists for v0.29.0,
+local or remote, no release has been created, and nothing beyond
+10efd09 has been pushed.
+
+What stage 2 still has to do: push the three prep commits and confirm
+their run, tag v0.29.0 AT the close-out commit with the message
+"temur v0.29.0 - unattended runs (T40)" verified against the raw tag
+object rather than the formatted view, run `release.sh` with no
+SKIP_CHECK and use the `gh release create` invocation it prints so the
+release title equals the tag message (new this cycle, T40 P3), confirm
+five assets on a private release, run the closing gate and the
+installer matrix, and record the result.
+
 ## v0.28.0 acceptance - recorded result (recorded at stage 1, before its release)
 
 What shipped: T39 alone, the Terminal-Bench row. The T39 acceptance
