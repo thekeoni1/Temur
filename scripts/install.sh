@@ -7,7 +7,7 @@
 # (cpuinfo path, test seam for the SSE2 check).
 set -eu
 
-VERSION=0.29.0
+VERSION=0.29.1
 TAG="v$VERSION"
 BASE="${TEMUR_BASE_URL:-https://github.com/thekeoni1/Temur/releases/download/$TAG}"
 DIR="${TEMUR_INSTALL_DIR:-$HOME/.local/bin}"

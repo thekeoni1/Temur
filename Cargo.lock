@@ -981,7 +981,7 @@ dependencies = [
 
 [[package]]
 name = "temur"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "env_logger",
  "globset",
