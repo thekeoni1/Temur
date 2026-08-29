@@ -7979,3 +7979,114 @@ No tag exists, local or remote, and nothing has been published. This
 record is written at stage 1, before the release, which is the standing
 procedure: the acceptance record has to be able to say something the
 release could still contradict.
+
+## v0.29.1 ship record - shipped private
+
+2026-08-29. **The T40 post-ship review fixes, shipped private at tag
+`v0.29.1`.** A PATCH on T40 rather than a milestone: six defects in
+what T40 shipped two days earlier, no new capability. Stage 2 ran to
+completion with no rerun and no deviation.
+
+Prep push and CI:
+
+- Three prep commits pushed 69baad3..167e9b9 (bump, CHANGELOG cut,
+  close-out). CI run **33257718959, attempt 1**, both jobs green:
+  `test` 2m20s, `release-gate` 7m13s. With the stage-1 run
+  (**33257172812, attempt 1**, `test` 1m23s, `release-gate` 4m30s)
+  that is **two runs, both attempt 1**, and with the three per-commit
+  `check.sh` gates and the stage-1 gate all green first try, a
+  zero-rerun cycle throughout. The planning session's running count
+  makes this the **seventh consecutive**.
+
+Tag:
+
+- Annotated tag `v0.29.1` at `167e9b9`, tag object
+  `3acbfed19be4709c32a3cd90db16fea03d716f9c`. Verified against the RAW
+  object before the push, not the formatted view:
+  `git cat-file tag v0.29.1 | tail -1 | od -c` gives exactly
+  `temur v0.29.1 - auto-compaction fixes (T40)\n`, 44 bytes, one line,
+  one trailing newline, no non-ASCII, and the hyphen is a plain `-`.
+  `%(objecttype)` reads `tag`. The remote tag object matches the local
+  one and dereferences to `167e9b9`.
+
+Release build:
+
+- `release.sh` with **no SKIP_CHECK**, green first try. The embedded
+  `check.sh` reached `== ALL CHECKS PASSED ==` with all 48
+  `test result:` lines at `0 failed`, the pty smoke did not hang, the
+  leak grep was clean, and the skew gate read
+  `OK: install.sh + README match version 0.29.1 and all targets`. 4/4
+  artifacts gated and staged.
+- **F5's first live outing, and it took the right branch.** The block
+  fixed this cycle now gates on `%(objecttype)` as well as
+  `%(contents:subject)`. Against a properly annotated tag it printed
+  `(title below is the annotated tag message of v0.29.1, read back
+  just now)` and `--title "temur v0.29.1 - auto-compaction fixes
+  (T40)"`, which is branch one. The lightweight branch it was written
+  for was exercised only in the scratch repo, as it should be: the
+  point of the fix is that the mistake now cannot reach a release.
+
+Staged sha256s:
+
+| artifact | sha256 |
+| --- | --- |
+| aarch64-unknown-linux-musl | `ebdbb6f3...844e0` |
+| armv7-unknown-linux-musleabihf | `09e1b66b...5091e` |
+| i686-unknown-linux-musl | `f4f58c79...f9080` |
+| x86_64-unknown-linux-musl | `7e8cb686...3b96a` |
+| SHA256SUMS (own hash) | `be682623...4417a` |
+
+Release:
+
+- Private release created with **5 assets**, `isDraft=false`,
+  `isPrerelease=false`, title
+  `temur v0.29.1 - auto-compaction fixes (T40)`, equal to the tag
+  message byte for byte. Repo visibility confirmed **PRIVATE before
+  and after** publishing (`isPrivate=true` both times).
+  Notes were the CHANGELOG 0.29.1 section, extracted to a file first.
+
+Closing gate:
+
+- x86_64 and SHA256SUMS re-downloaded from the release into a fresh
+  scratch dir. Independent sha256 of the binary is
+  `7e8cb686...3b96a`, equal to its staged value; `sha256sum -c` OK;
+  `cmp` against the staged files reports **both byte-identical**.
+- The `gh release download` repo-resolution trap caught this cycle
+  too, exactly as v0.7.0 and v0.29.0 recorded it: run from the scratch
+  dir it failed with "not a git repository" and needed
+  `-R thekeoni1/Temur -D <dir>`. Three cycles is a pattern, not a
+  slip; the procedure note should be read as a step, not a footnote.
+- Installer matrix **6/6 twice** (pass / corrupt / unlisted, on the GNU
+  host and inside busybox), logs at
+  `~/temur-eval-archive/t40-fix-gates/v0.29.1-installer-1.log` and
+  `-2.log`.
+
+Installed binary:
+
+- `~/.local/bin/temur` refreshed from the staged i686 musl build:
+  `temur 0.29.1`, sha256
+  `f4f58c79927efd58cb4e37ee637230434e1b03dc146a63544f863312a1ff9080`,
+  equal to the published i686 entry. It was `temur 0.29.0` before.
+
+Gate logs for this cycle are archived under
+`~/temur-eval-archive/t40-fix-gates/`: the three per-commit gates, the
+F1 pre-fix failure proof, the stage-1 gate at 0.29.1
+(`v0.29.1-stage1-167e9b9.log`, which is the `<head>` the gate-log table
+above leaves as a placeholder because a commit cannot cite its own
+sha), the `release.sh` log, and both installer runs.
+
+Residuals carried into this ship:
+
+- **F4 is queued, not fixed**: two full serializations and atomic
+  writes per round-trip in `persist_now`, on the ROADMAP under "Queued
+  from v0.29.1" with the measurement it needs first.
+- **The `oom` residual is only PARTLY closed.** The tracked copy that
+  shipped in v0.29.0 is identified and removed; the three 2026-08-24
+  sightings inside OpenCode cells predate it and stay unattributed.
+- **One unnamed `--lib` failure sighting**, unreproduced across 21
+  subsequent runs and every gate in this cycle, recorded above.
+- Everything the T40 acceptance record carried that this patch did not
+  touch, including the prompt floor (F6 of T40) and `release.sh` still
+  printing the publish invocation rather than publishing.
+- The `CLAUDE.md` scope line naming v0.28.0 was stale at the previous
+  ship and is staler now. Still deliberately left for a ruling.
