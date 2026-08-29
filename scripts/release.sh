@@ -204,10 +204,25 @@ echo "== RELEASE $TAG: $N/$N ARTIFACTS GATED == (ARM verified at build level per
 # omitted and gh defaulted to the tag name. Old releases are NOT retitled.
 echo ""
 echo "== next step: publish =="
-if TAG_SUBJECT=$(git tag -l --format='%(contents:subject)' "$TAG" 2>/dev/null) \
-        && [ -n "$TAG_SUBJECT" ]; then
+#
+# %(contents:subject) alone is NOT enough to prove there is a tag message:
+# for a LIGHTWEIGHT tag, git dereferences to the commit and reports the
+# COMMIT subject, which is non-empty and looks exactly like a success here
+# (verified: a lightweight tag on a "v9.9.9: close-out" commit reports that
+# line, objecttype "commit"). So the one mistake this block exists to catch,
+# `git tag` instead of `git tag -a`, would have sailed through with the
+# close-out commit's subject as the release title. Gate on the object type.
+TAG_TYPE=$(git tag -l --format='%(objecttype)' "$TAG" 2>/dev/null || true)
+TAG_SUBJECT=$(git tag -l --format='%(contents:subject)' "$TAG" 2>/dev/null || true)
+if [ "$TAG_TYPE" = "tag" ] && [ -n "$TAG_SUBJECT" ]; then
     echo "  (title below is the annotated tag message of $TAG, read back just now)"
     TITLE="$TAG_SUBJECT"
+elif [ -n "$TAG_TYPE" ]; then
+    echo "  NOTE: tag $TAG exists but is LIGHTWEIGHT (objecttype: $TAG_TYPE), so it"
+    echo "  has no message of its own and the title below is a placeholder, NOT a"
+    echo "  tag message. Delete it, create the ANNOTATED tag (git tag -a), then"
+    echo "  re-run this script."
+    TITLE="temur $TAG - <name> (T<n>)"
 else
     echo "  NOTE: tag $TAG does not exist yet. Create the annotated tag FIRST,"
     echo "  then re-run this script so the title is read from it rather than typed."

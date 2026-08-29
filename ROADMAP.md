@@ -464,6 +464,25 @@ guard was never the issue.
   distribution. If a second machine or a slower model ever runs doctor
   against a local server, record what it cost.
 
+### Queued from v0.29.1 (2026-08-29)
+
+- **Mid-turn persistence writes the whole session twice per
+  round-trip.** `persist_now` runs at the top of every turn-loop
+  iteration and again after each assistant append, and each call
+  serializes the entire envelope, writes a per-pid temp file and
+  renames it. At the 4 MiB `session_max_bytes` default that is ~8 MiB
+  of serialization and I/O per round-trip on a 32-bit target, and the
+  over-cap path is worse: `session_store::save` re-serializes every
+  message individually to size them and then serializes the trimmed
+  envelope again, three passes over the history for one write. F4 of
+  the v0.29.0 code review, and deliberately NOT fixed there: the
+  crash-safety it buys is the entire point of T40 P2, and trading it
+  away needs a measurement first. Measure the cost at the cap on the
+  i686 target, then choose between dropping the top-of-loop write
+  (redundant except immediately after a fold, which is the one case
+  that changes history without appending an assistant message) and
+  skipping the write when the serialized bytes are unchanged.
+
 ### Queued from T40 (2026-08-27)
 
 - **temur's own request floor is most of a small window.** Measured

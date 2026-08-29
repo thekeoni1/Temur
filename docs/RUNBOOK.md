@@ -6632,6 +6632,13 @@ Residuals carried forward unclosed, all of them from T37 itself:
   14:53 on 2026-08-24 and ran clean through both full matrices, three
   phase gates and every probe; its only two DETECTED entries are its
   own self-test, stamped at the moment of arming.
+  **PARTLY CLOSED 2026-08-29 (v0.29.1 F6).** A zero-byte `oom` was
+  found TRACKED in the tree, shipped in v0.29.0, and its origin is
+  established: the T40 rider-2 builder session created it at 18:47:53
+  on 2026-08-27, two minutes before archiving `run2-oom-dmesg.txt`,
+  and committed it in `c09785c`. It is removed. The three 2026-08-24
+  sightings inside OpenCode cells predate it and stay unattributed, so
+  the phenomenon is not explained, only the copy that shipped.
 - The comparison remains on temur's home turf until a neutral suite
   exists. The Terminal-Bench adapter is queued at tier 2.
 - temur's Qwen2.5-Coder-3B score resting wholly on prose-call recovery
@@ -7860,3 +7867,49 @@ drifting away from the path that actually runs. Deleted, with its six
 test callers ported to the seam (which is what `main.rs` and `/resume`
 call) or to `context_crossing`, now `pub` for that purpose. What each
 test asserts is unchanged.
+
+### F5: the annotated-tag guard passed the mistake it was written for
+
+`release.sh` prints the `gh release create` invocation with the release
+title read back from the tag, which is what keeps the title equal to
+the tag message. It decided "there is a tag message" from
+`%(contents:subject)` being non-empty. For a LIGHTWEIGHT tag git
+dereferences to the commit and reports the COMMIT subject, which is
+non-empty and indistinguishable from success here. Verified in a
+scratch repo: a lightweight tag on a commit titled `v9.9.9: close-out`
+reports exactly that string, with `%(objecttype)` reading `commit`
+rather than `tag`. So `git tag` typed instead of `git tag -a` would
+have produced a release titled with the close-out commit's subject,
+which is the one mistake the block exists to catch. It now gates on
+`%(objecttype)` as well, and a lightweight tag takes a third branch
+that names the problem and prints the placeholder title. All three
+branches exercised against a scratch repo (annotated, lightweight,
+absent).
+
+The self-matching `ps` grep asked about in the same breath is NOT in
+`release.sh`, and there is no `ps`-based hang detector anywhere in
+`scripts/`. The only process scan in the repo is `sleeper_running()` in
+`scripts/sigint_test.sh`, which walks `/proc/*/cmdline` and already
+defeats self-matching with the `sleep [9]87` bracket trick. Left alone.
+
+### F6: the stray `oom` file, identified and removed
+
+The zero-byte `oom` at the repository root is gone (`git rm`), and its
+origin is no longer a mystery: it was created by the rider-2 BUILDER
+session on 2026-08-27 at 18:47:53, two minutes before that same session
+archived `run2-oom-dmesg.txt` at 18:49:54, while it was investigating
+the kernel OOM kill. It was then swept into `c09785c` along with the
+RUNBOOK text about that kill. A builder-session redirect, not an
+artifact of the OOM event and not anything the product does.
+
+Scope, stated precisely because the v0.26.0 residual was about a
+different sighting: what is closed is the file that was TRACKED in the
+tree, which is what mattered, since it shipped in v0.29.0. The three
+2026-08-24 appearances inside OpenCode cells predate this file by three
+days and remain unattributed; the T37 record already says the polling
+detector never caught them recurring. Worth noting against the harm
+path claimed there: staging by explicit path, never `git add -A`, did
+NOT stop this one. However `oom` reached the index, the rule only
+helps if the paths being staged are read before they are staged, and
+`git status` was clearly not consulted against a one-word untracked
+file at the root.

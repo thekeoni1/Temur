@@ -24,6 +24,15 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   over-cap session repeated that identical line up to a hundred times
   in a single long turn.
 
+- `scripts/release.sh` decided whether a tag carries a message from
+  `%(contents:subject)` alone, which for a lightweight tag reports the
+  COMMIT subject instead: the release title would have been the
+  close-out commit's subject, and the guard against a non-annotated tag
+  would never have fired. It now checks the tag's object type as well.
+
+- Removed a stray zero-byte `oom` file from the repository root, added
+  by accident during the v0.29.0 rider.
+
 ## v0.29.0 - 2026-08-27
 
 - `docs/COMPARISON.md` gains a GPU desktop row: the same pre-registered
