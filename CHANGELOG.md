@@ -9,6 +9,21 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   at the top of the history (any resumed or multi-turn session with
   auto-compaction on); the first compaction was correct.
 
+- Fixed: with auto-compaction on, a turn that crossed the context
+  threshold but never had enough round-trips to fold said nothing at
+  all. In one-shot `-p`, where auto-compaction defaults on and there is
+  no later turn to carry the crossing, that meant no warning was ever
+  printed before the run died on the next request. The ordinary
+  advisory now prints at the end of such a turn, without consuming the
+  once-per-session latch, which is what `docs/USAGE.md` described
+  throughout.
+
+- Fixed: the notice that says the session file was trimmed to its byte
+  cap is latched once per process, like the save-failure notice beside
+  it. Since mid-turn persistence writes twice per round-trip, an
+  over-cap session repeated that identical line up to a hundred times
+  in a single long turn.
+
 ## v0.29.0 - 2026-08-27
 
 - `docs/COMPARISON.md` gains a GPU desktop row: the same pre-registered

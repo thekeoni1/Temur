@@ -179,6 +179,12 @@ pub struct Session {
     /// the end-of-turn write must share one latch: a full disk should say
     /// so once, not once per round-trip.
     save_failure_notified: bool,
+    /// F3 (v0.29.1): same latch, for the SUCCESS-path trim notice. T40 P2
+    /// turned one save per turn into two per round-trip, and the notice
+    /// `session_store::save` emits when it trims the file has no reason to
+    /// repeat at that rate: the condition is a property of the session, not
+    /// of the write.
+    trim_notified: bool,
 }
 
 /// The cost-advisory latch value for a session holding `usage` under `cfg`:
@@ -408,6 +414,7 @@ impl Session {
             // T40 P2: installed by the caller that owns a session file.
             persist: None,
             save_failure_notified: false,
+            trim_notified: false,
         }
     }
 
@@ -490,10 +497,10 @@ impl Session {
     /// at most one request.
     ///
     /// Never fatal, exactly as the turn-end save was never fatal: the
-    /// in-memory conversation is intact and the next write retries. The
-    /// failure notice is latched once per process (see
-    /// `save_failure_notified`) so a full disk does not shout on every
-    /// round-trip.
+    /// in-memory conversation is intact and the next write retries. BOTH
+    /// notices are latched once per process (`save_failure_notified` and
+    /// `trim_notified`) so neither a full disk nor an over-cap session
+    /// shouts on every round-trip.
     pub fn persist_now(&mut self, ui: &mut dyn FnMut(AgentEvent)) {
         let Some(target) = self.persist.as_ref() else {
             return;
@@ -516,7 +523,10 @@ impl Session {
         match result {
             Ok(()) => {
                 for n in trim_notices {
-                    ui(AgentEvent::Notice(n));
+                    if !self.trim_notified {
+                        self.trim_notified = true;
+                        ui(AgentEvent::Notice(n));
+                    }
                 }
             }
             Err(e) => {
@@ -840,28 +850,12 @@ impl Session {
         self.cfg.thinking = on;
     }
 
-    /// The unified context advisory (T20). Fires ONCE per latch period,
-    /// when either arm crosses first: `used >= 80%` of the window, or the
-    /// remaining window is smaller than `max_tokens` (the next response may
-    /// not fit). Returns the advisory and sets the latch; `None` below
-    /// threshold, when already warned, or without a window/estimate (no
-    /// configured `context_window` means no advisory can fire, as before).
-    ///
-    /// Two trigger paths call it: the turn loop after each response, and
-    /// the resume seams (startup `--continue`/`--resume`, `/resume`) right
-    /// after a seed load, because resume is the zero-waste moment to
-    /// compact: no provider cache prefix is warm yet. The latch is shared,
-    /// so a resume-time advisory suppresses the turn-loop one and vice
-    /// versa, and every existing re-arm point (provider switch, `/clear`,
-    /// seed load, `/compact`) resets both.
-    pub fn context_advisory(&mut self) -> Option<String> {
-        let (used, window) = self.context_crossing()?;
-        self.context_warned = true;
-        Some(context_advisory_text(used, window))
-    }
-
     /// The advisory CONDITION, with no side effect: `(used, window)` when
-    /// the latch is open and either arm crosses, `None` otherwise.
+    /// the latch is open and either arm crosses first - `used >= 80%` of
+    /// the window, or the remaining window smaller than `max_tokens`, so
+    /// the next response may not fit - and `None` below threshold, when
+    /// already warned, or without a window/estimate (no configured
+    /// `context_window` means no advisory can fire, as before).
     ///
     /// Split from the latch by T40 rider 2. Consuming the latch at the
     /// moment of DETECTION was wrong under auto-compaction: a crossing that
@@ -870,7 +864,14 @@ impl Session {
     /// auto-compaction out of that session entirely. Detection and
     /// consumption are now separate decisions, and the caller makes the
     /// second one.
-    fn context_crossing(&self) -> Option<(u64, u64)> {
+    ///
+    /// The three consumers are the turn loop (after each response, and once
+    /// more at turn end for F2), the resume seams via
+    /// [`Session::resume_seam_context_action`], and the tests. The latch is
+    /// shared across them, so a resume-time advisory suppresses the
+    /// turn-loop one and vice versa, and every existing re-arm point
+    /// (provider switch, `/clear`, seed load, `/compact`) resets it.
+    pub fn context_crossing(&self) -> Option<(u64, u64)> {
         if self.context_warned {
             return None;
         }
@@ -1041,6 +1042,11 @@ impl Session {
         // this turn has already spent against MAX_AUTO_COMPACTIONS_PER_TURN.
         let mut compact_pending = false;
         let mut auto_compactions: u32 = 0;
+        // F2 (v0.29.1): a crossing arrived that nothing could act on yet.
+        // Rider 2 was right that it must not CONSUME the latch; it was
+        // wrong to let the turn end without ever saying so. Cleared as soon
+        // as any arm speaks about a crossing.
+        let mut crossing_unspoken = false;
 
         loop {
             iterations += 1;
@@ -1183,6 +1189,7 @@ impl Session {
                     // Nobody is going to compact this: advise, and latch, as
                     // temur always did.
                     self.context_warned = true;
+                    crossing_unspoken = false;
                     ui(AgentEvent::Notice(context_advisory_text(used, window)));
                 } else if auto_compact_will_fold(
                     self.history.len(),
@@ -1193,15 +1200,22 @@ impl Session {
                     // safe point, so the turn never announces a compaction it
                     // then does not perform.
                     self.context_warned = true;
+                    crossing_unspoken = false;
                     compact_pending = true;
                     ui(AgentEvent::Notice(auto_compact_notice_text(used, window)));
+                } else {
+                    // Crossed, but the turn has too few round-trips to fold
+                    // yet. Say NOTHING here and consume NOTHING: rider 1
+                    // spent the latch at this site and thereby locked
+                    // auto-compaction out of the whole session, which is
+                    // exactly the state the 4096-window smoke run ended in.
+                    // The check repeats after the next round-trip and fires
+                    // at the first foldable one. Remembered so that a turn
+                    // which ENDS without ever becoming foldable still
+                    // reports the crossing (F2), which is what a one-shot
+                    // `-p` run gets instead of a later turn.
+                    crossing_unspoken = true;
                 }
-                // Otherwise: crossed, but the turn has too few round-trips to
-                // fold yet. Say NOTHING and consume NOTHING. Rider 1 spent the
-                // latch here and thereby locked auto-compaction out of the
-                // whole session, which is exactly the state the 4096-window
-                // smoke run ended in. The check simply repeats after the next
-                // round-trip and fires at the first foldable one.
             }
             // T26: the spend advisory sits beside the context one, and for
             // the same reason: an agentic turn is many round-trips, and a
@@ -1727,6 +1741,21 @@ impl Session {
                     }
                     break;
                 }
+            }
+        }
+
+        // F2 (v0.29.1): the turn is over and a crossing was never acted on,
+        // so the ordinary advisory is what remains, exactly as docs/USAGE.md
+        // has always described this case. In one-shot `-p` - the mode where
+        // auto_compact defaults ON - there is no later turn to carry it, so
+        // saying nothing here meant saying nothing at all, and then dying on
+        // the next request. It is asked, not remembered: a fold or a fall
+        // back under the threshold since then means there is nothing left to
+        // report. The latch is deliberately NOT consumed, so a later REPL
+        // turn can still compact; at most one such line per turn.
+        if crossing_unspoken {
+            if let Some((used, window)) = self.context_crossing() {
+                ui(AgentEvent::Notice(context_advisory_text(used, window)));
             }
         }
 

@@ -7821,3 +7821,42 @@ not-0, and nothing anywhere used the second. The regression test is
 therefore built on a session with six messages of prior history, and
 it fails on the pre-fix tree with the prompt gone (`left: []` against
 `right: ["the real task"]`), not on a subtlety of wording.
+
+### F2: a crossing nobody could act on became a crossing nobody heard about
+
+Rider 2 established that a not-yet-foldable crossing must not CONSUME
+the once-per-session latch, and that is still right. What it also did
+was print nothing, on the reasoning that the check repeats next
+round-trip. That reasoning holds for a turn with a next round-trip.
+One-shot `-p` is the mode where `auto_compact` DEFAULTS ON, and there
+is no later turn there at all: a short `-p` turn that crossed printed
+nothing and then died on the next request, where v0.28.0 had at least
+advised. `docs/USAGE.md` described the advisory as firing throughout.
+
+The turn loop now remembers that a crossing went unspoken and, at turn
+end, asks the condition AGAIN and prints the ordinary advisory if it
+still holds. Asking again rather than replaying the remembered numbers
+is deliberate: a fold or a drop back under the threshold in between
+means there is nothing left to report. The latch is deliberately not
+consumed, so a REPL session can still fold on a later turn, and at most
+one such line is printed per turn.
+
+### F3: the trim notice had no latch
+
+`persist_now` latched the save-FAILURE notice and passed the success
+path's trim notice straight through. Before T40 that was one line per
+turn; P2 made it two writes per round-trip, so a session over
+`session_max_bytes` in a fifty-iteration turn could print the same
+sentence a hundred times. Same latch, same reason, `trim_notified`
+beside `save_failure_notified`.
+
+### F7: `context_advisory()` had no production callers left
+
+The T40 rider moved both real call sites onto
+`resume_seam_context_action`, and the turn loop onto
+`context_crossing`, leaving a `pub` accessor that only tests called.
+`pub` suppresses the dead-code warning, so it would have sat there
+drifting away from the path that actually runs. Deleted, with its six
+test callers ported to the seam (which is what `main.rs` and `/resume`
+call) or to `context_crossing`, now `pub` for that purpose. What each
+test asserts is unchanged.

@@ -269,7 +269,11 @@ only statement of the task, and a model handed a paraphrase of its
 assignment does the wrong job. The cut always lands on a
 `tool_use`/`tool_result` boundary, so no tool call is ever separated
 from its result. A turn with fewer than three completed round-trips has
-nothing to fold and is left alone, with the ordinary advisory instead.
+nothing to fold and is left alone. Such a crossing is not reported the
+moment it happens, since the very next round-trip may be able to fold
+it; if the turn ends and nothing ever folded, the ordinary advisory
+prints then, and the once-per-session latch is left open so a later
+turn can still compact.
 
 On resume it works differently, and deliberately. When
 `--continue`/`--resume` (or `/resume`) restores a session that is

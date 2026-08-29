@@ -660,6 +660,17 @@ fn resumed_with_window(
     Session::resume(Box::new(provider), Registry::standard(), cfg, seed)
 }
 
+/// The seam is what main.rs and `/resume` actually call, so it is what a
+/// test of the resume-time advisory should drive. F7 (v0.29.1) removed the
+/// `Session::context_advisory()` accessor these tests used: it had no
+/// production callers left after the T40 rider and was drifting away from
+/// the path that really runs.
+fn seam_notices(session: &mut Session) -> Vec<String> {
+    let mut events = vec![];
+    session.resume_seam_context_action(&mut |e| events.push(e));
+    notices(&events)
+}
+
 #[test]
 fn resume_time_advisory_fires_once_and_latches_across_trigger_paths() {
     let dir = tempfile::tempdir().unwrap();
@@ -674,12 +685,13 @@ fn resume_time_advisory_fires_once_and_latches_across_trigger_paths() {
         Some(1000),
         100,
     );
-    let advisory = session.context_advisory().expect("restored 900 of 1000 must advise");
-    assert!(advisory.contains("context: ~900 of 1000 tokens used"));
-    assert!(advisory.contains("/compact frees the window"));
-    assert!(advisory.contains("or start a new session"));
-    // Latch: the accessor itself does not re-fire...
-    assert_eq!(session.context_advisory(), None);
+    let fired = seam_notices(&mut session);
+    assert_eq!(fired.len(), 1, "restored 900 of 1000 must advise: {fired:?}");
+    assert!(fired[0].contains("context: ~900 of 1000 tokens used"));
+    assert!(fired[0].contains("/compact frees the window"));
+    assert!(fired[0].contains("or start a new session"));
+    // Latch: the seam itself does not re-fire...
+    assert!(seam_notices(&mut session).is_empty());
     // ...and the OTHER trigger path (the turn loop) honors the same latch
     // even though this turn's usage (910 of 1000) crosses again.
     let n = notices(&collect_events(&mut session, "next"));
@@ -691,13 +703,13 @@ fn resume_time_advisory_stays_silent_below_threshold_or_without_window() {
     let dir = tempfile::tempdir().unwrap();
     // Below both arms: 100 of 1000 with max_tokens 100.
     let mut session = resumed_with_window(dir.path(), Some(100), vec![], Some(1000), 100);
-    assert_eq!(session.context_advisory(), None);
+    assert!(seam_notices(&mut session).is_empty());
     // No window configured: never advises, whatever the estimate says.
     let mut session = resumed_with_window(dir.path(), Some(900), vec![], None, 100);
-    assert_eq!(session.context_advisory(), None);
+    assert!(seam_notices(&mut session).is_empty());
     // No restored estimate: nothing to judge.
     let mut session = resumed_with_window(dir.path(), None, vec![], Some(1000), 100);
-    assert_eq!(session.context_advisory(), None);
+    assert!(seam_notices(&mut session).is_empty());
 }
 
 #[test]
@@ -4826,14 +4838,27 @@ fn auto_compact_leaves_a_turn_with_too_few_round_trips_alone() {
         true,
     );
     let n = notices(&collect_events(&mut session, "the task"));
-    assert!(n.is_empty(), "not yet actionable: say nothing at all: {n:?}");
+    // F2 (v0.29.1): the turn ends still over the threshold and nothing ever
+    // folded, so the ordinary advisory is what remains - once, at turn end.
+    // Rider 2 printed nothing at all here, and in one-shot `-p`, the mode
+    // where auto_compact defaults ON, there is no later turn to carry the
+    // crossing: "nothing yet" became "nothing ever", and the run died on the
+    // next request with no warning ever printed. docs/USAGE.md described
+    // this case as advising throughout.
+    assert_eq!(
+        n,
+        vec!["context: ~800 of 1000 tokens used; /compact frees the window by summarizing the conversation, or start a new session".to_string()],
+        "exactly one advisory, at turn end: {n:?}"
+    );
     // No summary call was spent...
     assert_eq!(requests.borrow().len(), 2);
     // ...and, the rider-2 rule, the once-per-session latch was NOT consumed
     // by a crossing nobody could act on. Before rider 2 this crossing spent
-    // the latch and locked auto-compaction out of the whole session.
+    // the latch and locked auto-compaction out of the whole session, so the
+    // F2 line is deliberately printed OUTSIDE the latch: a later turn in a
+    // REPL session can still fold.
     assert!(
-        session.context_advisory().is_some(),
+        session.context_crossing().is_some(),
         "the latch must still be open after a non-actionable crossing"
     );
 }
@@ -5122,6 +5147,59 @@ fn a_failing_save_is_noticed_once_per_process_not_once_per_round_trip() {
     assert_eq!(failures2, 0, "already noticed");
 }
 
+#[test]
+fn a_trimmed_save_is_noticed_once_per_process_not_once_per_round_trip() {
+    // F3 (v0.29.1): the failure notice was latched and the SUCCESS-path trim
+    // notice was not. T40 P2 turned one save per turn into two per
+    // round-trip, so an over-cap session repeated an identical line up to a
+    // hundred times in one agentic turn where it used to print once.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.json");
+    let (mut session, _) = session_auto_compact(
+        dir.path(),
+        vec![
+            msg_with_usage(
+                vec![text(&"x".repeat(3000))],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 10, "output_tokens": 5}),
+            ),
+            msg_with_usage(
+                vec![text("short")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 10, "output_tokens": 5}),
+            ),
+        ],
+        None,
+        100,
+        false,
+    );
+    // Two turns first, with no persist target: the history has to be big
+    // enough to need trimming, and a cut point to trim back to.
+    session.turn("go", &mut |_| {}).unwrap();
+    session.turn("again", &mut |_| {}).unwrap();
+
+    let mut target = persist_target(&path);
+    target.max_bytes = 1_000; // the first exchange alone is over 3000 bytes
+    session.set_persist_target(Some(target));
+
+    let trims = |events: &[AgentEvent]| {
+        notices(events)
+            .iter()
+            .filter(|n| n.starts_with("session file exceeded"))
+            .count()
+    };
+    let mut first = vec![];
+    session.persist_now(&mut |e| first.push(e));
+    let mut second = vec![];
+    session.persist_now(&mut |e| second.push(e));
+    assert_eq!(trims(&first), 1, "the trim is reported: {:?}", notices(&first));
+    assert_eq!(trims(&second), 0, "and not again on the next write");
+    assert!(
+        std::fs::read(&path).unwrap().len() <= 1_000,
+        "both writes still happened, trimmed to the cap"
+    );
+}
+
 // ---- T40 rider: resume seam, notice order, outcome wording ----
 
 /// A resumed session with a real history and a requests handle, so the seam
@@ -5334,6 +5412,11 @@ fn a_turn_too_short_to_fold_says_nothing_at_all() {
         true,
     );
     let n = notices(&collect_events(&mut session, "the task"));
+    // Silent, and it stays silent through F2's turn-end check too: the last
+    // response reports 100 of 1000, so by the time the turn ends there is no
+    // crossing left to report. F2 asks the condition again rather than
+    // replaying a remembered one, precisely so a transient crossing does not
+    // produce a stale line.
     assert!(n.is_empty(), "silent, not contradictory: {n:?}");
     assert_eq!(requests.borrow().len(), 2, "no summary call was spent");
 }
