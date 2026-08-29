@@ -532,6 +532,14 @@ guard was never the issue.
   (`~/temur-eval-archive/desktop-exp1/`) and was never a measured
   comparison, so it corroborates the finding and scores nothing.
 
+  Desktop experiment 3 (2026-08-29). The same GPU box ran the same
+  16-task subset again on Qwen3-8B with thinking held off, and
+  ctx-exhausted cells went from 7 to 22 across the three harnesses
+  (temur 7, opencode 14, codex 1). No cause is attributed and the
+  binary there is still 0.28.0, so it is not a measurement of what
+  shipped. Published as "Same rig, larger model" in
+  `docs/COMPARISON.md`; evidence `~/temur-eval-archive/desktop-exp3/`.
+
   Original entry: temur watches its own
   context fill, says so, and then dies on the next request. Measured on
   Terminal-Bench with one-shot `-p`: the advisory fires at roughly
@@ -545,6 +553,14 @@ guard was never the issue.
   its 32 cells, so what is missing is the unattended remedy rather than
   headroom. Evidence: `~/temur-eval-archive/t39-terminal-bench/`,
   F4 in its `PRODUCT-FINDINGS.md`.
+
+- **T40 auto-compaction differential on Terminal-Bench.** Added
+  2026-08-29. Every Terminal-Bench number published so far was taken
+  with a v0.28.0 binary, which predates `auto_compact`, so the feature
+  built for exactly those cells has never been measured on them.
+  temur-only, v0.28.0 against v0.29.1, same GPU box, same 16-task
+  subset, Qwen3-8B with thinking off, two runs each: the one variable
+  is the binary. Planned as desktop experiment 5.
 
 - ~~**A killed run loses its whole session.**~~ SHIPPED in T40
   (v0.29.0): the session is written after every round-trip, so a

@@ -503,6 +503,70 @@ the machine, so nothing about either box is inferred from the pair;
 the build, model, binary source, subset, ctx and budget are identical
 between them.
 
+### Same rig, larger model (Qwen3-8B, thinking off)
+
+A third matrix ran on the same box, 2026-08-27 to 2026-08-29, changing
+one thing: the model. Build, image digest, ctx, per-task budgets, the
+16-task subset and all three harness pins are the ones listed above.
+The model is `Qwen3-8B-Q4_K_M.gguf` from `unsloth/Qwen3-8B-GGUF`,
+sha256 `120307ba...`, which is also its Hugging Face LFS oid.
+
+Qwen3-8B is a hybrid thinking model, so thinking was held **off** with
+`--chat-template-kwargs '{"enable_thinking": false}'`, and that is
+established three ways rather than asserted once: a control server on
+the same build, model and prompt with the flag removed **did** reason;
+every cell issued an 8-token probe before its agent started that had
+to return no `<think>` tag and no `reasoning_content` field, 96/96;
+and a sweep of every transcript after the matrix returned 0 hits.
+
+All 96 cells again offloaded 37/37 layers to the GPU, 84 of them at a
+peak of 6464 MiB of VRAM and the highest at 7049 MiB. The temur binary
+is 0.28.0, the same one the 4B run used: **auto-compaction, which
+shipped in v0.29.x, is not in these numbers.**
+
+| harness | run | pass | fail | ctx-exhausted | exc | void | wall clock |
+|---|---|---|---|---|---|---|---|
+| temur 0.28.0 | run 1 | 1/16 | 12 | 3 | 0 | 0 | 0.66 h |
+| temur 0.28.0 | run 2 | 0/16 | 12 | 4 | 0 | 0 | 0.53 h |
+| opencode 1.18.23 | run 1 | 1/16 | 8 | 7 | 0 | 0 | 1.70 h |
+| opencode 1.18.23 | run 2 | 1/16 | 8 | 7 | 0 | 0 | 1.73 h |
+| codex 0.149.1 | run 1 | 1/16 | 11 | 1 | 2 | 1 | 1.32 h |
+| codex 0.149.1 | run 2 | 0/16 | 15 | 0 | 1 | 0 | 1.19 h |
+
+Wall clock per harness over 32 cells each: **temur 1.18 h, opencode
+3.43 h, codex 2.51 h.** The spread between each harness's own two runs
+was 1, 0 and 1 pass, all below the threshold that triggers a third
+run, and no third run was made.
+
+All three `exc` are `codex exec` itself exiting non-zero, scored as
+failures. The one void is an agent-setup timeout on
+`git-leak-recovery`; it took the single retry the ruling allows, hit
+the same 360-second setup budget again, and so stays excluded from the
+scored denominator rather than counted as a failure. That is the same
+task both of the 4B run's voids landed on.
+
+Every pass in this table is `modernize-scientific-stack`: temur run 1,
+opencode run 1 and run 2, codex run 1. `prove-plus-comm`, which
+produced 3 of the 4B run's 7 passes, produced none here.
+
+Beside the 4B section: passes 7/96 to 4/96, and ctx-exhausted 7 to 22
+(temur 7, opencode 14, codex 1, spread across 9 of the 16 tasks).
+**Same rig, model changed** is the whole of what may be said about the
+pair. The per-cell counts sit inside the run-to-run noise the 4B pair
+already showed, where a harness's own two runs differed by as much as
+a pass; the exception is ctx-exhausted, which is recorded here as an
+observation with no cause attributed to it. Throughput on the same
+build, GPU and context, from the server's own timings: prompt
+processing 593.9 tok/s, generation 32.2 tok/s, which is 0.63x and
+0.64x of the 4B.
+
+Required disclosure: the host slept for 18 h 54 m mid-matrix on a
+Windows power plan since corrected, with 48 cells run before it and 48
+after, the interrupted cell deleted and re-run, no cell spanning the
+gap, an `INTERRUPTED` line at that point in the append-only ledger,
+and 8 h 07 m of running elapsed. Full report, cell tree and ledger for
+this run: `~/temur-eval-archive/desktop-exp3/`.
+
 ### The earlier GPU run is archive-only
 
 An experiment 1 ran on this box on 2026-08-26/27 against llama.cpp b8580,

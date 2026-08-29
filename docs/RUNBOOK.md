@@ -8090,3 +8090,154 @@ Residuals carried into this ship:
   printing the publish invocation rather than publishing.
 - The `CLAUDE.md` scope line naming v0.28.0 was stale at the previous
   ship and is staler now. Still deliberately left for a ruling.
+
+## Desktop experiment 3 acceptance - Qwen3-8B on the GPU box (recorded 2026-08-29)
+
+The third matrix on DESKTOP-6O763EN, and the second one whose numbers
+are published. It changes exactly one variable against the run already
+on `docs/COMPARISON.md`: the model, Qwen3-4B-Instruct-2507 to Qwen3-8B
+with thinking held off. Same box, same `server-cuda-b10438` image and
+digest, same ctx 12288, same pre-registered 16-task subset, same
+per-task budgets, same harness pins, same temur binary. **No product
+code was touched and no test.** Everything outside `docs/` lived on the
+desktop and in the archive.
+
+### Provenance
+
+| item | value |
+| --- | --- |
+| archive | `~/temur-eval-archive/desktop-exp3/` |
+| tarball | `desktop-exp3.tgz`, sha256 `bd32dab1a60d0b6319f5d49edfd167fcb9a94bcb9569eb52931fa0b1d9764671` |
+| report | `temur-desktop/reports/FINAL-exp3.md`, stages `stage-d3.md` and `stage-e3.md` |
+| cells | `tb-bridge/cells-desktop-exp3/<task>/<harness>/run<r>/` |
+| ledger section | `=== desktop experiment 3 ===` |
+| model | `unsloth/Qwen3-8B-GGUF`, `Qwen3-8B-Q4_K_M.gguf`, sha256 `120307ba...`, equal to the HF LFS oid |
+| image | `ghcr.io/ggml-org/llama.cpp:server-cuda-b10438`, digest `sha256:b5e13ddf...` |
+| temur binary | `temur-v0.28.0-x86_64-unknown-linux-musl`, sha256 `813d539f...` |
+| pins | codex 0.149.1, opencode 1.18.23, subset sha `57160ac7...` |
+
+The tarball hash above was recomputed here, on this box, against the
+copy in the archive; it matches the value the planning session
+verified.
+
+### The numbers were computed twice, independently
+
+Every figure in the report was derived once from the cell tree by the
+desktop session and once by a separate agent that was given only the
+cell directory and the experiment-3 section of the ledger, no sight of
+the draft, and an instruction to ignore `instrumentation.json` and work
+from `result.txt`, `reward.txt`, `result.json` and the temur session
+JSON. **The two computations agree on every value that is published.**
+Two boundary definitions differed and are printed in the report rather
+than averaged away: the post-sleep segment measured from the ledger's
+`resumed:` header (21:17:07Z) against the first resumed cell
+(21:17:21Z), 14 seconds apart, and the transcript-sweep scope, 2558
+files against 2451, both returning zero hits by different routes.
+
+The one table that is single-sourced is the per-harness
+instrumentation, because the recompute was told not to read it. It is
+not published in `docs/COMPARISON.md` for the same reason the 4B run's
+was not: the three parsers count different things and codex's has a
+known hole.
+
+### Thinking off, established three ways
+
+Qwen3-8B is a hybrid thinking model, so the whole table would be
+comparing different things if thinking had leaked on for one harness
+and not another. The claim rests on three separate checks, not one:
+
+1. **At the server, with a control.** The server ran with
+   `--chat-template-kwargs '{"enable_thinking": false}'`. A control
+   server on the same build, model and prompt with the flag removed
+   **did** produce reasoning, which is what makes "no thinking"
+   attributable to the flag rather than to the prompt. b10438 marks
+   the flag deprecated in favour of `--reasoning off`; deprecated is
+   not ignored, and the `--reasoning-budget 0` fallback was never
+   needed.
+2. **Per cell, before the agent started.** Every cell issued an
+   8-token completion that had to come back with no `<think>` tag and
+   no `reasoning_content`, or be scored `VOID-THINKING-ON` and never
+   reach the table. **96/96 passed**, with `reasoning_content` absent
+   from the message object entirely rather than present and empty.
+3. **After the matrix, across every transcript.** A sweep for
+   `<think>`, `</think>` and a populated `reasoning_content` over
+   every file under each cell's `job/`: **0 hits**, on both sweeps.
+
+One limit is recorded with them because it is real: the server flag
+sets the template default and does not forbid an override, so a client
+that sends `chat_template_kwargs:{enable_thinking:true}` in its own
+request body can turn thinking back on. That was measured. None of
+temur, codex or opencode does it, and checks 2 and 3 are what turn
+that from an assumption into a finding.
+
+### The interruption
+
+A Windows power plan suspended the host at 2026-08-28T02:22:38Z,
+during the first cell of opencode run 2 (`cobol-modernization`),
+roughly six seconds in. The plan has since been corrected with
+`powercfg`. Work resumed at 21:17Z and the matrix finished at
+02:05:45Z on 2026-08-29: **18 h 54 m asleep inside a 27 h 01 m span,
+of which 8 h 07 m was running elapsed**, and only the running figure
+is used anywhere.
+
+48 cells had a `RESULT` before the gap and were not re-run, as the
+resume ruling directs; the interrupted cell wrote no `RESULT`, was
+snapshotted, deleted and re-run; 48 cells ran after. **No cell spans
+the gap.** The ledger carries
+`INTERRUPTED cobol-modernization opencode run2 2026-08-28 host slept`
+at exactly that point and a `RESUMED` block naming what stands and
+what is re-run, so the gap is explained in the append-only record and
+not only in prose. Before restarting, the driver, image digest, model
+hash, temur hash, context, budgets and pins were all read back
+unchanged, and the thinking-off control was re-run: the post-sleep
+reply is the identical 409-character answer the pre-sleep one gave.
+
+### Cell integrity
+
+- **37/37 layers offloaded at `-ngl 99` on all 96 cells**, with
+  `n_slots=1` and `n_ctx_slot=12288` read back on all 96. No partial
+  offload, no cell on CPU. Peak VRAM 7049 MiB of 8192, with 84 cells
+  at 6464.
+- **Zero server deaths** and `rc=0` with `alive_after=yes` on all 96.
+- **Reward integrity:** on all 95 scored cells, `result.txt`'s
+  `reward=` equals both `verifier/reward.txt` and `result.json`'s
+  `verifier_result.rewards.reward`. Zero disagreements. The single
+  void has no verifier output at all and carries `exception_info`
+  instead.
+- **The T39 `--plain` delivery defect does not reproduce:** all 32
+  temur cells hold exactly one instruction user message.
+- The T36 futile-call guard fired in four temur cells, one notice
+  each. The report gives the raw distribution `{1: 28, 2: 4}` beside
+  the adjusted `{1: 32}` rather than instead of it, because counting
+  a working guard's own notice as user text would read it as the
+  delivery defect it exists to detect.
+
+### What this does not establish, and what it leaves open
+
+- **The binary is 0.28.0.** Auto-compaction shipped in v0.29.x and is
+  not in any of these numbers. That is what the new ROADMAP item,
+  desktop experiment 5, is for.
+- **ctx-exhausted 7 to 22 has no attributed cause.** It spans 9 of the
+  16 tasks and all three harnesses, so it is not one task or one
+  harness misbehaving, and explaining it needs a controlled run
+  nobody has ruled.
+- `git-leak-recovery` took the one allowed retry and hit the same
+  360-second agent-setup timeout again, so the void stands. Two
+  experiments in, that task is 0-for-2 on retries and holds 5 of the
+  6 setup voids this box has produced. The recommendation to measure
+  `ensure_system_dependencies` per task image before blaming the link
+  is not discharged.
+- The thinking-off proof cell is reused as `fix-git/temur/run1` rather
+  than discarded, the same practice the 4B run recorded; the
+  independent recompute flagged it unprompted and noted that a reader
+  who thinks a skipped cell is not a fresh measurement should read
+  temur run 1 as 15 cells, not 16. It is scored, and this is the
+  disclosure that lets that reader disagree.
+
+### The desktop moved drives before experiment 4
+
+Recorded here because it dates from this cycle and bears on any later
+run from that box: on 2026-08-29 the desktop's WSL distro was moved
+from `C:` to `P:` after `C:` filled to 22 MB free and the guest root
+went read-only. The move happened after this experiment finished and
+before experiment 4 started, so nothing above ran under it.
