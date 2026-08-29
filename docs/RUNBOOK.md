@@ -7772,3 +7772,52 @@ than the runs they came from:
   It prints the invocation with the title read back from the tag
   instead. The plan asked for the flag to be passed; this is the
   closest the script can get without taking over publishing.
+
+## v0.29.1 post-ship fix - the v0.29.0 code review (recorded 2026-08-29, before its release)
+
+A code review of the shipped v0.29.0 range (`5f18325..b961a83`) raised
+seven items. The planning session verified all seven against the tree
+before any was acted on: six are fixed here, one commit per group, and
+one is queued rather than built. No milestone work rides along.
+
+### F1: the second fold of a turn folded around a stale index
+
+`turn()` captured `turn_start` once, at the one moment it is
+unambiguous, and never moved it. But a fold rewrites history as
+`[prompt, summary, resume, tail]`, which puts the prompt at index 0,
+and the safe point kept passing the ORIGINAL index to the second fold
+of the same turn. What sits at that index afterwards is a
+`tool_result`, so the second fold kept a tool result as "the prompt",
+dropped the real prompt (invariant (a)), and left history opening with
+an orphan `tool_result` whose `tool_use` it had just folded away: a
+hard 400 on both wires, and written straight to the session file by
+the P2 saves, so it survives a resume.
+
+The first fold was always correct, and a turn that starts at the top
+of history (a fresh one-shot `-p` run) is unaffected, because the
+stale index is 0 there anyway. Everything else is exposed: any REPL
+turn after the first, and every `--continue -p`, which is the exact
+invocation T39 F4 motivated auto-compaction for.
+
+The fix is one line at the safe point, `turn_start = 0` after a
+successful fold, plus the comment saying why. `auto_compact_on_resume`
+needs nothing: it runs before the prompt is pushed, so no index
+captured in `turn()` can be stale for it.
+
+### Fail-open family entry six
+
+Same family as T37's three and T39's two, and closest in shape to
+entry five: **the test corpus only ever compacted from an empty
+history.** Nine auto-compaction tests, a pure merge test per invariant,
+a live 900-second smoke, and every one of them started its turn at
+history index 0, where the stale index and the correct one are the
+same number. The defect was not merely uncaught; it was unreachable
+by construction from the whole corpus.
+
+The general form, which is what makes it worth recording: a corpus
+that fixes one value of a parameter proves nothing about the
+parameter. `turn_start` had exactly two interesting values, 0 and
+not-0, and nothing anywhere used the second. The regression test is
+therefore built on a session with six messages of prior history, and
+it fails on the pre-fix tree with the prompt gone (`left: []` against
+`right: ["the real task"]`), not on a subtlety of wording.

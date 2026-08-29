@@ -1004,7 +1004,12 @@ impl Session {
         // T40: where this turn's prompt sits. Auto-compaction keeps exactly
         // this message verbatim and folds what follows, so the index is
         // captured at the one moment it is unambiguous.
-        let turn_start = self.history.len() - 1;
+        //
+        // It MOVES when a compaction rewrites history, which is why it is
+        // `mut`; the safe point below is the only writer. `auto_compact_on
+        // _resume` needs no such care: it runs before this push, so nothing
+        // it does can invalidate an index captured here.
+        let mut turn_start = self.history.len() - 1;
 
         let mut turn_usage = Usage::default();
         let mut iterations: u32 = 0;
@@ -1062,6 +1067,18 @@ impl Session {
                         after_bytes,
                     } => {
                         auto_compactions += 1;
+                        // The fold rewrote history as [prompt, summary,
+                        // resume, tail], so this turn's prompt is at 0 now.
+                        // Leaving the captured index here made a SECOND
+                        // compaction in the same turn keep whatever had
+                        // moved into it (a tool_result) as "the prompt",
+                        // drop the real prompt, and open history with an
+                        // orphan tool_result: a 400 on both wires, written
+                        // to the session file by the P2 saves. Only
+                        // reachable when the turn did not start at the top
+                        // of history, which is every resumed or later REPL
+                        // turn.
+                        turn_start = 0;
                         ui(AgentEvent::Notice(auto_compacted_notice_text(
                             folded,
                             kept,
@@ -2331,6 +2348,45 @@ mod tests {
             [ContentBlock::Text { text }] => assert_eq!(text, "the task"),
             other => panic!("the CURRENT turn's prompt leads: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_second_fold_of_one_turn_must_be_told_the_prompt_moved_to_zero() {
+        // F1, found by the v0.29.0 code review. The first fold puts the
+        // prompt at index 0, so a second fold of the SAME turn has to be
+        // given 0. Told the original index instead, it keeps whatever has
+        // moved into that slot.
+        let mut h = vec![
+            user_text("older"),
+            assistant_text("older reply"),
+            user_text("older 2"),
+            assistant_text("older reply 2"),
+            user_text("older 3"),
+            assistant_text("older reply 3"),
+        ];
+        let turn_start = h.len();
+        h.extend(turn_history(3));
+        let tail = auto_compact_tail_start(&h, turn_start, 2).unwrap();
+        let once = auto_compacted_history("S1", &h, turn_start, tail);
+
+        // The turn runs on: three more round-trips on the folded history.
+        let mut grown = once;
+        for i in 4..=6 {
+            grown.push(assistant_tool_use(&format!("tu_{i}")));
+            grown.push(user_tool_result(&format!("tu_{i}")));
+        }
+        let tail2 = auto_compact_tail_start(&grown, 0, 2).unwrap();
+        let twice = auto_compacted_history("S2", &grown, 0, tail2);
+        assert_eq!(twice[0], h[turn_start], "the prompt survives BOTH folds");
+
+        // And what the fix exists to prevent, spelled out: the stale index
+        // now addresses a tool_result whose tool_use this very fold removes.
+        let stale = auto_compacted_history("S2", &grown, turn_start, tail2);
+        assert!(
+            matches!(stale[0].content[..], [ContentBlock::ToolResult { .. }]),
+            "stale index keeps an orphan tool_result: {:?}",
+            stale[0]
+        );
     }
 
     #[test]

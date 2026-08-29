@@ -5395,6 +5395,77 @@ fn a_crossing_that_stays_over_compacts_at_the_first_foldable_round_trip() {
 }
 
 #[test]
+fn a_second_compaction_in_one_turn_keeps_the_prompt_and_leaves_no_orphan() {
+    // F1, from the v0.29.0 code review. `turn_start` was captured once and
+    // never moved, but a fold rewrites history as [prompt, summary, resume,
+    // tail] and puts the prompt at 0. A turn that does NOT start at the top
+    // of history - any later REPL turn, and every `--continue -p`, which is
+    // the invocation auto-compaction exists for - therefore handed the
+    // SECOND fold a stale index: it kept a tool_result as "the prompt",
+    // dropped the real prompt, and left history opening with an orphan
+    // tool_result, which is a 400 on both wires and is written to the
+    // session file by the P2 saves.
+    //
+    // Nothing caught it because every other auto-compaction test starts
+    // from an empty history, where the stale index is 0 and therefore
+    // right by accident.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = resumed_auto_compact(
+        dir.path(),
+        seeded_history(), // six messages of a completed earlier turn
+        None,             // no restored estimate: the seam has nothing to do
+        vec![
+            rt(1, 100),
+            rt(2, 100),
+            rt(3, 800), // crossing 1: the first foldable round-trip
+            summary_response("FIRST FOLD"),
+            rt(4, 100),
+            rt(5, 100),
+            rt(6, 800), // crossing 2, on the already-folded history
+            summary_response("SECOND FOLD"),
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 100, "output_tokens": 0}),
+            ),
+        ],
+        Some(1000),
+        100,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the real task"));
+    assert_eq!(
+        n.iter().filter(|x| x.starts_with("compacted: ")).count(),
+        2,
+        "two folds inside one turn: {n:?}"
+    );
+    assert_eq!(requests.borrow().len(), 9, "7 round-trips plus 2 summary calls");
+
+    let h = session.history();
+    assert_eq!(h[0].role, Role::User, "history opens with the user prompt");
+    assert_eq!(
+        texts_of(&h[0]),
+        vec!["the real task"],
+        "invariant (a): the prompt survives BOTH folds, verbatim and alone"
+    );
+    // No orphans: every result answers a call that is still in history, and
+    // still earlier than it.
+    for (i, m) in h.iter().enumerate() {
+        for b in &m.content {
+            if let ContentBlock::ToolResult { tool_use_id, .. } = b {
+                assert!(
+                    h[..i]
+                        .iter()
+                        .flat_map(|earlier| earlier.content.iter())
+                        .any(|c| matches!(c, ContentBlock::ToolUse { id, .. } if id == tool_use_id)),
+                    "orphan tool_result {tool_use_id} at message {i}: {h:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn the_outcome_line_reports_round_trips_and_bytes_not_message_counts() {
     // Why the wording changed: this fold replaces 4 round-trips of tool
     // output with a summary, and the old line called it "9 into 7".

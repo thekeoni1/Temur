@@ -4,6 +4,11 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- Fixed: a second auto-compaction within one turn dropped the turn
+  prompt and left an orphan `tool_result` when the turn did not start
+  at the top of the history (any resumed or multi-turn session with
+  auto-compaction on); the first compaction was correct.
+
 ## v0.29.0 - 2026-08-27
 
 - `docs/COMPARISON.md` gains a GPU desktop row: the same pre-registered
