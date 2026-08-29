@@ -6462,6 +6462,12 @@ bug: **derive verdicts from archived evidence, never only at write
 time**, and a classification error costs a script run instead of hours
 of model time.
 
+Entry FIVE joined in T39 (an adapter that asserted completion but never
+delivery), and entry SIX in v0.29.1 (a test corpus that fixed one value
+of a parameter and so could not reach the defect at all). Both are
+recorded in their own sections below; the list is kept here because the
+family is the point, not any one member.
+
 ### Four memory misreports, and the one rule that covers them
 
 1. 4.24 GiB was a STARTUP reading quoted as an operating figure.
@@ -7913,3 +7919,63 @@ NOT stop this one. However `oom` reached the index, the rule only
 helps if the paths being staged are read before they are staged, and
 `git status` was clearly not consulted against a one-word untracked
 file at the root.
+
+### Provenance of this record
+
+Seven findings, from a code review of the shipped v0.29.0 range run on
+2026-08-29. The planning session verified all seven against the tree
+BEFORE any was acted on, which matters because a review is a claim
+until something reproduces it: F1 was reproduced as a failing test on
+the pre-fix tree, F5 was reproduced in a scratch repository, and the
+rest are readable off the code. Six are fixed here in three commits;
+F4 is queued on the ROADMAP under "Queued from v0.29.1" rather than
+built, because it trades away the crash-safety that is the whole point
+of T40 P2 and wants a measurement on the i686 target first.
+
+Nothing else rides along. No milestone work, no new capability, and
+the version moves 0.29.0 -> 0.29.1 as a PATCH: everything here is a
+defect in what T40 shipped two days earlier.
+
+### Gate log
+
+| Commit | What | Tests | check.sh | Gate log |
+| --- | --- | --- | --- | --- |
+| `9559897` | F1 | 755 | ALL CHECKS PASSED, first try | `t40-fix-gates/c1-f1.log` |
+| `bda9b85` | F2 + F3 + F7 | 756 | ALL CHECKS PASSED, first try | `t40-fix-gates/c2-f2-f3-f7.log` |
+| `69baad3` | F5 + F6 | 756 | ALL CHECKS PASSED, first try | `t40-fix-gates/c3-f5-f6.log` |
+| close-out | stage 1 | 756 | see the stage-1 log | `t40-fix-gates/v0.29.1-stage1-<head>.log` |
+
+Every run was pty-backed and teed with no tail in the pipe, so a single
+failure would keep its name. All 48 `test result:` lines read `0
+failed` in each of the three, and the TUI pty smokes passed first
+attempt throughout: no kill-and-rerun this cycle.
+
+The pre-fix proof for F1 is archived beside them as
+`t40-fix-gates/f1-prefix-failure-proof.txt`: the regression test
+against a tree with the one-line fix removed, failing with the prompt
+gone (`left: []` against `right: ["the real task"]`) rather than on a
+subtlety of wording.
+
+Stage 1 CI: run `33257172812` on `69baad3`, attempt 1, both jobs green
+(test 1m23s, release-gate 4m30s).
+
+### One sighting, recorded because it is unexplained
+
+The first full `cargo test` after the F1 fix was restored reported
+`263 passed; 1 failed` in the `--lib` suite. The failing test's NAME
+was not captured, because the command filtered the output, and it has
+not recurred: 21 consecutive `--lib` runs since, plus three full
+`check.sh` gates, are green, and the container legs run the same suite
+twice more each. So it is recorded exactly as the T24-cycle sighting
+was, unnamed and unreproduced, rather than dismissed. If it returns,
+capture the name first and stop.
+
+The teed-log procedure is the reason a recurrence would be nameable,
+and it stays on.
+
+### Stage 2 explicitly not yet run
+
+No tag exists, local or remote, and nothing has been published. This
+record is written at stage 1, before the release, which is the standing
+procedure: the acceptance record has to be able to say something the
+release could still contradict.
