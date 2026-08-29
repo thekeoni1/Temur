@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.29.1 - 2026-08-29
+
 - Fixed: a second auto-compaction within one turn dropped the turn
   prompt and left an orphan `tool_result` when the turn did not start
   at the top of the history (any resumed or multi-turn session with
