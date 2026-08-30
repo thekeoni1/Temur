@@ -8768,3 +8768,107 @@ No tag exists, local or remote, and nothing has been published. This
 record is written at stage 1, before the release, which is the standing
 procedure: the acceptance record has to be able to say something the
 release could still contradict.
+
+## v0.30.1 ship record - shipped private
+
+2026-08-30. **The T41 post-ship review fixes, shipped private at tag
+`v0.30.1`.** A PATCH on T41 rather than a milestone: three defects in
+what v0.30.0 shipped the same day, one commit each, no new capability.
+Stage 2 ran to completion with no rerun and no deviation.
+
+Prep push and CI:
+
+- The three fix commits pushed `12cd7ec..909191f` at stage 1. CI run
+  **33326768195, attempt 1**, both jobs green: `test` 1m51s,
+  `release-gate` 4m31s.
+- The three prep commits pushed `909191f..bde5890` (bump, CHANGELOG
+  cut, close-out). CI run **33329517828, attempt 1**, both jobs green:
+  `test` 2m11s, `release-gate` 7m24s.
+- With the three per-commit `check.sh` gates, the stage-1 gate, and
+  `release.sh`'s own embedded gate, every gate and every CI run in this
+  cycle was attempt 1. The planning session's running count makes this
+  the **ninth consecutive zero-rerun cycle**.
+
+Tag:
+
+- Annotated tag `v0.30.1` at `bde5890`, tag object
+  `bc80dd26b60b9727d613d53db08634475a5f174d`. Verified against the RAW
+  object before the push, not the formatted view:
+  `git cat-file tag v0.30.1 | tail -1 | od -c` gives exactly
+  `temur v0.30.1 - prompt floor fixes (T41)\n`, 41 bytes, one line, one
+  trailing newline, no non-ASCII, and the hyphen is a plain `-`.
+  `%(objecttype)` reads `tag`. The remote tag object matches the local
+  one and dereferences to `bde5890`.
+
+Release build:
+
+- `release.sh` with **no SKIP_CHECK**, green first try. The embedded
+  `check.sh` reached `== ALL CHECKS PASSED ==`, the three pty smokes
+  passed on the first attempt, the leak grep was clean, and the skew
+  gate read `OK: install.sh + README match version 0.30.1 and all
+  targets`. 4/4 artifacts gated and staged.
+- **F5's third live outing, and it took branch one again.** The block
+  printed `(title below is the annotated tag message of v0.30.1, read
+  back just now)` and `--title "temur v0.30.1 - prompt floor fixes
+  (T41)"`, which is the annotated-tag branch, not the lightweight-tag
+  fallback.
+
+Staged sha256:
+
+| Target | sha256 |
+| --- | --- |
+| i686-unknown-linux-musl | `cc1fe758...a4bf` |
+| x86_64-unknown-linux-musl | `1f2c185e...547d1` |
+| aarch64-unknown-linux-musl | `3ae1b2dc...db1c` |
+| armv7-unknown-linux-musleabihf | `46dafdc9...4a16` |
+| SHA256SUMS | `24ca7bc6...5829` |
+
+Publish:
+
+- Private release at
+  `https://github.com/thekeoni1/Temur/releases/tag/v0.30.1`, **5
+  assets**, `isDraft=false`, `isPrerelease=false`. Repo `isPrivate`
+  confirmed `true` BEFORE and AFTER the publish. The release title
+  equals the tag message byte for byte, checked by string comparison
+  rather than by eye.
+
+Closing gate:
+
+- Re-downloaded x86_64 and SHA256SUMS into a fresh directory: both
+  `cmp`-identical to the staged copies, `sha256sum -c` OK, and the
+  downloaded x86_64 re-hashes to `1f2c185e...`. A second, fuller
+  download of ALL five assets was also `cmp`-identical to staged, five
+  for five, with `sha256sum -c` passing 4/4, so every published
+  artifact is byte-for-byte what the gate produced.
+- Installer matrix **6/6 twice**: once against the staged directory and
+  once against the fresh full download, each covering pass, corrupt,
+  and unlisted on both the GNU host and the bare busybox container.
+- `~/.local/bin/temur` refreshed from the freshly DOWNLOADED i686
+  asset, so the chain runs published to installed: it prints
+  `temur 0.30.1`, sha256 `cc1fe758...a4bf`, equal to the published i686
+  entry in the downloaded SHA256SUMS and `cmp`-identical to both the
+  downloaded and the staged copy. It was `0.30.0` / `37def034...` before.
+
+### What this release does not establish
+
+The v0.30.0 ship record listed three things that release did not
+establish. One is now closed and two stand:
+
+- **Closed.** Doctor's MEASURED prompt-floor half had never run against
+  a real server. It has now, on both profiles at four windows, against
+  llama.cpp `server-b10438` with Qwen3-4B-Instruct-2507; see the
+  post-ship fix record above and `~/temur-eval-archive/t41-live/`.
+- **Open.** No threshold, 16384 or 20480, is validated by any task
+  score. 20480 is derived from doctor's own warning line, which makes
+  the release self-consistent; it is still arithmetic about what temur
+  SENDS, not evidence about what it FINISHES. The measurement is queued
+  under "Queued from T41".
+- **Open.** Auto-selection is still blind on a local server whose
+  window was never written into the config, because nothing probes
+  `/props` at REPL startup. Also queued under "Queued from T41".
+
+One new residual, found by this cycle's live smoke and queued under
+"Queued from v0.30.1": a `max_tokens` larger than `context_window`
+makes the T20 context advisory fire from the first response, because
+`window - used < max_tokens` is true by construction. Not a T41 defect
+and not fixed here.
