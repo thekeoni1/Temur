@@ -8872,3 +8872,271 @@ One new residual, found by this cycle's live smoke and queued under
 makes the T20 context advisory fire from the first response, because
 `window - used < max_tokens` is true by construction. Not a T41 defect
 and not fixed here.
+
+## Desktop experiment 4 acceptance - Qwen3-Coder-30B-A3B on the GPU box (recorded 2026-08-30)
+
+The fourth matrix on DESKTOP-6O763EN, and the third one whose numbers
+are published. It changes the model again, Qwen3-8B to
+Qwen3-Coder-30B-A3B-Instruct, and with it two things the model forced:
+a WSL memory cap raised from 15 to 22 GiB and a partial MoE offload
+instead of a full one, because a 17.3 GiB model does not fit an 8 GiB
+card. **Three variables differ from experiment 3, not one**, and the
+published section says so. Same box, same `server-cuda-b10438` image
+and digest, same ctx 12288, same pre-registered 16-task subset, same
+per-task budgets, same harness pins, same temur binary. **No product
+code was touched and no test.** Everything outside `docs/` lived on
+the desktop and in the archive.
+
+### Provenance
+
+| item | value |
+| --- | --- |
+| archive | `~/temur-eval-archive/desktop-exp4/` |
+| tarball | `desktop-exp4.tgz`, sha256 `13f7d08bcae91ceb0484f7cc7bf29fabd899d3dedec64bfe310e532c82ef038d` |
+| report | `temur-desktop/reports/FINAL-exp4.md`, stages `stage-a4.md`, `stage-d4.md`, `stage-d4-crash1.md`, `stage-e4.md`, `HALTED-exp4.md` |
+| cells | `tb-bridge/cells-desktop-exp4/<task>/<harness>/run<r>/` |
+| ledger section | `=== desktop experiment 4 ===` plus its `RESUMED` block, on the desktop only |
+| model | `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF` at commit `b17cb02d`, `Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf`, 18,556,689,568 B, sha256 `fadc3e5f...`, equal to the HF LFS oid |
+| offload | `-ngl 99 --n-cpu-moe 34`, partial, one configuration for all 96 cells |
+| image | `ghcr.io/ggml-org/llama.cpp:server-cuda-b10438`, digest `sha256:b5e13ddf...` |
+| temur binary | `temur-v0.28.0-x86_64-unknown-linux-musl`, sha256 `813d539f...` |
+| pins | codex 0.149.1, opencode 1.18.23, subset sha `57160ac7...` |
+| budgets | ctx 12288, agent 900 s, agent setup 360 s, none raised |
+
+The tarball hash above was recomputed here, on this box, against the
+copy in the archive; it matches the value the planning session
+verified.
+
+**A packaging omission, recorded rather than repaired.** Unlike
+experiments 2 and 3, `desktop-exp4.tgz` carries only
+`tb-bridge/cells-desktop-exp4/` and `temur-desktop/reports/`. The
+`ledger-desktop.txt` section that the halt, the resume ruling and the
+retry-idempotence choices are written into **is not in the tarball**
+and lives on the desktop. Nothing in the published table depends on
+it: the cells carry their own headers, verdicts and rewards, and both
+computations derived every figure from the cell tree, so **the cells
+are authoritative** and the ledger is corroboration. It is noted here
+so that a reader who unpacks the tarball looking for the halt record
+knows where it is and does not read its absence as a gap in evidence.
+
+### The numbers were computed twice, independently
+
+The same procedure as experiment 3. Every figure was derived once from
+the cell tree by the desktop session and once by a separate agent
+given only `cells-desktop-exp4/` and the experiment-4 section of the
+ledger, with no sight of the draft, and under instruction to ignore
+`instrumentation.json` and work from `result.txt`, `reward.txt`,
+`result.json` and the temur session JSON. **The two computations agree
+on every value that is published**, and a failure-only recompute run
+here reproduces the FINAL report's figures as well.
+
+One definitional difference is printed rather than reconciled. Field 7
+carries `CTX` on six cells that nevertheless scored `reward=1`, so a
+**raw census of the `CTX` string finds 45 and a census of
+ctx-exhausted failures finds 40**. Both computations classify pass
+first and report 40, which is the number in `docs/COMPARISON.md`. A
+later recompute reporting 45 has hit this definition, not a data
+conflict.
+
+The one table that is single-sourced is the per-harness
+instrumentation, because the recompute was told not to read it. It is
+not published in `docs/COMPARISON.md`, for the same reason the two
+earlier runs' were not: the three parsers count different things, and
+codex's has a known hole that reads worse here than before, 9 turns
+against 738 tool calls, because more codex cells ended mid-turn.
+
+### The halt, the ruling and the retries
+
+**The matrix halted once, at 2026-08-30T02:11:02Z, 42 cells in**, on
+the halt condition for three consecutive VOID cells. The three were
+`chess-best-move`, `count-dataset-tokens` and `crack-7z-hash` in
+opencode run 1, and all three, plus an earlier `prove-plus-comm`,
+carried the same line: `AgentSetupTimeoutError: Agent setup timed out
+after 360.0 seconds`. **No cell VOIDed for a rig reason at any point
+in this experiment.**
+
+The halt condition was **not** edited to keep the run alive. The
+matrix stopped as briefed, the diagnosis was written to
+`HALTED-exp4.md`, and a separate ruling then resumed the run with one
+rule change **for this experiment only**: a setup-timeout VOID is
+exempt from that halt condition, because the experiment-2 ruling
+already classifies a setup timeout as a property of this box's link
+rather than of the run. Every other VOID kind still counts. The 360 s
+budget was not raised and no pin was changed.
+
+Two implementation choices were made explicit rather than left to
+interpretation, and both are in the ledger's `RESUMED` block:
+
+1. **An exempt VOID is transparent to the counter.** It neither
+   increments nor resets it, so a real VOID, a setup VOID and another
+   real VOID still count as two consecutive real ones. Resetting on an
+   exempt VOID would let a setup timeout launder a run of genuine
+   failures.
+2. **Retry idempotence.** A cell that already holds a
+   `run1-void-attempt1/` directory is not retried again, so a second
+   resume cannot silently grant a second retry against the ruling's
+   "once".
+
+**All four retries produced a verdict, 4 for 4**: `prove-plus-comm`
+came back `reward=1`, and `chess-best-move`, `count-dataset-tokens`
+and `crack-7z-hash` scored as failures, one of them ctx-exhausted.
+**Zero VOIDs remain in the scored table.** First attempts are
+preserved at `*/run1-void-attempt1/` and are excluded from every
+tally. In experiments 2 and 3 the same retry mechanism went 0-for-2 on
+`git-leak-recovery`, so this is the first evidence that a setup
+timeout here is transient rather than a task that cannot install, and
+it means the halt cost time and nothing else.
+
+The gap the halt opened is **9 h 33 m** against **14 h 43 m of running
+elapsed**, inside a 2026-08-29T21:11:12Z to 2026-08-30T21:26:40Z span,
+and only the running figure is used anywhere. The driver, image
+digest, model hash, temur hash, context, budgets and pins were all
+read back unchanged before the restart.
+
+**Why setup timed out is a hypothesis, not a finding.** The rate was 4
+of 32 opencode cells here against 3 of 34 in experiment 2 and 0 of 32
+in experiment 3, on the same budget, pins, images and pre-warm. The
+explanation the numbers point at is page cache: the WSL cap went up,
+15.00 to 21.50 GiB, but free-of-model headroom went down by more than
+half, ~10.3 to ~4.2 GiB, and the stage-E4 pre-warm measured `apt` at
+224 s of a 313 s setup, so ~15% of I/O slowdown exceeds 360 s. Against
+it, the failures were not monotonic and all four recovered. **Not
+measured, not asserted.** It restates experiments 2's and 3's standing
+recommendation to measure `ensure_system_dependencies` per task image.
+
+### Stage D4: offload chosen by measurement, briefed start took the box down
+
+The ruling briefed "start `-ngl 20`, bisect". On the per-layer cost
+this box measured, `-ngl 20` needs **8489 MiB against an 8192 MiB
+card**. It was attempted once, at 18:33:5xZ on 2026-08-29, and **the
+entire WSL2 VM was terminated about ten seconds later**, dated by the
+Hyper-V-VmSwitch NIC-delete event on a Windows that never rebooted.
+The best explanation is a VRAM over-commitment spilling through WDDM
+into a host with ~6 GiB free; it is **not established**, because the
+guest journal died with the VM and the absence of an OOM record
+therefore proves nothing. Write-up in `stage-d4-crash1.md`.
+
+The ladder was consequently **climbed from the safe end rather than
+bisected from 20**, under a guard that refuses to attempt any
+candidate predicted above 8000 MiB. This is a deliberate deviation
+from the briefed procedure, recorded in the report and the ledger, and
+it avoided a second crash: a bisect's own next probe below 20 would
+have been `-ngl 24` at ~9.9 GiB.
+
+Both configurations the ruling asked for were measured. MoE expert
+offload at `-ngl 99 --n-cpu-moe 34` gave **tg 18.76 tok/s at a 7841
+MiB peak, 351 MiB of headroom**; the best dense partial offload,
+`-ngl 18`, gave **9.27 tok/s**. **MoE is 2.02x faster and was
+chosen**, and `--n-cpu-moe 33` was never attempted because it predicts
+8196 MiB. The `tg < 8 tok/s` stop condition was cleared with more than
+twice the margin, and was only ever met by the CPU-only rung.
+
+**A second incident preceded stage D4 and cost no cells.** At about
+2026-08-29T19:1xZ the guest's root filesystem went read-only because
+the Windows `C:` drive had filled to 22 MB free. The operator moved
+the distro to a disk with 130+ GB free and set the WSL cap to 22 GB
+with `autoMemoryReclaim=gradual`. `cells-desktop-exp4/` was empty at
+both incidents, so no cell was lost or re-run, and the model's sha256
+was re-verified against the HF LFS oid after both and was unchanged.
+
+Recorded with them, because the ledger header does not carry it: the
+cap's path was **15 to 26 to 22 GiB**, and the 26 GB setting is what
+the first incident happened under. The header's "raised from 15 GiB"
+is true and elides that; the correction was written into the report
+rather than interleaved into a ledger the matrix was actively
+appending to.
+
+### Cell integrity
+
+- **All 96 cells at one configuration**, confirmed by both
+  computations: `offloaded 49/49 layers to GPU`, `ngl=99`,
+  `--n-cpu-moe 34`, `thinking_off=yes`, `ctx=12288`, exactly one
+  distinct value each.
+- **The `49/49` line is misleading and the published text says so.**
+  It counts layers, not tensors. The real split puts all attention and
+  dense tensors and the full 12288-token KV cache on the GPU and the
+  experts of the first 34 layers on the CPU, 12,308 MiB resident
+  there.
+- **Peak VRAM 8037 MiB of 8192**, mean 7660, min 7450. Stage D4's
+  probe measured 7841 at this setting, so real cells ran **196 MiB
+  hotter than the probe** and the true margin at peak was **155 MiB,
+  not 351**. That is the number a future experiment should plan
+  against.
+- **Peak host RAM 7.14 GiB** of the 21.50 GiB cap, mean 2.50; the
+  three highest are all opencode.
+- **Zero server deaths.** No `VOID-SERVER-DIED`, `VOID-SERVER-START`,
+  `VOID-SERVER-PROVENANCE` or `VOID-THINKING-ON` in 96 cells, with
+  `rc=0` and `alive_after=yes` throughout.
+- **Reward integrity 96/96.** `result.txt`, `job/*/verifier/reward.txt`
+  and `result.json`'s `verifier_result.rewards.reward` agree on every
+  cell. Zero disagreements, zero missing files.
+- **The T39 `--plain` delivery defect does not reproduce:** all 32
+  temur cells hold exactly one instruction user message, `{1: 32}`.
+  **Zero T36 futile-call guard notices fired**, so the raw and
+  adjusted distributions are identical, unlike experiment 3 where four
+  notices made them differ.
+
+### Thinking, off trivially and not client-overridable
+
+Qwen3-Coder-30B-A3B-Instruct is a non-thinking model, so no
+`enable_thinking` flag was set and none was needed. The ruling asked
+for experiment 3's probe to be kept anyway and recorded as passing
+trivially, and it was: **100/100 per-cell probes clean** across the 96
+cells and the 4 preserved attempts, and a sweep for `<think>`,
+`</think>` and populated `reasoning_content` over every file under
+each cell's `job/` returned **0 hits** on both sweeps, one of which
+ran a control finding "reward" in 197 files to prove the sweep
+executed.
+
+**Experiment 4 does not inherit experiment 3's caveat.** There, a
+client sending `chat_template_kwargs:{enable_thinking:true}` could
+turn thinking back on, and that limit had to be stated. Here the same
+request returns a byte-identical 451-character reply with no
+`reasoning_content`: this template has no thinking branch to reach.
+
+The recompute caught one thing the desktop session had not: codex runs
+with `model_reasoning_effort=high` and opencode with
+`"reasoning_effort":"high"` in their pinned configs, against a
+declared non-thinking model. It is **inert**, all 470
+`reasoning_output_tokens` in the telemetry are 0, but the configs
+contradict the stated intent. Recorded and not fixed, because changing
+a pin mid-ladder would break the comparison the ladder exists to make.
+
+### What this does not establish, and what it leaves open
+
+- **The binary is 0.28.0.** Auto-compaction shipped in v0.29.x and is
+  in none of these numbers, while ctx-exhausted reached 40 of 96 cells
+  and 16 of temur's 32. That is exactly what desktop experiment 5 is
+  for, and it is still queued.
+- **Nothing here is evidence about the harnesses.** Every one scored
+  7 of 32. Two runs of sixteen tasks cannot rank three harnesses.
+- **Nor about model size, MoE architectures or coder-tuned models.**
+  Three variables differ from experiment 3, so the ladder's columns
+  support "same rig, model changed" and no finer claim.
+- **The opencode row is weakened by the clock.** Six `TIMEOUT`
+  verdicts appear, the first in this series, and all six are opencode,
+  so part of what its 900 s budget now measures is 18.65 tok/s rather
+  than the agent. The count is unstable run to run, 4 then 2, and is
+  reported per run rather than averaged.
+- **The pass gain is narrow.** 4/96 to 21/96, but only 5 of 16 tasks
+  were ever passed and 11 went 0-for-6. A handful of tasks became
+  reliably solvable; the suite did not get broadly easier.
+- **The proof cell is reused as `fix-git/temur/run1`**, the practice
+  experiments 2 and 3 both recorded. The recompute flagged unprompted
+  that its job stamp is 5 m 50 s before the declared matrix start and
+  that it is the only pre-halt `SKIP`. It ran under identical script,
+  args, image, model and server settings. A reader who holds that a
+  skipped cell is not a fresh measurement should read temur run 1 as
+  15 cells, not 16; this disclosure is what lets them.
+- **`instrument.py` needed a missing symlink.** `archive-desktop-exp4/`
+  lacked the `cells -> ../cells-desktop-exp4` link the script globs
+  through and silently wrote nothing on its first run. Created and
+  re-derived. No measurement was affected, since it only reads files
+  already in each cell, but uncaught it would have emptied every
+  instrumentation figure.
+- **`git-leak-recovery` passed 5 of 6 cells here.** It holds 5 of the
+  6 agent-setup VOIDs this box has ever produced and went 0-for-2 on
+  retries in the two earlier experiments. It is not intrinsically
+  broken, and the recommendation to measure
+  `ensure_system_dependencies` per task image before blaming the link
+  is still not discharged.

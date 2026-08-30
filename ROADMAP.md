@@ -604,6 +604,18 @@ guard was never the issue.
   shipped. Published as "Same rig, larger model" in
   `docs/COMPARISON.md`; evidence `~/temur-eval-archive/desktop-exp3/`.
 
+  Desktop experiment 4 (2026-08-30). The same box and the same subset
+  again, on Qwen3-Coder-30B-A3B-Instruct with a partial MoE offload,
+  and ctx-exhausted went 7 to 22 to **40 of 96 cells**, now the single
+  dominant outcome and spread across all three harnesses (temur 16,
+  codex 14, opencode 10) and 13 of the 16 tasks. temur's own share is
+  16 of its 32 cells, the largest yet. The binary is still 0.28.0
+  there too. Across the ladder the pass totals are 7/96 at Qwen3-4B,
+  4/96 at Qwen3-8B and 21/96 at 30B-A3B, so the model moved the score
+  while ctx-exhausted grew with it. Published as "Same rig, MoE model"
+  in `docs/COMPARISON.md`; evidence
+  `~/temur-eval-archive/desktop-exp4/`.
+
   Original entry: temur watches its own
   context fill, says so, and then dies on the next request. Measured on
   Terminal-Bench with one-shot `-p`: the advisory fires at roughly

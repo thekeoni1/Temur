@@ -567,6 +567,95 @@ gap, an `INTERRUPTED` line at that point in the append-only ledger,
 and 8 h 07 m of running elapsed. Full report, cell tree and ledger for
 this run: `~/temur-eval-archive/desktop-exp3/`.
 
+### Same rig, MoE model (Qwen3-Coder-30B-A3B)
+
+A fourth matrix ran on the same box, 2026-08-29 to 2026-08-30,
+changing the model again. Build, image digest, ctx 12288, per-task
+budgets, the 16-task subset and all three harness pins are the ones
+listed above, and the temur binary is still 0.28.0, so
+**auto-compaction, which shipped in v0.29.x, is again not in these
+numbers.** The model is `Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf`
+from `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF`, sha256
+`fadc3e5f...`, which is also its Hugging Face LFS oid, 18,556,689,568
+bytes. It is a non-thinking model, so no thinking flag was set; the
+per-cell probe experiment 3 introduced was run anyway and passed
+trivially on all 96 cells.
+
+The offload here is **partial, and the server's own log line says
+otherwise.** Every cell prints `offloaded 49/49 layers to GPU`. That
+line counts layers, not tensors, and it is misleading at this
+setting. Under `-ngl 99 --n-cpu-moe 34`, all 48 layers' attention and
+dense tensors and the full 12288-token KV cache are on the GPU (5766
+MiB of weights, 1152 MiB of KV, 222 MiB of compute), the experts of
+the first 34 layers are on the CPU (12,308 MiB resident there), and
+the experts of the last 14 are on the GPU. That configuration was
+chosen over the best dense split by measurement rather than by
+preference: `-ngl 18` reached 9.27 tok/s of generation against
+18.76, so the MoE split is 2.0x faster. Throughput of the chosen
+configuration, warm, from the server's own timings at the same
+2087-token prompt: prompt processing 190.7 tok/s, generation 18.65
+tok/s.
+
+| harness | run | pass | fail | timeout | ctx-exhausted | exc | void | wall clock |
+|---|---|---|---|---|---|---|---|---|
+| temur 0.28.0 | run 1 | 3/16 | 5 | 0 | 8 | 0 | 0 | 1.14 h |
+| temur 0.28.0 | run 2 | 4/16 | 4 | 0 | 8 | 0 | 0 | 1.16 h |
+| opencode 1.18.23 | run 1 | 4/16 | 5 | 4 | 3 | 0 | 0 | 3.37 h |
+| opencode 1.18.23 | run 2 | 3/16 | 4 | 2 | 7 | 0 | 0 | 3.19 h |
+| codex 0.149.1 | run 1 | 3/16 | 2 | 0 | 8 | 3 | 0 | 2.00 h |
+| codex 0.149.1 | run 2 | 4/16 | 3 | 0 | 6 | 3 | 0 | 1.97 h |
+
+Wall clock per harness over 32 cells each: **temur 2.31 h, opencode
+6.56 h, codex 3.97 h.** Every harness's two runs differed by exactly
+1 pass, below the threshold that triggers a third run, and no third
+run was made.
+
+Four cells VOIDed on an agent-setup timeout and each took the single
+retry the experiment-2 rule allows. All four retries produced a
+verdict: `prove-plus-comm` passed, and the other three scored as
+failures, one of them ctx-exhausted. **There are no VOIDs in the
+scored table**, and the first attempts are preserved in the archive
+and excluded from every count above.
+
+Read in this order:
+
+- **Every harness scored exactly 7 of 32.** Two runs of sixteen tasks
+  cannot rank three harnesses, and this table does not.
+- **The model ladder moved: 7/96 at 4B, 4/96 at 8B, 21/96 here**,
+  with passes landing on five of the sixteen tasks instead of one.
+  The flatness of the two earlier tables was the models, not the
+  suite.
+- **Cost still separates what the score does not.** opencode spent
+  2.8x temur's wall clock to reach the same total.
+- **At 18.65 tok/s the 900-second agent budget has started to bind.**
+  Six cells ended in `TIMEOUT`, the first in this series, and all six
+  are opencode, the harness that spends the most turns per cell. Part
+  of what that row now measures is the clock rather than the agent,
+  which weakens it in a way the temur and codex rows do not share.
+- **temur's ctx-exhausted failures are 16 of 32**, the largest count
+  yet, and they were measured on v0.28.0, **without auto-compaction**.
+  The controlled run that would say whether the feature converts them
+  is queued as desktop experiment 5.
+
+Required disclosures. The matrix halted once, 42 cells in, on three
+consecutive opencode VOIDs, all of them
+`AgentSetupTimeoutError: Agent setup timed out after 360.0 seconds`.
+The halt condition was obeyed rather than edited, and a ruling then
+resumed the run with one change **for this experiment only**: a
+setup-timeout VOID is exempt from that halt condition, because the
+experiment-2 ruling already treats a setup timeout as a property of
+this box's link rather than of the run. The 360-second budget was not
+raised and no pin was changed. The gap is 9 h 33 m, against 14 h 43 m
+of running elapsed, and only the running figure is used anywhere; the
+driver, image digest, model hash, temur hash, context, budgets and
+pins were all read back unchanged before the restart. Separately, a
+census note for anyone recomputing the table: a raw count of the
+`CTX` tag finds 45 cells, and counting only ctx-exhausted **failures**
+finds 40, because six cells carry the tag and nevertheless passed.
+Passes are classified first, so 40 is the number the table uses. Full
+report, cell tree and stage records for this run:
+`~/temur-eval-archive/desktop-exp4/`.
+
 ### The earlier GPU run is archive-only
 
 An experiment 1 ran on this box on 2026-08-26/27 against llama.cpp b8580,
