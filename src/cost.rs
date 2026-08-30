@@ -204,6 +204,7 @@ mod tests {
             max_tokens: 4096,
             context_window: None,
             prompt_profile: PromptProfile::Full,
+            prompt_profile_source: Default::default(),
             price_input_per_mtok: prices.map(|(i, _)| i),
             price_output_per_mtok: prices.map(|(_, o)| o),
             max_tokens_parameter: Default::default(),

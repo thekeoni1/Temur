@@ -1296,3 +1296,72 @@ fn a_bad_cost_advisory_step_is_a_startup_error_naming_the_field() {
         "stderr: {stderr}"
     );
 }
+
+// ------------------------------------------ T41: the auto prompt profile
+
+/// A keyless openai-compat config with a window, and an optional explicit
+/// prompt_profile. Startup on such a config needs no credential and no
+/// network, so these runs reach the notice and quit on EOF.
+fn windowed_config(window: u64, prompt_profile: Option<&str>) -> String {
+    let pp = prompt_profile
+        .map(|p| format!(r#""prompt_profile":"{p}","#))
+        .unwrap_or_default();
+    format!(
+        r#"{{"provider":"openai-compat",{pp}"openai_compat":{{"model":"m","context_window":{window}}}}}"#
+    )
+}
+
+const AUTO_COMPACT_LINE: &str =
+    "prompt profile: compact (context_window 12288 is below 16384; \
+     set prompt_profile to \"full\" to override)";
+
+#[test]
+fn a_small_window_prints_the_auto_compact_notice_at_startup() {
+    let sb = sandbox();
+    sb.write_config(&windowed_config(12288, None));
+    let (code, stdout, stderr) = run(sb.cmd(), "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains(AUTO_COMPACT_LINE), "{stdout}");
+}
+
+#[test]
+fn a_large_window_auto_selects_full_and_says_nothing() {
+    let sb = sandbox();
+    sb.write_config(&windowed_config(32768, None));
+    let (code, stdout, stderr) = run(sb.cmd(), "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!stdout.contains("prompt profile:"), "{stdout}");
+}
+
+#[test]
+fn an_explicit_full_at_a_small_window_is_never_second_guessed() {
+    let sb = sandbox();
+    sb.write_config(&windowed_config(12288, Some("full")));
+    let (code, stdout, stderr) = run(sb.cmd(), "/status\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!stdout.contains("prompt profile:"), "no notice: {stdout}");
+    assert!(stdout.contains("prompt: full"), "{stdout}");
+    assert!(!stdout.contains("prompt: full (auto)"), "{stdout}");
+}
+
+/// The `/status` word carries the source, so a user can tell what they
+/// configured from what the rule picked.
+#[test]
+fn status_marks_an_auto_chosen_profile_as_auto() {
+    let sb = sandbox();
+    sb.write_config(&windowed_config(12288, None));
+    let (code, stdout, stderr) = run(sb.cmd(), "/status\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains("prompt: compact (auto)"), "{stdout}");
+
+    let sb = sandbox();
+    sb.write_config(&windowed_config(32768, None));
+    let (_code, stdout, _stderr) = run(sb.cmd(), "/status\n");
+    assert!(stdout.contains("prompt: full (auto)"), "{stdout}");
+
+    let sb = sandbox();
+    sb.write_config(&windowed_config(2048, Some("compact")));
+    let (_code, stdout, _stderr) = run(sb.cmd(), "/status\n");
+    assert!(stdout.contains("prompt: compact"), "{stdout}");
+    assert!(!stdout.contains("(auto)"), "explicit is not auto: {stdout}");
+}

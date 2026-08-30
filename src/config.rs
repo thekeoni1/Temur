@@ -31,6 +31,101 @@ pub const DEFAULT_KEY_ROTATE_WARN_DAYS: u64 = 90;
 /// spend alarm is off exactly when it is needed. 0 in config disables it.
 pub const DEFAULT_COST_ADVISORY_STEP_USD: f64 = 5.0;
 
+/// The `"auto"` prompt-profile threshold (T41): a configured context
+/// window STRICTLY below this many tokens selects
+/// [`crate::tools::PromptProfile::Compact`].
+///
+/// Where the number comes from. T40 finding F6 measured temur's own prompt
+/// floor against a live llama.cpp server on 2026-08-29: the full profile
+/// costs 6,991 prompt tokens before the task starts, the compact profile
+/// 2,763. At a 12,288-token window the full floor is 57% of everything the
+/// model will ever see; at 16,384 it is 43%; at 32,768 it is 21%. Desktop
+/// experiments 3 and 4 found context exhaustion to be the dominant
+/// Terminal-Bench failure mode at those small windows. 16384 is the round
+/// window above which the full floor stops dominating, and it is a
+/// threshold rather than a ratio because a threshold is something a user
+/// can read off their own config and predict.
+pub const PROMPT_AUTO_COMPACT_BELOW: u64 = 16384;
+
+/// The accepted `prompt_profile` spellings, quoted once so every error
+/// message naming them cannot drift apart.
+const PROMPT_PROFILE_EXPECTED: &str = "expected \"auto\", \"full\", or \"compact\"";
+
+/// The pure `"auto"` rule (T41), the ONE place a window turns into a
+/// profile. Compact strictly below [`PROMPT_AUTO_COMPACT_BELOW`]; full at
+/// or above it; full when the window is unknown, because guessing smaller
+/// would silently trim descriptions on a model that never needed it.
+pub fn auto_prompt_profile(context_window: Option<u64>) -> crate::tools::PromptProfile {
+    match context_window {
+        Some(w) if w < PROMPT_AUTO_COMPACT_BELOW => crate::tools::PromptProfile::Compact,
+        _ => crate::tools::PromptProfile::Full,
+    }
+}
+
+/// How a resolved [`crate::tools::PromptProfile`] was chosen (T41). Only
+/// reporting reads it: an `Auto` choice of compact is worth one startup
+/// line, because a user who never wrote `"compact"` anywhere should not
+/// have to wonder why the tool descriptions look short.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PromptProfileSource {
+    /// Config named the profile outright (`"full"` or `"compact"`).
+    #[default]
+    Explicit,
+    /// The `"auto"` spec (the default) ran [`auto_prompt_profile`].
+    Auto,
+}
+
+/// A validated `prompt_profile` spelling, before any window is known
+/// (T41). Splitting validation from resolution is what lets startup reject
+/// a typo in the GLOBAL field even when every named profile overrides it,
+/// while each selection still resolves `"auto"` against its OWN window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptProfileSpec {
+    Auto,
+    Explicit(crate::tools::PromptProfile),
+}
+
+impl PromptProfileSpec {
+    /// Parse one spelling; `None` (the field absent) is [`Self::Auto`],
+    /// the T41 default. `None` return = the value is not a spelling we
+    /// accept, which every caller turns into a startup error naming it.
+    pub fn parse(s: Option<&str>) -> Option<Self> {
+        match s {
+            None | Some("auto") => Some(PromptProfileSpec::Auto),
+            Some("full") => Some(PromptProfileSpec::Explicit(crate::tools::PromptProfile::Full)),
+            Some("compact") => {
+                Some(PromptProfileSpec::Explicit(crate::tools::PromptProfile::Compact))
+            }
+            Some(_) => None,
+        }
+    }
+
+    /// Resolve against a selection's own context window. Pure, total, and
+    /// the only path from a spec to a profile.
+    pub fn resolve(
+        self,
+        context_window: Option<u64>,
+    ) -> (crate::tools::PromptProfile, PromptProfileSource) {
+        match self {
+            PromptProfileSpec::Explicit(p) => (p, PromptProfileSource::Explicit),
+            PromptProfileSpec::Auto => {
+                (auto_prompt_profile(context_window), PromptProfileSource::Auto)
+            }
+        }
+    }
+}
+
+/// The one line printed when the auto rule picks compact (T41), shared by
+/// startup and `/model` so the two can never word it differently. Only
+/// ever called for an `Auto` selection that landed on compact, which by
+/// construction has a window.
+pub fn auto_compact_notice(context_window: u64) -> String {
+    format!(
+        "prompt profile: compact (context_window {context_window} is below \
+         {PROMPT_AUTO_COMPACT_BELOW}; set prompt_profile to \"full\" to override)"
+    )
+}
+
 /// Loaded from ~/.config/temur/config.json (or $XDG_CONFIG_HOME).
 /// Unknown fields are tolerated so old binaries accept newer configs.
 #[derive(Debug, Clone, Deserialize)]
@@ -61,10 +156,12 @@ pub struct Config {
     /// Ceiling on provider round-trips within a single turn. Distinct from the
     /// doom-loop guard (identical-call detection), which stays hardcoded.
     pub max_turn_iterations: u32,
-    /// Tool-prompt profile: `"full"` (= absent, the default) or `"compact"`
-    /// (hand-trimmed descriptions + a shorter default system prompt for
-    /// small-context local models). EXPLICIT-ONLY: never auto-selected from
-    /// context_window or anything else; any other value is a startup
+    /// Tool-prompt profile: `"auto"` (= absent, the default since T41),
+    /// `"full"`, or `"compact"` (hand-trimmed descriptions + a shorter
+    /// default system prompt for small-context local models). `"auto"`
+    /// picks compact below [`PROMPT_AUTO_COMPACT_BELOW`] and full at or
+    /// above it, per [`auto_prompt_profile`]; an explicit `"full"` or
+    /// `"compact"` is never second-guessed. Any other value is a startup
     /// config error.
     pub prompt_profile: Option<String>,
     /// Directory holding saved sessions (T5). `None` = the default state
@@ -152,10 +249,11 @@ pub struct ProfileConfig {
     /// Advisory context-window size of the served model; `None` = awareness
     /// off (same contract as `openai_compat.context_window`).
     pub context_window: Option<u64>,
-    /// Tool-prompt profile for THIS profile: `"full"` or `"compact"` (T9).
-    /// `None` = the global `prompt_profile` (which itself defaults to full).
-    /// Same explicit-only contract as the global field — never inferred
-    /// from context_window; any other value is a startup error.
+    /// Tool-prompt profile for THIS profile: `"auto"`, `"full"`, or
+    /// `"compact"` (T9). `None` = the global `prompt_profile` (which itself
+    /// defaults to `"auto"`). Same contract as the global field, resolved
+    /// against THIS profile's own `context_window`; any other value is a
+    /// startup error.
     pub prompt_profile: Option<String>,
     /// List price per MILLION input tokens, in the key's billing currency
     /// (USD for the values `init` bakes). Feeds nothing but the `/status`
@@ -193,8 +291,14 @@ pub struct ResolvedProfile {
     pub max_tokens: u32,
     pub context_window: Option<u64>,
     /// Already resolved: this profile's own setting, else the global, else
-    /// [`crate::tools::PromptProfile::Full`].
+    /// the `"auto"` default, run through [`auto_prompt_profile`] against
+    /// [`ResolvedProfile::context_window`].
     pub prompt_profile: crate::tools::PromptProfile,
+    /// How [`ResolvedProfile::prompt_profile`] was arrived at (T41): a
+    /// config value that named it, or the auto rule. Only reporting reads
+    /// this (the startup notice and the `/status` word); nothing about the
+    /// prompt itself depends on it.
+    pub prompt_profile_source: PromptProfileSource,
     /// Validated list prices per million tokens (T24), either both set or
     /// both absent (see [`ProfileConfig::price_input_per_mtok`]). Only the
     /// `/status` cost estimate reads them.
@@ -300,16 +404,17 @@ impl Config {
         Self::load_from_reporting(&config_path())
     }
 
-    /// Resolve `prompt_profile` to the typed profile, rejecting anything
-    /// but `"full"` / `"compact"` / absent at startup.
-    pub fn prompt_profile(&self) -> Result<crate::tools::PromptProfile, crate::error::Error> {
-        match self.prompt_profile.as_deref() {
-            None | Some("full") => Ok(crate::tools::PromptProfile::Full),
-            Some("compact") => Ok(crate::tools::PromptProfile::Compact),
-            Some(other) => Err(crate::error::Error::Config(format!(
-                "unknown prompt_profile {other:?} (expected \"full\" or \"compact\")"
-            ))),
-        }
+    /// Validate the GLOBAL `prompt_profile` spelling, rejecting anything
+    /// but `"auto"` / `"full"` / `"compact"` / absent at startup. Returns
+    /// the SPEC, not a profile: which profile an `"auto"` spec resolves to
+    /// depends on a context window, which lives on the selection, not here.
+    pub fn prompt_profile_spec(&self) -> Result<PromptProfileSpec, crate::error::Error> {
+        PromptProfileSpec::parse(self.prompt_profile.as_deref()).ok_or_else(|| {
+            let other = self.prompt_profile.as_deref().unwrap_or_default();
+            crate::error::Error::Config(format!(
+                "unknown prompt_profile {other:?} ({PROMPT_PROFILE_EXPECTED})"
+            ))
+        })
     }
 
     /// Resolve the session file size cap, rejecting a uselessly small value at
@@ -387,17 +492,18 @@ impl Config {
             )));
         }
         // Per-profile prompt profile (T9), validated as eagerly as the
-        // provider name above: absent = the global setting.
-        let prompt_profile = match p.prompt_profile.as_deref() {
-            None => self.prompt_profile()?,
-            Some("full") => crate::tools::PromptProfile::Full,
-            Some("compact") => crate::tools::PromptProfile::Compact,
-            Some(other) => {
-                return Err(crate::error::Error::Config(format!(
-                    "profile {name:?}: unknown prompt_profile {other:?} (expected \"full\" or \"compact\")"
-                )))
-            }
+        // provider name above: absent = the global setting. T41: resolved
+        // against THIS profile's window, so a small local profile and a
+        // large hosted one in the same config each get the right answer.
+        let spec = match p.prompt_profile.as_deref() {
+            None => self.prompt_profile_spec()?,
+            Some(other) => PromptProfileSpec::parse(Some(other)).ok_or_else(|| {
+                crate::error::Error::Config(format!(
+                    "profile {name:?}: unknown prompt_profile {other:?} ({PROMPT_PROFILE_EXPECTED})"
+                ))
+            })?,
         };
+        let (prompt_profile, prompt_profile_source) = spec.resolve(p.context_window);
         // T24 prices, validated as eagerly as everything above. A negative
         // or non-finite rate is a typo, not a price; and exactly one of the
         // pair is the silent-disable case worth naming, since a profile
@@ -451,6 +557,7 @@ impl Config {
             max_tokens: p.max_tokens.unwrap_or(self.max_tokens),
             context_window: p.context_window,
             prompt_profile,
+            prompt_profile_source,
             price_input_per_mtok: p.price_input_per_mtok,
             price_output_per_mtok: p.price_output_per_mtok,
             max_tokens_parameter,
@@ -461,6 +568,11 @@ impl Config {
     /// error messages included byte-for-byte. Used when no startup `profile`
     /// is set, so absent-profiles configs behave exactly as they always did.
     pub fn resolve_base(&self) -> Result<ResolvedProfile, crate::error::Error> {
+        // T41: the base paths run the same rule as a named profile, each
+        // against the window it actually has. The anthropic base carries
+        // no window field at all, so auto lands on full there.
+        let spec = self.prompt_profile_spec()?;
+        let (base_prompt_profile, base_prompt_profile_source) = spec.resolve(None);
         match self.provider.as_str() {
             "anthropic" => Ok(ResolvedProfile {
                 provider: self.provider.clone(),
@@ -469,7 +581,8 @@ impl Config {
                 api_key_file: None,
                 max_tokens: self.max_tokens,
                 context_window: None,
-                prompt_profile: self.prompt_profile()?,
+                prompt_profile: base_prompt_profile,
+                prompt_profile_source: base_prompt_profile_source,
                 // T24: prices are a per-profile field, so the base
                 // selection has nowhere to carry them and the estimate
                 // stays off there.
@@ -495,14 +608,17 @@ impl Config {
                         ))
                     })?,
                 };
+                let (oc_prompt_profile, oc_prompt_profile_source) =
+                    spec.resolve(oc.context_window);
                 Ok(ResolvedProfile {
                     provider: self.provider.clone(),
                     model: oc.model,
                     base_url: oc.base_url,
                     api_key_file: oc.api_key_file,
                     max_tokens: self.max_tokens,
+                    prompt_profile: oc_prompt_profile,
+                    prompt_profile_source: oc_prompt_profile_source,
                     context_window: oc.context_window,
-                    prompt_profile: self.prompt_profile()?,
                     price_input_per_mtok: None,
                     price_output_per_mtok: None,
                     max_tokens_parameter,
@@ -838,31 +954,134 @@ mod tests {
         assert_eq!(c.max_turn_iterations, DEFAULT_MAX_TURN_ITERATIONS);
     }
 
+    // ------------------------------------------- T41: the "auto" rule
+
+    /// The pure rule, at and around the threshold. An unknown window must
+    /// stay Full: guessing smaller would trim descriptions on a model that
+    /// never needed it.
     #[test]
-    fn prompt_profile_explicit_only_and_invalid_is_startup_error() {
-        // Absent = full, byte-for-byte the pre-T4 default path.
+    fn auto_prompt_profile_rule_table() {
+        use crate::tools::PromptProfile;
+        assert_eq!(auto_prompt_profile(None), PromptProfile::Full);
+        assert_eq!(auto_prompt_profile(Some(0)), PromptProfile::Compact);
+        assert_eq!(auto_prompt_profile(Some(16383)), PromptProfile::Compact);
+        assert_eq!(auto_prompt_profile(Some(16384)), PromptProfile::Full);
+        assert_eq!(auto_prompt_profile(Some(16385)), PromptProfile::Full);
+        assert_eq!(PROMPT_AUTO_COMPACT_BELOW, 16384);
+    }
+
+    /// An explicit spelling is never second-guessed, in either direction,
+    /// at any window: that is the whole contract that survived T41.
+    #[test]
+    fn explicit_spellings_ignore_the_window_in_both_directions() {
+        use crate::tools::PromptProfile;
+        use PromptProfileSource::Explicit as E;
+        let full = PromptProfileSpec::parse(Some("full")).unwrap();
+        let compact = PromptProfileSpec::parse(Some("compact")).unwrap();
+        for w in [None, Some(2048), Some(16384), Some(1_000_000)] {
+            assert_eq!(full.resolve(w), (PromptProfile::Full, E), "window {w:?}");
+            assert_eq!(compact.resolve(w), (PromptProfile::Compact, E), "window {w:?}");
+        }
+        // Absent and "auto" are the same spec, and it is the default.
+        assert_eq!(PromptProfileSpec::parse(None), Some(PromptProfileSpec::Auto));
+        assert_eq!(
+            PromptProfileSpec::parse(Some("auto")),
+            Some(PromptProfileSpec::Auto)
+        );
+        assert_eq!(
+            PromptProfileSpec::Auto.resolve(Some(2048)),
+            (PromptProfile::Compact, PromptProfileSource::Auto)
+        );
+        assert_eq!(
+            PromptProfileSpec::Auto.resolve(Some(32768)),
+            (PromptProfile::Full, PromptProfileSource::Auto)
+        );
+    }
+
+    #[test]
+    fn prompt_profile_spellings_and_invalid_is_startup_error() {
+        // Absent = auto (T41 CHANGED this: it used to be full).
         let c: Config = serde_json::from_str("{}").unwrap();
         assert!(c.prompt_profile.is_none());
-        assert_eq!(c.prompt_profile().unwrap(), crate::tools::PromptProfile::Full);
+        assert_eq!(c.prompt_profile_spec().unwrap(), PromptProfileSpec::Auto);
         // Explicit values.
         let c: Config = serde_json::from_str(r#"{"prompt_profile":"full"}"#).unwrap();
-        assert_eq!(c.prompt_profile().unwrap(), crate::tools::PromptProfile::Full);
+        assert_eq!(
+            c.prompt_profile_spec().unwrap(),
+            PromptProfileSpec::Explicit(crate::tools::PromptProfile::Full)
+        );
         let c: Config = serde_json::from_str(r#"{"prompt_profile":"compact"}"#).unwrap();
         assert_eq!(
-            c.prompt_profile().unwrap(),
-            crate::tools::PromptProfile::Compact
+            c.prompt_profile_spec().unwrap(),
+            PromptProfileSpec::Explicit(crate::tools::PromptProfile::Compact)
         );
-        // Anything else is a config error, not a silent fallback. NOTE:
-        // deliberately NO auto-selection — a small context_window must not
-        // flip the profile.
+        let c: Config = serde_json::from_str(r#"{"prompt_profile":"auto"}"#).unwrap();
+        assert_eq!(c.prompt_profile_spec().unwrap(), PromptProfileSpec::Auto);
+        // Anything else is a config error, not a silent fallback, and the
+        // message names all three accepted spellings.
         let c: Config = serde_json::from_str(r#"{"prompt_profile":"tiny"}"#).unwrap();
-        let err = c.prompt_profile().unwrap_err().to_string();
+        let err = c.prompt_profile_spec().unwrap_err().to_string();
         assert!(err.contains("tiny"), "error names the bad value: {err}");
+        for word in ["auto", "full", "compact"] {
+            assert!(err.contains(word), "error names {word:?}: {err}");
+        }
+    }
+
+    /// The T41 default flip, pinned at the boundary. THROUGH v0.29.1 this
+    /// case resolved Full ("never inferred from context_window"); a 2048
+    /// window now resolves Compact through the auto rule, and an explicit
+    /// "full" at the same window still resolves Full.
+    #[test]
+    fn a_small_window_now_auto_selects_compact_unless_config_says_otherwise() {
+        use crate::tools::PromptProfile;
         let c: Config = serde_json::from_str(
-            r#"{"openai_compat":{"model":"m","context_window":2048}}"#,
+            r#"{"provider":"openai-compat",
+                "openai_compat":{"model":"m","context_window":2048}}"#,
         )
         .unwrap();
-        assert_eq!(c.prompt_profile().unwrap(), crate::tools::PromptProfile::Full);
+        let base = c.resolve_base().unwrap();
+        assert_eq!(base.prompt_profile, PromptProfile::Compact);
+        assert_eq!(base.prompt_profile_source, PromptProfileSource::Auto);
+
+        let c: Config = serde_json::from_str(
+            r#"{"provider":"openai-compat","prompt_profile":"full",
+                "openai_compat":{"model":"m","context_window":2048}}"#,
+        )
+        .unwrap();
+        let base = c.resolve_base().unwrap();
+        assert_eq!(base.prompt_profile, PromptProfile::Full);
+        assert_eq!(base.prompt_profile_source, PromptProfileSource::Explicit);
+
+        // A large window under auto stays Full, and says it was auto.
+        let c: Config = serde_json::from_str(
+            r#"{"provider":"openai-compat",
+                "openai_compat":{"model":"m","context_window":32768}}"#,
+        )
+        .unwrap();
+        let base = c.resolve_base().unwrap();
+        assert_eq!(base.prompt_profile, PromptProfile::Full);
+        assert_eq!(base.prompt_profile_source, PromptProfileSource::Auto);
+    }
+
+    /// The anthropic base carries no window field, so auto can only land
+    /// on Full there: no hosted config silently loses its descriptions.
+    #[test]
+    fn the_anthropic_base_has_no_window_so_auto_stays_full() {
+        let c: Config = serde_json::from_str("{}").unwrap();
+        let base = c.resolve_base().unwrap();
+        assert_eq!(base.context_window, None);
+        assert_eq!(base.prompt_profile, crate::tools::PromptProfile::Full);
+        assert_eq!(base.prompt_profile_source, PromptProfileSource::Auto);
+    }
+
+    #[test]
+    fn the_auto_compact_notice_names_the_window_the_threshold_and_the_override() {
+        let line = auto_compact_notice(12288);
+        assert_eq!(
+            line,
+            "prompt profile: compact (context_window 12288 is below 16384; \
+             set prompt_profile to \"full\" to override)"
+        );
     }
 
     #[test]
@@ -1018,10 +1237,11 @@ mod tests {
     // -------------------------------------------- T9: per-profile prompt_profile
 
     #[test]
-    fn profile_prompt_profile_resolution_own_then_global_then_full() {
+    fn profile_prompt_profile_resolution_own_then_global_then_auto() {
         use crate::tools::PromptProfile;
         // Own value wins over the global; absent falls back to the global;
-        // both absent = Full.
+        // both absent = auto, which with no window on these profiles is
+        // Full.
         let c: Config = serde_json::from_str(
             r#"{"prompt_profile": "compact",
                 "profiles": {
@@ -1052,6 +1272,57 @@ mod tests {
         assert_eq!(c.resolve_base().unwrap().prompt_profile, PromptProfile::Full);
     }
 
+    /// T41: auto resolves per profile, against THAT profile's window. One
+    /// config with a small local server and a large hosted model must get
+    /// a different answer for each, from the same absent global field.
+    #[test]
+    fn auto_resolves_against_each_profiles_own_window() {
+        use crate::tools::PromptProfile;
+        let c: Config = serde_json::from_str(
+            r#"{"profiles": {
+                    "local":  { "provider": "openai-compat", "model": "m",
+                                "context_window": 12288 },
+                    "hosted": { "provider": "anthropic", "model": "claude-sonnet-5",
+                                "context_window": 200000 },
+                    "blind":  { "provider": "openai-compat", "model": "m" },
+                    "pinned": { "provider": "openai-compat", "model": "m",
+                                "context_window": 12288, "prompt_profile": "full" },
+                    "asked":  { "provider": "openai-compat", "model": "m",
+                                "context_window": 200000, "prompt_profile": "auto" }
+                }}"#,
+        )
+        .unwrap();
+        let p = c.resolved_profiles().unwrap();
+        assert_eq!(p["local"].prompt_profile, PromptProfile::Compact);
+        assert_eq!(p["local"].prompt_profile_source, PromptProfileSource::Auto);
+        assert_eq!(p["hosted"].prompt_profile, PromptProfile::Full);
+        assert_eq!(p["hosted"].prompt_profile_source, PromptProfileSource::Auto);
+        // No window on the profile: nothing to infer from, so Full.
+        assert_eq!(p["blind"].prompt_profile, PromptProfile::Full);
+        // An explicit value beats the window, and says it was explicit.
+        assert_eq!(p["pinned"].prompt_profile, PromptProfile::Full);
+        assert_eq!(p["pinned"].prompt_profile_source, PromptProfileSource::Explicit);
+        // A per-profile "auto" is a real spelling, not an error.
+        assert_eq!(p["asked"].prompt_profile, PromptProfile::Full);
+        assert_eq!(p["asked"].prompt_profile_source, PromptProfileSource::Auto);
+    }
+
+    /// The global spec still reaches a profile that names none: a global
+    /// "full" survives a tiny per-profile window.
+    #[test]
+    fn a_global_explicit_value_still_covers_every_profile_that_names_none() {
+        use crate::tools::PromptProfile;
+        let c: Config = serde_json::from_str(
+            r#"{"prompt_profile": "full",
+                "profiles": {"tiny": {"provider": "openai-compat", "model": "m",
+                                      "context_window": 2048}}}"#,
+        )
+        .unwrap();
+        let p = c.resolved_profiles().unwrap();
+        assert_eq!(p["tiny"].prompt_profile, PromptProfile::Full);
+        assert_eq!(p["tiny"].prompt_profile_source, PromptProfileSource::Explicit);
+    }
+
     #[test]
     fn invalid_profile_prompt_profile_is_a_startup_error_naming_the_profile() {
         let c: Config = serde_json::from_str(
@@ -1061,8 +1332,12 @@ mod tests {
         .unwrap();
         let err = c.resolved_profiles().unwrap_err().to_string();
         assert!(
-            err.contains("\"bad\"") && err.contains("tiny") && err.contains("expected"),
-            "error names profile and value: {err}"
+            err.contains("\"bad\"")
+                && err.contains("tiny")
+                && err.contains("auto")
+                && err.contains("full")
+                && err.contains("compact"),
+            "error names profile, value, and every accepted spelling: {err}"
         );
     }
 

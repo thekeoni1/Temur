@@ -11,7 +11,7 @@
 
 use crate::agent::events::AgentEvent;
 use crate::agent::{CompactOutcome, Session};
-use crate::config::ResolvedProfile;
+use crate::config::{PromptProfileSource, ResolvedProfile};
 use crate::provider::Provider;
 use crate::session_store;
 use crate::tools::PromptProfile;
@@ -169,10 +169,30 @@ fn onoff(b: bool) -> &'static str {
     }
 }
 
-fn profile_word(p: PromptProfile) -> &'static str {
-    match p {
-        PromptProfile::Full => "full",
-        PromptProfile::Compact => "compact",
+/// The `/status` prompt word (T41): the profile, plus `(auto)` when the
+/// window rule chose it rather than config naming it. The distinction is
+/// the whole point of the word here, since only one of the two is
+/// something the user wrote down.
+fn profile_word(p: PromptProfile, source: PromptProfileSource) -> &'static str {
+    match (p, source) {
+        (PromptProfile::Full, PromptProfileSource::Explicit) => "full",
+        (PromptProfile::Compact, PromptProfileSource::Explicit) => "compact",
+        (PromptProfile::Full, PromptProfileSource::Auto) => "full (auto)",
+        (PromptProfile::Compact, PromptProfileSource::Auto) => "compact (auto)",
+    }
+}
+
+/// The T41 auto-compact line for a selection that just became active, or
+/// `None` when there is nothing to say. Shares
+/// [`crate::config::auto_compact_notice`] with startup, so a `/model`
+/// switch that lands on the auto-chosen compact profile explains itself in
+/// exactly the words the startup line used.
+fn auto_compact_notice(p: &ResolvedProfile) -> Option<AgentEvent> {
+    match (p.prompt_profile_source, p.prompt_profile, p.context_window) {
+        (PromptProfileSource::Auto, PromptProfile::Compact, Some(w)) => {
+            Some(notice(crate::config::auto_compact_notice(w)))
+        }
+        _ => None,
     }
 }
 
@@ -331,7 +351,7 @@ fn status(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
             "thinking: {} · max_tokens: {} · prompt: {}",
             onoff(s.thinking()),
             s.max_tokens(),
-            profile_word(*ctx.prompt_profile)
+            profile_word(*ctx.prompt_profile, ctx.active_resolved.prompt_profile_source)
         )),
         notice(match (s.context_window(), s.last_context_used()) {
             (Some(w), Some(u)) => format!("context: ~{u} of {w} tokens used"),
@@ -505,7 +525,7 @@ fn model_switch(ctx: &mut CommandCtx, name: String) -> Vec<AgentEvent> {
     if let Err(failure) = activate_profile(ctx, &name) {
         return vec![failure];
     }
-    vec![
+    let mut out = vec![
         AgentEvent::ModelSwitched {
             model: profile.model.clone(),
             provider: profile.provider.clone(),
@@ -514,7 +534,10 @@ fn model_switch(ctx: &mut CommandCtx, name: String) -> Vec<AgentEvent> {
             "switched to {name} ({} · {})",
             profile.provider, profile.model
         )),
-    ]
+    ];
+    // T41: the switch re-ran the auto rule against THIS profile's window.
+    out.extend(auto_compact_notice(profile));
+    out
 }
 
 /// The FULL profile activation shared by `/model <name>` and the T16 hop.
@@ -618,8 +641,10 @@ fn hop_switch(ctx: &mut CommandCtx, id: String, name: String) -> Vec<AgentEvent>
     if let Err(failure) = activate_profile(ctx, &name) {
         return vec![failure];
     }
+    // T41: the hop is a full activation, so it re-ran the auto rule too.
+    let auto = auto_compact_notice(&ctx.profiles[&name]);
     if id == hop_model {
-        return vec![
+        let mut out = vec![
             AgentEvent::ModelSwitched {
                 model: id.clone(),
                 provider: hop_provider,
@@ -628,17 +653,23 @@ fn hop_switch(ctx: &mut CommandCtx, id: String, name: String) -> Vec<AgentEvent>
                 "{id:?} is an anthropic model - switched to profile {name:?} (anthropic, {id})"
             )),
         ];
+        out.extend(auto);
+        return out;
     }
     match raw_override(ctx, &id) {
-        Ok(()) => vec![
-            AgentEvent::ModelSwitched {
-                model: id.clone(),
-                provider: hop_provider,
-            },
-            notice(format!(
-                "{id:?} looks anthropic - hopped to profile {name:?} (its key file and limits apply), model {id}"
-            )),
-        ],
+        Ok(()) => {
+            let mut out = vec![
+                AgentEvent::ModelSwitched {
+                    model: id.clone(),
+                    provider: hop_provider,
+                },
+                notice(format!(
+                    "{id:?} looks anthropic - hopped to profile {name:?} (its key file and limits apply), model {id}"
+                )),
+            ];
+            out.extend(auto);
+            out
+        }
         // The activation already happened and stands; the override failure
         // is reported on top so the partial state is never silent.
         Err(failure) => vec![

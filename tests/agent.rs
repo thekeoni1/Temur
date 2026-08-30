@@ -2020,6 +2020,7 @@ fn two_profiles() -> BTreeMap<String, ResolvedProfile> {
             max_tokens: 111,
             context_window: None,
             prompt_profile: PromptProfile::Full,
+            prompt_profile_source: Default::default(),
             price_input_per_mtok: None,
             price_output_per_mtok: None,
             max_tokens_parameter: Default::default(),
@@ -2035,6 +2036,7 @@ fn two_profiles() -> BTreeMap<String, ResolvedProfile> {
             max_tokens: 222,
             context_window: Some(4_096),
             prompt_profile: PromptProfile::Full,
+            prompt_profile_source: Default::default(),
             price_input_per_mtok: None,
             price_output_per_mtok: None,
             max_tokens_parameter: Default::default(),
@@ -2096,6 +2098,7 @@ fn base_resolved() -> ResolvedProfile {
         max_tokens: 32_000,
         context_window: None,
         prompt_profile: PromptProfile::Full,
+        prompt_profile_source: Default::default(),
         price_input_per_mtok: None,
         price_output_per_mtok: None,
         max_tokens_parameter: Default::default(),
@@ -2852,6 +2855,47 @@ fn switch_swaps_system_and_tool_descriptions_and_back() {
     assert!(notices(&events).iter().any(|n| n.ends_with("prompt: full")), "{events:?}");
 }
 
+/// T41: a `/model` switch onto a profile whose SMALL window auto-selected
+/// compact says so, in the same words startup uses, and `/status` marks it
+/// `(auto)`. A switch onto a profile that auto-selected full says nothing.
+#[test]
+fn a_switch_onto_an_auto_compact_profile_explains_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    {
+        let b = h.profiles.get_mut("b").unwrap();
+        b.context_window = Some(12288);
+        b.prompt_profile = PromptProfile::Compact;
+        b.prompt_profile_source = temur::config::PromptProfileSource::Auto;
+    }
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        Ok(Box::new(MockProvider {
+            responses: RefCell::new(vec![]),
+            requests: Rc::new(RefCell::new(vec![])),
+        }))
+    };
+    let events = commands::run(commands::parse("/model b"), &mut h.ctx(&mut session, &build));
+    assert!(
+        notices(&events)
+            .iter()
+            .any(|n| n == &temur::config::auto_compact_notice(12288)),
+        "the switch prints the startup line verbatim: {events:?}"
+    );
+    let events = commands::run(commands::parse("/status"), &mut h.ctx(&mut session, &build));
+    assert!(
+        notices(&events).iter().any(|n| n.ends_with("prompt: compact (auto)")),
+        "{events:?}"
+    );
+
+    // Profile "a" resolves full: nothing to say, either way.
+    let events = commands::run(commands::parse("/model a"), &mut h.ctx(&mut session, &build));
+    assert!(
+        !notices(&events).iter().any(|n| n.contains("prompt profile:")),
+        "auto-full is silent: {events:?}"
+    );
+}
+
 /// The config system_prompt override rule, as main's rebuild_system closure
 /// implements it: the SAME string comes back for either profile, so a
 /// prompt-profile switch changes nothing about the system string (tool
@@ -3534,6 +3578,7 @@ fn hop_harness() -> CmdHarness {
             max_tokens: 333,
             context_window: None,
             prompt_profile: PromptProfile::Compact,
+            prompt_profile_source: Default::default(),
             price_input_per_mtok: None,
             price_output_per_mtok: None,
             max_tokens_parameter: Default::default(),

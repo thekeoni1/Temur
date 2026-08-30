@@ -249,7 +249,7 @@ fn repl(
     // Validated up front: an unknown GLOBAL prompt_profile is a startup
     // error even when every named profile overrides it (per-profile values
     // are validated inside resolved_profiles below).
-    cfg.prompt_profile()?;
+    cfg.prompt_profile_spec()?;
     let cwd = std::env::current_dir()?;
 
     // Session persistence (T5), resolved up front so a bad cap is a startup
@@ -331,6 +331,22 @@ fn repl(
     // model/cwd mismatches, the dropped-prompt rule) follow it, surviving
     // the TUI's transcript rebuild.
     let mut pending_notices: Vec<String> = Vec::new();
+    // T41: the auto rule picked compact for this selection, so say so once.
+    // A user who never wrote "compact" anywhere should not have to guess why
+    // the tool descriptions look short, and the line names the override.
+    // Nothing is printed when auto chose full: that is the shape every
+    // config had before T41.
+    if let (
+        temur::config::PromptProfileSource::Auto,
+        temur::tools::PromptProfile::Compact,
+        Some(w),
+    ) = (
+        resolved.prompt_profile_source,
+        resolved.prompt_profile,
+        resolved.context_window,
+    ) {
+        pending_notices.push(temur::config::auto_compact_notice(w));
+    }
     let mut pending_loaded: Option<AgentEvent> = None;
     let seed = if resume || resume_key.is_some() {
         // Which file: --continue = this directory's default session;

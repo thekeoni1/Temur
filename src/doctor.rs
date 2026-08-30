@@ -108,7 +108,7 @@ fn run_with_sandbox_probe(
         }
     };
 
-    if let Err(e) = cfg.prompt_profile() {
+    if let Err(e) = cfg.prompt_profile_spec() {
         r.fail(&format!("{e}"))?;
     }
     if let Err(e) = cfg.session_max_bytes() {

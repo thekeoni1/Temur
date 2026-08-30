@@ -132,8 +132,15 @@ impl ToolError {
 
 /// Which description set [`Registry::definitions`] serves (T4). `Full` is
 /// the OpenCode-ported prompts (Claude-sized); `Compact` is hand-trimmed
-/// for small-context local models. Selected explicitly via config only —
-/// never inferred from context_window or anything else.
+/// for small-context local models.
+///
+/// T41 CHANGED how one is selected. Through v0.29.1 this was
+/// explicit-only: config named the profile and nothing else could pick
+/// it. It is now selected by `prompt_profile`, whose default spelling is
+/// `"auto"`; see [`crate::config::PromptProfileSpec`] and
+/// [`crate::config::auto_prompt_profile`] for the rule. An explicit
+/// `"full"` / `"compact"` still wins and is never second-guessed, and the
+/// only inference is the documented window threshold.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PromptProfile {
     #[default]
