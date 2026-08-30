@@ -748,7 +748,13 @@ endpoint with network checks enabled, doctor also asks the server that
 will actually serve the session, with one more one-token request
 carrying the real system prompt and the real definitions, and reports
 `prompt floor (measured): N tokens` instead. A measurement always wins
-over the estimate.
+over the estimate. When the measurement cannot be taken, doctor names
+the outcome and falls back rather than letting the estimate stand under
+a line that promised a measurement:
+
+```
+NOTE: prompt floor measurement inconclusive: the server at http://127.0.0.1:8080/v1 did not answer within 300s (a slow local server may need longer to prefill the system prompt and every definition); the figure below is the estimate
+```
 
 That request is the largest prefill a doctor run asks for, and on a
 CPU-only local server it can take minutes, so doctor says what it is
@@ -773,6 +779,15 @@ the line, the WARN says so and points at `context_window` instead of at
 a knob that is already turned. With no `context_window` configured
 there is nothing to divide by, so the line is a NOTE carrying the
 number alone.
+
+A WARN at exactly 20480 with no `prompt_profile` set is not a
+contradiction: the auto threshold is pinned by a test so temur's own
+full-profile floor stays under the WARN line on a baseline install, but
+your floor also carries your installed skills, any `system_prompt`
+override and your real cwd, none of which the binary controls. A
+skills-heavy install can therefore get `full` from the rule and still
+be told to make it compact. Setting `"prompt_profile": "compact"` is
+the right answer there; the report is measuring what you actually run.
 
 ### Cost estimate
 

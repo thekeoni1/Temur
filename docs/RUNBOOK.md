@@ -8613,6 +8613,18 @@ Two decisions inside the fix, both deliberate:
   growing the prompts past the line, now fails loudly instead of
   shipping the contradiction again.
 
+  **Amended 2026-08-31**, after the v0.30.1 code review: that last
+  sentence is true of the CONSTANTS and overstated as a claim about
+  installs. The test measures a baseline, a fixed cwd and no skills;
+  the runtime floor `prompt_floor_check` reports is
+  `session_system_prompt`, which also carries a `system_prompt`
+  override, the real cwd and one section per installed skill. At a
+  window of exactly 20480 the margin is about 3.8 KB of prompt, so a
+  skills-heavy install can still cross 40% and get the WARN advising an
+  explicit compact profile. That is the check doing its job on inputs
+  the binary does not control, not the tie breaking, and the tie test's
+  doc comment now says which of the two it guards.
+
 RIPPLE, the same shape as T41's own and stated in the commit, the
 CHANGELOG, USAGE and OFFLINE: a config with a `context_window` from
 16384 to 20479 and no `prompt_profile` moves from the full tool

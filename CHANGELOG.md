@@ -4,6 +4,15 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- Fixed: `temur doctor` announced that it was measuring the prompt floor
+  against the server and then, if the server never answered, rejected
+  the request or reported no usage, printed the offline estimate with
+  nothing said about the attempt. The estimate read as the measurement
+  the line above had promised, and the silent case was the slow one the
+  announcement itself warns about. Doctor now names the outcome before
+  the figure: `NOTE: prompt floor measurement inconclusive: <why>; the
+  figure below is the estimate`. A successful measurement is unchanged.
+
 ## v0.30.1 - 2026-08-30
 
 - **The `"auto"` prompt-profile threshold moved from 16384 to 20480.**

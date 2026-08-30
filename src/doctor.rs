@@ -446,7 +446,10 @@ const PROMPT_FLOOR_INPUTS_NOTE: &str =
 /// same gate as the tools-drop probe (keyless openai-compat, network on)
 /// and asks the server that will actually serve this session: one POST,
 /// one generated token, carrying the real system prompt and the real
-/// definitions. When it answers, its number is the one judged.
+/// definitions. When it answers, its number is the one judged; when it
+/// does not, doctor names the outcome and falls back to the estimate,
+/// rather than letting the estimate stand under a line that announced a
+/// measurement.
 ///
 /// Reports the ACTIVE selection only, and never FAILs: a floor that is
 /// too large is a configuration to change, not a broken install.
@@ -477,13 +480,42 @@ fn prompt_floor_check(
             crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS
         )?;
         let _ = r.out.flush();
-        match crate::provider::probe_prompt_tokens(
+        let outcome = crate::provider::probe_prompt_tokens(
             &p.base_url,
             &p.model,
             Some(defs),
             Some(&system),
             std::time::Duration::from_secs(crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS),
-        ) {
+        );
+        // Having announced a measurement, say when it did not happen.
+        // Otherwise the estimate line below reads as the measurement the
+        // NOTE above promised, and the slowest case is exactly the one
+        // that NOTE warns about: a CPU-only server that cannot prefill
+        // the system prompt and every definition inside the bound. Same
+        // shape as the tools-drop probe's own inconclusive arm.
+        let why = match &outcome {
+            ProbeOutcome::Ok(_) => None,
+            ProbeOutcome::Unreachable => Some(format!(
+                "the server at {} did not answer within {}s (a slow local server may need longer to prefill the system prompt and every definition)",
+                p.base_url,
+                crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS
+            )),
+            ProbeOutcome::HttpError { status, message } => Some(format!(
+                "the server at {} rejected the request (HTTP {status}: {message})",
+                p.base_url
+            )),
+            ProbeOutcome::NoUsage => Some(format!(
+                "the server at {} reported no usable prompt_tokens",
+                p.base_url
+            )),
+        };
+        if let Some(why) = why {
+            writeln!(
+                r.out,
+                "NOTE: prompt floor measurement inconclusive: {why}; the figure below is the estimate"
+            )?;
+        }
+        match outcome {
             ProbeOutcome::Ok(n) => Some(n),
             _ => None,
         }
@@ -1800,6 +1832,52 @@ mod tests {
         assert!(healthy, "{out}");
         assert!(out.contains("prompt floor (estimate): ~"), "{out}");
         assert!(out.contains("is not tokenization"), "the caveat rides it: {out}");
+        assert!(
+            out.contains("NOTE: prompt floor measurement inconclusive:"),
+            "the announced measurement says it did not happen: {out}"
+        );
+    }
+
+    /// v0.30.1 review R2: the probe announces itself and then, on a server
+    /// that never answers, silently reported the estimate under a line
+    /// promising a measurement. The announcement is now answered either
+    /// way. The dropped connection is the case the announcement itself
+    /// warns about: a server that cannot prefill the whole prompt in time.
+    #[test]
+    fn floor_measurement_that_never_answers_says_so_before_the_estimate() {
+        let (base, _p) = canned_server_with_completions_ex(LLAMA_MODELS, USAGE_10, "", USAGE_31);
+        let (healthy, out) = doctor_over(&windowed_keyless(&base, 100000, None), false);
+        assert!(healthy, "{out}");
+        let note = out
+            .find("NOTE: prompt floor measurement inconclusive:")
+            .expect("the inconclusive note");
+        assert!(
+            out[note..].starts_with(&format!(
+                "NOTE: prompt floor measurement inconclusive: the server at {base} did not answer within {}s",
+                crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS
+            )),
+            "it names the outcome, not just that there was one: {out}"
+        );
+        assert!(out[note..].contains("the figure below is the estimate"), "{out}");
+        let line = out.find("prompt floor (estimate): ~").expect("the estimate line");
+        assert!(note < line, "the note comes before the figure it qualifies: {out}");
+        assert!(!out.contains("prompt floor (measured)"), "{out}");
+    }
+
+    /// The Ok path is untouched: a server that answers gets a measured
+    /// figure and no inconclusive line at all.
+    #[test]
+    fn a_measured_floor_carries_no_inconclusive_note() {
+        let (base, _p) = canned_server_with_completions_ex(
+            LLAMA_MODELS,
+            USAGE_10,
+            "HTTP/1.1 200 OK",
+            USAGE_3900,
+        );
+        let (healthy, out) = doctor_over(&windowed_keyless(&base, 10000, None), false);
+        assert!(healthy, "{out}");
+        assert!(out.contains("prompt floor (measured):"), "{out}");
+        assert!(!out.contains("prompt floor measurement inconclusive"), "{out}");
     }
 
     #[test]
@@ -1915,6 +1993,18 @@ mod tests {
     /// so a change to either constant, or to the prompts, fails here
     /// instead of shipping a default that doctor immediately advises the
     /// user to undo.
+    ///
+    /// What this guards, precisely (amended 2026-08-31): the CONSTANTS,
+    /// for a BASELINE install. The runtime floor `prompt_floor_check`
+    /// measures is `session_system_prompt`, which also carries a
+    /// `system_prompt` override, the real cwd, and one section per
+    /// installed skill. Those terms are not in this test and cannot be:
+    /// they are the user's, not the binary's. So a skills-heavy install
+    /// at exactly `PROMPT_AUTO_COMPACT_BELOW` can still exceed
+    /// `PROMPT_FLOOR_WARN_PERCENT` and get a WARN advising an explicit
+    /// compact profile. That is the check working, not the tie breaking:
+    /// the default is sound for what ships, and doctor reports what the
+    /// install actually costs.
     #[test]
     fn the_auto_threshold_keeps_the_full_floor_under_the_doctor_warn_line() {
         let window = crate::config::PROMPT_AUTO_COMPACT_BELOW;
