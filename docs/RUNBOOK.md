@@ -7686,6 +7686,32 @@ tool descriptions, so the configured window slightly changes the size
 of the prompt that reports it. The two numbers are the same
 measurement under different windows, not a discrepancy.
 
+**CORRECTION (2026-08-30, T41).** The mechanism in the paragraph above
+does not exist in this tree. `Registry::set_context_window` writes
+`cap_chars` and nothing else, and `cap_chars` is read at tool EXECUTE
+time, inside the truncation marker. The tool descriptions are static
+`include_str!` text: no description quotes the cap, and `definitions()`
+never consults the window. Verified directly with the T41 doctor floor
+estimator, which weighs the same system prompt plus definitions the
+request carries:
+
+```
+window 4096   -> prompt floor (estimate): ~7240 tokens
+window 12288  -> prompt floor (estimate): ~7240 tokens
+window 100000 -> prompt floor (estimate): ~7240 tokens
+```
+
+Byte-identical across a 24x range of windows. Whatever produced the
+40-token gap between the two readings, it was not the window scaling
+the prompt. The likelier causes are the two things that DO move the
+system prompt between runs: the `{cwd}` substitution (a different
+working directory is a different number of bytes) and the skills
+section (a different set of installed skills advertises differently).
+Both are named in doctor's own floor NOTE for exactly this reason. The
+6,991 figure itself stands: it was one measurement of one configuration
+and nothing here disputes it. What is withdrawn is the explanation of
+why the other reading differed.
+
 ### The OOM mechanism, incidentally established
 
 The T40 smoke OOM-killed the local server, and in doing so produced
@@ -8241,3 +8267,138 @@ run from that box: on 2026-08-29 the desktop's WSL distro was moved
 from `C:` to `P:` after `C:` filled to 22 MB free and the guest root
 went read-only. The move happened after this experiment finished and
 before experiment 4 started, so nothing above ran under it.
+
+## T41 acceptance - the prompt floor (recorded 2026-08-30, before its release)
+
+F6 (T40) measured temur's own request floor and left two candidates
+queued rather than built: select the compact prompt profile
+automatically below a `context_window` threshold, and report the floor
+in `doctor`. The operator approved the default flip on 2026-08-30 and
+T41 builds both. Offline throughout, no API key, no hosted provider.
+Three commits, one per phase, full `check.sh` at each.
+
+### What shipped
+
+**P1, `prompt_profile` gains `"auto"`, and absent means auto.** The
+field now accepts `"auto"` | `"full"` | `"compact"`. Auto resolves to
+compact when a `context_window` is configured and is strictly below
+16384 (`PROMPT_AUTO_COMPACT_BELOW`), and to full otherwise, an unknown
+window included. An explicit value is never second-guessed at any
+window. The rule is one pure function over `Option<u64>`, and it is the
+only path from a window to a profile.
+
+The threshold is a threshold, not a ratio, because a threshold is
+something a reader can check against their own config without doing
+arithmetic. 16384 is where F6's full-profile floor (6,991 tokens) stops
+dominating: 57% of a 12288 window, 43% of a 16384 one, 21% of 32768.
+
+`ResolvedProfile` gained `prompt_profile_source` (`Explicit` | `Auto`),
+which nothing but reporting reads. When auto picks compact, startup
+prints one line, and a `/model` switch that lands there prints the
+identical line from the same function:
+
+```
+  [!] prompt profile: compact (context_window 12288 is below 16384; set prompt_profile to "full" to override)
+```
+
+Nothing is printed when auto picks full. `/status` became
+`prompt: compact (auto)` / `full (auto)` / `compact` / `full`.
+
+This DELIBERATELY reverses the explicit-only contract three places
+pinned through v0.29.1: the `PromptProfile` doc comment, the config
+resolution test asserting a 2048 window stays Full, and OFFLINE.md's
+"temur never auto-selects a profile from `context_window`". All three
+changed in place and say what they used to say.
+
+**The ripple, stated.** Any config with a window below 16384 and no
+explicit `prompt_profile` gets compact descriptions from this release
+on. That includes every config `temur init` writes for a local server,
+since the wizard bakes the `/props` allocation (or 8192 when it cannot
+probe). This is the intended effect. Request goldens use stub tools and
+did not move; no fixture changed in any phase.
+
+**P2, `doctor` reports the floor.** New check between the T22 context
+checks and the tools-drop probe, for the ACTIVE selection only. An
+offline ESTIMATE always runs: system-prompt bytes (real cwd
+substituted, skills section included) plus tool description and
+serialized schema bytes, over 4. A MEASURED figure replaces it under
+the tools-drop gate (keyless openai-compat, network on): one extra
+POST, one generated token, carrying the real system prompt and the real
+definitions. PASS below 40% of the window, WARN at or above, never a
+FAIL; a WARN on a selection that is already compact says so and points
+at `context_window` instead.
+
+`probe_prompt_tokens` and `tools_drop_probe_body` gained
+`system: Option<&str>`. `None` reproduces the pre-T41 body byte for
+byte and both tools-drop probes pass it, because their prompt-token
+comparison is the published T34 baseline. A test asserts exactly two of
+the three POSTs carry no system message and that the bare one is still
+byte-identical.
+
+`DEFAULT_SYSTEM` and `DEFAULT_SYSTEM_COMPACT` moved from `src/main.rs`
+to a new `src/prompt.rs`, byte-identical, pinned by a test carrying the
+v0.29.1 text as its expected value. A doctor that weighed its own
+approximation of the prompt would be measuring nothing.
+
+### The estimate note does not say what the plan asked it to say
+
+The plan specified a NOTE saying chars/4 "under-reads by roughly 15-30%
+versus servers", calibrated on F6. It does not reliably under-read. Run
+against this checkout the estimator reads 7,240 tokens for the full
+profile where F6 counted 6,991: 4% HIGH, not low. The two runs weigh
+different cwd paths and different installed skills, so the sign of the
+gap is not a property of chars/4, and no percentage is defensible from
+a single calibration point measured under different inputs.
+
+The shipped NOTE says the estimate is prompt bytes over 4, that this is
+not tokenization, that it can err in either direction, that a networked
+run produces a measured figure instead, and quotes F6's two numbers as
+the reference. The always-on NOTE naming what moves the number (cwd
+path length, installed skills) is as planned.
+
+### Correction folded into the F6 record
+
+The F6 section's closing paragraph explained a 40-token gap between two
+readings of the full profile by claiming the configured window scales
+the output cap and that cap is quoted in the tool descriptions. That
+mechanism does not exist in this tree. The correction, with the
+evidence, is recorded inline at the end of the F6 section above.
+
+### Gates
+
+Full `scripts/check.sh` at each phase, teed to
+`~/temur-eval-archive/t41-gates/`. Every gate green on the first run;
+the TUI pty smoke stayed quiet through the cycle.
+
+| Phase | Log | Result |
+| --- | --- | --- |
+| P1 | `p1.log` | ALL CHECKS PASSED |
+| P2 | `p2.log` | ALL CHECKS PASSED |
+| P3 | `p3.log` | ALL CHECKS PASSED |
+
+Test count 756 at v0.29.1 to 779 after P2.
+
+### What this does not establish
+
+- **The measured half has never run against a real server.** Every
+  measured-path test is against a canned HTTP server in-process. The
+  offline estimate is exercised for real (the numbers quoted in this
+  record and in USAGE.md come from actual `temur doctor` runs), but the
+  one extra POST has only ever been answered by a fixture. The first
+  live outing should be watched, particularly for how long a CPU-only
+  server takes to prefill the system prompt on top of the definitions
+  the tools-drop probe already makes it prefill.
+- **The threshold is reasoned, not measured.** 16384 follows from F6's
+  floor arithmetic and the desktop experiments' failure mode. Nothing
+  here demonstrates that a run at 16384 succeeds where 16383 fails, or
+  that compact-below-threshold improves any score. The eval that would
+  show it is queued on the ROADMAP, not run.
+- **No re-measure of the compact-vs-full effect.** The Terminal-Bench
+  cells that motivated this were run on the desktop under experiments 3
+  and 4. This release changes what those cells would send; it does not
+  re-run them.
+- **The floor still cannot be seen at REPL startup on an unconfigured
+  server.** Auto keys off the CONFIGURED window only. Nothing probes
+  `/props` at REPL startup, so a local server whose window was never
+  written into the config gets `full` regardless of what it actually
+  serves. Queued on the ROADMAP.

@@ -4,6 +4,42 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **BEHAVIOR CHANGE: `prompt_profile` now defaults to `"auto"`, and auto
+  picks the compact profile on small context windows.** The field
+  accepts `"auto"` | `"full"` | `"compact"`, and an absent field means
+  `"auto"`. Auto resolves to `compact` when a `context_window` is
+  configured and is below 16384, and to `full` otherwise, including
+  when no window is configured. An explicit `"full"` or `"compact"` is
+  never second-guessed at any window, so a config that names one
+  behaves exactly as before. **If your config sets a `context_window`
+  below 16384 and no `prompt_profile`, you now get the compact tool
+  descriptions and the compact default system prompt where you used to
+  get the full ones**; add `"prompt_profile": "full"` to keep the old
+  behavior. This includes configs written by `temur init` for a local
+  server, which bake the server's own context allocation.
+
+  Why: temur's request floor on the full profile is 6,991 prompt
+  tokens, which is 57% of a 12288-token window before the task is read
+  (the "known limit, measured not fixed" from v0.29.0). Through 0.29.x
+  the profile was explicit-only and temur never inferred one from
+  `context_window`; that is what changed. When auto picks compact,
+  startup says so in one line naming the window, the threshold, and the
+  override, and `/status` distinguishes `prompt: compact (auto)` from a
+  configured `prompt: compact`.
+
+- `temur doctor` reports the prompt floor for the active selection: how
+  much of the context window is spent before your first word. An
+  offline estimate always runs, `--no-network` included; on a keyless
+  openai-compat endpoint with network checks enabled, doctor also asks
+  the server that will serve the session and reports a measured token
+  count instead. PASS below 40% of the window, WARN at or above it,
+  never a FAIL. A WARN on a selection that is already compact points at
+  `context_window` rather than at a knob that is already turned.
+
+- The default system prompts moved from the binary into the library
+  (`src/prompt.rs`), byte-identically, so the floor check can weigh the
+  real prompt rather than a copy of it. No behavior change.
+
 ## v0.29.1 - 2026-08-29
 
 - Fixed: a second auto-compaction within one turn dropped the turn

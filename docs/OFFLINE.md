@@ -223,7 +223,10 @@ immediately. 1024–4096 is a sensible local range.
 
 The stock tool descriptions are the OpenCode-ported prompts, sized for
 Claude-class context windows (~24 KB of tool text). On a small local
-window that is a real tax before the conversation even starts. Setting
+window that is a real tax before the conversation even starts: measured
+against a live llama.cpp server, the full profile spends **6,991 prompt
+tokens** before the task is read, which is 57% of a 12288-token window.
+The compact profile spends **2,763**.
 
 ```json
 { "prompt_profile": "compact" }
@@ -236,15 +239,52 @@ schemas are identical in both profiles (only the description text
 varies), and an explicit `system_prompt` in config always wins over
 either default.
 
-The profile is **explicit-only**: absent or `"full"` means the stock
-prompts (byte-identical to pre-profile behavior), `"compact"` opts in,
-anything else is a startup config error. temur never auto-selects a
-profile from `context_window` or the model name.
+### Auto-selection (the default since v0.30.0)
 
-Named profiles can each carry their own `prompt_profile` (same values,
-same explicit-only rule; absent = the global setting above). That is
-the natural pairing for mixed setups: compact on the small local
-profile, full on a hosted one:
+`prompt_profile` takes three values: `"auto"`, `"full"`, `"compact"`.
+Absent means `"auto"`, and **auto is the default**.
+
+Auto is one rule, and it reads exactly one thing:
+
+| `context_window` | Profile chosen |
+| --- | --- |
+| set, below 16384 | `compact` |
+| set, 16384 or above | `full` |
+| not configured | `full` |
+
+An unconfigured window resolves to `full` on purpose: guessing smaller
+would trim the descriptions on a model that never needed it. Note that
+this means auto only works where a window is configured, which for a
+local server is what `temur init` writes from the server's `/props`
+allocation.
+
+When auto picks compact, temur says so once at startup:
+
+```
+  [!] prompt profile: compact (context_window 12288 is below 16384; set prompt_profile to "full" to override)
+```
+
+Nothing is printed when auto picks full. `/status` distinguishes the
+two sources: `prompt: compact (auto)` versus a configured
+`prompt: compact`.
+
+An explicit `"full"` or `"compact"` is **never second-guessed** at any
+window, and anything but those three spellings is a startup config
+error. That was the whole contract before v0.30.0, when the field was
+explicit-only and temur never inferred a profile from `context_window`;
+what changed is only what an ABSENT field means.
+
+**Upgrading from 0.29.x or earlier:** if your config sets a
+`context_window` below 16384 and no `prompt_profile`, you now get the
+compact descriptions where you used to get the full ones. Add
+`"prompt_profile": "full"` to keep the old behavior.
+
+Named profiles can each carry their own `prompt_profile` (same three
+values; absent = the global setting above), and `"auto"` resolves
+against THAT profile's own `context_window`, so one config can hold a
+small local server and a large hosted model and get the right answer
+for each without naming either. Explicit values still pair the obvious
+way:
 
 ```json
 {
@@ -258,9 +298,14 @@ profile, full on a hosted one:
 
 `/model local` ⇄ `/model sonnet` swaps the tool descriptions and the
 default system prompt together with the provider (`/status` shows the
-live value as `prompt: full|compact`); an explicit `system_prompt`
-override still wins in both profiles, and a raw-id switch
-(`/model <model-id>`) never changes the prompt profile.
+live value as `prompt: full|compact`, with `(auto)` appended when the
+window rule chose it, and a switch that lands on an auto-chosen compact
+profile prints the same one-line notice startup does); an explicit
+`system_prompt` override still wins in both profiles, and a raw-id
+switch (`/model <model-id>`) never changes the prompt profile.
+
+`temur doctor` reports what the active profile actually costs; see
+USAGE.md, "The prompt floor".
 
 ## LAN topology
 

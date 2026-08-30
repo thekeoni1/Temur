@@ -75,7 +75,9 @@ authority on argument shapes).
 - `/status` - profile, provider, model, thinking, prompt, context,
   session file. The thinking line reads
   `thinking: … · max_tokens: … · prompt: full|compact`, the LIVE
-  prompt profile, which follows profile switches.
+  prompt profile, which follows profile switches. Since v0.30.0 the
+  word carries `(auto)` when the window rule chose the profile rather
+  than config naming it, e.g. `prompt: compact (auto)`.
 - `/model [<profile>|<model-id>]` - bare: list profiles. With an
   argument: profile names win; anything else is a raw model id switched
   WITHIN the active provider: endpoint, credentials, limits, profile

@@ -375,9 +375,9 @@ to keep useful.
 
 Naming note: `/compact` is unrelated to the `"compact"` value of
 `prompt_profile` in config.json. That knob picks the SIZE of the tool
-prompts and system prompt served to small models; `/compact` is a
-command that shrinks the conversation history. A session can use
-either, both, or neither.
+prompts and system prompt served to small models (see "Prompt profiles"
+below); `/compact` is a command that shrinks the conversation history. A
+session can use either, both, or neither.
 
 ## Configuration reference
 
@@ -579,6 +579,11 @@ The two extra requests are capped at one generated token each, go to a
 local keyless endpoint, and are skipped entirely under `--no-network`.
 See OFFLINE.md for which models this hits.
 
+Under the same gate, and capped the same way, doctor also measures the
+prompt floor: how much of the context window this selection spends
+before the first instruction. That check has an offline half that runs
+everywhere, `--no-network` included. See "The prompt floor" above.
+
 The install check answers a question that costs real debugging time
 after a rebuild: is the `temur` your shell runs the one you just built?
 Doctor compares the first `temur` on your PATH against the binary
@@ -641,8 +646,11 @@ fields: `provider` (`"anthropic"` or `"openai-compat"`), `model`
 endpoint), `api_key_file` (path to a key file: openai-compat profiles
 without one are keyless, anthropic profiles without one fall back to
 `APP_SECRET_FILE`), `max_tokens` (default: the global value),
-`context_window`, `prompt_profile` (`"full"` or `"compact"` for
-THIS profile; default: the global `prompt_profile` - switching between
+`context_window`, `prompt_profile` (`"auto"`, `"full"`, or `"compact"`
+for THIS profile; default: the global `prompt_profile`, which itself
+defaults to `"auto"` - `"auto"` resolves against THIS profile's own
+`context_window`, so one config can hold a small local server and a
+large hosted model and get the right answer for each; switching between
 profiles swaps the system prompt and tool descriptions accordingly, and
 an explicit `system_prompt` still wins in either profile), and the
 price pair `price_input_per_mtok` / `price_output_per_mtok` (see "Cost
@@ -652,6 +660,100 @@ only fail on a credential/IO problem, and a failed switch leaves the
 session untouched. History continues across a switch (it is stored
 provider-neutrally), and each save records whichever provider/model is
 active at that moment.
+
+### Prompt profiles
+
+`prompt_profile` picks the SIZE of what temur sends before your first
+word: the tool descriptions and the default system prompt. `"full"` is
+the stock OpenCode-ported set, sized for Claude-class windows;
+`"compact"` is hand-trimmed for small local models. The tool set,
+order, and input schemas are identical in both, and an explicit
+`system_prompt` in config wins over either default.
+
+It takes three values, and an absent field means `"auto"`, which is the
+default:
+
+| Value | Effect |
+| --- | --- |
+| `"auto"` (or absent) | `compact` when `context_window` is set and below 16384, `full` otherwise (an unconfigured window included) |
+| `"full"` | the stock prompts, at any window |
+| `"compact"` | the trimmed prompts, at any window |
+
+Anything else is a startup config error naming all three spellings. An
+explicit value is never second-guessed; the threshold applies to
+`"auto"` alone.
+
+When auto picks compact, temur says so once at startup and nowhere
+else:
+
+```
+  [!] prompt profile: compact (context_window 12288 is below 16384; set prompt_profile to "full" to override)
+```
+
+Nothing is printed when auto picks full. A `/model` switch onto a
+profile whose window lands it on compact prints the same line.
+`/status` names both the profile and where it came from:
+
+```
+thinking: off · max_tokens: 32000 · prompt: compact (auto)
+```
+
+`(auto)` means the rule chose it; a bare `prompt: compact` means your
+config did.
+
+**Changed in v0.30.0.** Through 0.29.x this field was explicit-only and
+temur never inferred a profile from `context_window`. If your config
+sets a window below 16384 and no `prompt_profile`, you now get the
+compact descriptions where you used to get the full ones; add
+`"prompt_profile": "full"` to keep the old behavior. What an explicit
+value means is unchanged.
+
+### The prompt floor
+
+The floor is what a turn costs before the conversation starts. Measured
+live on 2026-08-29 (llama.cpp `server-b10438`, Qwen3-4B-Instruct-2507
+Q4_K_M, `context_window` 12288, one request per profile, the reported
+input-token count):
+
+| Prompt profile | Floor | Left of a 12288 window |
+| --- | --- | --- |
+| `full` | 6,991 tokens | ~5,297 |
+| `compact` | 2,763 tokens | ~9,525 |
+
+That is the reason auto-selection exists: on the full profile a 12288
+window is 57% spent before the model reads the task, and at a
+`context_window` of 4096 the floor exceeds the whole window.
+
+Your own number will differ. The floor moves with the length of your
+cwd path and the number of installed skills, both of which ride in the
+system prompt, so `temur doctor` reports it for the ACTIVE selection
+rather than quoting the table above:
+
+```
+PASS: prompt floor (estimate): ~2459 tokens; window 12288; 20% of the window
+NOTE: that estimate is prompt bytes divided by 4, which is not tokenization: expect it to be off by some percent in either direction. A networked run against a keyless openai-compat server reports a measured figure instead. Reference measurement (2026-08-29, llama.cpp, Qwen3-4B-Instruct-2507): 6,991 tokens for the full profile, 2,763 for the compact one.
+NOTE: the prompt floor moves with the length of the cwd path and the number of installed skills, both of which ride in the system prompt
+```
+
+The estimate is offline and always runs. On a keyless openai-compat
+endpoint with network checks enabled, doctor also asks the server that
+will actually serve the session, with one more one-token request
+carrying the real system prompt and the real definitions, and reports
+`prompt floor (measured): N tokens` instead. A measurement always wins
+over the estimate.
+
+The verdict is on whichever number is in hand: PASS below 40% of the
+window, WARN at or above it, never a FAIL.
+
+```
+WARN: prompt floor (estimate): ~7240 tokens; window 12288; 58% of the window is spent before the task starts; set prompt_profile to "compact" or raise context_window
+```
+
+If the active profile is already compact and the floor is still over
+the line, the WARN says so and points at `context_window` instead of at
+a knob that is already turned. With no `context_window` configured
+there is nothing to divide by, so the line is a NOTE carrying the
+number alone.
 
 ### Cost estimate
 
