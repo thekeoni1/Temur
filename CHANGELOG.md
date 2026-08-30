@@ -29,6 +29,14 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   nothing said about why. The definitions the two probes share are also
   built once per run now instead of twice.
 
+- Fixed: a `/model <claude-id>` hop whose model override then failed
+  swallowed the line explaining the prompt profile it left you on. The
+  hop activates the anthropic profile first and that activation STANDS
+  when the override fails, prompt profile included, so a user could
+  land on the compact tool descriptions and the compact system prompt
+  with only a failure notice to go on. The notice now rides that path
+  too, as it already did on both success paths.
+
 ## v0.30.0 - 2026-08-30
 
 - **BEHAVIOR CHANGE: `prompt_profile` now defaults to `"auto"`, and auto

@@ -671,17 +671,24 @@ fn hop_switch(ctx: &mut CommandCtx, id: String, name: String) -> Vec<AgentEvent>
             out
         }
         // The activation already happened and stands; the override failure
-        // is reported on top so the partial state is never silent.
-        Err(failure) => vec![
-            AgentEvent::ModelSwitched {
-                model: hop_model.clone(),
-                provider: hop_provider,
-            },
-            notice(format!(
-                "hopped to profile {name:?}, but the model override to {id:?} failed — the profile's own model {hop_model} is active"
-            )),
-            failure,
-        ],
+        // is reported on top so the partial state is never silent. The
+        // activation includes the PROMPT PROFILE, so the auto line rides
+        // this path too: a user left on the compact descriptions by a
+        // switch that half-failed is exactly who needs to be told why.
+        Err(failure) => {
+            let mut out = vec![
+                AgentEvent::ModelSwitched {
+                    model: hop_model.clone(),
+                    provider: hop_provider,
+                },
+                notice(format!(
+                    "hopped to profile {name:?}, but the model override to {id:?} failed — the profile's own model {hop_model} is active"
+                )),
+                failure,
+            ];
+            out.extend(auto);
+            out
+        }
     }
 }
 

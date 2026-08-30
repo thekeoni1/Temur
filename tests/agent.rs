@@ -3754,6 +3754,49 @@ fn hop_failed_activation_is_atomic() {
     assert_eq!(h.model, "model-b");
 }
 
+/// T41 (fixed in v0.30.1): the override failed, but the activation
+/// STANDS, and an activation swaps the prompt profile. A user left on the
+/// compact descriptions by a switch that only half-succeeded is exactly
+/// who the auto line exists for, so it survives this path too.
+#[test]
+fn a_failed_override_after_a_hop_still_explains_the_auto_compact_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = hop_harness();
+    {
+        let a = h.profiles.get_mut("a").unwrap();
+        a.context_window = Some(12288);
+        a.prompt_profile = PromptProfile::Compact;
+        a.prompt_profile_source = temur::config::PromptProfileSource::Auto;
+    }
+    // Activating "a" (model-a) succeeds; only the override onto the
+    // requested id fails, which is the partial state under test.
+    let build = |p: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        if p.model == "claude-opus-4-8" {
+            return Err(temur::error::Error::Secret("no route to that model".into()));
+        }
+        Ok(Box::new(MockProvider {
+            responses: RefCell::new(vec![]),
+            requests: Rc::new(RefCell::new(vec![])),
+        }))
+    };
+    let events = commands::run(
+        commands::parse("/model claude-opus-4-8"),
+        &mut h.ctx(&mut session, &build),
+    );
+    let ns = notices(&events);
+    assert!(
+        ns.iter().any(|n| n.contains("the model override to")),
+        "the failure is still reported: {ns:?}"
+    );
+    assert!(
+        ns.iter().any(|n| n == &temur::config::auto_compact_notice(12288)),
+        "and the profile it left the session on is explained: {ns:?}"
+    );
+    assert_eq!(h.active.as_deref(), Some("a"), "the activation stands");
+    assert_eq!(h.prompt_profile, PromptProfile::Compact, "and it swapped the prompts");
+}
+
 #[test]
 fn hop_then_save_persists_to_the_hop_profiles_site() {
     let dir = tempfile::tempdir().unwrap();
