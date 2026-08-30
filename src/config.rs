@@ -39,13 +39,26 @@ pub const DEFAULT_COST_ADVISORY_STEP_USD: f64 = 5.0;
 /// floor against a live llama.cpp server on 2026-08-29: the full profile
 /// costs 6,991 prompt tokens before the task starts, the compact profile
 /// 2,763. At a 12,288-token window the full floor is 57% of everything the
-/// model will ever see; at 16,384 it is 43%; at 32,768 it is 21%. Desktop
-/// experiments 3 and 4 found context exhaustion to be the dominant
-/// Terminal-Bench failure mode at those small windows. 16384 is the round
-/// window above which the full floor stops dominating, and it is a
-/// threshold rather than a ratio because a threshold is something a user
-/// can read off their own config and predict.
-pub const PROMPT_AUTO_COMPACT_BELOW: u64 = 16384;
+/// model will ever see; at 16,384 it is 42%; at 20,480 it is 34%; at
+/// 32,768 it is 21%. Desktop experiments 3 and 4 found context exhaustion
+/// to be the dominant Terminal-Bench failure mode at those small windows.
+///
+/// The threshold is DERIVED from `doctor`'s own warning line, not picked
+/// for roundness: it is the smallest power-of-2-ish window at which the
+/// FULL floor sits under `PROMPT_FLOOR_WARN_PERCENT` (40%) with margin,
+/// measured 34% and estimated 35% at 20480. v0.30.0 shipped 16384, where
+/// the two disagreed by construction (16384 * 40% = 6,554, below the 6,991
+/// the full profile actually costs): auto chose full and `doctor` then
+/// WARNed that the same selection should be compact, on the very window
+/// `temur init` writes from a 16k llama.cpp server. The tie is pinned by a
+/// test in `doctor`, so changing either constant, or the prompts, fails
+/// loudly instead of shipping the contradiction again. Compact is the
+/// better choice at 16384 anyway: it leaves 13.6k tokens for the task
+/// where full leaves 9.4k.
+///
+/// It stays a threshold rather than a ratio because a threshold is
+/// something a user can read off their own config and predict.
+pub const PROMPT_AUTO_COMPACT_BELOW: u64 = 20480;
 
 /// The accepted `prompt_profile` spellings, quoted once so every error
 /// message naming them cannot drift apart.
@@ -964,10 +977,11 @@ mod tests {
         use crate::tools::PromptProfile;
         assert_eq!(auto_prompt_profile(None), PromptProfile::Full);
         assert_eq!(auto_prompt_profile(Some(0)), PromptProfile::Compact);
-        assert_eq!(auto_prompt_profile(Some(16383)), PromptProfile::Compact);
-        assert_eq!(auto_prompt_profile(Some(16384)), PromptProfile::Full);
-        assert_eq!(auto_prompt_profile(Some(16385)), PromptProfile::Full);
-        assert_eq!(PROMPT_AUTO_COMPACT_BELOW, 16384);
+        assert_eq!(auto_prompt_profile(Some(16384)), PromptProfile::Compact);
+        assert_eq!(auto_prompt_profile(Some(20479)), PromptProfile::Compact);
+        assert_eq!(auto_prompt_profile(Some(20480)), PromptProfile::Full);
+        assert_eq!(auto_prompt_profile(Some(20481)), PromptProfile::Full);
+        assert_eq!(PROMPT_AUTO_COMPACT_BELOW, 20480);
     }
 
     /// An explicit spelling is never second-guessed, in either direction,
@@ -1079,7 +1093,7 @@ mod tests {
         let line = auto_compact_notice(12288);
         assert_eq!(
             line,
-            "prompt profile: compact (context_window 12288 is below 16384; \
+            "prompt profile: compact (context_window 12288 is below 20480; \
              set prompt_profile to \"full\" to override)"
         );
     }

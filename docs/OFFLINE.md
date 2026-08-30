@@ -248,8 +248,8 @@ Auto is one rule, and it reads exactly one thing:
 
 | `context_window` | Profile chosen |
 | --- | --- |
-| set, below 16384 | `compact` |
-| set, 16384 or above | `full` |
+| set, below 20480 | `compact` |
+| set, 20480 or above | `full` |
 | not configured | `full` |
 
 An unconfigured window resolves to `full` on purpose: guessing smaller
@@ -261,7 +261,7 @@ allocation.
 When auto picks compact, temur says so once at startup:
 
 ```
-  [!] prompt profile: compact (context_window 12288 is below 16384; set prompt_profile to "full" to override)
+  [!] prompt profile: compact (context_window 12288 is below 20480; set prompt_profile to "full" to override)
 ```
 
 Nothing is printed when auto picks full. `/status` distinguishes the
@@ -275,9 +275,19 @@ explicit-only and temur never inferred a profile from `context_window`;
 what changed is only what an ABSENT field means.
 
 **Upgrading from 0.29.x or earlier:** if your config sets a
-`context_window` below 16384 and no `prompt_profile`, you now get the
+`context_window` below 20480 and no `prompt_profile`, you now get the
 compact descriptions where you used to get the full ones. Add
 `"prompt_profile": "full"` to keep the old behavior.
+
+**The threshold moved in v0.30.1**, from 16384 to 20480. 16384 sat
+below temur's own full-profile floor, so a 16384 window (exactly what
+`temur init` writes from a 16k llama.cpp server) got `full` from the
+rule and a `doctor` WARN against it in the same run. 20480 is the
+smallest round window where the full floor stays under that WARN line:
+34% of it measured, 35% estimated. Windows from 16384 to 20479 with no
+`prompt_profile` move to compact in v0.30.1, which is the better trade
+there anyway (compact leaves 13.6k tokens of a 16384 window for the
+task where full leaves 9.4k).
 
 Named profiles can each carry their own `prompt_profile` (same three
 values; absent = the global setting above), and `"auto"` resolves

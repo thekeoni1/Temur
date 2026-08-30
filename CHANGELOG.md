@@ -4,6 +4,23 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **The `"auto"` prompt-profile threshold moved from 16384 to 20480.**
+  v0.30.0 shipped a threshold below temur's own full-profile floor, so
+  the two halves of that release contradicted each other: a
+  `context_window` of 16384 got `full` from the auto rule and then a
+  `doctor` WARN saying the floor is 42% of the window and the profile
+  should be `compact`. 16384 is exactly what `temur init` writes from a
+  16k llama.cpp server, so a fresh `init` plus `doctor` told you to undo
+  the choice temur had just made for you. 20480 is the smallest round
+  window at which the full floor stays under doctor's 40% line (34%
+  measured, 35% estimated), and the tie between the two constants is now
+  pinned by a test. **If your config sets a `context_window` from 16384
+  to 20479 and no `prompt_profile`, this release moves you from the full
+  descriptions to the compact ones**; add `"prompt_profile": "full"` to
+  keep the full ones. Compact is the better trade at those windows
+  anyway: at 16384 it leaves 13.6k tokens for the task where full leaves
+  9.4k.
+
 ## v0.30.0 - 2026-08-30
 
 - **BEHAVIOR CHANGE: `prompt_profile` now defaults to `"auto"`, and auto

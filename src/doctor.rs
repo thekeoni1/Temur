@@ -384,6 +384,24 @@ const PROMPT_FLOOR_WARN_PERCENT: u64 = 40;
 /// gets wrong and by how much.
 const PROMPT_FLOOR_CHARS_PER_TOKEN: u64 = 4;
 
+/// The offline half of the floor, in one place so the check and the tie
+/// test that guards [`crate::config::PROMPT_AUTO_COMPACT_BELOW`] cannot
+/// measure it differently: system-prompt bytes plus definition bytes
+/// (description text and the serialized schema, which is what goes on the
+/// wire), over [`PROMPT_FLOOR_CHARS_PER_TOKEN`].
+fn floor_estimate(system: &str, defs: &[crate::provider::ToolDef]) -> u64 {
+    let tool_bytes: u64 = defs
+        .iter()
+        .map(|d| {
+            d.description.len() as u64
+                + serde_json::to_string(&d.input_schema)
+                    .map(|s| s.len() as u64)
+                    .unwrap_or(0)
+        })
+        .sum();
+    (system.len() as u64 + tool_bytes).div_ceil(PROMPT_FLOOR_CHARS_PER_TOKEN)
+}
+
 /// What the estimate is worth, printed only when an estimate is the
 /// number being reported.
 ///
@@ -436,17 +454,7 @@ fn prompt_floor_check(
     use crate::provider::ProbeOutcome;
     let system = session_system_prompt(cfg, p);
     let defs = session_tool_definitions(cfg, p);
-    let tool_bytes: u64 = defs
-        .iter()
-        .map(|d| {
-            d.description.len() as u64
-                + serde_json::to_string(&d.input_schema)
-                    .map(|s| s.len() as u64)
-                    .unwrap_or(0)
-        })
-        .sum();
-    let estimate =
-        (system.len() as u64 + tool_bytes).div_ceil(PROMPT_FLOOR_CHARS_PER_TOKEN);
+    let estimate = floor_estimate(&system, &defs);
 
     // The measured half, under the tools-drop gate. Anything short of a
     // usable count (keyed selection, --no-network, a server that refuses
@@ -1844,6 +1852,44 @@ mod tests {
         );
         let (_healthy, _out) = doctor_over(&windowed_keyless(&base, 10000, None), true);
         assert!(posts.lock().unwrap().is_empty(), "no POST under --no-network");
+    }
+
+    /// The tie between the two constants, which v0.30.0 shipped broken.
+    /// At exactly `PROMPT_AUTO_COMPACT_BELOW` the auto rule picks FULL,
+    /// so the full profile's own floor has to sit under the percentage at
+    /// which this same binary WARNs about it. Computed with the shipped
+    /// estimator over the real full-profile prompts and the real registry,
+    /// so a change to either constant, or to the prompts, fails here
+    /// instead of shipping a default that doctor immediately advises the
+    /// user to undo.
+    #[test]
+    fn the_auto_threshold_keeps_the_full_floor_under_the_doctor_warn_line() {
+        let window = crate::config::PROMPT_AUTO_COMPACT_BELOW;
+        assert_eq!(
+            crate::config::auto_prompt_profile(Some(window)),
+            crate::tools::PromptProfile::Full,
+            "the threshold itself selects full: that is what makes this a tie"
+        );
+        // A representative cwd, not this checkout's: the floor moves with
+        // the path length, and the tie must not depend on where the
+        // repository happens to live.
+        let system =
+            crate::prompt::system_prompt_template(crate::tools::PromptProfile::Full)
+                .replace("{cwd}", "/home/user/projects/example-project");
+        let defs = crate::tools::Registry::standard_with_skills(vec![])
+            .with_profile(crate::tools::PromptProfile::Full)
+            .definitions();
+        let estimate = floor_estimate(&system, &defs);
+        let percent = estimate.saturating_mul(100) / window.max(1);
+        assert!(
+            percent < PROMPT_FLOOR_WARN_PERCENT,
+            "PROMPT_AUTO_COMPACT_BELOW ({window}) selects the FULL profile, whose \
+             floor estimates at {estimate} tokens = {percent}% of that window, at or \
+             above PROMPT_FLOOR_WARN_PERCENT ({PROMPT_FLOOR_WARN_PERCENT}): doctor \
+             would WARN about the very profile the auto rule just chose, and tell the \
+             user to set prompt_profile to \"compact\". Raise \
+             PROMPT_AUTO_COMPACT_BELOW, or shrink the full prompts."
+        );
     }
 
     // ------------------------------- T17 P4: key-rotation reminder (mtime)

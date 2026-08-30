@@ -675,7 +675,7 @@ default:
 
 | Value | Effect |
 | --- | --- |
-| `"auto"` (or absent) | `compact` when `context_window` is set and below 16384, `full` otherwise (an unconfigured window included) |
+| `"auto"` (or absent) | `compact` when `context_window` is set and below 20480, `full` otherwise (an unconfigured window included) |
 | `"full"` | the stock prompts, at any window |
 | `"compact"` | the trimmed prompts, at any window |
 
@@ -687,7 +687,7 @@ When auto picks compact, temur says so once at startup and nowhere
 else:
 
 ```
-  [!] prompt profile: compact (context_window 12288 is below 16384; set prompt_profile to "full" to override)
+  [!] prompt profile: compact (context_window 12288 is below 20480; set prompt_profile to "full" to override)
 ```
 
 Nothing is printed when auto picks full. A `/model` switch onto a
@@ -703,10 +703,18 @@ config did.
 
 **Changed in v0.30.0.** Through 0.29.x this field was explicit-only and
 temur never inferred a profile from `context_window`. If your config
-sets a window below 16384 and no `prompt_profile`, you now get the
+sets a window below 20480 and no `prompt_profile`, you now get the
 compact descriptions where you used to get the full ones; add
 `"prompt_profile": "full"` to keep the old behavior. What an explicit
 value means is unchanged.
+
+**Changed again in v0.30.1.** The threshold was 16384 in v0.30.0, which
+put it below temur's own full-profile floor: a 16384 window got `full`
+from the rule and then a `doctor` WARN telling you to make it compact.
+20480 is the smallest round window where the full floor stays under
+that WARN line (34% measured, 35% estimated). If your window is between
+16384 and 20479 and you have no `prompt_profile`, v0.30.1 moves you
+from the full descriptions to the compact ones.
 
 ### The prompt floor
 

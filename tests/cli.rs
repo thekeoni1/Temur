@@ -1316,7 +1316,7 @@ fn windowed_config(window: u64, prompt_profile: Option<&str>) -> String {
 }
 
 const AUTO_COMPACT_LINE: &str =
-    "prompt profile: compact (context_window 12288 is below 16384; \
+    "prompt profile: compact (context_window 12288 is below 20480; \
      set prompt_profile to \"full\" to override)";
 
 #[test]
