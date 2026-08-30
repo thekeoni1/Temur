@@ -21,6 +21,14 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   anyway: at 16384 it leaves 13.6k tokens for the task where full leaves
   9.4k.
 
+- `temur doctor` announces the prompt-floor measurement before making
+  it. That request carries the system prompt and every tool definition,
+  which makes it the largest prefill a doctor run asks for, and it runs
+  before the tools-drop probe that already announced itself; on a
+  CPU-only local server v0.30.0 could sit silent for minutes with
+  nothing said about why. The definitions the two probes share are also
+  built once per run now instead of twice.
+
 ## v0.30.0 - 2026-08-30
 
 - **BEHAVIOR CHANGE: `prompt_profile` now defaults to `"auto"`, and auto

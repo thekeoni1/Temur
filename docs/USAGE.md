@@ -750,6 +750,17 @@ carrying the real system prompt and the real definitions, and reports
 `prompt floor (measured): N tokens` instead. A measurement always wins
 over the estimate.
 
+That request is the largest prefill a doctor run asks for, and on a
+CPU-only local server it can take minutes, so doctor says what it is
+waiting for before it waits:
+
+```
+NOTE: measuring the prompt floor against the server; on a CPU-only server this is a large prefill (up to 300s)
+```
+
+The tools-drop probe that follows announces its own pair the same way.
+Neither line appears under `--no-network`, where nothing is sent.
+
 The verdict is on whichever number is in hand: PASS below 40% of the
 window, WARN at or above it, never a FAIL.
 

@@ -254,16 +254,21 @@ fn run_with_sandbox_probe(
         context_check(&mut r, &prefix, p, no_network, &mut props)?;
     }
 
+    // The definitions the two probes below both send, built ONCE: the
+    // build enumerates every skill directory, and doing that twice per
+    // doctor run bought nothing.
+    let defs = session_tool_definitions(&cfg, &active);
+
     // Prompt floor (T41). The ACTIVE selection only, same reason as the
     // tools-drop probe below: the offline half is cheap, but the measured
     // half POSTs, and one POST per configured profile is more than a
     // report should cost.
-    prompt_floor_check(&mut r, &cfg, &active, no_network)?;
+    prompt_floor_check(&mut r, &cfg, &active, &defs, no_network)?;
 
     // Tools-drop probe (T31). The ACTIVE selection only, because unlike
     // the checks above this one POSTs, and two requests per configured
     // profile is more than a report should cost.
-    tools_drop_check(&mut r, &cfg, &active, no_network)?;
+    tools_drop_check(&mut r, &active, &defs, no_network)?;
 
     finish(r)
 }
@@ -449,12 +454,12 @@ fn prompt_floor_check(
     r: &mut Report<'_>,
     cfg: &Config,
     p: &crate::config::ResolvedProfile,
+    defs: &[crate::provider::ToolDef],
     no_network: bool,
 ) -> std::io::Result<()> {
     use crate::provider::ProbeOutcome;
     let system = session_system_prompt(cfg, p);
-    let defs = session_tool_definitions(cfg, p);
-    let estimate = floor_estimate(&system, &defs);
+    let estimate = floor_estimate(&system, defs);
 
     // The measured half, under the tools-drop gate. Anything short of a
     // usable count (keyed selection, --no-network, a server that refuses
@@ -462,10 +467,20 @@ fn prompt_floor_check(
     // estimate is computed first and unconditionally.
     let probe_gate = !no_network && p.provider == "openai-compat" && p.api_key_file.is_none();
     let measured = if probe_gate {
+        // This request carries the system prompt AND every definition, so
+        // it is the largest prefill doctor asks for and it runs first. Say
+        // so and flush before going quiet for it, exactly as the
+        // tools-drop check does for its own pair.
+        writeln!(
+            r.out,
+            "NOTE: measuring the prompt floor against the server; on a CPU-only server this is a large prefill (up to {}s)",
+            crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS
+        )?;
+        let _ = r.out.flush();
         match crate::provider::probe_prompt_tokens(
             &p.base_url,
             &p.model,
-            Some(&defs),
+            Some(defs),
             Some(&system),
             std::time::Duration::from_secs(crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS),
         ) {
@@ -551,8 +566,8 @@ fn floor_notes(r: &mut Report<'_>, estimated: bool) -> std::io::Result<()> {
 /// doctor stays honest but calm.
 fn tools_drop_check(
     r: &mut Report<'_>,
-    cfg: &Config,
     p: &crate::config::ResolvedProfile,
+    defs: &[crate::provider::ToolDef],
     no_network: bool,
 ) -> std::io::Result<()> {
     use crate::provider::ProbeOutcome;
@@ -561,7 +576,6 @@ fn tools_drop_check(
     }
     let timeout =
         std::time::Duration::from_secs(crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS);
-    let defs = session_tool_definitions(cfg, p);
     // The second request makes the server prefill every tool definition, so
     // on a CPU-only local server this check is the slow one (measured 106s,
     // 2026-08-18). Say so before going quiet for it, rather than after.
@@ -576,7 +590,7 @@ fn tools_drop_check(
     let _ = r.out.flush();
     let bare = crate::provider::probe_prompt_tokens(&p.base_url, &p.model, None, None, timeout);
     let with_tools =
-        crate::provider::probe_prompt_tokens(&p.base_url, &p.model, Some(&defs), None, timeout);
+        crate::provider::probe_prompt_tokens(&p.base_url, &p.model, Some(defs), None, timeout);
     match (bare, with_tools) {
         (ProbeOutcome::Ok(a), ProbeOutcome::Ok(b)) if a == b => r.warn(&format!(
             "the server at {} appears to drop tool definitions for \"{}\" (prompt_tokens {a} with and without temur's tools): the chat template has no tool support, so tool calls can silently never happen",
@@ -1852,6 +1866,45 @@ mod tests {
         );
         let (_healthy, _out) = doctor_over(&windowed_keyless(&base, 10000, None), true);
         assert!(posts.lock().unwrap().is_empty(), "no POST under --no-network");
+    }
+
+    /// The floor probe carries the system prompt AND every definition, so
+    /// it is the largest prefill a doctor run asks for, and it runs first.
+    /// It says so and flushes before going quiet for it, exactly as the
+    /// tools-drop check next to it does for its own pair.
+    #[test]
+    fn the_floor_probe_announces_itself_before_going_quiet() {
+        let (base, _p) = canned_server_with_completions_ex(
+            LLAMA_MODELS,
+            USAGE_10,
+            "HTTP/1.1 200 OK",
+            USAGE_3900,
+        );
+        let (healthy, out) = doctor_over(&windowed_keyless(&base, 10000, None), false);
+        assert!(healthy, "{out}");
+        let expected = format!(
+            "NOTE: measuring the prompt floor against the server; on a CPU-only server this is a large prefill (up to {}s)",
+            crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS
+        );
+        assert!(out.contains(&expected), "{out}");
+        let note = out.find(&expected).expect("the note");
+        let line = out.find("prompt floor (measured)").expect("the measured line");
+        assert!(note < line, "the warning comes before the wait, not after: {out}");
+    }
+
+    /// No probe, no announcement: under --no-network the estimate is the
+    /// whole check and nothing goes quiet.
+    #[test]
+    fn the_floor_probe_announcement_is_absent_when_no_probe_runs() {
+        let (base, _p) = canned_server_with_completions_ex(
+            LLAMA_MODELS,
+            USAGE_10,
+            "HTTP/1.1 200 OK",
+            USAGE_3900,
+        );
+        let (healthy, out) = doctor_over(&windowed_keyless(&base, 10000, None), true);
+        assert!(healthy, "{out}");
+        assert!(!out.contains("measuring the prompt floor"), "{out}");
     }
 
     /// The tie between the two constants, which v0.30.0 shipped broken.
