@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.30.0 - 2026-08-30
+
 - **BEHAVIOR CHANGE: `prompt_profile` now defaults to `"auto"`, and auto
   picks the compact profile on small context windows.** The field
   accepts `"auto"` | `"full"` | `"compact"`, and an absent field means
