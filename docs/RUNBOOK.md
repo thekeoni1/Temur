@@ -8402,3 +8402,72 @@ Test count 756 at v0.29.1 to 779 after P2.
   `/props` at REPL startup, so a local server whose window was never
   written into the config gets `full` regardless of what it actually
   serves. Queued on the ROADMAP.
+
+## v0.30.0 close-out - recorded at stage 1, before its release
+
+2026-08-30. **T41, the prompt floor, cut as v0.30.0.** A MINOR bump,
+not a patch: the release changes a default that every config without an
+explicit `prompt_profile` sits on. The T41 acceptance record above
+carries what shipped, the measurements, and the three deviations; this
+section is the release-cycle bookkeeping only.
+
+Version moves 0.29.1 -> 0.30.0. Nothing else rides along: three T41
+phase commits and three prep commits, no unrelated work.
+
+### Gate log
+
+| Commit | What | Tests | check.sh | Gate log |
+| --- | --- | --- | --- | --- |
+| `b2ca18d` | P1 auto profile | 768 | ALL CHECKS PASSED, first try | `t41-gates/p1.log` |
+| `cb99dd9` | P2 doctor floor | 779 | ALL CHECKS PASSED, first try | `t41-gates/p2.log` |
+| `432506c` | P3 docs | 779 | ALL CHECKS PASSED, first try | `t41-gates/p3.log` |
+| close-out | stage 1 | 779 | ALL CHECKS PASSED, first try | `t41-gates/v0.30.0-stage1-<head>.log` |
+
+Every run was pty-backed and teed with no tail in the pipe, so a single
+failure would keep its name. All 48 `test result:` lines read `0
+failed` in each, and the TUI pty smoke passed first attempt throughout:
+no kill-and-rerun this cycle. The unnamed `--lib` failure recorded as
+an open sighting in the v0.29.1 close-out did not recur.
+
+CI: the T41 phase commits pushed `049085e..432506c`, run
+**33320692326, attempt 1**, both jobs green (`test` 1m19s,
+`release-gate` 4m48s).
+
+### The three accepted deviations from the T41 plan
+
+Recorded here as well as in the acceptance record above, because a
+reader auditing the release should not have to find them in a
+milestone section.
+
+1. **The doctor estimate NOTE does not quote an error percentage.** The
+   plan asked it to say chars/4 "under-reads by roughly 15-30%" against
+   servers. It does not reliably under-read: run against this checkout
+   the estimator reads 7,240 tokens for the full profile where F6
+   counted 6,991, which is 4% HIGH. The two runs weigh different cwd
+   paths and different installed skills, so the sign of the gap is not
+   a property of chars/4 and no range is defensible from one
+   calibration point. The shipped NOTE says the estimate is not
+   tokenization, that it errs in either direction, and quotes F6's two
+   figures as the reference.
+2. **`tests/agent.rs` `test_system_for` was not collapsed into the
+   library copy.** The plan describes it as a duplicate of the prompt
+   constants. It is not: it returns the sentinels `"full test system"`
+   and `"compact test system"`, whose whole job is to prove which
+   profile a swap landed on. Pointing it at the real prompts would
+   weaken those assertions rather than remove a duplicate. The real
+   constants did move, byte-identically, and are pinned by a test
+   carrying the v0.29.1 text.
+3. **Two em-dashes on added lines in P2.** Both are inside the
+   byte-identical prompt literals moved from `main.rs` into
+   `src/prompt.rs`, and removing them would change shipped prompt text,
+   which P2 forbids. Zero em-dashes on added lines in P1, P3, and all
+   three prep commits; zero in newly authored prose anywhere in the
+   cycle. The one moved doc comment that carried a third was reworded.
+
+### Stage 2 explicitly not yet run
+
+No tag exists, local or remote, and nothing has been published. This
+record is written at stage 1, before the release, which is the standing
+procedure: the close-out has to be able to say something the release
+could still contradict. The stage-2 tag message will be exactly one
+line, `temur v0.30.0 - prompt floor (T41)`.
