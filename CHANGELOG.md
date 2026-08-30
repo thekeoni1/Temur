@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.30.1 - 2026-08-30
+
 - **The `"auto"` prompt-profile threshold moved from 16384 to 20480.**
   v0.30.0 shipped a threshold below temur's own full-profile floor, so
   the two halves of that release contradicted each other: a
