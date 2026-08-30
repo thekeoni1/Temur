@@ -1,6 +1,6 @@
 [package]
 name = "temur"
-version = "0.29.1"
+version = "0.30.0"
 edition = "2021"
 description = "Zero-runtime-dependency single static binary AI agent for any Linux, down to 32-bit and embedded. Bring your own model: hosted or fully offline against local models"
 license = "MIT"
