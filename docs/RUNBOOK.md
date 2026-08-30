@@ -8557,3 +8557,214 @@ reasoned from F6's floor arithmetic and not from any task score; and
 auto-selection is blind on a local server whose window was never
 written into the config, because nothing probes `/props` at REPL
 startup. All three are queued on the ROADMAP under "Queued from T41".
+
+## v0.30.1 post-ship fix - the v0.30.0 code review (recorded 2026-08-30, before its release)
+
+A code review of the shipped v0.30.0 range (`049085e..12cd7ec`) raised
+three items. The planning session verified all three against the tree
+before any was acted on, and all three are fixed here, one commit each.
+No milestone work rides along, and the version moves 0.30.0 -> 0.30.1 as
+a PATCH: everything here is a defect in what T41 shipped hours earlier.
+
+### R1: the auto threshold and doctor's own WARN line disagreed by construction
+
+T41 shipped two constants that cannot both be right.
+`PROMPT_AUTO_COMPACT_BELOW` was 16384, chosen because it is a round
+window above which the full floor "stops dominating".
+`PROMPT_FLOOR_WARN_PERCENT` is 40: doctor WARNs when the floor reaches
+40% of the window. But 16384 * 40% is 6,554, and the full profile costs
+6,991 tokens (F6, 2026-08-29). So at the threshold itself the auto rule
+selects FULL and doctor immediately reports that selection as over the
+line:
+
+```
+WARN: prompt floor (measured): 6942 tokens; window 16384; 42% of the window is spent before the task starts; set prompt_profile to "compact" or raise context_window
+```
+
+Every window in [16384, 17478) measured, and [16384, 18100) by the
+estimator, lands in that gap. It is not a corner: `temur init` writes
+`"context_window": 16384` from a 16k llama.cpp `/props` allocation, so a
+fresh `init` followed by `doctor` on a 16k server told the user to undo
+the choice the wizard had just made for them.
+
+The fix DERIVES the threshold from the warning line instead of choosing
+it for roundness: 20480, the smallest round window at which the full
+floor sits under 40% with margin (34% measured, 35% estimated). Compact
+is the better trade at 16384 anyway, which is the substance behind the
+arithmetic: it leaves 13.6k tokens of that window for the task where
+full leaves 9.4k.
+
+Two decisions inside the fix, both deliberate:
+
+- **The WARN was NOT softened for an `Auto` choice.** The alternative
+  fix was to keep 16384 and teach doctor to stay quiet when the rule
+  itself chose full. A 44% floor is a 44% floor; a report that excuses a
+  number because the tool picked it is worth less than no report. The
+  number moved instead of the verdict.
+- **The tie is now a test, not a comment.** `floor_estimate` was
+  factored out of `prompt_floor_check` so the check and the test cannot
+  measure the floor differently, and
+  `the_auto_threshold_keeps_the_full_floor_under_the_doctor_warn_line`
+  runs that estimator over the real full-profile system prompt and the
+  real registry definitions at a window of exactly
+  `PROMPT_AUTO_COMPACT_BELOW`, asserting the percentage stays under
+  `PROMPT_FLOOR_WARN_PERCENT` and failing with a message that names both
+  constants. It reads 7,245 tokens, 35%. Changing either constant, or
+  growing the prompts past the line, now fails loudly instead of
+  shipping the contradiction again.
+
+RIPPLE, the same shape as T41's own and stated in the commit, the
+CHANGELOG, USAGE and OFFLINE: a config with a `context_window` from
+16384 to 20479 and no `prompt_profile` moves from the full tool
+descriptions to the compact ones in this release.
+
+The v0.30.0 CHANGELOG section keeps its 16384. It describes what that
+release did; the v0.30.1 entry says what moved.
+
+### R2: the largest, slowest probe in a doctor run was the one that said nothing
+
+The floor probe sends the real system prompt AND every tool definition,
+which makes it the biggest prefill doctor asks for, and it runs first.
+It announced nothing. The tools-drop check immediately after it prints a
+NOTE and flushes before its own pair precisely because that prefill is
+slow on a CPU-only local server (measured 106s, 2026-08-18), so v0.30.0
+could sit silent for up to `TOOLS_DROP_PROBE_TIMEOUT_SECS` (300s) with
+no indication of what it was waiting for, having quietly taken the
+worst case from two large prefills to three.
+
+It now prints and flushes the same style of line before the probe, on
+the networked path only:
+
+```
+NOTE: measuring the prompt floor against the server; on a CPU-only server this is a large prefill (up to 300s)
+```
+
+Riding along: `session_tool_definitions` is built ONCE per run and
+passed to both checks. Building it enumerates every skill directory and
+rebuilds the registry, and v0.30.0 did that twice per run for two probes
+that send byte-identical definitions.
+
+### R3: the hop's failure path swallowed the line that explains the prompts
+
+`hop_switch` computes the auto-compact notice right after activation and
+emits it on both success paths, but the arm handling a failed
+`raw_override` built its event vector without it. That arm's own comment
+says the activation "already happened and stands", and an activation
+swaps the PROMPT PROFILE: a user who hopped onto an anthropic profile
+whose window auto-selects compact, and whose model override then failed,
+was left on the compact tool descriptions and the compact system prompt
+with nothing but a failure notice to explain it. That is exactly the
+confusion the T41 notice exists to prevent, on the one path where a user
+is least likely to guess. The notice now rides that arm too.
+
+### The live smoke: what the fix was verified against
+
+`~/temur-eval-archive/t41-live/REPORT.md`, with transcripts and every
+config variant beside it. The REBUILT `i686-unknown-linux-gnu` debug
+binary carrying all three commits, against llama.cpp `server-b10438`
+(Qwen3-4B-Instruct-2507 Q4_K_M, `CTX=12288`, `--jinja`, bundled
+template), keyless, no `ANTHROPIC_API_KEY` in the environment at any
+point, no hosted provider contacted.
+
+| Profile | Window | Measured | Estimate | Verdict |
+| --- | --- | --- | --- | --- |
+| compact (auto) | 12288 | 2,714 (22%) | ~2,459 (20%) | PASS |
+| full (explicit) | 12288 | 6,942 (56%) | ~7,240 (58%) | WARN |
+| full (auto) | 24576 | 6,942 (28%) | - | PASS |
+| compact (auto) | 16384 | 2,714 (16%) | - | PASS |
+
+The last row is R1's whole point, and the counterfactual is the proof
+rather than the argument: the INSTALLED `temur 0.30.0`, same config,
+same server, same window 16384, prints `WARN: prompt floor (measured):
+6942 tokens; window 16384; 42% of the window ... set prompt_profile to
+"compact"`, where the fixed build picks compact and PASSes at 16%. Log:
+`t41-live/logs/3g-counterfactual-v0.30.0-16384.log`.
+
+Against F6's 6,991 full and 2,763 compact, this run reads 6,942 and
+2,714, 49 tokens lower on each. Expected: the floor moves with the cwd
+path length and the installed skills, and both differ between the two
+runs. The estimator came out 4.3% HIGH on full and 9.4% LOW on compact,
+which is the "off by some percent in either direction" the NOTE claims
+and, again, no single percentage worth quoting.
+
+Probe cost, which is R2's subject: 84.9s for a cold compact run, 293.8s
+(4m54s) for the full profile, 18.0s and 47.1s once the server's prefix
+cache was warm, and 0.005s under `--no-network`, where the probe does
+not run and the announcement is correctly absent.
+
+**This closes one of the three "what this release does not establish"
+items from the v0.30.0 ship record**: doctor's MEASURED prompt-floor
+half had never run against a real server, only canned ones. It has now,
+on both profiles, at four windows. The other two stand unchanged: no
+threshold, 16384 or 20480, is validated by any task score, and
+auto-selection is still blind on a local server whose window was never
+written into the config.
+
+Two live observations recorded as NOT findings:
+
+- The T20 context advisory fired in the one-shot step at 33% of the
+  window. `context_crossing`'s second arm is `window - used <
+  max_tokens`, and the smoke config sets no `max_tokens`, so the default
+  32000 exceeds the entire 12288 window and that arm is true by
+  construction from the first response on. Pre-existing since T20,
+  unrelated to these commits, and now queued on the ROADMAP under
+  "Queued from v0.30.1" with a candidate doctor WARN.
+- The smoke plan said to quit the REPL with `/quit`; temur answers
+  `unknown command "/quit"` and the real exit is `exit`, which is what
+  `/help` lists and what the docs say. A slip in the plan text, not in
+  the product.
+
+Docs were checked line by line against the live output (`docs/USAGE.md`
+"The prompt profile" and "The prompt floor", `docs/OFFLINE.md`
+"Auto-selection"). No mismatches: the auto table, the startup notice,
+the `/status` wording, the new NOTE and USAGE's own `~7240 tokens;
+window 12288; 58%` sample all match what the binary printed.
+
+### Provenance of this record
+
+Three findings, from a code review of the shipped v0.30.0 range run on
+2026-08-30, hours after that release. The planning session verified all
+three against the tree BEFORE any was acted on, which matters because a
+review is a claim until something reproduces it: R1 was reproduced live
+on the shipped binary (the counterfactual above), R3 was reproduced as a
+failing test on the pre-fix tree, and R2 is readable off the code beside
+the tools-drop check it fails to imitate.
+
+Nothing else rides along. No milestone work, no new capability.
+
+### Gate log
+
+| Commit | What | Tests | check.sh | Gate log |
+| --- | --- | --- | --- | --- |
+| `1628350` | R1 | 780 | ALL CHECKS PASSED, first try | `t41-gates/fix-1.log` |
+| `a9e41f7` | R2 | 782 | ALL CHECKS PASSED, first try | `t41-gates/fix-2.log` |
+| `909191f` | R3 | 783 | ALL CHECKS PASSED, first try | `t41-gates/fix-3.log` |
+| close-out | stage 1 | 783 | see the stage-1 log | `t41-gates/v0.30.1-stage1-<head>.log` |
+
+The pre-fix proof for R3 is archived beside them as
+`t41-gates/r3-prefix-failure-proof.txt`: the regression test against a
+tree with `src/commands.rs` taken from the parent commit, failing with
+the two failure notices present and the compact line simply absent from
+the list, rather than on a subtlety of wording.
+
+Every run was pty-backed and teed with no tail in the pipe, so a single
+failure would keep its name. The TUI pty smokes passed first attempt
+throughout: no kill-and-rerun this cycle, and the unnamed `--lib`
+failure from the v0.29.1 cycle did not recur.
+
+Test count 779 at v0.30.0 to 783 here: one test for R1 (the tie), two
+for R2 (the NOTE present on the networked path and ahead of the number
+it explains, absent under `--no-network`), one for R3.
+
+One recorded deviation: the R3 diff shows an added line carrying an em
+dash. It is the pre-existing failure-notice string re-indented into the
+new block, not a new one, and the em-dash count in `src/commands.rs` is
+46 before and after. Noted in the commit message rather than worked
+around.
+
+### Stage 2 explicitly not yet run
+
+No tag exists, local or remote, and nothing has been published. This
+record is written at stage 1, before the release, which is the standing
+procedure: the acceptance record has to be able to say something the
+release could still contradict.
