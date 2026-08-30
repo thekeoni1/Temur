@@ -8471,3 +8471,89 @@ record is written at stage 1, before the release, which is the standing
 procedure: the close-out has to be able to say something the release
 could still contradict. The stage-2 tag message will be exactly one
 line, `temur v0.30.0 - prompt floor (T41)`.
+
+## v0.30.0 ship record - shipped private
+
+2026-08-30. **T41, the prompt floor, shipped private at tag `v0.30.0`.**
+A MINOR bump: the release flips a default that every config without an
+explicit `prompt_profile` sits on. Stage 2 ran to completion with no
+rerun and no deviation.
+
+Prep push and CI:
+
+- Three prep commits pushed `432506c..2fecbc8` (bump, CHANGELOG cut,
+  close-out). CI run **33322416167, attempt 1**, both jobs green:
+  `test` 2m22s, `release-gate` 8m14s. With the stage-1 run
+  (**33320692326, attempt 1**, `test` 1m19s, `release-gate` 4m48s)
+  that is **two runs, both attempt 1**, and with the three per-phase
+  `check.sh` gates and the stage-1 gate all green first try, a
+  zero-rerun cycle throughout. The planning session's running count
+  makes this the **eighth consecutive**.
+
+Tag:
+
+- Annotated tag `v0.30.0` at `2fecbc8`, tag object
+  `ce7906a194091cd87aa65a0a649a3e299ddfdf49`. Verified against the RAW
+  object before the push, not the formatted view:
+  `git cat-file tag v0.30.0 | tail -1 | od -c` gives exactly
+  `temur v0.30.0 - prompt floor (T41)\n`, 35 bytes, one line, one
+  trailing newline, no non-ASCII, and the hyphen is a plain `-`.
+  `%(objecttype)` reads `tag`. The remote tag object matches the local
+  one and dereferences to `2fecbc8`.
+
+Release build:
+
+- `release.sh` with **no SKIP_CHECK**, green first try. The embedded
+  `check.sh` reached `== ALL CHECKS PASSED ==` with all 48
+  `test result:` lines at `0 failed`, the three pty smokes passed on
+  the first attempt, the leak grep was clean, and the skew gate read
+  `OK: install.sh + README match version 0.30.0 and all targets`. 4/4
+  artifacts gated and staged.
+- **F5's second live outing, and it took branch one again.** The block
+  printed `(title below is the annotated tag message of v0.30.0, read
+  back just now)` and `--title "temur v0.30.0 - prompt floor (T41)"`,
+  which is the annotated-tag branch, not the lightweight-tag fallback
+  that shipped the v0.21 through v0.28 bare titles.
+
+Staged sha256:
+
+| Target | sha256 |
+| --- | --- |
+| aarch64-unknown-linux-musl | `481962e4...ae73` |
+| armv7-unknown-linux-musleabihf | `642e1f4f...c833` |
+| i686-unknown-linux-musl | `37def034...5146` |
+| x86_64-unknown-linux-musl | `aad62451...6292` |
+| SHA256SUMS (own hash) | `d3e8342a...a5e5` |
+
+Publish:
+
+- Private release at
+  `https://github.com/thekeoni1/Temur/releases/tag/v0.30.0`, **5
+  assets**, `isDraft=false`, `isPrerelease=false`. Repo `isPrivate`
+  confirmed `true` BEFORE and AFTER the publish. The release title
+  equals the tag message byte for byte, checked by string comparison
+  rather than by eye.
+
+Closing gate:
+
+- Re-downloaded x86_64 and SHA256SUMS into a fresh directory: both
+  `cmp`-identical to the staged copies, `sha256sum -c` OK. A second,
+  fuller download of ALL five assets was also `cmp`-identical to
+  staged, four for four, so every published artifact is byte-for-byte
+  what the gate produced.
+- Installer matrix **6/6 twice**: once against the staged directory and
+  once against the fresh full download, each covering pass, corrupt,
+  and unlisted on both the GNU host and the bare busybox container.
+- `~/.local/bin/temur` refreshed from the published i686 build: prints
+  `temur 0.30.0`, sha256 `37def034...5146`, equal to the published
+  i686 entry. It was `0.29.1` / `f4f58c79...9080` before.
+
+### What this release does not establish
+
+Unchanged from the T41 acceptance record above, and worth repeating at
+the ship: doctor's MEASURED prompt-floor half has still never run
+against a real server, only canned ones; the 16384 threshold is
+reasoned from F6's floor arithmetic and not from any task score; and
+auto-selection is blind on a local server whose window was never
+written into the config, because nothing probes `/props` at REPL
+startup. All three are queued on the ROADMAP under "Queued from T41".
