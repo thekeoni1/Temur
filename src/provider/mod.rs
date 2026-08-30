@@ -381,12 +381,30 @@ pub fn probe_props_context(base_url: &str, timeout: std::time::Duration) -> Opti
 ///
 /// Non-streaming on purpose: doctor wants the `usage` block, not deltas,
 /// and every compat server reports usage on a non-streamed response.
-pub fn tools_drop_probe_body(model: &str, tools: Option<&[ToolDef]>) -> String {
+///
+/// T41 added `system`, for the prompt-floor probe: the same request shape
+/// with the session's real system prompt as a leading system message, so
+/// the count that comes back is the real floor rather than the tools half
+/// of it. `None` (what both tools-drop probes pass) produces a
+/// BYTE-IDENTICAL body to the pre-T41 one, which matters because the
+/// tools-drop comparison is a published T34 baseline.
+pub fn tools_drop_probe_body(
+    model: &str,
+    tools: Option<&[ToolDef]>,
+    system: Option<&str>,
+) -> String {
+    let messages = match system {
+        None => serde_json::json!([{"role": "user", "content": "hi"}]),
+        Some(s) => serde_json::json!([
+            {"role": "system", "content": s},
+            {"role": "user", "content": "hi"},
+        ]),
+    };
     let mut body = serde_json::json!({
         "model": model,
         "stream": false,
         "max_tokens": 1,
-        "messages": [{"role": "user", "content": "hi"}],
+        "messages": messages,
     });
     if let Some(defs) = tools {
         let wire: Vec<openai_compat::types::ToolDef> =
@@ -471,12 +489,15 @@ pub enum ProbeOutcome {
 ///
 /// T34 widened only WHAT is sent (the caller's real definitions instead of
 /// one synthetic tool) and what comes back (a [`ProbeOutcome`] instead of
-/// an `Option`). The contract above is unchanged and still assertable:
-/// there is no credential-shaped parameter to pass.
+/// an `Option`). T41 added `system`, for doctor's prompt-floor
+/// measurement. The contract above is unchanged and still assertable:
+/// there is still no credential-shaped parameter to pass, and adding one
+/// would be visible in this signature.
 pub fn probe_prompt_tokens(
     base_url: &str,
     model: &str,
     tools: Option<&[ToolDef]>,
+    system: Option<&str>,
     timeout: std::time::Duration,
 ) -> ProbeOutcome {
     use std::io::Read;
@@ -490,7 +511,7 @@ pub fn probe_prompt_tokens(
     let res = match agent
         .post(&url)
         .header("content-type", "application/json")
-        .send(tools_drop_probe_body(model, tools))
+        .send(tools_drop_probe_body(model, tools, system))
     {
         Ok(res) => res,
         Err(_) => return ProbeOutcome::Unreachable,

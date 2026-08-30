@@ -13,27 +13,6 @@ use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Compact default system prompt for v1; overridable via config.
-/// (`{cwd}` is substituted at startup.)
-const DEFAULT_SYSTEM: &str = "You are temur, a terminal coding agent. You help with software \
-engineering tasks: reading and editing code, running commands, and searching the codebase.\n\
-Use the provided tools (read, write, edit, bash, glob, grep, todowrite, todoread, skill) to act; \
-prefer tools over guessing. Keep responses concise and direct — this is a terminal. \
-When you edit files, verify your changes. \
-You can see the local filesystem through these tools, so list or read a path before saying you \
-cannot access it. \
-The current working directory is: {cwd}";
-
-/// Shorter default system prompt used when `prompt_profile` is `"compact"`
-/// AND no config `system_prompt` override exists — an explicit override
-/// always wins, in either profile.
-const DEFAULT_SYSTEM_COMPACT: &str = "You are temur, a coding agent in a terminal. Act through \
-the provided tools; always call them with valid JSON arguments — never write a tool call as \
-plain text. Prefer tools over guessing, keep answers short, verify edits. \
-You can see the local filesystem through these tools, so list or read a path before saying you \
-cannot access it. \
-Working directory: {cwd}";
-
 fn main() -> ExitCode {
     env_logger::init();
     match run() {
@@ -503,11 +482,7 @@ fn repl(
     // its provider build already succeeded.
     let rebuild_system = |profile: temur::tools::PromptProfile| -> String {
         let base_system = cfg.system_prompt.clone().unwrap_or_else(|| {
-            let default = match profile {
-                temur::tools::PromptProfile::Compact => DEFAULT_SYSTEM_COMPACT,
-                temur::tools::PromptProfile::Full => DEFAULT_SYSTEM,
-            };
-            default.replace("{cwd}", &cwd_display)
+            temur::prompt::system_prompt_template(profile).replace("{cwd}", &cwd_display)
         });
         match temur::skills::system_prompt_section(&installed_skills) {
             Some(section) => format!("{base_system}{section}"),

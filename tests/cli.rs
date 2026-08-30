@@ -874,6 +874,10 @@ fn doctor_healthy_keyless_config_passes() {
     assert!(stdout.contains("keyless"), "{stdout}");
     assert!(stdout.contains("sessions dir"), "{stdout}");
     assert!(stdout.contains("SKIP: reachability probes (--no-network)"), "{stdout}");
+    // T41: the floor estimate is offline, so it is present even here. No
+    // window is configured on this config, so it is a NOTE with no verdict.
+    assert!(stdout.contains("prompt floor (estimate): ~"), "{stdout}");
+    assert!(stdout.contains("SKIP: prompt floor measurement (--no-network)"), "{stdout}");
     assert!(stdout.contains("0 fail"), "{stdout}");
     assert!(!stdout.contains("FAIL"), "{stdout}");
 }

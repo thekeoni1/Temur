@@ -254,6 +254,12 @@ fn run_with_sandbox_probe(
         context_check(&mut r, &prefix, p, no_network, &mut props)?;
     }
 
+    // Prompt floor (T41). The ACTIVE selection only, same reason as the
+    // tools-drop probe below: the offline half is cheap, but the measured
+    // half POSTs, and one POST per configured profile is more than a
+    // report should cost.
+    prompt_floor_check(&mut r, &cfg, &active, no_network)?;
+
     // Tools-drop probe (T31). The ACTIVE selection only, because unlike
     // the checks above this one POSTs, and two requests per configured
     // profile is more than a report should cost.
@@ -340,6 +346,173 @@ fn session_tool_definitions(
         .definitions()
 }
 
+/// The system prompt a session would send for this selection, assembled
+/// exactly as main's `rebuild_system` closure assembles it: the config
+/// override wins in either profile, `{cwd}` is the real working
+/// directory, and the skills section is appended. Doctor cannot call that
+/// closure (it lives in the binary, over locals main owns), so it rebuilds
+/// from the same three ingredients; [`crate::prompt`] holds the templates
+/// so at least the text itself cannot drift between the two.
+fn session_system_prompt(cfg: &Config, p: &crate::config::ResolvedProfile) -> String {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let base = cfg.system_prompt.clone().unwrap_or_else(|| {
+        crate::prompt::system_prompt_template(p.prompt_profile)
+            .replace("{cwd}", &cwd.display().to_string())
+    });
+    let skill_override = std::env::var("TEMUR_SKILLS_DIR")
+        .or_else(|_| std::env::var("OPENCODE_SKILLS_DIR"))
+        .ok()
+        .or_else(|| cfg.skills_dir.clone());
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let skill_dirs =
+        crate::skills::skill_dirs(skill_override.as_deref(), &cwd, home.as_deref());
+    match crate::skills::system_prompt_section(&crate::skills::enumerate(&skill_dirs)) {
+        Some(section) => format!("{base}{section}"),
+        None => base,
+    }
+}
+
+/// Fraction of the context window the prompt floor may occupy before the
+/// floor check WARNs. 40% is where F6's measurements stop being a tax and
+/// start being the budget: the full profile's 6,991 tokens are 57% of a
+/// 12,288-token window, which is the configuration desktop experiments 3
+/// and 4 watched exhaust itself.
+const PROMPT_FLOOR_WARN_PERCENT: u64 = 40;
+
+/// Bytes-to-tokens divisor for the offline estimate. Deliberately crude
+/// and deliberately named: see [`PROMPT_FLOOR_ESTIMATE_NOTE`] for what it
+/// gets wrong and by how much.
+const PROMPT_FLOOR_CHARS_PER_TOKEN: u64 = 4;
+
+/// What the estimate is worth, printed only when an estimate is the
+/// number being reported.
+///
+/// The note deliberately does NOT quote an error percentage or a
+/// direction. The only calibration this project has is F6 (RUNBOOK,
+/// 2026-08-29, llama.cpp `server-b10438`, Qwen3-4B-Instruct-2507,
+/// `context_window` 12288): 6,991 counted tokens for the full profile and
+/// 2,763 for the compact one. Against those, this estimator reads 7,240
+/// for the full profile in this repository's checkout, i.e. 4% HIGH, not
+/// low: the two runs weigh different cwd paths and different installed
+/// skills, so the sign of the gap is not a property of chars/4. Anyone
+/// who wants the real number can have it, from the measured line, for one
+/// request.
+const PROMPT_FLOOR_ESTIMATE_NOTE: &str =
+    "NOTE: that estimate is prompt bytes divided by 4, which is not tokenization: expect it to be off by some percent in either direction. A networked run against a keyless openai-compat server reports a measured figure instead. Reference measurement (2026-08-29, llama.cpp, Qwen3-4B-Instruct-2507): 6,991 tokens for the full profile, 2,763 for the compact one.";
+
+/// What moves the number, printed with every floor line, measured or not.
+/// Both ingredients are things the reader can change and neither is
+/// obvious from the number alone.
+const PROMPT_FLOOR_INPUTS_NOTE: &str =
+    "NOTE: the prompt floor moves with the length of the cwd path and the number of installed skills, both of which ride in the system prompt";
+
+/// The prompt floor (T41): how much of the context window is spent before
+/// the user's first word.
+///
+/// T40 finding F6 measured temur's own floor at 6,991 tokens on the full
+/// profile and 2,763 on the compact one. On a 12,288-token local server
+/// that is 57% of the window gone before the task starts, and desktop
+/// experiments 3 and 4 found context exhaustion to be the dominant
+/// Terminal-Bench failure mode at those sizes. The number is knowable
+/// offline and cheap to measure exactly, so doctor reports it.
+///
+/// Two halves. The ESTIMATE always runs: system prompt bytes plus tool
+/// description and schema bytes, divided by
+/// [`PROMPT_FLOOR_CHARS_PER_TOKEN`]. It is honest about being an estimate
+/// because chars/4 is not tokenization. The MEASURED half runs under the
+/// same gate as the tools-drop probe (keyless openai-compat, network on)
+/// and asks the server that will actually serve this session: one POST,
+/// one generated token, carrying the real system prompt and the real
+/// definitions. When it answers, its number is the one judged.
+///
+/// Reports the ACTIVE selection only, and never FAILs: a floor that is
+/// too large is a configuration to change, not a broken install.
+fn prompt_floor_check(
+    r: &mut Report<'_>,
+    cfg: &Config,
+    p: &crate::config::ResolvedProfile,
+    no_network: bool,
+) -> std::io::Result<()> {
+    use crate::provider::ProbeOutcome;
+    let system = session_system_prompt(cfg, p);
+    let defs = session_tool_definitions(cfg, p);
+    let tool_bytes: u64 = defs
+        .iter()
+        .map(|d| {
+            d.description.len() as u64
+                + serde_json::to_string(&d.input_schema)
+                    .map(|s| s.len() as u64)
+                    .unwrap_or(0)
+        })
+        .sum();
+    let estimate =
+        (system.len() as u64 + tool_bytes).div_ceil(PROMPT_FLOOR_CHARS_PER_TOKEN);
+
+    // The measured half, under the tools-drop gate. Anything short of a
+    // usable count (keyed selection, --no-network, a server that refuses
+    // or reports no usage) falls back to the estimate, which is why the
+    // estimate is computed first and unconditionally.
+    let probe_gate = !no_network && p.provider == "openai-compat" && p.api_key_file.is_none();
+    let measured = if probe_gate {
+        match crate::provider::probe_prompt_tokens(
+            &p.base_url,
+            &p.model,
+            Some(&defs),
+            Some(&system),
+            std::time::Duration::from_secs(crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS),
+        ) {
+            ProbeOutcome::Ok(n) => Some(n),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    if no_network {
+        writeln!(r.out, "SKIP: prompt floor measurement (--no-network)")?;
+    }
+
+    let (kind, tokens, tilde) = match measured {
+        Some(n) => ("measured", n, ""),
+        None => ("estimate", estimate, "~"),
+    };
+    let Some(window) = p.context_window else {
+        // Nothing to compare against: report the number and say why there
+        // is no verdict, rather than inventing a window to divide by.
+        writeln!(
+            r.out,
+            "NOTE: prompt floor ({kind}): {tilde}{tokens} tokens; no context_window is configured, so there is nothing to compare it against"
+        )?;
+        return floor_notes(r, measured.is_none());
+    };
+    let percent = tokens.saturating_mul(100) / window.max(1);
+    let line = format!(
+        "prompt floor ({kind}): {tilde}{tokens} tokens; window {window}; {percent}% of the window"
+    );
+    if percent < PROMPT_FLOOR_WARN_PERCENT {
+        r.pass(&line)?;
+    } else if p.prompt_profile == crate::tools::PromptProfile::Compact {
+        // Already on the small prompts and still over the line: the knob
+        // this check usually points at is spent, so point at the other one.
+        r.warn(&format!(
+            "{line} is spent before the task starts, and the compact profile is ALREADY active: raise context_window, or serve a model with a larger window"
+        ))?;
+    } else {
+        r.warn(&format!(
+            "{line} is spent before the task starts; set prompt_profile to \"compact\" or raise context_window"
+        ))?;
+    }
+    floor_notes(r, measured.is_none())
+}
+
+/// The trailing notes for one floor line: what moves the number, always,
+/// and what the estimate gets wrong, only when the number IS an estimate.
+fn floor_notes(r: &mut Report<'_>, estimated: bool) -> std::io::Result<()> {
+    if estimated {
+        writeln!(r.out, "{PROMPT_FLOOR_ESTIMATE_NOTE}")?;
+    }
+    writeln!(r.out, "{PROMPT_FLOOR_INPUTS_NOTE}")
+}
+
 /// The tools-drop probe (T31, widened by T34). llama.cpp's `--jinja` mode
 /// SILENTLY drops the tools array when the model's chat template has no
 /// tool support: the request returns HTTP 200, the server logs nothing, and
@@ -393,9 +566,9 @@ fn tools_drop_check(
         p.base_url
     )?;
     let _ = r.out.flush();
-    let bare = crate::provider::probe_prompt_tokens(&p.base_url, &p.model, None, timeout);
+    let bare = crate::provider::probe_prompt_tokens(&p.base_url, &p.model, None, None, timeout);
     let with_tools =
-        crate::provider::probe_prompt_tokens(&p.base_url, &p.model, Some(&defs), timeout);
+        crate::provider::probe_prompt_tokens(&p.base_url, &p.model, Some(&defs), None, timeout);
     match (bare, with_tools) {
         (ProbeOutcome::Ok(a), ProbeOutcome::Ok(b)) if a == b => r.warn(&format!(
             "the server at {} appears to drop tool definitions for \"{}\" (prompt_tokens {a} with and without temur's tools): the chat template has no tool support, so tool calls can silently never happen",
@@ -1341,10 +1514,13 @@ mod tests {
         let (healthy, out) = doctor_over(&keyless_config(&base, "m"), false);
         assert!(healthy, "{out}");
         let bodies = posts.lock().unwrap().clone();
+        // T41 put a THIRD POST on the wire (the prompt-floor probe), and
+        // it carries tools too. The tools-drop pair is the one without a
+        // system message; see `the_floor_probe_carries_the_real_system_prompt`.
         let with_tools = bodies
             .iter()
-            .find(|b| b.contains("\"tools\""))
-            .expect("one probe request carries tools");
+            .find(|b| b.contains("\"tools\"") && !b.contains("\"system\""))
+            .expect("one tools-drop request carries tools and no system");
         let json_start = with_tools.find("{").expect("a JSON body");
         let v: serde_json::Value =
             serde_json::from_str(&with_tools[json_start..]).expect("parseable body");
@@ -1450,6 +1626,224 @@ mod tests {
         assert!(healthy, "{out}");
         assert!(!out.contains("tools-drop probe"), "{out}");
         assert!(!out.contains("tool definitions"), "{out}");
+    }
+
+    // ----------------------------------------- T41: the prompt floor
+
+    /// The window that puts the floor at exactly 39% and 40% of it, given
+    /// a server that reports `tokens` for the floor probe. Chosen so the
+    /// PASS/WARN boundary is asserted on the number, not on a real prompt
+    /// whose size drifts with the cwd.
+    const USAGE_3900: &str =
+        r#"{"choices":[],"usage":{"prompt_tokens":3900,"completion_tokens":1}}"#;
+    const USAGE_4000: &str =
+        r#"{"choices":[],"usage":{"prompt_tokens":4000,"completion_tokens":1}}"#;
+
+    /// A keyless openai-compat config with a window, and optionally an
+    /// explicit prompt_profile.
+    fn windowed_keyless(base: &str, window: u64, prompt_profile: Option<&str>) -> String {
+        let pp = prompt_profile
+            .map(|p| format!(r#""prompt_profile":"{p}","#))
+            .unwrap_or_default();
+        format!(
+            r#"{{"provider":"openai-compat",{pp}"openai_compat":{{"base_url":"{base}","model":"m","context_window":{window}}}}}"#
+        )
+    }
+
+    /// The measured half asks the server that will serve the session, with
+    /// what the session would actually send: the real system prompt AND
+    /// the real definitions, capped at one generated token.
+    #[test]
+    fn the_floor_probe_carries_the_real_system_prompt_and_the_real_definitions() {
+        let (base, posts) = canned_server_with_completions_ex(
+            LLAMA_MODELS,
+            USAGE_10,
+            "HTTP/1.1 200 OK",
+            USAGE_3900,
+        );
+        let (healthy, out) = doctor_over(&windowed_keyless(&base, 10000, None), false);
+        assert!(healthy, "{out}");
+        let bodies = posts.lock().unwrap().clone();
+        let floor = bodies
+            .iter()
+            .find(|b| b.contains("\"system\""))
+            .expect("the floor probe carries a system message");
+        let v: serde_json::Value =
+            serde_json::from_str(&floor[floor.find('{').expect("a JSON body")..])
+                .expect("parseable body");
+        assert_eq!(v["messages"][0]["role"], "system");
+        let sent = v["messages"][0]["content"].as_str().expect("a system string");
+        // The compact template, because a 10000 window auto-selects it.
+        assert!(sent.starts_with("You are temur, a coding agent in a terminal."), "{sent}");
+        assert_eq!(v["max_tokens"], 1, "one generated token, like its siblings");
+        let expected = crate::tools::Registry::standard_with_skills(vec![]).definitions();
+        assert_eq!(
+            v["tools"].as_array().expect("a tools array").len(),
+            expected.len(),
+            "the whole registry rides the floor probe"
+        );
+    }
+
+    /// The T34 comparison baseline must not move: the two tools-drop
+    /// bodies are byte-identical to their pre-T41 selves, which here means
+    /// they carry no system message at all.
+    #[test]
+    fn the_two_tools_drop_bodies_carry_no_system_field() {
+        let (base, posts) = canned_server_with_completions_ex(
+            LLAMA_MODELS,
+            USAGE_10,
+            "HTTP/1.1 200 OK",
+            USAGE_31,
+        );
+        let (_healthy, _out) = doctor_over(&windowed_keyless(&base, 10000, None), false);
+        let bodies = posts.lock().unwrap().clone();
+        assert_eq!(bodies.len(), 3, "one floor probe plus the tools-drop pair");
+        let without_system: Vec<&String> =
+            bodies.iter().filter(|b| !b.contains("\"system\"")).collect();
+        assert_eq!(without_system.len(), 2, "exactly the tools-drop pair: {bodies:?}");
+        // And they are still the bare/with-tools pair, unchanged.
+        let expected_bare = crate::provider::tools_drop_probe_body("m", None, None);
+        assert!(
+            without_system.iter().any(|b| b.ends_with(&expected_bare)),
+            "the bare body is byte-identical: {without_system:?}"
+        );
+    }
+
+    #[test]
+    fn floor_passes_below_forty_percent_and_warns_at_it() {
+        // 3900 of 10000 = 39%: PASS.
+        let (base, _p) = canned_server_with_completions_ex(
+            LLAMA_MODELS,
+            USAGE_10,
+            "HTTP/1.1 200 OK",
+            USAGE_3900,
+        );
+        let (healthy, out) = doctor_over(&windowed_keyless(&base, 10000, None), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains("PASS: prompt floor (measured): 3900 tokens; window 10000; 39% of the window"),
+            "{out}"
+        );
+        assert!(!out.contains("(estimate)"), "a measurement wins: {out}");
+        // No estimate caveat when nothing was estimated.
+        assert!(!out.contains("is not tokenization"), "{out}");
+        assert!(out.contains("moves with the length of the cwd path"), "{out}");
+
+        // 4000 of 10000 = 40%: WARN, naming the fix.
+        let (base, _p) = canned_server_with_completions_ex(
+            LLAMA_MODELS,
+            USAGE_10,
+            "HTTP/1.1 200 OK",
+            USAGE_4000,
+        );
+        let (healthy, out) = doctor_over(&windowed_keyless(&base, 10000, Some("full")), false);
+        assert!(healthy, "a big floor is a WARN, never a FAIL: {out}");
+        assert!(
+            out.contains("WARN: prompt floor (measured): 4000 tokens; window 10000; 40% of the window is spent before the task starts; set prompt_profile to \"compact\" or raise context_window"),
+            "{out}"
+        );
+    }
+
+    /// Already compact and still over the line: the advice this check
+    /// usually gives is spent, so it gives the other one instead.
+    #[test]
+    fn floor_warn_on_an_already_compact_profile_says_so_and_points_elsewhere() {
+        let (base, _p) = canned_server_with_completions_ex(
+            LLAMA_MODELS,
+            USAGE_10,
+            "HTTP/1.1 200 OK",
+            USAGE_4000,
+        );
+        let (healthy, out) =
+            doctor_over(&windowed_keyless(&base, 10000, Some("compact")), false);
+        assert!(healthy, "{out}");
+        assert!(out.contains("the compact profile is ALREADY active"), "{out}");
+        assert!(
+            out.contains("raise context_window, or serve a model with a larger window"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("set prompt_profile to \"compact\""),
+            "never advise what is already true: {out}"
+        );
+    }
+
+    /// A server that answers nothing usable leaves the offline estimate,
+    /// which says so in the word "estimate" and carries its own caveat.
+    #[test]
+    fn floor_falls_back_to_the_estimate_when_the_probe_says_nothing_usable() {
+        let no_usage = r#"{"choices":[{"message":{"content":"hi"}}]}"#;
+        let base = canned_server_with_completions(LLAMA_MODELS, no_usage, no_usage);
+        let (healthy, out) = doctor_over(&windowed_keyless(&base, 100000, None), false);
+        assert!(healthy, "{out}");
+        assert!(out.contains("prompt floor (estimate): ~"), "{out}");
+        assert!(out.contains("is not tokenization"), "the caveat rides it: {out}");
+    }
+
+    #[test]
+    fn floor_under_no_network_is_the_estimate_with_a_skip_line() {
+        let (healthy, out) = doctor_over(
+            r#"{"provider":"openai-compat","openai_compat":{"model":"m","context_window":100000}}"#,
+            true,
+        );
+        assert!(healthy, "{out}");
+        assert!(out.contains("SKIP: prompt floor measurement (--no-network)"), "{out}");
+        assert!(out.contains("PASS: prompt floor (estimate): ~"), "{out}");
+        assert!(out.contains("window 100000"), "{out}");
+        assert!(!out.contains("(measured)"), "{out}");
+    }
+
+    /// No window: the number is still worth printing, and a percentage of
+    /// nothing is not. NOTE, so it cannot move the exit code either way.
+    #[test]
+    fn floor_without_a_window_is_a_note_with_no_verdict() {
+        let (healthy, out) = doctor_over(
+            r#"{"provider":"openai-compat","openai_compat":{"model":"m"}}"#,
+            true,
+        );
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains("NOTE: prompt floor (estimate): ~")
+                && out.contains("no context_window is configured, so there is nothing to compare it against"),
+            "{out}"
+        );
+        assert!(!out.contains("% of the window"), "no percentage of nothing: {out}");
+    }
+
+    /// The estimate follows the ACTIVE profile: the compact prompts really
+    /// are the smaller number, which is the whole reason auto exists.
+    #[test]
+    fn the_estimate_is_smaller_on_the_compact_profile() {
+        fn floor_of(profile: &str) -> u64 {
+            let (_healthy, out) = doctor_over(
+                &format!(
+                    r#"{{"provider":"openai-compat","prompt_profile":"{profile}","openai_compat":{{"model":"m","context_window":100000}}}}"#
+                ),
+                true,
+            );
+            let at = out.find("prompt floor (estimate): ~").expect("a floor line");
+            out[at..]
+                .split('~')
+                .nth(1)
+                .and_then(|s| s.split(' ').next())
+                .and_then(|s| s.parse().ok())
+                .expect("a number")
+        }
+        assert!(floor_of("compact") < floor_of("full"));
+    }
+
+    /// The floor probe is gated exactly like the tools-drop probe: no
+    /// network, no POST.
+    #[test]
+    fn floor_makes_no_request_under_no_network() {
+        let (base, posts) = canned_server_with_completions_ex(
+            LLAMA_MODELS,
+            USAGE_10,
+            "HTTP/1.1 200 OK",
+            USAGE_31,
+        );
+        let (_healthy, _out) = doctor_over(&windowed_keyless(&base, 10000, None), true);
+        assert!(posts.lock().unwrap().is_empty(), "no POST under --no-network");
     }
 
     // ------------------------------- T17 P4: key-rotation reminder (mtime)

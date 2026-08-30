@@ -975,8 +975,8 @@ fn session_defs() -> Vec<temur::provider::ToolDef> {
 #[test]
 fn tools_drop_probe_body_differs_only_by_the_tools_array() {
     let defs = session_defs();
-    let bare = tools_drop_probe_body("my-model", None);
-    let with = tools_drop_probe_body("my-model", Some(&defs));
+    let bare = tools_drop_probe_body("my-model", None, None);
+    let with = tools_drop_probe_body("my-model", Some(&defs), None);
     // Both are tiny, capped at one generated token, and non-streaming, so
     // the usage block comes back in one response.
     for b in [&bare, &with] {
@@ -1063,7 +1063,7 @@ fn tools_drop_probe_posts_to_chat_completions_and_sends_no_auth_header() {
     );
     let defs = session_defs();
     assert_eq!(
-        probe_prompt_tokens(&base, "m", Some(&defs), KEYLESS_TIMEOUT),
+        probe_prompt_tokens(&base, "m", Some(&defs), None, KEYLESS_TIMEOUT),
         ProbeOutcome::Ok(31)
     );
     let request = server.join().unwrap();
@@ -1088,7 +1088,7 @@ fn tools_drop_probe_http_error_carries_the_status_and_the_servers_words() {
         r#"{"error":{"message":"Object key of unhashable type: Array","type":"server_error"}}"#,
     );
     assert_eq!(
-        probe_prompt_tokens(&base, "m", None, KEYLESS_TIMEOUT),
+        probe_prompt_tokens(&base, "m", None, None, KEYLESS_TIMEOUT),
         ProbeOutcome::HttpError {
             status: 400,
             message: "Object key of unhashable type: Array".into()
@@ -1098,7 +1098,7 @@ fn tools_drop_probe_http_error_carries_the_status_and_the_servers_words() {
 
     let (base, server) = one_shot_post_server("HTTP/1.1 404 Not Found", "not found");
     assert_eq!(
-        probe_prompt_tokens(&base, "m", None, KEYLESS_TIMEOUT),
+        probe_prompt_tokens(&base, "m", None, None, KEYLESS_TIMEOUT),
         ProbeOutcome::HttpError {
             status: 404,
             message: "not found".into()
@@ -1111,7 +1111,7 @@ fn tools_drop_probe_http_error_carries_the_status_and_the_servers_words() {
 fn tools_drop_probe_unusable_body_is_no_usage_and_a_dead_port_is_unreachable() {
     let (base, server) = one_shot_post_server("HTTP/1.1 200 OK", "<html>gateway</html>");
     assert_eq!(
-        probe_prompt_tokens(&base, "m", None, KEYLESS_TIMEOUT),
+        probe_prompt_tokens(&base, "m", None, None, KEYLESS_TIMEOUT),
         ProbeOutcome::NoUsage
     );
     server.join().unwrap();
@@ -1121,7 +1121,7 @@ fn tools_drop_probe_unusable_body_is_no_usage_and_a_dead_port_is_unreachable() {
         l.local_addr().unwrap().port()
     };
     assert_eq!(
-        probe_prompt_tokens(&format!("http://127.0.0.1:{port}/v1"), "m", None, KEYLESS_TIMEOUT),
+        probe_prompt_tokens(&format!("http://127.0.0.1:{port}/v1"), "m", None, None, KEYLESS_TIMEOUT),
         ProbeOutcome::Unreachable
     );
 }
