@@ -762,7 +762,15 @@ impl Session {
         let before_bytes = history_bytes(&self.history);
         let folded = round_trips(&self.history[turn_start + 1..tail_start]);
         let kept = round_trips(&self.history[tail_start..]);
-        let summary = match self.summarize(AUTO_COMPACT_INSTRUCTION) {
+        // T42 P3: summarize the PRE-TAIL only. The tail survives verbatim
+        // in the merged result, so sending it to the summary call buys
+        // nothing and costs the whole reason this is being done. Desktop
+        // experiment 5's adaptive-rejection-sampler r2 is the case: the
+        // crossing was first seen at 94% of the window, and the summary
+        // call, carrying full history, 400'd at 13,518 tokens against a
+        // 12,288 window. The fold that would have rescued the turn was the
+        // thing that could not fit.
+        let summary = match self.summarize_upto(AUTO_COMPACT_INSTRUCTION, tail_start) {
             Ok(s) => s,
             Err(outcome) => return outcome.into(),
         };
@@ -920,13 +928,34 @@ impl Session {
     /// unchanged, and no arm touches history: the replacement is the
     /// caller's job, and only after a completed, non-empty summary.
     fn summarize(&mut self, instruction: &str) -> Result<String, CompactOutcome> {
+        self.summarize_upto(instruction, self.history.len())
+    }
+
+    /// [`Session::summarize`] over `history[..upto]` only.
+    ///
+    /// T42 P3 exists for the one caller that needs it: T40 auto-compaction,
+    /// whose result KEEPS the tail verbatim and therefore does not need the
+    /// tail described to it. `/compact` is fail-closed and discards
+    /// everything but the summary, so it must keep passing the whole
+    /// history and does (`upto == history.len()`).
+    ///
+    /// Alternation stays safe at either bound. `auto_compact_tail_start`
+    /// cuts on a pair boundary, so `history[..tail_start]` ends with the
+    /// user message answering the previous response, and the instruction
+    /// joins THAT message rather than opening a second consecutive user
+    /// one. Pinned by test, not by this paragraph.
+    fn summarize_upto(
+        &mut self,
+        instruction: &str,
+        upto: usize,
+    ) -> Result<String, CompactOutcome> {
         // Alternation-safe instruction: history normally ends with an
         // assistant message and the instruction is a new user message; when
         // it already ends with a user message (dangling prompt after a
-        // provider-error turn), the instruction joins that message as an
-        // extra text block instead. The Anthropic wire rejects two
-        // consecutive user messages.
-        let mut messages = self.history.clone();
+        // provider-error turn, or the pre-tail cut above), the instruction
+        // joins that message as an extra text block instead. The Anthropic
+        // wire rejects two consecutive user messages.
+        let mut messages = self.history[..upto.min(self.history.len())].to_vec();
         let instruction = ContentBlock::Text {
             text: instruction.to_string(),
         };

@@ -6091,3 +6091,89 @@ fn the_pre_send_check_compacts_when_the_turn_is_foldable() {
     // 3 turn round-trips, the summary call, the send after the fold.
     assert_eq!(requests.borrow().len(), 5);
 }
+
+// ---- T42 P3: the auto path's summary call is bounded ----
+
+#[test]
+fn the_auto_summary_call_excludes_the_tail_it_is_about_to_keep() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_auto_compact(
+        dir.path(),
+        vec![
+            rt(1, 100),
+            rt(2, 100),
+            rt(3, 100),
+            rt(4, 800), // crosses
+            summary_response("WORK SO FAR"),
+            rt(5, 100),
+            done_with(100),
+        ],
+        Some(1000),
+        100,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    // Outcome wording is unchanged by the bound.
+    assert!(
+        n.iter().any(|x| x.starts_with("compacted: 2 round-trip(s) summarized, 2 kept, ~")),
+        "{n:?}"
+    );
+
+    let reqs = requests.borrow();
+    let sreq = &reqs[4];
+    assert!(sreq.tools.is_empty(), "the summary call still omits tools");
+    // History at the safe point is 9 messages and the tail begins at 5, so
+    // the summary call carries [prompt, a1, r1, a2, r2] and nothing else.
+    // The two kept round-trips survive verbatim in the result and do not
+    // need describing to the summarizer.
+    assert_eq!(sreq.messages.len(), 5, "{:?}", sreq.messages.len());
+    assert_eq!(
+        tool_results(&sreq.messages).len(),
+        2,
+        "the tail's results are absent from the summary call"
+    );
+    // Alternation, pinned rather than argued: the pre-tail ends with a user
+    // message, so the instruction JOINS it instead of opening a second
+    // consecutive user message, which both wires reject.
+    let last = sreq.messages.last().unwrap();
+    assert_eq!(last.role, Role::User);
+    assert!(
+        texts_of(last).iter().any(|t| t.contains("The middle of this conversation")),
+        "{:?}",
+        texts_of(last)
+    );
+    assert!(
+        sreq.messages.windows(2).all(|w| w[0].role != w[1].role),
+        "no two consecutive messages share a role"
+    );
+}
+
+#[test]
+fn manual_compact_still_summarizes_the_whole_history() {
+    // T42 P3 regression pin. `/compact` is fail-closed and discards
+    // everything but the summary, so bounding ITS call would silently throw
+    // the conversation away. The bound is the auto path's alone.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(vec![text("answer one")], StopReason::EndTurn),
+            msg(vec![text("answer two")], StopReason::EndTurn),
+            msg(vec![text("Goal: x\nState: y")], StopReason::EndTurn),
+        ],
+    );
+    collect_events(&mut session, "first question");
+    collect_events(&mut session, "second question");
+    assert_eq!(session.history().len(), 4);
+    assert!(matches!(session.compact(), CompactOutcome::Compacted { .. }));
+
+    let reqs = requests.borrow();
+    let sreq = &reqs[2];
+    assert_eq!(sreq.messages.len(), 5, "all 4 messages plus the instruction");
+    let last = sreq.messages.last().unwrap();
+    assert_eq!(last.role, Role::User);
+    assert!(
+        texts_of(last).iter().any(|t| t.contains("Summarize this conversation")),
+        "the MANUAL instruction, not the auto one"
+    );
+}
