@@ -139,6 +139,58 @@ pub fn auto_compact_notice(context_window: u64) -> String {
     )
 }
 
+/// T42 P4: does this selection want the startup `/props` probe?
+///
+/// Deliberately narrow, and every clause is load-bearing. `openai-compat`
+/// with NO key file is the keyless local endpoint the probe was built for
+/// in T22, and it is the only shape [`crate::provider::probe_props_context`]
+/// can be pointed at: that function takes a base URL and nothing else, so
+/// it cannot attach auth by construction. An UNSET `context_window` is the
+/// only case worth asking about, because a configured one is authoritative
+/// and is never probed over (doctor already warns when the two disagree,
+/// which is the right place for that conversation). And `--mock` replays
+/// fixtures with no server to ask.
+///
+/// Costs at most one 3-second GET, once, on a run that would otherwise
+/// have had no window at all: no advisory, no auto-compaction, and the
+/// unscaled tool-output ceiling.
+pub fn wants_startup_context_probe(p: &ResolvedProfile, is_mock: bool) -> bool {
+    !is_mock
+        && p.provider == "openai-compat"
+        && p.api_key_file.is_none()
+        && p.context_window.is_none()
+}
+
+/// T42 P4: fold a probed window into the resolved selection, returning the
+/// line that says so. In-memory only: nothing is written to disk, because
+/// what the server allocates today is not a config decision, and doctor
+/// still recommends the explicit `"context_window"` line for anyone who
+/// wants one.
+///
+/// The prompt profile is recomputed ONLY for an `Auto` selection. An
+/// explicit `"full"` or `"compact"` is a user's stated choice and a probe
+/// result is not grounds to overrule it. When auto does flip to compact,
+/// the existing T41 line ([`auto_compact_notice`]) says so right after
+/// this one, in the same words startup and `/model` have always used.
+pub fn apply_probed_context_window(p: &mut ResolvedProfile, n: u64) -> String {
+    p.context_window = Some(n);
+    if p.prompt_profile_source == PromptProfileSource::Auto {
+        p.prompt_profile = auto_prompt_profile(Some(n));
+    }
+    probed_context_notice(n)
+}
+
+/// The T42 P4 startup line. Names the SOURCE, because a number nobody
+/// configured appearing in `/status` is otherwise a mystery, and the
+/// CONSEQUENCE, because the three things it switches on are exactly the
+/// three a user would otherwise wonder about.
+pub fn probed_context_notice(n: u64) -> String {
+    format!(
+        "context window {n} detected from the server (/props); the context advisory, \
+         auto-compaction, and the tool-output cap now use it"
+    )
+}
+
 /// Loaded from ~/.config/temur/config.json (or $XDG_CONFIG_HOME).
 /// Unknown fields are tolerated so old binaries accept newer configs.
 #[derive(Debug, Clone, Deserialize)]
@@ -783,6 +835,108 @@ pub fn config_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A keyless local selection with no window and the auto profile: the
+    /// exact shape T42 P4 probes for.
+    fn keyless_local() -> ResolvedProfile {
+        ResolvedProfile {
+            provider: "openai-compat".into(),
+            model: "local-gguf".into(),
+            base_url: "http://127.0.0.1:8080/v1".into(),
+            api_key_file: None,
+            max_tokens: 3072,
+            context_window: None,
+            prompt_profile: crate::tools::PromptProfile::Full,
+            prompt_profile_source: PromptProfileSource::Auto,
+            price_input_per_mtok: None,
+            price_output_per_mtok: None,
+            max_tokens_parameter: crate::provider::MaxTokensParam::default(),
+        }
+    }
+
+    #[test]
+    fn the_startup_probe_gate_is_the_narrow_shape_it_claims_to_be() {
+        assert!(wants_startup_context_probe(&keyless_local(), false));
+        // --mock has no server to ask.
+        assert!(!wants_startup_context_probe(&keyless_local(), true));
+        // A configured window is authoritative and is never probed over.
+        let mut p = keyless_local();
+        p.context_window = Some(8192);
+        assert!(!wants_startup_context_probe(&p, false));
+        // A keyed endpoint: the T22 probe is keyless by construction and
+        // is not pointed at anything that expects auth.
+        let mut p = keyless_local();
+        p.api_key_file = Some("/srv/secrets/key".into());
+        assert!(!wants_startup_context_probe(&p, false));
+        // Anthropic does not serve /props.
+        let mut p = keyless_local();
+        p.provider = "anthropic".into();
+        assert!(!wants_startup_context_probe(&p, false));
+    }
+
+    #[test]
+    fn a_probed_window_flows_into_the_selection_and_the_auto_profile() {
+        // Below the auto threshold: the window lands and the profile flips.
+        let mut p = keyless_local();
+        let notice = apply_probed_context_window(&mut p, 12288);
+        assert_eq!(p.context_window, Some(12288));
+        assert_eq!(p.prompt_profile, crate::tools::PromptProfile::Compact);
+        assert!(notice.contains("context window 12288 detected from the server (/props)"), "{notice}");
+        assert!(!notice.contains('\n'), "one line: {notice}");
+        assert!(notice.is_ascii(), "ASCII: {notice}");
+
+        // At or above it: the window lands, the profile does not move.
+        let mut p = keyless_local();
+        apply_probed_context_window(&mut p, PROMPT_AUTO_COMPACT_BELOW);
+        assert_eq!(p.context_window, Some(PROMPT_AUTO_COMPACT_BELOW));
+        assert_eq!(p.prompt_profile, crate::tools::PromptProfile::Full);
+    }
+
+    #[test]
+    fn an_explicit_prompt_profile_survives_a_probed_window() {
+        // The window is a server fact; the profile is a user's decision.
+        let mut p = keyless_local();
+        p.prompt_profile = crate::tools::PromptProfile::Full;
+        p.prompt_profile_source = PromptProfileSource::Explicit;
+        apply_probed_context_window(&mut p, 4096);
+        assert_eq!(p.context_window, Some(4096));
+        assert_eq!(
+            p.prompt_profile,
+            crate::tools::PromptProfile::Full,
+            "an explicit \"full\" is not overruled by a probe"
+        );
+    }
+
+    #[test]
+    fn the_startup_probe_never_asks_where_doctor_would_not() {
+        // Parity pin. doctor's context_check probes when the selection is
+        // openai-compat AND keyless (and the run allows network); startup
+        // adds two further conditions. Startup must stay a strict SUBSET,
+        // so no run can be probed at startup by a rule doctor does not
+        // also consider safe.
+        let doctor_would = |p: &ResolvedProfile| {
+            p.provider == "openai-compat" && p.api_key_file.is_none()
+        };
+        let mut cases = vec![keyless_local()];
+        for window in [None, Some(8192)] {
+            for key in [None, Some("/k".to_string())] {
+                for provider in ["openai-compat", "anthropic"] {
+                    let mut p = keyless_local();
+                    p.context_window = window;
+                    p.api_key_file = key.clone();
+                    p.provider = provider.into();
+                    cases.push(p);
+                }
+            }
+        }
+        for p in &cases {
+            for is_mock in [false, true] {
+                if wants_startup_context_probe(p, is_mock) {
+                    assert!(doctor_would(p), "startup probed where doctor would not: {p:?}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn prose_tool_calls_defaults_true_and_false_parses() {

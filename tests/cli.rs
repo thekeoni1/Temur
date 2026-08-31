@@ -1369,3 +1369,116 @@ fn status_marks_an_auto_chosen_profile_as_auto() {
     assert!(stdout.contains("prompt: compact"), "{stdout}");
     assert!(!stdout.contains("(auto)"), "explicit is not auto: {stdout}");
 }
+
+// ---- T42 P4: the startup /props probe ----
+
+/// A canned llama.cpp for the startup path: one keyless GET of `/props`
+/// answering with an n_ctx, then one chat completion so the one-shot turn
+/// finishes. Sequential on one listener, so the ORDER is asserted too:
+/// the probe has to happen before the session exists.
+#[test]
+fn startup_probes_props_for_a_missing_context_window() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://127.0.0.1:{}/v1", listener.local_addr().unwrap().port());
+    let sse = std::fs::read_to_string(fixture("text_simple.sse")).unwrap();
+    let server = std::thread::spawn(move || {
+        let mut heads = Vec::new();
+        let bodies: [(&str, String); 2] = [
+            ("application/json", r#"{"default_generation_settings":{"n_ctx":12288}}"#.into()),
+            ("text/event-stream", sse),
+        ];
+        for (ctype, body) in bodies {
+            use std::io::Read;
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                req.extend_from_slice(&buf[..n]);
+                if n == 0 || req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            heads.push(String::from_utf8_lossy(&req).into_owned());
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+        heads
+    });
+
+    let sb = sandbox();
+    // Keyless openai-compat with NO context_window and the default (auto)
+    // prompt profile: exactly the shape that ran blind before T42.
+    sb.write_config(&format!(
+        r#"{{"provider":"openai-compat","openai_compat":{{"base_url":"{base}","model":"local-gguf"}}}}"#
+    ));
+    let mut c = sb.cmd();
+    c.args(["-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("context window 12288 detected from the server (/props)"),
+        "{stderr}"
+    );
+    // The consequence the probe unlocks, in T41's own words: 12288 is below
+    // the auto threshold, so the profile flips and says so.
+    assert!(
+        stderr.contains("prompt profile: compact (context_window 12288 is below"),
+        "{stderr}"
+    );
+
+    let heads = server.join().unwrap();
+    assert_eq!(heads.len(), 2, "one probe, one completion");
+    let probe = heads[0].to_ascii_lowercase();
+    assert!(probe.starts_with("get /props "), "{probe}");
+    assert!(
+        !probe.contains("authorization") && !probe.contains("x-api-key"),
+        "the startup probe sent a credential header: {probe}"
+    );
+    assert!(heads[1].to_ascii_lowercase().starts_with("post /v1/chat/completions "));
+}
+
+#[test]
+fn a_configured_context_window_is_never_probed_over() {
+    // The server would answer 12288 if asked. It must not be asked: a
+    // configured window is authoritative, and doctor already warns when
+    // the two disagree.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://127.0.0.1:{}/v1", listener.local_addr().unwrap().port());
+    let sse = std::fs::read_to_string(fixture("text_simple.sse")).unwrap();
+    let server = std::thread::spawn(move || {
+        use std::io::Read;
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut req = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = stream.read(&mut buf).unwrap();
+            req.extend_from_slice(&buf[..n]);
+            if n == 0 || req.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}",
+            sse.len()
+        );
+        let _ = stream.write_all(response.as_bytes());
+        String::from_utf8_lossy(&req).into_owned()
+    });
+
+    let sb = sandbox();
+    sb.write_config(&format!(
+        r#"{{"provider":"openai-compat","openai_compat":{{"base_url":"{base}","model":"local-gguf","context_window":8192}}}}"#
+    ));
+    let mut c = sb.cmd();
+    c.args(["-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!stderr.contains("/props"), "no probe was made: {stderr}");
+    // The FIRST request the server saw is the completion, not a probe.
+    let head = server.join().unwrap().to_ascii_lowercase();
+    assert!(head.starts_with("post /v1/chat/completions "), "{head}");
+}

@@ -271,7 +271,7 @@ fn repl(
     // fixtures through the SELECTED provider, so the selection path itself
     // is exercised offline.
     let profiles = cfg.resolved_profiles()?;
-    let (mut active_profile, resolved) = cfg.startup_selection(&profiles)?;
+    let (mut active_profile, mut resolved) = cfg.startup_selection(&profiles)?;
     // T14 first-run quickstart: a genuinely missing config file on a live
     // run (--mock replays never need credentials) whose selection would need
     // a key that is not there means the very next step is the raw
@@ -287,6 +287,30 @@ fn repl(
     {
         eprint!("{}", quickstart_text());
         return Ok(ExitCode::FAILURE);
+    }
+    // T42 P4: a keyless local endpoint that never said how big its window
+    // is. Before T42 that meant the whole session ran blind: no context
+    // advisory, no auto-compaction, and the unscaled tool-output ceiling,
+    // which is the combination desktop experiment 5 watched fill a 12,288
+    // window in one tool result. llama.cpp will simply tell us, so ask.
+    //
+    // The T22 probe, unchanged and under its own amendment contract: a
+    // keyless GET taking a base URL and nothing else, so it cannot attach
+    // an auth header or touch a key file by construction. A miss (server
+    // down, not llama.cpp, --no-network shape) is silent and behavior is
+    // exactly what it was; doctor is the surface that DIAGNOSES a missing
+    // window, and it still recommends the explicit config line.
+    //
+    // Declared here rather than below because this notice must land before
+    // the T41 auto-profile line it can cause.
+    let mut pending_notices: Vec<String> = Vec::new();
+    if temur::config::wants_startup_context_probe(&resolved, mock.is_some()) {
+        if let Some(n) = temur::provider::probe_props_context(
+            &resolved.base_url,
+            std::time::Duration::from_secs(temur::provider::KEYLESS_LISTING_TIMEOUT_SECS),
+        ) {
+            pending_notices.push(temur::config::apply_probed_context_window(&mut resolved, n));
+        }
     }
     let is_compat = resolved.provider == "openai-compat";
     let model = resolved.model.clone();
@@ -309,7 +333,6 @@ fn repl(
     // so BOTH UIs render the resumed backscroll; advisory notices (provider/
     // model/cwd mismatches, the dropped-prompt rule) follow it, surviving
     // the TUI's transcript rebuild.
-    let mut pending_notices: Vec<String> = Vec::new();
     // T41: the auto rule picked compact for this selection, so say so once.
     // A user who never wrote "compact" anywhere should not have to guess why
     // the tool descriptions look short, and the line names the override.
