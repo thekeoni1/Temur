@@ -9416,3 +9416,126 @@ record is written at stage 1, before the release, which is the standing
 procedure: the close-out has to be able to say something the release
 could still contradict. The stage-2 tag message will be exactly one
 line, `temur v0.31.0 - context overflow recovery (T42)`.
+
+## v0.31.0 ship record - shipped private
+
+2026-08-31. **T42, context overflow recovery, shipped private at tag
+`v0.31.0`.** A MINOR bump: the release adds behaviour that did not
+exist, on paths every local run takes. Stage 2 ran to completion with
+no rerun and no deviation.
+
+Prep push and CI:
+
+- The five T42 phase commits pushed `9b3cd5c..183007e` at stage 1. CI
+  run **33402110930, attempt 1**, both jobs green: `test` 1m16s,
+  `release-gate` 4m42s.
+- The three prep commits pushed `183007e..dc38ca4` (bump, CHANGELOG
+  cut, close-out). CI run **33413397001, attempt 1**, both jobs green:
+  `test` 2m14s, `release-gate` 7m47s.
+- With the five per-phase `check.sh` gates, the stage-1 gate at 0.31.0
+  and `release.sh`'s own embedded gate, every gate and every CI run in
+  this cycle was attempt 1. Seven full `check.sh` runs, twenty-one TUI
+  pty smokes, no kill-and-rerun anywhere and no `FAIL(` line in any
+  log. The planning session's running count makes this the **tenth
+  consecutive zero-rerun cycle**.
+
+Tag:
+
+- Annotated tag `v0.31.0` at `dc38ca4`, tag object
+  `90c765907408a216c45fb30728b6dc19ea2140f9`. Verified against the RAW
+  object before the push, not the formatted view, because
+  `git tag -l --format` appends a newline of its own and would hide a
+  trailing-blank-line mistake. `git cat-file tag v0.31.0 | od -c` shows
+  the header block, then `\n\n`, then exactly
+  `temur v0.31.0 - context overflow recovery (T42)\n`: **48 bytes, one
+  line, one trailing newline**, nothing after it, no non-ASCII, and the
+  separator is a plain hyphen `-`. `%(objecttype)` reads `tag`. The
+  pushed remote tag object equals the local one and dereferences to
+  `dc38ca4`.
+
+Release build:
+
+- `release.sh` with **no SKIP_CHECK**, green first try. The embedded
+  `check.sh` reached `== ALL CHECKS PASSED ==` with all 48
+  `test result:` lines at `0 failed` and the bare busybox container
+  reporting `temur 0.31.0`; the three pty smokes passed on the first
+  attempt inside their 180s bound; the leak grep was clean over both
+  files and history; and the skew gate read `OK: install.sh + README
+  match version 0.31.0 and all targets`. 4/4 artifacts gated and
+  staged, each with `no INTERP program header` and `no NEEDED entries`.
+- **F5's fourth live outing, branch one again.** The publish block
+  printed `(title below is the annotated tag message of v0.31.0, read
+  back just now)`, the annotated-tag branch, not the lightweight
+  fallback.
+
+Staged sha256:
+
+| Target | sha256 |
+| --- | --- |
+| i686-unknown-linux-musl | `c111c625ac0392bf271c633aa214dd126337cbf601ef4abc0059e3df619e582d` |
+| x86_64-unknown-linux-musl | `bc797ac8163a7cbcacb45269e9ad681c1dde1bdf5e5b1a7239d04acdbb313747` |
+| aarch64-unknown-linux-musl | `9b92fbdfb06bc6710b16220c78ece24b11d54d90f6c68a8b89bc840c811db548` |
+| armv7-unknown-linux-musleabihf | `86d2624b347813b10313ecefa91650fef9ba3c5986b131ca81ad422f638c993d` |
+| SHA256SUMS | `5c1ac1550f9de9969f7e1af7ef5b51531978bf306cc73aef6c89311cad71886c` |
+
+Publish:
+
+- Private release at
+  `https://github.com/thekeoni1/Temur/releases/tag/v0.31.0`, **5
+  assets**, all `uploaded`, `isDraft=false`, `isPrerelease=false`. Repo
+  `isPrivate` confirmed `true` BEFORE and AFTER the publish. The
+  release title equals the tag message byte for byte, checked by string
+  comparison rather than by eye.
+- Notes are the CHANGELOG `v0.31.0` section verbatim, six entries, no
+  non-ASCII.
+
+Closing gate:
+
+- Re-downloaded x86_64 and SHA256SUMS into a fresh directory with the
+  repo NAMED EXPLICITLY (`--repo thekeoni1/Temur`), since `gh` otherwise
+  resolves the repository from the working directory's git remote and
+  would silently verify something other than what was asked. Both
+  `cmp`-identical to the staged copies, `sha256sum -c` OK, and the
+  downloaded x86_64 re-hashes independently to `bc797ac8...3747`.
+- A second, fuller download of ALL five assets was `cmp`-identical to
+  staged, **five for five**, with `sha256sum -c` passing 4/4 inside the
+  downloaded directory, so every published artifact is byte-for-byte
+  what the gate produced.
+- Installer matrix **6/6 three times**: twice against the staged
+  directory and once against the fresh full download, each covering
+  pass, corrupt and unlisted on both the GNU host and the bare busybox
+  container.
+- `~/.local/bin/temur` refreshed from the musl i686 build, so the chain
+  runs published to installed: it prints `temur 0.31.0`, sha256
+  `c111c625...e582d`, equal to the published i686 entry in the
+  DOWNLOADED SHA256SUMS and `cmp`-identical to the downloaded i686
+  asset. It was `0.30.1` / `cc1fe758...` before.
+
+### What this release does not establish
+
+The v0.30.1 ship record left two items open. One is now closed and one
+stands, and T42's own residuals are new:
+
+- **Closed.** Auto-selection was blind on a local server whose window
+  was never written into the config, because nothing probed `/props` at
+  REPL startup. P4 probes it. Dequeued from "Queued from T41".
+- **Open.** No prompt-profile threshold, 16384 or 20480, is validated
+  by any task score. Still arithmetic about what temur SENDS, not
+  evidence about what it FINISHES. Still queued under "Queued from
+  T41".
+- **Nothing in T42 ran against a live model.** Every claim is proven
+  against scripted providers and canned servers. Overflow recovery has
+  never fired against a real llama.cpp, which is the same residual
+  shape the T36 loop guard shipped with, and the desktop experiment 5
+  cells that motivate it cannot be replayed on this box. This is the
+  single largest thing this release does not establish.
+- **Arm (b)'s halving is uncalibrated.** One halving fixes the exp-5
+  gcode arithmetic and nothing proves one halving is enough in general.
+- **P3 shrinks the summary call by the tail and no more.** Nothing
+  guarantees the pre-tail fits either.
+- **P5 keys on the CONFIGURED window only**, so a run whose window came
+  from P4's probe gets no `max_tokens` WARN until the user writes the
+  value into the config, which doctor still tells them to do.
+- **Whether the advisory's second arm should be quieted** when
+  `max_tokens` exceeds the window is untouched and still open; P5 gave
+  that question the WARN it wanted first.
