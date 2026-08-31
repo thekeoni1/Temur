@@ -1010,11 +1010,46 @@ impl Session {
     /// turn-loop one and vice versa, and every existing re-arm point
     /// (provider switch, `/clear`, seed load, `/compact`) resets it.
     pub fn context_crossing(&self) -> Option<(u64, u64)> {
+        self.crossing_at(self.last_context_used?)
+    }
+
+    /// T42 P2: [`Session::context_crossing`] with this round-trip's PENDING
+    /// additions folded in, for the pre-send check.
+    ///
+    /// `last_context_used` comes from the previous response's reported
+    /// usage, so it describes the conversation as it was BEFORE the tool
+    /// results now sitting in history. That staleness is what desktop
+    /// experiment 5 measured as the dominant remaining failure class: a
+    /// single large result can take a request from 2.9k to 13.4k tokens
+    /// without the estimate moving at all. Adding chars/4 of what has been
+    /// appended since is the cheap part of the answer.
+    ///
+    /// HONEST ABOUT WHAT IT IS: four chars per token is an AVERAGE over
+    /// ordinary prose and code, and dense content defeats it badly. The
+    /// gcode cells measured ~1.2 chars/token, where this estimate
+    /// understates by more than 3x and would still have missed the
+    /// crossing. The divisor is deliberately NOT tuned to that sample:
+    /// tuning to the worst case would make every ordinary turn compact
+    /// early, and the real backstop for what this misses is T42 P1, which
+    /// recovers after the server rejects the request rather than trying to
+    /// predict it. This check exists to catch the ordinary large result in
+    /// time to fold it cheaply, not to be right about every one.
+    ///
+    /// `None` when there is no estimate to add to, exactly as before.
+    pub fn pending_context_crossing(&self) -> Option<(u64, u64)> {
+        let used = self.last_context_used?;
+        self.crossing_at(used.saturating_add(pending_input_estimate(&self.history)))
+    }
+
+    /// The shared threshold arithmetic behind both crossing tests: `used`
+    /// at or past 80% of the window, or too little window left for one
+    /// full response. The LATCH is checked here too, which is what makes
+    /// the two sites one speaker: whichever fires first closes it.
+    fn crossing_at(&self, used: u64) -> Option<(u64, u64)> {
         if self.context_warned {
             return None;
         }
         let window = self.cfg.context_window?;
-        let used = self.last_context_used?;
         let eighty = u128::from(used) * 5 >= u128::from(window) * 4;
         let tight = window.saturating_sub(used) < u64::from(self.cfg.max_tokens);
         if !(eighty || tight) {
@@ -1194,6 +1229,44 @@ impl Session {
                     self.cfg.max_iterations
                 )));
                 break;
+            }
+
+            // T42 P2 PRE-SEND CHECK, immediately before the safe point so a
+            // crossing found here is acted on by it in this same iteration.
+            //
+            // The post-response check below reads only the last response's
+            // reported usage, which is one round-trip stale by nature: the
+            // tool results now sitting in history are invisible to it. This
+            // adds a chars/4 estimate of exactly those, so an ordinary large
+            // result is folded while folding is still cheap.
+            //
+            // Same thresholds, same latch, same three outcomes as the
+            // post-response site. The shared latch is what keeps ONE
+            // crossing to ONE speaker: whichever site fires first closes it
+            // and the other says nothing.
+            if let Some((used, window)) = self.pending_context_crossing() {
+                let at_bound = auto_compactions >= MAX_AUTO_COMPACTIONS_PER_TURN;
+                if !self.cfg.auto_compact || at_bound {
+                    self.context_warned = true;
+                    crossing_unspoken = false;
+                    ui(AgentEvent::Notice(context_advisory_text(used, window)));
+                } else if auto_compact_folds(
+                    // History is COMPLETE here (results appended), which is
+                    // what the safe point will fold, so this is the plain
+                    // predicate and not the post-response site's lookahead.
+                    self.history.len(),
+                    turn_start,
+                    AUTO_COMPACT_TAIL_ROUND_TRIPS,
+                ) {
+                    self.context_warned = true;
+                    crossing_unspoken = false;
+                    compact_pending = true;
+                    ui(AgentEvent::Notice(auto_compact_notice_text(used, window)));
+                } else {
+                    // Crossed, nothing can act on it yet: consume nothing,
+                    // say nothing, remember it for the F2 end-of-turn report.
+                    crossing_unspoken = true;
+                }
             }
 
             // T40 SAFE POINT. Not at the advisory site: that fires right
@@ -2092,6 +2165,30 @@ pub fn auto_compacted_notice_text(
     format!(
         "compacted: {folded} round-trip(s) summarized, {kept} kept, ~{before_bytes} -> ~{after_bytes} bytes"
     )
+}
+
+/// T42 P2: the chars-per-token divisor of the pending-input estimate. An
+/// average, not a measurement; see [`Session::pending_context_crossing`]
+/// for what it does and does not buy.
+const CHARS_PER_TOKEN_ESTIMATE: u64 = 4;
+
+/// T42 P2: a chars/4 estimate of everything appended since the response
+/// that set `last_context_used`, which is exactly the trailing run of
+/// non-assistant messages (the tool results answering the last response,
+/// or this turn's prompt on the first iteration).
+fn pending_input_estimate(history: &[RequestMessage]) -> u64 {
+    let chars: u64 = history
+        .iter()
+        .rev()
+        .take_while(|m| m.role != Role::Assistant)
+        .flat_map(|m| m.content.iter())
+        .map(|b| match b {
+            ContentBlock::Text { text } => text.chars().count() as u64,
+            ContentBlock::ToolResult { content, .. } => content.chars().count() as u64,
+            _ => 0,
+        })
+        .sum();
+    chars / CHARS_PER_TOKEN_ESTIMATE
 }
 
 /// T42: is this send's failure the one overflow recovery is allowed to act

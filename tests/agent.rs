@@ -5770,18 +5770,24 @@ const OVERFLOW_COMPACT_MARKER: &str =
 const OVERFLOW_ELIDE_MARKER: &str =
     "context overflow: the server rejected the request; truncating the largest tool result and retrying";
 
-/// A file of `lines` x 100 chars, and the round-trip that cats it.
-fn big_file(dir: &std::path::Path, name: &str, lines: usize) -> ResponseMessage {
+/// A file of `lines` x 100 chars, and the round-trip that cats it back as
+/// one tool result of exactly `lines * 100` chars.
+fn cat_rt(dir: &std::path::Path, name: &str, lines: usize, used: u64) -> ResponseMessage {
     let body = format!("{}\n", "x".repeat(99)).repeat(lines);
     std::fs::write(dir.join(name), body).unwrap();
-    msg(
+    msg_with_usage(
         vec![tool_use(
             &format!("tu_{name}"),
             "bash",
             serde_json::json!({"command": format!("cat {name}")}),
         )],
         StopReason::ToolUse,
+        serde_json::json!({"input_tokens": used, "output_tokens": 0}),
     )
+}
+
+fn big_file(dir: &std::path::Path, name: &str, lines: usize) -> ResponseMessage {
+    cat_rt(dir, name, lines, 10)
 }
 
 fn done() -> ResponseMessage {
@@ -5988,4 +5994,100 @@ fn overflow_recovery_declines_when_every_result_is_already_small() {
     );
     assert_eq!(requests.borrow().len(), 2, "no retry");
     assert_eq!(tool_results(session.history())[0].chars().count(), 500);
+}
+
+// ---- T42 P2: the pre-send estimator fold-in ----
+
+fn done_with(used: u64) -> ResponseMessage {
+    msg_with_usage(
+        vec![text("done")],
+        StopReason::EndTurn,
+        serde_json::json!({"input_tokens": used, "output_tokens": 0}),
+    )
+}
+
+#[test]
+fn a_large_result_trips_the_crossing_before_the_stale_estimate_would() {
+    let dir = tempfile::tempdir().unwrap();
+    // The response reported 100 of 1000 tokens, nowhere near either arm.
+    // Then a 3,000-char result landed, which the post-response check will
+    // not see until the round-trip AFTER the one that is about to go out.
+    let (mut session, _) = session_auto_compact(
+        dir.path(),
+        vec![cat_rt(dir.path(), "big.txt", 30, 100), done_with(100)],
+        Some(1000),
+        100,
+        false,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert!(
+        n.iter().any(|x| x
+            == "context: ~850 of 1000 tokens used; /compact frees the window by summarizing the conversation, or start a new session"),
+        "100 reported + 3000 chars/4 pending = 850: {n:?}"
+    );
+}
+
+#[test]
+fn a_small_result_does_not_trip_the_pre_send_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_auto_compact(
+        dir.path(),
+        vec![cat_rt(dir.path(), "small.txt", 4, 100), done_with(100)],
+        Some(1000),
+        100,
+        false,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert!(
+        !n.iter().any(|x| x.starts_with("context: ")),
+        "100 + 400/4 = 200 is not a crossing: {n:?}"
+    );
+}
+
+#[test]
+fn one_crossing_gets_one_speaker_across_both_check_sites() {
+    let dir = tempfile::tempdir().unwrap();
+    // The post-response check fires first (800 of 1000), and the big result
+    // that lands right after would cross on its own. The shared latch means
+    // the pre-send site says nothing.
+    let (mut session, _) = session_auto_compact(
+        dir.path(),
+        vec![cat_rt(dir.path(), "big.txt", 30, 800), done_with(800)],
+        Some(1000),
+        100,
+        false,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    let spoken: Vec<&String> = n.iter().filter(|x| x.starts_with("context: ")).collect();
+    assert_eq!(spoken.len(), 1, "exactly one speaker: {n:?}");
+    assert!(spoken[0].starts_with("context: ~800 of 1000"), "{:?}", spoken[0]);
+}
+
+#[test]
+fn the_pre_send_check_compacts_when_the_turn_is_foldable() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_auto_compact(
+        dir.path(),
+        vec![
+            rt(1, 100),
+            rt(2, 100),
+            cat_rt(dir.path(), "big.txt", 30, 100),
+            summary_response("WORK SO FAR"),
+            done_with(100),
+        ],
+        Some(1000),
+        100,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert!(
+        n.iter().any(|x| x == "context: ~850 of 1000 tokens used; compacting automatically"),
+        "{n:?}"
+    );
+    assert!(
+        n.iter().any(|x| x.starts_with("compacted: 1 round-trip(s) summarized, 2 kept, ~")),
+        "{n:?}"
+    );
+    // 3 turn round-trips, the summary call, the send after the fold.
+    assert_eq!(requests.borrow().len(), 5);
 }
