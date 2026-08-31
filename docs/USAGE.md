@@ -224,6 +224,17 @@ a new session starts clean. The same advisory also fires immediately
 at `--continue`/`--resume`/`/resume` when the restored session is
 already past the threshold.
 
+That estimate is one round-trip behind by nature: it is what the last
+response reported, so a large tool result appended since is invisible
+to it. The check therefore runs a second time immediately before each
+request goes out, adding a rough four-characters-per-token estimate of
+everything appended since. It is an average, and dense content defeats
+it (G-code measured about 1.2 characters per token in one experiment),
+so it catches the ordinary large result rather than every one. The
+backstop for the rest is further down: temur also recovers *after* a
+server rejects an over-sized request. Either way one crossing produces
+exactly one line, never two.
+
 ### Auto-compaction for unattended runs
 
 The advisory assumes a reader. One-shot `-p` has none: the estimate
@@ -300,6 +311,41 @@ summary call names the error and continues uncompacted. Compaction
 happens between round-trips, never in the middle of one, so a response
 whose tool calls are still unanswered is never cut.
 
+### When the server rejects the request anyway
+
+Prediction is not enough on its own. A single capped tool result of
+dense content can take one request past the window with no crossing
+ever detected, and on the first round-trip of a turn there is nothing
+to fold even if it were. So a rejection is treated as recoverable
+rather than fatal: when a request comes back as a context-size
+rejection, temur recovers once and retries once, and says which it did.
+
+```
+[!] context overflow: the server rejected the request; compacting and retrying
+[!] compacted: 3 round-trip(s) summarized, 2 kept, ~40118 -> ~9204 bytes
+```
+
+```
+[!] context overflow: the server rejected the request; truncating the largest tool result and retrying
+[!] truncated the largest tool result: 12433 -> 6216 chars
+```
+
+The first line is the ordinary fold, taken when auto-compaction is on
+and the turn has enough round-trips for it. The second is for the case
+a fold cannot reach: the largest tool result in the conversation is cut
+to half its size in place, keeping its head and tail with a marker in
+the middle saying what happened, so the model can see its own earlier
+read got shorter and re-read a narrower range. Only tool results are
+ever cut. The task prompt and the model's own messages are never
+touched, and a result already under about a thousand characters is left
+alone, because it is not what filled the window.
+
+Bounded, like everything else here: at most one recovery per request,
+counted against the same three-per-turn limit as auto-compaction, and a
+retry that is rejected again propagates rather than looping. Anything
+that goes wrong inside the recovery reports the server's original
+error, not one of temur's own.
+
 Requests are append-only by design (pinned by a prefix-stability test
 suite), which is what makes provider prompt caching effective: the
 anthropic provider marks cache breakpoints (system+tools, plus a
@@ -329,13 +375,43 @@ Where should the `context_window` number come from? For a local
 llama.cpp server the truth is the server's own context allocation (its
 `-c` flag), not the model card, and temur reads it from the server's
 `/props` endpoint: `temur init` writes the detected value into a fresh
-local config when the server is up, and `temur doctor` compares a
-configured value against the same source, warning in both directions
+local config when the server is up, **startup asks the same question**
+when a keyless local selection has no `context_window` configured at
+all, and `temur doctor` compares a configured value against the same
+source, warning in both directions
 (configured larger than the allocation means this advisory fires too
 late and requests can fail at the real limit; smaller is safe but
 early) and naming the exact line to add when the value is missing.
 Non-llama.cpp servers answer nothing useful at `/props` and stay
 silent, and doctor NOTEs any profile with no `context_window` at all.
+
+The startup probe is what stops an unconfigured local server from
+running the whole session blind, with no advisory, no auto-compaction
+and an unscaled tool-output cap. It runs only for an `openai-compat`
+selection with no key file and no configured window, never under
+`--mock`, and it is the same unauthenticated GET `init` and `doctor`
+make. On an answer it says so once and nothing is written to disk:
+
+```
+[!] context window 12288 detected from the server (/props); the context advisory, auto-compaction, and the tool-output cap now use it
+```
+
+If the detected window also puts the selection below the `"auto"`
+prompt-profile threshold, the ordinary profile line follows it. A
+configured `context_window` is authoritative and is never probed over,
+and a server that is down, or is not llama.cpp, is silent: behaviour is
+then exactly what it was before. Adding the explicit `"context_window"`
+line to the config is still worth doing, and doctor still says so.
+
+One more thing doctor now checks here: a `max_tokens` larger than the
+`context_window` it runs against draws a WARN naming both numbers. That
+configuration makes the advisory's second arm (`window - used <
+max_tokens`) true from the first response of every session, so temur
+recommends `/compact` about a window that is barely touched, and
+underneath that every request reserves more completion than the server
+can hold. It is a WARN and never a FAIL: it is live-able, and it is
+exactly what a hand-written local config falls into when it names a
+window but lets the default cap ride along.
 On an anthropic profile the truth is the per-model `max_input_tokens`
 the models API reports, and the `/models` command already receives it:
 after a listing, a configured window larger than the reported value

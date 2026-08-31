@@ -9152,3 +9152,164 @@ a pin mid-ladder would break the comparison the ladder exists to make.
   broken, and the recommendation to measure
   `ensure_system_dependencies` per task image before blaming the link
   is still not discharged.
+
+## T42 acceptance - context overflow recovery (recorded 2026-08-31, before its release)
+
+Desktop experiment 5 (`docs/COMPARISON.md`, "Same rig, auto-compaction
+on"; archive `~/temur-eval-archive/desktop-exp5/`) left five
+context-exhausted cells out of 32 on the v0.29.1 binary and decomposed
+them into three separable mechanisms. T42 builds against all three,
+plus the two diagnostics queued from T41 and v0.30.1. Offline
+throughout, no API key, no hosted provider, no live model. Five
+commits, one per phase, full `check.sh` at each, all five green on the
+first attempt (gate logs archived to `~/temur-eval-archive/t42-gates/`
+as `gate-p1.log` through `gate-p5.log`).
+
+### The evidence each phase answers
+
+- **3 of 5** deaths, both `gcode-to-text` cells and
+  `adaptive-rejection-sampler` r1: no crossing was EVER detected.
+  `context_crossing()` reads the previous response's reported usage, so
+  a large `tool_result` appended client-side is invisible to it. The
+  gcode request measured 13,402 tokens against a 12,288 window while
+  the estimate still said about 2.9k, and both cells died on
+  ROUND-TRIP ONE, where nothing is foldable and where a fold would have
+  kept the oversized result in the verbatim tail regardless.
+- **1 of 5**, `adaptive-rejection-sampler` r2: the crossing was first
+  seen at 94% of the window and the summary call, carrying full
+  history, was itself rejected at 13,518 tokens.
+- **1 of 5**, `build-cython-ext` r2: the per-turn bound behaving as
+  designed. Not a defect and not addressed.
+
+### What shipped
+
+**P1, overflow recovery, the headline.** A send that fails with
+`ProviderError::Api` whose PARSED kind is exactly
+`exceed_context_size_error` is recovered once and retried once. Before
+T42 the error was terminal (`git grep exceed_context` at v0.29.1: zero
+hits in `src/`).
+
+Arm (a), the ordinary fold, when `auto_compact` is on and the turn
+already holds enough round-trips: the same `auto_compact(turn_start)`
+call the safe point makes, with the same `turn_start` reset the T40.1
+F1 fix established.
+
+Arm (b), for the case a fold cannot reach: the LARGEST `tool_result` in
+history is halved in place using the T19 head+tail elision shape, with
+a marker addressed to the model, which is about to see its own earlier
+read get shorter. Only `ToolResult` blocks are candidates, so the
+prompt-verbatim invariant holds without needing to be defended
+separately. A largest result at or below 1,024 chars declines instead,
+because a result that small is not what filled the window.
+
+```
+[!] context overflow: the server rejected the request; compacting and retrying
+[!] context overflow: the server rejected the request; truncating the largest tool result and retrying
+[!] truncated the largest tool result: 20000 -> 10254 chars
+```
+
+The two trigger lines are STABLE, greppable markers, recorded here
+verbatim: future desktop experiments read them out of `temur.txt` the
+way the current instrument reads `compacting automatically`, so
+rewording one breaks an instrument.
+
+Bounds, all of them: at most one recovery per send; the recovery counts
+against the same `MAX_AUTO_COMPACTIONS_PER_TURN` as auto-compaction;
+the retry's result is deliberately NOT re-examined, so a second
+overflow propagates rather than looping; and every failure inside the
+recovery path propagates the ORIGINAL provider error, the T40
+fail-open discipline.
+
+**P2, the pre-send estimator.** The crossing check runs a second time
+immediately before each request, on `last_context_used` plus a chars/4
+estimate of the trailing run of non-assistant messages. Same
+eighty/tight thresholds, same three outcomes, and the same latch, so
+one crossing still gets exactly one speaker across both sites.
+
+Said plainly because it matters: **chars/4 would not have caught the
+gcode class.** That content measured about 1.2 chars per token, where
+the estimate understates by more than 3x. The divisor is deliberately
+NOT tuned to that sample, since tuning to the worst case makes every
+ordinary turn compact early. P2 catches the ordinary large result in
+time to fold it cheaply; P1 is what catches this class.
+
+**P3, the summary call is bounded.** The AUTO path now summarizes
+`history[..tail_start]` rather than everything. The tail survives
+verbatim in the merged result, so sending it bought nothing and cost
+the whole reason the call was being made. `/compact` and the resume
+seam keep full history, because both are fail-closed and discard
+everything but the summary. Alternation is pinned by test rather than
+argued: the pre-tail ends with a user message, so the instruction joins
+it instead of opening a second consecutive user one.
+
+**P4, the startup `/props` probe.** A keyless `openai-compat` selection
+with no configured `context_window` ran the whole session blind: no
+advisory, no auto-compaction, and the unscaled tool-output ceiling.
+Startup now makes the T22 keyless GET, unchanged and under its own
+amendment contract, and the answer flows to `session_cfg.context_window`
+and, through `Session::build`, to the T19 registry cap (both verified,
+not assumed). The prompt profile is recomputed only for an `Auto`
+selection.
+
+```
+[!] context window 12288 detected from the server (/props); the context advisory, auto-compaction, and the tool-output cap now use it
+```
+
+When the detected window also puts the selection below the auto
+threshold, T41's existing profile line follows, in the words startup
+and `/model` already shared. Gate: `openai-compat` AND no key file AND
+no configured window AND not `--mock`. Nothing is written to disk; a
+configured window is authoritative and is never probed over; a miss is
+silent.
+
+**P5, the `doctor` WARN.** `max_tokens` larger than `context_window`
+now WARNs, naming both numbers, both consequences and the fix, never a
+FAIL. That configuration makes the advisory's second arm
+(`window - used < max_tokens`) true by construction from the first
+response of every session. Seen live in the v0.30.1 smoke, step 3e,
+with the anthropic default `max_tokens` of 32000 riding along on an
+`openai-compat` profile that never named its own, against a 12,288
+window.
+
+### Deliberate non-changes, all recorded
+
+- **`/compact` is untouched.** It is fail-closed and discards
+  everything but the summary, so bounding its call would silently throw
+  the conversation away.
+- **The T19 cap formula is untouched.** Its ~4 chars/token budget is
+  exactly what dense content defeats, and it is now backstopped by P1.
+  Changing it would move every model's tool output and is its own
+  milestone if ever.
+- **No provider-general error taxonomy.** P1 classifies llama.cpp's
+  kind alone, by exact match on the parsed kind, never on the display
+  string and never on another provider's overload wording. A wrong
+  classification would resend a request that was rejected for an
+  entirely different reason. The taxonomy stays queued.
+- **The advisory's second arm is not quieted** when `max_tokens`
+  exceeds the window. P5 gives that question the WARN it wanted first;
+  the question itself stays open.
+
+### What this does not establish
+
+- **Nothing here ran against a live model.** Every claim is proven
+  against scripted providers and canned servers. Recovery has never
+  fired against a real llama.cpp, which is the same residual shape the
+  T36 loop guard shipped with, and the exp-5 cells that motivate it
+  cannot be replayed on this box.
+- **Arm (b)'s halving is uncalibrated.** One halving fixes the exp-5
+  gcode arithmetic (about 20,000 chars to about 10,250, which fits),
+  and nothing proves one halving is enough in general. A retry that
+  still overflows propagates, by design.
+- **P3 shrinks the summary call by the tail, and no more.** In the
+  adaptive r2 shape that is the difference between 13,518 tokens and
+  something under the window, but nothing guarantees the pre-tail fits
+  either. A summary call that still overflows fails as before, and
+  inside P1's recovery falls through to arm (b).
+- **P5 keys on the CONFIGURED window only.** A run whose window came
+  from P4's probe rather than the config gets no `max_tokens` WARN,
+  because doctor reads the config. Doctor already tells that user to
+  add the `"context_window"` line, and the WARN fires once they do.
+- **The startup probe costs a bounded wait.** Up to
+  `KEYLESS_LISTING_TIMEOUT_SECS` on a filtered port, once per run, on
+  runs that would otherwise have had no window at all. A refused
+  connection is instant.

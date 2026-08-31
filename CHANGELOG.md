@@ -4,6 +4,64 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **A context-size rejection is no longer fatal.** When a request comes
+  back from the server as too large for the window, temur now recovers
+  once and retries once instead of ending the turn. Either it compacts,
+  when auto-compaction is on and the turn has enough round-trips to
+  fold, or it cuts the largest tool result in the conversation to half
+  its size in place, keeping head and tail with a marker in the middle
+  so the model can see what happened and re-read a narrower range. Only
+  tool results are ever cut; the task prompt and the model's own
+  messages are untouched, and a result already under about a thousand
+  characters is left alone. At most one recovery per request, counted
+  against the same three-per-turn limit as auto-compaction, and a retry
+  rejected again propagates rather than looping. Both arms announce
+  themselves. This is the class desktop experiment 5 measured as the
+  dominant remaining context death: three of five, including both
+  `gcode-to-text` cells, which died on round-trip ONE where nothing was
+  foldable and one capped 12,433-character read filled about 85% of a
+  12,288-token window on its own.
+
+- **The context check now looks at the request about to be sent, not
+  only the one already answered.** The estimate comes from the previous
+  response's reported usage, so a large tool result appended since was
+  invisible to it. A second check runs immediately before each request,
+  adding a four-characters-per-token estimate of everything appended
+  since. Same thresholds, same latch, so one crossing still produces
+  exactly one line. Honest about its limits: four characters per token
+  is an average, dense content defeats it (about 1.2 on G-code), and
+  the divisor is deliberately not tuned to that worst case. The
+  recovery above is the backstop for what this misses.
+
+- **Auto-compaction's summary call no longer carries the tail it is
+  about to keep.** It summarized the full history, including the last
+  round-trips that survive verbatim in the result, which meant the one
+  call that could relieve the window was itself subject to it. In
+  desktop experiment 5 the `adaptive-rejection-sampler` run saw the
+  crossing at 94% of the window and its summary request was rejected at
+  13,518 tokens against 12,288. `/compact` is unchanged and must be: it
+  is fail-closed and discards everything but the summary.
+
+- **Startup asks a local server how big its context window is.** A
+  keyless `openai-compat` selection with no `context_window` configured
+  used to run the whole session blind: no advisory, no auto-compaction,
+  and the unscaled tool-output cap. Startup now makes the same
+  unauthenticated `/props` GET that `init` and `doctor` already make,
+  and uses the answer for the rest of the run, including recomputing an
+  `"auto"` prompt profile. Nothing is written to disk, a configured
+  window is never probed over, `--mock` skips it, and a server that is
+  down or is not llama.cpp is silent.
+
+- Added: `temur doctor` warns when `max_tokens` is larger than
+  `context_window`, naming both numbers and the fix. That configuration
+  makes the context advisory's second arm true from the first response
+  of every session, so temur recommends `/compact` about a window that
+  is barely touched, and underneath it every request reserves more
+  completion than the server can hold. Seen live in the v0.30.1 smoke
+  (step 3e) with the anthropic default `max_tokens` of 32000 riding
+  along on an `openai-compat` profile against a 12,288-token window.
+  WARN, never FAIL.
+
 - Fixed: `temur doctor` announced that it was measuring the prompt floor
   against the server and then, if the server never answered, rejected
   the request or reported no usage, printed the offline estimate with

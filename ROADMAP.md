@@ -214,14 +214,20 @@ payload.
 | T40.1 | Post-ship review fixes (v0.29.1) | PATCH on T40, not a new milestone: no new capability, only defects in what T40 shipped. As built 2026-08-29 from a code review of the shipped v0.29.0 range (`5f18325..b961a83`), seven findings, all seven verified against the tree by the planning session before any was acted on, three commits. F1 (HIGH): `turn()` captured `turn_start` once and never moved it, but a fold rewrites history as `[prompt, summary, resume, tail]`, so the SECOND fold of one turn was handed a stale index, kept a `tool_result` as "the prompt", dropped the real prompt (invariant (a)) and opened history with an orphan `tool_result` whose `tool_use` it had just folded away: a hard 400 on both wires, written to the session file by the P2 saves. Only reachable when the turn does not start at the top of history, which is every resumed or later REPL turn including `--continue -p`, the invocation T39 F4 motivated auto-compaction for. Nothing caught it because the entire auto-compaction corpus compacts from an EMPTY history, where the stale index is 0 and correct by accident: fail-open family entry six, in the RUNBOOK beside T37's three and T39's two. F2: a crossing with too few round-trips to fold said nothing at all, and in one-shot `-p`, the mode where auto-compaction defaults ON, there is no later turn to carry it, so the run printed no warning and then died on the next request; the ordinary advisory now prints at turn end, latch deliberately unconsumed, which is what `docs/USAGE.md` described throughout. F3: the session-file trim notice had no latch while the save-failure notice beside it did, and P2's two writes per round-trip turned one line per turn into up to a hundred. F5: `release.sh` read the release title from `%(contents:subject)`, which for a LIGHTWEIGHT tag reports the COMMIT subject, so the guard against a non-annotated tag passed the exact mistake it exists to catch; now gated on `%(objecttype)` as well. F6: the stray zero-byte `oom` at the repo root is removed and identified as a rider-2 builder-session artifact, closing the tracked copy of the v0.26.0 residual but NOT the three 2026-08-24 sightings that predate it. F7: `Session::context_advisory()` deleted, no production callers left after the T40 rider. F4 (two full serializations and atomic writes per round-trip in `persist_now`) is NOT fixed: it is a design trade against the crash-safety that is the point of T40 P2, and it is queued above under "Queued from v0.29.1" with the measurement it needs first. Tests 753 -> 756, full `check.sh` green first try at every commit. |
 | T41 | Prompt floor | As built 2026-08-30, dequeuing **F6 (T40)**, whose two candidates were "select the compact profile automatically below a `context_window` threshold" and "report the floor in `doctor`". Both built; the operator approved the default flip on 2026-08-30. P1: `prompt_profile` accepts `"auto"` | `"full"` | `"compact"` and an ABSENT field now means `"auto"`, which is the new default. Auto resolves to compact when a `context_window` is configured and strictly below 16384, to full otherwise (an unknown window included, since guessing smaller would trim descriptions on a model that never needed them); an explicit value is never second-guessed at any window. One pure function over `Option<u64>` is the only path from a window to a profile, and `PromptProfileSpec` splits spelling validation from window resolution so a typo in the GLOBAL field is still a startup error while each selection resolves against its OWN window. `ResolvedProfile` gained `prompt_profile_source` (`Explicit`/`Auto`), read only by reporting: one startup line when auto picks compact, the same line from the same function on a `/model` switch that lands there, and `/status` becoming `compact (auto)` / `full (auto)` / `compact` / `full`. This DELIBERATELY reverses the explicit-only contract pinned in three places through v0.29.1 (the `PromptProfile` doc comment, the config resolution test, `docs/OFFLINE.md`), all three changed in place. RIPPLE, stated in the commit and the docs: any config with a window below 16384 and no explicit `prompt_profile` gets compact descriptions from this release on, `temur init`'s local template included. P2: `doctor` reports the prompt floor for the active selection, an offline estimate always (system-prompt plus definition bytes over 4) and a MEASURED figure under the tools-drop gate (one extra one-token POST carrying the real system prompt and the real definitions); PASS below 40% of the window, WARN at or above, never FAIL, and a WARN on an already-compact selection points at `context_window` instead. `probe_prompt_tokens`/`tools_drop_probe_body` gained `system: Option<&str>`, with `None` byte-identical to the pre-T41 body so the T34 tools-drop baseline cannot move. `DEFAULT_SYSTEM`/`DEFAULT_SYSTEM_COMPACT` moved from `main.rs` into `src/prompt.rs` byte-identically. The estimate NOTE deliberately does NOT quote the planned "under-reads by 15-30%": measured against this checkout the estimator reads 7,240 where F6 counted 6,991, 4% HIGH, so no percentage is defensible from one calibration point. Tests 756 -> 779, full `check.sh` green first try at every phase. Ships as v0.30.0. **Three defects in it were fixed as v0.30.1; the threshold shipped here (16384) is NOT the one that stands, see T41.1.** |
 | T41.1 | Post-ship review fixes (v0.30.1) | PATCH on T41, not a new milestone: no new capability, only defects in what T41 shipped hours earlier. As built 2026-08-30 from a code review of the shipped v0.30.0 range (`049085e..12cd7ec`), three findings, all three verified against the tree by the planning session before any was acted on, one commit each. R1 (MEDIUM, the reason this is a release and not a note): `PROMPT_AUTO_COMPACT_BELOW` and `doctor`'s `PROMPT_FLOOR_WARN_PERCENT` disagreed BY CONSTRUCTION. 16384 * 40% is 6,554, below the 6,991 tokens the full profile actually costs, so every window in [16384, 17478) measured (and [16384, 18100) estimated) got `full` from the auto rule and then a WARN against that same selection from `doctor` in the same run, telling the user to set `prompt_profile` to `"compact"` and undo the choice temur had just made. 16384 is exactly what `temur init` writes from a 16k llama.cpp `/props` allocation, so a fresh `init` followed by `doctor` produced the contradiction on the wizard's own output. Fixed by DERIVING the threshold from the warning line instead of picking it for roundness: 20480, the smallest round window at which the full floor sits under 40% (34% measured, 35% estimated), with the tie pinned by a test that runs the shipped estimator over the real full-profile prompt and the real registry at exactly the threshold, so changing either constant or growing the prompts fails loudly. The WARN itself was deliberately NOT softened for an `Auto` choice: a 44% floor is a 44% floor, and a report that excuses a number because the tool picked it is worth nothing. RIPPLE, same shape as T41's own: a config with a window from 16384 to 20479 and no `prompt_profile` moves from the full descriptions to the compact ones. R2 (LOW/MEDIUM): the floor probe carries the system prompt AND every definition, which makes it the largest prefill a doctor run asks for, and it runs FIRST, unannounced, where the tools-drop check right after it prints a NOTE and flushes before its own pair for exactly this reason; v0.30.0 could go silent for up to 300s with nothing said, and took the worst case from two large prefills to three. It now announces itself in the same style, on the networked path only, and the definitions the two probes share are built once per run instead of twice. R3 (LOW): `hop_switch` computed the auto-compact notice and emitted it on both success paths but dropped it in the arm where `raw_override` failed, although that arm's own comment says the activation stands and an activation swaps the prompt profile: a user who hopped onto an auto-compact profile and whose model override then failed was left on the compact prompts with only a failure notice. VERIFIED LIVE, not just reasoned: `~/temur-eval-archive/t41-live/REPORT.md` records the fixed binary against llama.cpp `server-b10438` (Qwen3-4B-Instruct-2507, ctx 12288) picking compact at 16384 and PASSing at 16%, while the installed 0.30.0 on the same config WARNs at 42% and advises compact. Tests 779 -> 783, full `check.sh` green first try at every commit. |
+| T42 | Context overflow recovery | As built 2026-08-31, dequeuing all three **desktop experiment 5** items plus the **T41** startup-probe item and the **v0.30.1** `max_tokens` item, offline throughout. Exp-5 decomposed temur's five remaining context-exhausted cells out of 32 into three mechanisms, and the answer is one reactive fix, two predictive ones, and two diagnostics. P1, the headline: a send that fails with a parsed wire kind of exactly `exceed_context_size_error` is recovered ONCE and retried ONCE, where before it was terminal. Arm (a) is the ordinary fold when `auto_compact` is on and the turn already holds enough round-trips, with the F1 `turn_start` reset; arm (b) is the class a fold cannot reach at all, halving the LARGEST `tool_result` in place with the T19 head+tail elision shape and a marker addressed to the model. Arm (b) is what the `gcode-to-text` cells needed: both died on round-trip ONE, where nothing is foldable and where a fold would have kept the oversized result in the verbatim tail regardless. Only `ToolResult` blocks are candidates, so the prompt-verbatim invariant holds; below a 1,024-char floor recovery declines. At most one recovery per send, counted against the same `MAX_AUTO_COMPACTIONS_PER_TURN` bound, no re-examination of the retry, and every failure inside the path propagates the ORIGINAL provider error (the T40 fail-open discipline). Both trigger lines are STABLE, greppable markers, because desktop experiments read them. P2: the crossing check runs a second time immediately before each request, folding a chars/4 estimate of the trailing non-assistant messages into `last_context_used`, which is one round-trip stale by nature; same thresholds, same latch, so one crossing still gets one speaker. Documented honestly rather than tuned: chars/4 is an average, the gcode cells measured ~1.2 chars/token, this alone would still have missed them, and P1 is the backstop. P3: the AUTO path's summary call now carries `history[..tail_start]` instead of everything, since the tail survives verbatim in the result; `adaptive-rejection-sampler` r2 is the evidence, its summarize request rejected at 13,518 tokens against a 12,288 window. `/compact` and the resume seam keep full history, because both are fail-closed and discard everything but the summary. P4: startup runs the T22 keyless `/props` GET for an `openai-compat` selection with no key file and no configured window, outside `--mock`, and feeds the answer to the resolved selection, `session_cfg.context_window`, the T19 registry cap, and the `"auto"` prompt rule; in-memory only, a configured window is never probed over, a miss is silent. P5: a `doctor` WARN when `max_tokens > context_window`, naming both numbers and the fix, never a FAIL. DELIBERATE NON-CHANGES, all recorded: `/compact` untouched (fail-closed, discards everything but the summary); the T19 cap formula untouched (its ~4 chars/token assumption is what dense content defeats, and changing it moves every model's tool output, so it is its own milestone if ever); and NO provider-general error taxonomy, since P1 classifies llama.cpp's kind alone and a wrong classification would resend a request rejected for some other reason. Ships as v0.31.0 |
 
 ### Queued from desktop experiment 5 (2026-08-31)
 
 The auto-compaction differential (`docs/COMPARISON.md`, "Same rig,
 auto-compaction on", archive `~/temur-eval-archive/desktop-exp5/`) left
 five context-exhausted cells out of 32, and the three mechanisms behind
-them are separable. Each candidate below is a decision, not an obvious
-yes, and none is built.
+them are separable. Each candidate below was a decision, not an obvious
+yes.
+
+**ALL THREE DEQUEUED by T42 (2026-08-31).** Kept here with what was
+actually built against each, because the split between them turned out
+to matter more than the list did: the estimator item alone could NOT
+have saved the class it describes, and the recovery item is what does.
 
 - **`context_crossing()` cannot see additions made since the last
   response.** It reads the usage the previous response reported, so a
@@ -239,6 +245,17 @@ yes, and none is built.
   budgets its bytes at about 4 characters per token, and dense G-code
   measured about 1.2, so one capped read can be about 85% of a 12288
   window on its own.
+  BUILT as T42 P2, with a correction the candidate did not make: a
+  chars/4 estimate would still have MISSED these three cells, because
+  the content that filled the window is exactly the content the divisor
+  is wrong about. P2 catches the ordinary large result in time to fold
+  it cheaply; what catches this class is P1, which acts after the
+  server rejects the request rather than trying to predict it. The
+  divisor is deliberately left at 4 rather than tuned to the gcode
+  sample, since tuning to the worst case makes every ordinary turn
+  compact early. The T19 cap formula itself is a DELIBERATE
+  NON-CHANGE: it is now backstopped by P1, and moving it would move
+  every model's tool output, which is its own milestone if ever.
 
 - **A context-size 400 is terminal, and nothing tries to recover from
   it.** The provider error propagates out of the turn loop mid-turn;
@@ -250,6 +267,15 @@ yes, and none is built.
   above: a better estimate would prevent most of these, a retry would
   survive the ones it still misses, and either can ship without the
   other.
+  BUILT as T42 P1, and it is the headline of that milestone rather than
+  a companion to the estimator fix. Two arms, not one: the
+  compact-and-retry the candidate names, plus a halve-the-largest-tool-
+  result arm for the case a fold cannot reach, which is the case both
+  `gcode-to-text` cells actually died in. Classification is an EXACT
+  match on the parsed wire kind `exceed_context_size_error` and nothing
+  else. A provider-general error taxonomy is a DELIBERATE NON-CHANGE
+  and stays queued below: pattern-matching other providers' overload
+  wordings would resend requests rejected for entirely other reasons.
 
 - **The summarize call is subject to the window it is trying to
   relieve.** When staleness means the crossing is first SEEN late, the
@@ -262,6 +288,11 @@ yes, and none is built.
   either by dropping the tail it is going to keep verbatim anyway or by
   hard-trimming what it sends, so the relief call cannot be the thing
   that overflows.
+  BUILT as T42 P3, by the first of the two routes: the AUTO path
+  summarizes `history[..tail_start]` only. No hard trim, which would
+  have needed a policy for what to cut and would have made the summary
+  a lie about what it read. `/compact` and the resume seam keep full
+  history, since both discard everything but the summary.
 
 ### Queued from v0.30.1 (2026-08-30)
 
@@ -282,6 +313,10 @@ yes, and none is built.
   every request asks for more completion than the server can hold.
   Whether the advisory arm itself should be quieted in that case is a
   separate question and wants the WARN first.
+  BUILT as T42 P5, exactly as scoped: WARN, never FAIL, naming both
+  numbers, both consequences and the fix. The advisory arm itself is
+  untouched, so that separate question stays open and now has the WARN
+  it wanted first.
 
 ### Queued from T41 (2026-08-30)
 
@@ -299,6 +334,15 @@ yes, and none is built.
   the amendment contract on keyless requests (`provider/mod.rs`) would
   have to be extended to cover it, so this is a decision and not an
   obvious yes.
+  BUILT as T42 P4. The contract needed no widening in the end: the
+  probe is the existing `probe_props_context`, which takes a base URL
+  and nothing else and therefore cannot attach auth by construction, so
+  startup is a third caller of a call already covered rather than a new
+  kind of request. The gate is narrower than the candidate's: keyless
+  `openai-compat` AND no configured window AND not `--mock`, so the
+  startup request is made only on runs that would otherwise have had no
+  window at all. In-memory only, and doctor still recommends the
+  explicit config line.
 
 - **The compact-vs-full effect has never been measured on tasks.**
   T41's threshold is reasoned from F6's floor arithmetic (6,991 tokens

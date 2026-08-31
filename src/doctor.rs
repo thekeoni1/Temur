@@ -254,6 +254,17 @@ fn run_with_sandbox_probe(
         context_check(&mut r, &prefix, p, no_network, &mut props)?;
     }
 
+    // T42 P5: the same shape, one level up. A window and a token cap that
+    // contradict each other is a config fact, so it is checked wherever a
+    // window is configured, probe or no probe.
+    max_tokens_check(&mut r, "", &active)?;
+    for (name, p) in &profiles {
+        if *p == active {
+            continue;
+        }
+        max_tokens_check(&mut r, &format!("profile \"{name}\" "), p)?;
+    }
+
     // The definitions the two probes below both send, built ONCE: the
     // build enumerates every skill directory, and doing that twice per
     // doctor run bought nothing.
@@ -322,6 +333,41 @@ fn context_check(
         ),
         (None, Some(_)) => Ok(()),
     }
+}
+
+/// T42 P5: `max_tokens` larger than `context_window` (T41/v0.30.1 queue
+/// item), WARN only.
+///
+/// Two consequences, and the second is the one people miss. The context
+/// advisory's second arm is `window - used < max_tokens`, which is true
+/// by construction whenever the cap exceeds the whole window: the advisory
+/// then fires on the FIRST response of every session, at any usage, and
+/// says `/compact` about a window that is barely touched. Seen live on
+/// 2026-08-30 in the v0.30.1 smoke (step 3e), where the anthropic default
+/// `max_tokens` of 32000 rode along on an openai-compat profile that never
+/// named its own, against a 12,288-token local window. Underneath that,
+/// every request reserves more completion than the server can hold at all.
+///
+/// Never a FAIL: it is a live-able configuration, it is exactly what a
+/// hand-written local config falls into, and doctor's exit code is for
+/// things that are broken. Silent when the two are consistent, and silent
+/// when no window is configured, since there is then nothing to compare
+/// against (the context check above already says so in that case).
+fn max_tokens_check(
+    r: &mut Report<'_>,
+    prefix: &str,
+    p: &crate::config::ResolvedProfile,
+) -> std::io::Result<()> {
+    let Some(window) = p.context_window else {
+        return Ok(());
+    };
+    if u64::from(p.max_tokens) <= window {
+        return Ok(());
+    }
+    r.warn(&format!(
+        "{prefix}max_tokens {} is larger than context_window {window}: the context advisory fires from the first response of every session, and every request reserves more output than the window can hold; lower max_tokens below {window} or raise context_window",
+        p.max_tokens
+    ))
 }
 
 /// The tool definitions a real session would send, for the tools-drop
@@ -1368,6 +1414,58 @@ mod tests {
     const LLAMA_MODELS: &str = r#"{"data":[{"id":"served"}]}"#;
     const LLAMA_PROPS_8192: &str =
         r#"{"default_generation_settings":{"n_ctx":8192},"total_slots":1}"#;
+
+    #[test]
+    fn max_tokens_over_the_window_warns_with_both_numbers_and_the_fix() {
+        // The v0.30.1 smoke (step 3e) shape: an openai-compat profile that
+        // never named its own max_tokens, so the anthropic default rode
+        // along against a 12,288-token local window.
+        let base = canned_server_with_props(LLAMA_MODELS, LLAMA_PROPS_8192);
+        let cfg = format!(
+            r#"{{"provider":"openai-compat","max_tokens":32000,"openai_compat":{{"base_url":"{base}","model":"served","context_window":12288}}}}"#
+        );
+        let (healthy, out) = doctor_over(&cfg, false);
+        assert!(healthy, "WARN must never affect the exit code: {out}");
+        assert!(
+            out.contains("WARN: max_tokens 32000 is larger than context_window 12288"),
+            "{out}"
+        );
+        assert!(out.contains("fires from the first response"), "{out}");
+        assert!(out.contains("reserves more output than the window can hold"), "{out}");
+        assert!(
+            out.contains("lower max_tokens below 12288 or raise context_window"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn max_tokens_within_the_window_says_nothing() {
+        let base = canned_server_with_props(LLAMA_MODELS, LLAMA_PROPS_8192);
+        let cfg = format!(
+            r#"{{"provider":"openai-compat","max_tokens":3072,"openai_compat":{{"base_url":"{base}","model":"served","context_window":12288}}}}"#
+        );
+        let (healthy, out) = doctor_over(&cfg, false);
+        assert!(healthy, "{out}");
+        assert!(!out.contains("is larger than context_window"), "{out}");
+        // Equal is fine too: the cap can use the whole window.
+        let cfg = format!(
+            r#"{{"provider":"openai-compat","max_tokens":12288,"openai_compat":{{"base_url":"{base}","model":"served","context_window":12288}}}}"#
+        );
+        let (_, out) = doctor_over(&cfg, false);
+        assert!(!out.contains("is larger than context_window"), "{out}");
+    }
+
+    #[test]
+    fn no_configured_window_means_no_max_tokens_comparison() {
+        // Nothing to compare against. The context check above already
+        // reports the missing window; a second line about it would be noise.
+        let base = canned_server_with_props(LLAMA_MODELS, LLAMA_PROPS_8192);
+        let cfg = format!(
+            r#"{{"provider":"openai-compat","max_tokens":32000,"openai_compat":{{"base_url":"{base}","model":"served"}}}}"#
+        );
+        let (_, out) = doctor_over(&cfg, false);
+        assert!(!out.contains("is larger than context_window"), "{out}");
+    }
 
     #[test]
     fn context_check_pass_on_exact_match() {
