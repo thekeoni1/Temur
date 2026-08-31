@@ -656,6 +656,151 @@ Passes are classified first, so 40 is the number the table uses. Full
 report, cell tree and stage records for this run:
 `~/temur-eval-archive/desktop-exp4/`.
 
+### Same rig, auto-compaction on (temur v0.29.1, differential)
+
+A fifth matrix ran on the same box, 2026-08-30 to 2026-08-31, and it is
+not a harness comparison. It runs **temur only**, and it changes exactly
+one thing against the Qwen3-8B table above: the temur binary, 0.28.0
+there and 0.29.1 here. Auto-compaction shipped in v0.29.x, so that one
+substitution is the whole of the variable. Everything else is pinned to
+the experiment-3 arm and read back rather than assumed: the same box,
+the same `server-cuda-b10438` image digest, the same
+`Qwen3-8B-Q4_K_M.gguf` with thinking held off, ctx 12288, `max_tokens`
+3072, the same 16-task subset, two runs each. `prompt_profile` is
+**`"compact"`, explicitly, in all 32 cell configs and in all 32 of
+experiment 3's**, so T41's auto profile is not in either arm's numbers,
+and at a 12288-token window it would have resolved to compact anyway.
+The baseline is experiment 3's 32 temur cells, not its 96.
+
+Capture is a grep of each cell's transcript (`temur.txt`, stdout and
+stderr merged) for the three strings v0.29.1 prints, `compacting
+automatically`, `compacted: ` and `auto-compact failed (`, recorded per
+cell as `started=`, `compactions=` and `failed=`. The planning session
+recounted the markers independently and matched the recorded fields in
+all 32 cells.
+
+**Headline: auto-compaction runs, it works, and it does not move the
+score.**
+
+| | exp 3, temur 0.28.0 | exp 5, temur 0.29.1 |
+|---|---|---|
+| passes | 1/32 | 0/32 |
+| ctx-exhausted | 7 | 5 |
+| compactions started / succeeded / failed | none possible | 12 / 11 / 1 |
+| cells with a compaction | none possible | 8 |
+| wall clock, 32 cells | 4,257 s | 4,932 s |
+
+The single experiment-3 pass, `modernize-scientific-stack` run 1, did
+not repeat. A 1-to-0 move on 32 cells is inside the single-task noise
+the tables above already show, and it is recorded as such rather than
+as a regression. The +16% wall clock is the honest price: compaction
+keeps doomed cells alive longer.
+
+The seven cells that exhausted context in experiment 3 went four ways
+on v0.29.1. **One was converted by compaction**: `build-pmars` run 1
+folded twice and survived to a completed failure in 254 s, which is the
+only clean CTX-death-to-completed-turn conversion in the set. **Three
+completed with zero compactions**, `build-pmars` run 2,
+`count-dataset-tokens` run 2 and `extract-elf` run 2, where the model
+simply took a shorter path; a cell that left CTX without the feature
+ever firing is run-to-run variance and is not credited to compaction.
+(`build-pmars` run 2 is also the one cell re-run after the
+interruption disclosed below; its count is unchanged and its
+provenance is flagged there.) **Three are still CTX**, `gcode-to-text`
+runs 1 and 2 and `adaptive-rejection-sampler` run 1, all three with
+zero compactions. Two cells that were fine in experiment 3 became CTX
+here: `adaptive-rejection-sampler` run 2 and `build-cython-ext` run 2.
+
+The five remaining CTX deaths decompose into three mechanisms, each
+verified against the v0.29.1 source rather than inferred from the
+transcripts.
+
+**Three of the five are an estimator blind spot.** `context_crossing()`
+reads the usage the previous response reported, so a large
+`tool_result` appended on the client side is invisible to the check
+until the next response comes back. Both `gcode-to-text` runs died on
+round-trip **one**: a single capped read of `text.gcode` delivered
+12,433 characters, and dense G-code tokenizes at roughly 1.2 characters
+per token, so that one result was about 10k tokens on its own. The
+request measured 13,402 tokens against a 12288-token window, while the
+value the check had to work from was the first response's usage,
+reconstructed at about 2.9k. No crossing line was ever printed because
+no crossing was ever detected, and a
+context-size 400 is terminal in v0.29.1, which has no reactive path.
+The related calibration fact is that the T19 output cap budgets its
+bytes assuming about 4 characters per token, which is about 3x off on
+this content class, so one capped read can arrive as roughly 85% of the
+window.
+
+**One of the five is a late-trigger fail-open.** In
+`adaptive-rejection-sampler` run 2 the crossing was first seen at
+~11,571 of 12,288 tokens, 94% of the window, and the summarize call is
+subject to the same window it is trying to relieve: it was rejected at
+13,518 tokens. Failing open is the designed behaviour and the session
+continued, but the next request died anyway.
+
+**One of the five is the per-turn bound behaving as documented.**
+`build-cython-ext` run 2 folded three times successfully, its fourth
+crossing hit `MAX_AUTO_COMPACTIONS_PER_TURN`, the advisory was emitted,
+and the cell died context-exhausted. The cell was a file-re-reading
+loop, reading the same `.pyx` again after a fold, which no amount of
+window rescues.
+
+Read together, the differential says that at this window and this model
+**the score is capability-bound, not context-bound**. The one cell that
+was given more runway still failed the task. What auto-compaction is
+measured to buy here is runway, not passes: correct capture, 11 of 12
+folds succeeding, honest and legible failure modes, and 16% more wall
+clock spent on cells that were going to fail either way. The remaining
+CTX class is dominated by the blind spot, which auto-compaction as
+built **cannot** catch, because it never sees the jump. A score-neutral
+differential is the honest headline, and it is a real answer rather
+than a null instrument.
+
+Required disclosures. **The first launch was VOID and measured
+nothing.** `cell-desktop-exp5.sh` was not executable, all 32 cells
+failed instantly on `Permission denied`, and the matrix reported
+`run1=0 passes run2=0 passes` and `complete` in one second, which reads
+as a finished 0/0 run to anything looking at the summary line. The
+desktop session caught it, the ledger carries a `VOID LAUNCH` block
+marked in place rather than deleted, and the deeper defect, a matrix
+that counted a cell which never ran as a non-pass, was fixed before the
+real run with a guard that halts on the first cell recording no
+`RESULT` line, verified by re-breaking the permission bit.
+
+**The matrix was interrupted once, at 22 of 32 cells**, by an external
+and orderly termination of the WSL VM at 00:50:47Z. Windows itself
+stayed up 33 h, and memory, GPU, disk, OOM, Windows Update, sleep and
+`loginctl` linger were each ruled out on evidence. The cause is **not
+determined**; the leading candidate is WSL's idle behaviour with no
+`vmIdleTimeout` set, and no cause is asserted. The resume skipped every
+cell that already had a verdict. `build-pmars/run2` had written no
+`RESULT` line, so its partial directory was deleted and the cell re-ran
+from scratch, with an `INTERRUPTED` line in the append-only ledger,
+which is the handling experiment 3's resume above used. Driver, image
+digest, model sha and temur binary sha were all read back unchanged
+across the gap, and the preflight re-ran and passed. Two further
+interruptions belong to the resume rather than to the measurement: it
+was killed once by the desktop session's own tooling error, and once
+halted correctly by the preflight finding containers orphaned by the VM
+death. The real run recorded **zero VOIDs and zero timeouts** across
+all 32 cells.
+
+**The run ledger is not in the tarball**; it lives on the desktop box
+and has never been packaged in any experiment. The cell tree,
+`FINAL-exp5.md` and the stage reports are all included, and the cell
+tree is what the planning session recomputed from.
+
+What this differential does not establish. It says nothing about larger
+context windows: 12288 is the only window measured, and every mechanism
+above is a statement about behaviour at that size. It says nothing
+about the full or auto prompt profiles, because compact was explicit in
+both arms. It says nothing about hosted providers. And it says nothing
+about compaction **quality**: 11 folds succeeded in the sense that the
+call returned and the history was replaced, and nothing scored the
+summaries themselves. Full report, cell tree and stage records for this
+run: `~/temur-eval-archive/desktop-exp5/`.
+
 ### The earlier GPU run is archive-only
 
 An experiment 1 ran on this box on 2026-08-26/27 against llama.cpp b8580,

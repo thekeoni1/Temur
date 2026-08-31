@@ -215,6 +215,54 @@ payload.
 | T41 | Prompt floor | As built 2026-08-30, dequeuing **F6 (T40)**, whose two candidates were "select the compact profile automatically below a `context_window` threshold" and "report the floor in `doctor`". Both built; the operator approved the default flip on 2026-08-30. P1: `prompt_profile` accepts `"auto"` | `"full"` | `"compact"` and an ABSENT field now means `"auto"`, which is the new default. Auto resolves to compact when a `context_window` is configured and strictly below 16384, to full otherwise (an unknown window included, since guessing smaller would trim descriptions on a model that never needed them); an explicit value is never second-guessed at any window. One pure function over `Option<u64>` is the only path from a window to a profile, and `PromptProfileSpec` splits spelling validation from window resolution so a typo in the GLOBAL field is still a startup error while each selection resolves against its OWN window. `ResolvedProfile` gained `prompt_profile_source` (`Explicit`/`Auto`), read only by reporting: one startup line when auto picks compact, the same line from the same function on a `/model` switch that lands there, and `/status` becoming `compact (auto)` / `full (auto)` / `compact` / `full`. This DELIBERATELY reverses the explicit-only contract pinned in three places through v0.29.1 (the `PromptProfile` doc comment, the config resolution test, `docs/OFFLINE.md`), all three changed in place. RIPPLE, stated in the commit and the docs: any config with a window below 16384 and no explicit `prompt_profile` gets compact descriptions from this release on, `temur init`'s local template included. P2: `doctor` reports the prompt floor for the active selection, an offline estimate always (system-prompt plus definition bytes over 4) and a MEASURED figure under the tools-drop gate (one extra one-token POST carrying the real system prompt and the real definitions); PASS below 40% of the window, WARN at or above, never FAIL, and a WARN on an already-compact selection points at `context_window` instead. `probe_prompt_tokens`/`tools_drop_probe_body` gained `system: Option<&str>`, with `None` byte-identical to the pre-T41 body so the T34 tools-drop baseline cannot move. `DEFAULT_SYSTEM`/`DEFAULT_SYSTEM_COMPACT` moved from `main.rs` into `src/prompt.rs` byte-identically. The estimate NOTE deliberately does NOT quote the planned "under-reads by 15-30%": measured against this checkout the estimator reads 7,240 where F6 counted 6,991, 4% HIGH, so no percentage is defensible from one calibration point. Tests 756 -> 779, full `check.sh` green first try at every phase. Ships as v0.30.0. **Three defects in it were fixed as v0.30.1; the threshold shipped here (16384) is NOT the one that stands, see T41.1.** |
 | T41.1 | Post-ship review fixes (v0.30.1) | PATCH on T41, not a new milestone: no new capability, only defects in what T41 shipped hours earlier. As built 2026-08-30 from a code review of the shipped v0.30.0 range (`049085e..12cd7ec`), three findings, all three verified against the tree by the planning session before any was acted on, one commit each. R1 (MEDIUM, the reason this is a release and not a note): `PROMPT_AUTO_COMPACT_BELOW` and `doctor`'s `PROMPT_FLOOR_WARN_PERCENT` disagreed BY CONSTRUCTION. 16384 * 40% is 6,554, below the 6,991 tokens the full profile actually costs, so every window in [16384, 17478) measured (and [16384, 18100) estimated) got `full` from the auto rule and then a WARN against that same selection from `doctor` in the same run, telling the user to set `prompt_profile` to `"compact"` and undo the choice temur had just made. 16384 is exactly what `temur init` writes from a 16k llama.cpp `/props` allocation, so a fresh `init` followed by `doctor` produced the contradiction on the wizard's own output. Fixed by DERIVING the threshold from the warning line instead of picking it for roundness: 20480, the smallest round window at which the full floor sits under 40% (34% measured, 35% estimated), with the tie pinned by a test that runs the shipped estimator over the real full-profile prompt and the real registry at exactly the threshold, so changing either constant or growing the prompts fails loudly. The WARN itself was deliberately NOT softened for an `Auto` choice: a 44% floor is a 44% floor, and a report that excuses a number because the tool picked it is worth nothing. RIPPLE, same shape as T41's own: a config with a window from 16384 to 20479 and no `prompt_profile` moves from the full descriptions to the compact ones. R2 (LOW/MEDIUM): the floor probe carries the system prompt AND every definition, which makes it the largest prefill a doctor run asks for, and it runs FIRST, unannounced, where the tools-drop check right after it prints a NOTE and flushes before its own pair for exactly this reason; v0.30.0 could go silent for up to 300s with nothing said, and took the worst case from two large prefills to three. It now announces itself in the same style, on the networked path only, and the definitions the two probes share are built once per run instead of twice. R3 (LOW): `hop_switch` computed the auto-compact notice and emitted it on both success paths but dropped it in the arm where `raw_override` failed, although that arm's own comment says the activation stands and an activation swaps the prompt profile: a user who hopped onto an auto-compact profile and whose model override then failed was left on the compact prompts with only a failure notice. VERIFIED LIVE, not just reasoned: `~/temur-eval-archive/t41-live/REPORT.md` records the fixed binary against llama.cpp `server-b10438` (Qwen3-4B-Instruct-2507, ctx 12288) picking compact at 16384 and PASSing at 16%, while the installed 0.30.0 on the same config WARNs at 42% and advises compact. Tests 779 -> 783, full `check.sh` green first try at every commit. |
 
+### Queued from desktop experiment 5 (2026-08-31)
+
+The auto-compaction differential (`docs/COMPARISON.md`, "Same rig,
+auto-compaction on", archive `~/temur-eval-archive/desktop-exp5/`) left
+five context-exhausted cells out of 32, and the three mechanisms behind
+them are separable. Each candidate below is a decision, not an obvious
+yes, and none is built.
+
+- **`context_crossing()` cannot see additions made since the last
+  response.** It reads the usage the previous response reported, so a
+  single large `tool_result` appended on the client side can carry the
+  next request past the window with no crossing ever detected. This is
+  **3 of the 5** exp-5 CTX deaths, and both `gcode-to-text` cells died
+  on round-trip ONE: one capped read of `text.gcode` delivered 12,433
+  characters, the request measured 13,402 tokens against a 12288-token
+  window, and the value the check had to work from was the first
+  response's usage, reconstructed at about 2.9k. Candidate, NOT built:
+  fold a chars-based estimate of the client-side additions appended
+  since the last response into the crossing check, so the check
+  describes the request about to be sent rather than the one already
+  answered. The related calibration fact belongs with it: T19's cap
+  budgets its bytes at about 4 characters per token, and dense G-code
+  measured about 1.2, so one capped read can be about 85% of a 12288
+  window on its own.
+
+- **A context-size 400 is terminal, and nothing tries to recover from
+  it.** The provider error propagates out of the turn loop mid-turn;
+  there is no reactive-compaction path in v0.29.1 at all. Every cell in
+  the blind-spot class above died this way rather than on a detected
+  crossing. Candidate, NOT built: one compact-and-retry when the error
+  is specifically a context-size rejection and `auto_compact` is on.
+  This is deliberately a **separate** decision from the estimator fix
+  above: a better estimate would prevent most of these, a retry would
+  survive the ones it still misses, and either can ship without the
+  other.
+
+- **The summarize call is subject to the window it is trying to
+  relieve.** When staleness means the crossing is first SEEN late, the
+  fold itself does not fit. `adaptive-rejection-sampler` run 2 saw the
+  crossing at ~11,571 of 12,288 tokens, 94% of the window; the
+  summarize request was rejected at 13,518 tokens, auto-compaction
+  failed open as designed, and the next request died anyway. That is
+  the 1 of 5 in this class, and the 1 failure in the 12 / 11 / 1
+  compaction totals. Candidate, NOT built: bound the summarize request,
+  either by dropping the tail it is going to keep verbatim anyway or by
+  hard-trimming what it sends, so the relief call cannot be the thing
+  that overflows.
+
 ### Queued from v0.30.1 (2026-08-30)
 
 - **`max_tokens` larger than `context_window` makes the context
@@ -265,7 +313,10 @@ payload.
   subset from the desktop, after experiment 5, changing only the prompt
   profile. Until that runs, T41's default flip rests on the floor
   arithmetic alone, which is a claim about what temur SENDS and not
-  about what it FINISHES.
+  about what it FINISHES. Desktop experiment 5 (2026-08-31) did NOT
+  close this: it ran `prompt_profile` `"compact"` EXPLICITLY in both
+  arms, varying the binary and not the profile, so this measurement
+  remains open.
 
 ### Queued from T37 (2026-08-24)
 
