@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.31.0 - 2026-08-31
+
 - **A context-size rejection is no longer fatal.** When a request comes
   back from the server as too large for the window, temur now recovers
   once and retries once instead of ending the turn. Either it compacts,
