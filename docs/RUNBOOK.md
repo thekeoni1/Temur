@@ -9313,3 +9313,106 @@ window.
   `KEYLESS_LISTING_TIMEOUT_SECS` on a filtered port, once per run, on
   runs that would otherwise have had no window at all. A refused
   connection is instant.
+
+## v0.31.0 close-out - recorded at stage 1, before its release
+
+2026-08-31. **T42, context overflow recovery, cut as v0.31.0.** A MINOR
+bump, not a patch: the release adds behaviour that did not exist, most
+of it on paths every local run takes. A context-size rejection used to
+end the turn and now does not; startup makes a request it never made
+before. The T42 acceptance record above carries what shipped, the
+evidence behind each phase and the residuals; this section is the
+release-cycle bookkeeping only.
+
+Version moves 0.30.1 -> 0.31.0. Nothing else rides along: five T42
+phase commits and three prep commits, no unrelated work.
+
+### Gate log
+
+| Commit | What | Tests | check.sh | Gate log |
+| --- | --- | --- | --- | --- |
+| `47d1f4f` | P1 overflow recovery | 792 | ALL CHECKS PASSED, first try | `t42-gates/gate-p1.log` |
+| `8ac37c4` | P2 pre-send estimator | 796 | ALL CHECKS PASSED, first try | `t42-gates/gate-p2.log` |
+| `a8ad0e0` | P3 bounded summary call | 798 | ALL CHECKS PASSED, first try | `t42-gates/gate-p3.log` |
+| `bf05347` | P4 startup /props probe | 804 | ALL CHECKS PASSED, first try | `t42-gates/gate-p4.log` |
+| `183007e` | P5 doctor WARN + docs | 807 | ALL CHECKS PASSED, first try | `t42-gates/gate-p5.log` |
+| `ff645cc` | stage 1, at 0.31.0 | 807 | ALL CHECKS PASSED, first try | `t42-gates/v0.31.0-stage1-ff645cc.log` |
+
+Tests 783 -> 807 across the milestone. Every run was pty-backed and
+teed with no tail in the pipe, so a single failure would keep its name.
+All 48 `test result:` lines read `0 failed` in each of the six logs,
+and all three TUI pty smokes (host, gnu container, musl container)
+passed on the first attempt in every one: **no kill-and-rerun anywhere
+this cycle**, and no `FAIL(` line in any log. The stage-1 gate's bare
+busybox container reported `temur 0.31.0`. The unnamed `--lib` failure
+still recorded as an open sighting from the v0.29.1 close-out did not
+recur.
+
+CI: the T42 phase commits pushed `9b3cd5c..183007e`, run **33402110930,
+attempt 1**, both jobs green (`test` 1m16s, `release-gate` 4m42s). One
+run, one attempt, no reruns.
+
+### The accepted deviations from the T42 plan
+
+Recorded here as well as in the acceptance record above, because a
+reader auditing the release should not have to find them in a milestone
+section.
+
+1. **`auto_compact_folds`, not `auto_compact_will_fold`, at both new
+   check sites.** The plan named `will_fold` for P1's arm (a). That
+   predicate adds the two messages the ADVISORY site knows are coming
+   but that do not exist yet; at the send site and at P2's pre-send
+   site the history is already complete, so the lookahead would
+   describe a history that never exists. Both predicates answer `false`
+   for the gcode shape, so no behaviour differs there; the plain one is
+   simply the correct question at these sites, and the call sites say
+   so.
+2. **A `persist_now` was added before P1's retry.** The plan said the
+   pre-send save already covered the rewritten history and to verify
+   rather than assume. Verified, and it does not: the retry sends
+   inside the same loop iteration, so the save at the top of that
+   iteration ran against the pre-recovery history. This is not a new
+   policy, it is T40 P2's existing rule ("the file on disk is current
+   before every request that goes out") applied at a new send site.
+3. **P1's agent-loop cases run against a scripted provider, not a
+   canned HTTP server.** The plan asked for canned one-shot POST
+   servers. The six behavioural cases are driven through a scripted
+   `Provider` that rejects an oversized request the way llama.cpp does,
+   and the wire half is pinned separately in `tests/openai_compat.rs`:
+   llama.cpp's real 400 body must still parse to kind
+   `exceed_context_size_error`, which is the contract the agent loop
+   keys on. Each half is tested where it lives.
+4. **P4 got its end-to-end test, so the plan's fallback was not
+   used.** The plan allowed unit tests plus a doctor-parity assertion
+   if the canned-server harness could not reach `main`'s startup path.
+   It can: two `tests/cli.rs` tests drive the real binary against a
+   canned llama.cpp, asserting the probe happens BEFORE the completion,
+   carries no credential header, and does not happen at all when a
+   window is configured. The parity unit pin is there as well.
+5. **P4's probe notice carries the detection line only.** The plan
+   described it as the detection line "plus the auto-profile clause
+   when auto flipped to compact". The clause is delivered by T41's
+   existing `auto_compact_notice`, which now fires on its own because
+   the recomputed profile precedes it. One wording for one fact rather
+   than a second copy of it; both lines are asserted in the e2e.
+6. **The five phase commits carry no `Co-Authored-By` trailer; the
+   three prep commits do.** The repository has both shapes, the v0.30.0
+   cycle used neither and the v0.30.1 cycle used both, so this is a
+   within-cycle inconsistency rather than a departure from a standard.
+   The phase commits were already pushed when it was noticed and were
+   deliberately NOT rewritten: rewriting published history to add a
+   trailer is a worse trade than the inconsistency.
+7. **The stage-1 gate log is named after the head it ran on**
+   (`ff645cc`, the CHANGELOG cut) rather than after this close-out
+   commit, which is what the two previous cycles' filenames record.
+   This close-out adds RUNBOOK prose and nothing else after that gate,
+   so naming the log for a tree it did not run on would have been the
+   only inaccurate option.
+
+### Stage 2 explicitly not yet run
+
+No tag exists, local or remote, and nothing has been published. This
+record is written at stage 1, before the release, which is the standing
+procedure: the close-out has to be able to say something the release
+could still contradict. The stage-2 tag message will be exactly one
+line, `temur v0.31.0 - context overflow recovery (T42)`.
