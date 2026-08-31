@@ -6,7 +6,8 @@ pub mod recover;
 
 use crate::cancel::CancelToken;
 use crate::provider::{
-    ChatRequest, ContentBlock, Provider, ProviderError, RequestMessage, Role, StopReason, Usage,
+    ChatRequest, ContentBlock, Provider, ProviderError, RequestMessage, ResponseMessage, Role,
+    StopReason, Usage,
 };
 use crate::session_store::SessionSeed;
 use crate::tools::{Registry, TodoItem, ToolCtx};
@@ -271,6 +272,32 @@ are kept.";
 const AUTO_COMPACT_RESUME: &str = "That summary replaces the earlier steps of this \
 task. Continue the task from it and from the most recent steps below.";
 
+/// T42: the wire `type` llama.cpp puts on a request that does not fit the
+/// model's context window ("request (13402 tokens) exceeds the available
+/// context size (12288 tokens)"), captured in every desktop experiment 5
+/// CTX primary. Matched EXACTLY, on the parsed kind and nothing else: the
+/// display string is not a contract, and no other provider's overload
+/// wording is claimed here. A wrong classification would resend a request
+/// that was rejected for some other reason, so this stays narrow until a
+/// provider-general taxonomy is built (queued, not built).
+const CONTEXT_OVERFLOW_KIND: &str = "exceed_context_size_error";
+
+/// T42 arm (b): a tool result this small is not what filled the window, and
+/// halving it again would destroy the last of its meaning for nothing. At
+/// or below this, recovery declines and the original error propagates.
+const OVERFLOW_ELISION_FLOOR_CHARS: usize = 1_024;
+
+/// T42 marker, STABLE and greppable: arm (a) fired. Desktop experiments
+/// grep these lines out of `temur.txt`; rewording one silently breaks an
+/// instrument, so treat it like a wire format.
+const OVERFLOW_COMPACT_NOTICE: &str =
+    "context overflow: the server rejected the request; compacting and retrying";
+
+/// T42 marker, STABLE and greppable: arm (b) fired. See
+/// [`OVERFLOW_COMPACT_NOTICE`].
+const OVERFLOW_ELIDE_NOTICE: &str =
+    "context overflow: the server rejected the request; truncating the largest tool result and retrying";
+
 /// T40 P2: where and how a session persists ITSELF. `None` on the session
 /// means never persist, which is what the `--mock` replay paths and any
 /// embedder without a session file get.
@@ -336,6 +363,20 @@ pub enum AutoCompactOutcome {
         before_bytes: u64,
         after_bytes: u64,
     },
+}
+
+/// T42: what one bounded overflow recovery did, and therefore what the turn
+/// loop owes it. `None` is the fail-open answer: nothing was changed and
+/// the caller propagates the ORIGINAL provider error.
+enum OverflowRecovery {
+    /// Arm (a). History was folded, so this turn's prompt is at index 0
+    /// now and `turn_start` must follow it (the F1 discipline).
+    Compacted,
+    /// Arm (b). The largest tool result was halved in place; indices are
+    /// unchanged.
+    Elided,
+    /// Nothing was done.
+    None,
 }
 
 /// What [`Session::compact`] did. The command layer words the notices; the
@@ -771,6 +812,103 @@ impl Session {
         }
     }
 
+    /// The request this session would send RIGHT NOW: current history,
+    /// current registry, current config. Extracted by T42 because overflow
+    /// recovery rewrites history and then has to rebuild the request from
+    /// it; there must be exactly one description of what a request is.
+    fn chat_request(&self) -> ChatRequest {
+        ChatRequest {
+            model: self.cfg.model.clone(),
+            max_tokens: self.cfg.max_tokens,
+            system: self.cfg.system.clone(),
+            thinking: self.cfg.thinking,
+            // None sends nothing (provider default), exactly as before
+            // config grew these knobs.
+            temperature: self.cfg.temperature.map(f64::from),
+            top_p: self.cfg.top_p.map(f64::from),
+            messages: self.history.clone(),
+            tools: self.registry.definitions(),
+        }
+    }
+
+    /// T42: the ONE bounded attempt to make an over-window request fit,
+    /// after the provider has already rejected it with
+    /// [`CONTEXT_OVERFLOW_KIND`]. Called from the turn loop only, at most
+    /// once per send, and counted against the same per-turn bound as
+    /// auto-compaction.
+    ///
+    /// Arm (a) is the ordinary fold, taken whenever auto-compaction is on
+    /// and the turn already holds enough round-trips. Arm (b) is the class
+    /// the fold cannot reach at all: desktop experiment 5's gcode cells
+    /// died on ROUND-TRIP ONE, where there is nothing to fold, and where
+    /// even a fold would keep the oversized result verbatim in the tail. It
+    /// halves the LARGEST tool result in place. Only `ToolResult` blocks
+    /// are candidates: the task prompt and every assistant message are
+    /// untouched (the prompt-verbatim invariant is not negotiable for a
+    /// one-shot run, where the prompt is the only statement of the task).
+    ///
+    /// Foldability is decided BEFORE anything is announced, the same
+    /// discipline as the advisory site, so the turn never says it is
+    /// compacting and then does something else instead.
+    ///
+    /// FAIL-OPEN, matching T40: every failure in here returns
+    /// [`OverflowRecovery::None`] and the caller propagates the ORIGINAL
+    /// provider error, never one this path invented.
+    fn recover_from_context_overflow(
+        &mut self,
+        turn_start: usize,
+        ui: &mut dyn FnMut(AgentEvent),
+    ) -> OverflowRecovery {
+        // The send site's history is COMPLETE (results appended, request
+        // already built), which is what `auto_compact` will operate on, so
+        // the plain predicate applies here and not the `will_fold`
+        // lookahead the advisory site needs.
+        if self.cfg.auto_compact
+            && auto_compact_folds(self.history.len(), turn_start, AUTO_COMPACT_TAIL_ROUND_TRIPS)
+        {
+            ui(AgentEvent::Notice(OVERFLOW_COMPACT_NOTICE.into()));
+            match self.auto_compact(turn_start) {
+                AutoCompactOutcome::Compacted {
+                    folded,
+                    kept,
+                    before_bytes,
+                    after_bytes,
+                } => {
+                    ui(AgentEvent::Notice(auto_compacted_notice_text(
+                        folded,
+                        kept,
+                        before_bytes,
+                        after_bytes,
+                    )));
+                    return OverflowRecovery::Compacted;
+                }
+                // The user interrupted the summary call. Do not start a
+                // second recovery on top of an interrupt; the caller's
+                // cancel check lands the turn.
+                AutoCompactOutcome::Cancelled => return OverflowRecovery::None,
+                // Said out loud, then arm (b) tries the other thing. The
+                // request that provoked all this is still too big, so
+                // staying silent and giving up would be the worst answer.
+                AutoCompactOutcome::Failed(reason) => {
+                    ui(AgentEvent::Notice(format!(
+                        "auto-compact failed ({reason}); continuing without compacting"
+                    )));
+                }
+                AutoCompactOutcome::Nothing => {}
+            }
+        }
+        match halve_largest_tool_result(&mut self.history) {
+            Some((before, after)) => {
+                ui(AgentEvent::Notice(OVERFLOW_ELIDE_NOTICE.into()));
+                ui(AgentEvent::Notice(format!(
+                    "truncated the largest tool result: {before} -> {after} chars"
+                )));
+                OverflowRecovery::Elided
+            }
+            None => OverflowRecovery::None,
+        }
+    }
+
     /// The summary provider call shared by `/compact` (T20) and T40
     /// auto-compaction. ONE call: the current history plus `instruction` as
     /// a final user message, tools omitted entirely (no `tool_use`
@@ -1129,33 +1267,53 @@ impl Session {
             // request that was in flight.
             self.persist_now(ui);
 
-            let req = ChatRequest {
-                model: self.cfg.model.clone(),
-                max_tokens: self.cfg.max_tokens,
-                system: self.cfg.system.clone(),
-                thinking: self.cfg.thinking,
-                // None sends nothing (provider default), exactly as before
-                // config grew these knobs.
-                temperature: self.cfg.temperature.map(f64::from),
-                top_p: self.cfg.top_p.map(f64::from),
-                messages: self.history.clone(),
-                tools: self.registry.definitions(),
-            };
-            let result = self.provider.stream(
-                &req,
-                &mut |ev| {
-                    ui(match ev {
-                        crate::provider::StreamEvent::TextDelta(t) => AgentEvent::TextDelta(t),
-                        crate::provider::StreamEvent::ThinkingDelta(t) => {
-                            AgentEvent::ThinkingDelta(t)
+            let req = self.chat_request();
+            let mut result =
+                self.provider
+                    .stream(&req, &mut |ev| ui(stream_event_to_agent(ev)), &self.cancel);
+            // T42 OVERFLOW RECOVERY. The provider has already said this
+            // request does not fit its window, which before T42 was simply
+            // terminal: three of desktop experiment 5's five CTX deaths
+            // never saw a crossing at all, because the estimate is one
+            // round-trip stale and a single large tool result appended
+            // client-side is invisible to it. Recover once, then retry once.
+            //
+            // Not on an interrupted send (the cancel arm below owns that),
+            // and never past the per-turn bound that auto-compaction shares:
+            // a turn needing a fourth of these is not going to be rescued
+            // by it.
+            if !self.cancel.is_set()
+                && is_context_overflow(&result)
+                && auto_compactions < MAX_AUTO_COMPACTIONS_PER_TURN
+            {
+                match self.recover_from_context_overflow(turn_start, ui) {
+                    OverflowRecovery::None => {}
+                    outcome => {
+                        auto_compactions += 1;
+                        if matches!(outcome, OverflowRecovery::Compacted) {
+                            // Same reset as the safe point's Compacted arm,
+                            // and for the same reason (F1): the fold moved
+                            // this turn's prompt to index 0.
+                            turn_start = 0;
                         }
-                        crate::provider::StreamEvent::ToolUseStarted { name } => {
-                            AgentEvent::ToolStart { name }
-                        }
-                    })
-                },
-                &self.cancel,
-            );
+                        // The pre-send save above ran against the history
+                        // recovery has just rewritten, so it is stale. This
+                        // retry IS a request going out, and T40 P2's rule is
+                        // that the file on disk is current before every one
+                        // of them.
+                        self.persist_now(ui);
+                        let retry = self.chat_request();
+                        result = self.provider.stream(
+                            &retry,
+                            &mut |ev| ui(stream_event_to_agent(ev)),
+                            &self.cancel,
+                        );
+                        // Deliberately NOT re-examined: one recovery per
+                        // send, so a retry that overflows again propagates
+                        // instead of looping.
+                    }
+                }
+            }
             if self.cancel.is_set() {
                 // Interrupted. An error that raced the cancel still ends the
                 // turn as an interruption — the user asked for it to stop —
@@ -1934,6 +2092,75 @@ pub fn auto_compacted_notice_text(
     format!(
         "compacted: {folded} round-trip(s) summarized, {kept} kept, ~{before_bytes} -> ~{after_bytes} bytes"
     )
+}
+
+/// T42: is this send's failure the one overflow recovery is allowed to act
+/// on? EXACT match on the parsed wire kind (see [`CONTEXT_OVERFLOW_KIND`]);
+/// every other error, including every other 400, is left exactly as it was
+/// before T42.
+fn is_context_overflow(result: &Result<ResponseMessage, ProviderError>) -> bool {
+    matches!(result, Err(ProviderError::Api { kind, .. }) if kind == CONTEXT_OVERFLOW_KIND)
+}
+
+/// T42 arm (b): halve the largest `ToolResult` in `history`, in place.
+///
+/// Returns the char count before and after, or `None` when there is no
+/// candidate at all or the largest one is already at or below
+/// [`OVERFLOW_ELISION_FLOOR_CHARS`] - at which point the honest answer is
+/// that this history cannot be shrunk this way and the original error
+/// stands. Ties go to the last block, which is deterministic and, being the
+/// most recent, the one the model still has the best chance of re-reading.
+fn halve_largest_tool_result(history: &mut [RequestMessage]) -> Option<(u64, u64)> {
+    let (chars, mi, bi) = history
+        .iter()
+        .enumerate()
+        .flat_map(|(mi, m)| m.content.iter().enumerate().map(move |(bi, b)| (mi, bi, b)))
+        .filter_map(|(mi, bi, b)| match b {
+            ContentBlock::ToolResult { content, .. } => Some((content.chars().count(), mi, bi)),
+            _ => None,
+        })
+        .max_by_key(|(n, _, _)| *n)?;
+    if chars <= OVERFLOW_ELISION_FLOOR_CHARS {
+        return None;
+    }
+    let ContentBlock::ToolResult { content, .. } = &mut history[mi].content[bi] else {
+        return None;
+    };
+    *content = elide_to_half(content);
+    Some((chars as u64, content.chars().count() as u64))
+}
+
+/// The T19 head+tail central elision, applied a SECOND time to one
+/// already-capped result, at half its current size. The T19 cap formula
+/// itself is untouched: it budgets a quarter of the window at ~4 chars per
+/// token, and dense content (G-code measured ~1.2 chars/token in desktop
+/// experiment 5) defeats that average. This is the backstop for when it
+/// does, not a replacement for it.
+///
+/// The marker is addressed to the MODEL, which is about to see its own
+/// earlier read get shorter and needs to know why and what to do about it.
+/// The marker's own length rides on top of the half, exactly as T19's does.
+fn elide_to_half(content: &str) -> String {
+    let total = content.chars().count();
+    let target = total / 2;
+    let head_n = target / 2;
+    let tail_n = target - head_n;
+    let head: String = content.chars().take(head_n).collect();
+    let tail: String = content.chars().skip(total - tail_n).collect();
+    format!(
+        "{head}\n\n(truncated again: the server rejected the request as larger than its context window, so this result was cut from {total} to {target} chars, keeping the first {head_n} and the last {tail_n}; re-run the tool over a narrower range to see the elided middle)\n\n{tail}"
+    )
+}
+
+/// The stream-event mapping the turn loop hands the provider. A free
+/// function since T42, because the loop now has TWO send sites (the send
+/// and its one recovery retry) and they must surface deltas identically.
+fn stream_event_to_agent(ev: crate::provider::StreamEvent) -> AgentEvent {
+    match ev {
+        crate::provider::StreamEvent::TextDelta(t) => AgentEvent::TextDelta(t),
+        crate::provider::StreamEvent::ThinkingDelta(t) => AgentEvent::ThinkingDelta(t),
+        crate::provider::StreamEvent::ToolUseStarted { name } => AgentEvent::ToolStart { name },
+    }
 }
 
 /// One model response is one round-trip, so counting assistant messages

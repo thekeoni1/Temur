@@ -5671,3 +5671,321 @@ fn the_outcome_line_reports_round_trips_and_bytes_not_message_counts() {
     assert!(after_b < before_b, "a real fold shrinks it: {outcome}");
     assert!(before_b > 0 && after_b > 0, "both figures are real: {outcome}");
 }
+
+// ---- T42: context overflow recovery ----
+
+/// A canned llama.cpp: it answers from the script, EXCEPT that a request
+/// whose prompt is larger than the server's window comes back as HTTP 400
+/// `exceed_context_size_error`, which is the wire shape every desktop
+/// experiment 5 CTX primary died on.
+///
+/// Size is measured as message-content chars plus, when the request carries
+/// tool definitions at all, a fixed `tool_overhead`. That one asymmetry is
+/// real and it matters here: the summary call omits tools entirely, so it
+/// pays no floor.
+struct OverflowProvider {
+    outcomes: RefCell<Vec<Result<ResponseMessage, ProviderError>>>,
+    requests: Rc<RefCell<Vec<ChatRequest>>>,
+    /// `None` = no size gate at all; the script is the only source of errors.
+    limit: Option<usize>,
+    tool_overhead: usize,
+}
+
+impl Provider for OverflowProvider {
+    fn stream(
+        &self,
+        req: &ChatRequest,
+        _on_event: &mut dyn FnMut(StreamEvent),
+        _cancel: &CancelToken,
+    ) -> Result<ResponseMessage, ProviderError> {
+        self.requests.borrow_mut().push(req.clone());
+        if let Some(limit) = self.limit {
+            let content: usize = req
+                .messages
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .map(|b| match b {
+                    ContentBlock::Text { text } => text.chars().count(),
+                    ContentBlock::ToolResult { content, .. } => content.chars().count(),
+                    _ => 0,
+                })
+                .sum();
+            let floor = if req.tools.is_empty() { 0 } else { self.tool_overhead };
+            let size = content + floor;
+            if size > limit {
+                return Err(ProviderError::Api {
+                    status: 400,
+                    kind: "exceed_context_size_error".into(),
+                    message: format!(
+                        "request ({size} tokens) exceeds the available context size ({limit} tokens), try increasing it"
+                    ),
+                });
+            }
+        }
+        self.outcomes.borrow_mut().remove(0)
+    }
+}
+
+fn session_overflow(
+    dir: &std::path::Path,
+    outcomes: Vec<Result<ResponseMessage, ProviderError>>,
+    limit: Option<usize>,
+    tool_overhead: usize,
+    context_window: Option<u64>,
+    auto_compact: bool,
+) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
+    let requests = Rc::new(RefCell::new(vec![]));
+    let provider = OverflowProvider {
+        outcomes: RefCell::new(outcomes),
+        requests: requests.clone(),
+        limit,
+        tool_overhead,
+    };
+    let cfg = SessionConfig {
+        model: "local-test".into(),
+        max_tokens: 100,
+        system: None,
+        thinking: false,
+        cwd: dir.to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        // `None` in most of these: with no window the crossing check can
+        // never fire, so what they exercise is the reactive path alone.
+        context_window,
+        max_tokens_source: None,
+        prose_tool_calls: true,
+        cost_rates: None,
+        cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact,
+    };
+    (
+        Session::new(Box::new(provider), Registry::standard(), cfg),
+        requests,
+    )
+}
+
+const OVERFLOW_COMPACT_MARKER: &str =
+    "context overflow: the server rejected the request; compacting and retrying";
+const OVERFLOW_ELIDE_MARKER: &str =
+    "context overflow: the server rejected the request; truncating the largest tool result and retrying";
+
+/// A file of `lines` x 100 chars, and the round-trip that cats it.
+fn big_file(dir: &std::path::Path, name: &str, lines: usize) -> ResponseMessage {
+    let body = format!("{}\n", "x".repeat(99)).repeat(lines);
+    std::fs::write(dir.join(name), body).unwrap();
+    msg(
+        vec![tool_use(
+            &format!("tu_{name}"),
+            "bash",
+            serde_json::json!({"command": format!("cat {name}")}),
+        )],
+        StopReason::ToolUse,
+    )
+}
+
+fn done() -> ResponseMessage {
+    msg(vec![text("done")], StopReason::EndTurn)
+}
+
+#[test]
+fn overflow_on_round_trip_one_halves_the_largest_result_and_retries() {
+    // The gcode shape: ONE capped tool result, on the first round-trip,
+    // is the whole problem. Nothing to fold, and folding would keep it in
+    // the verbatim tail anyway.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_overflow(
+        dir.path(),
+        vec![Ok(big_file(dir.path(), "big.txt", 200)), Ok(done())],
+        Some(16_000),
+        2_000,
+        None,
+        true, // auto-compaction ON: arm (b) is still the only reachable arm
+    );
+    let events = collect_events(&mut session, "the task");
+    let n = notices(&events);
+    assert!(n.iter().any(|x| x == OVERFLOW_ELIDE_MARKER), "{n:?}");
+    assert!(
+        !n.iter().any(|x| x == OVERFLOW_COMPACT_MARKER),
+        "one round-trip is not foldable: {n:?}"
+    );
+    assert!(
+        n.iter().any(|x| x.starts_with("truncated the largest tool result: 20000 -> ")),
+        "{n:?}"
+    );
+    // Sent, rejected, retried: exactly one recovery, exactly one retry.
+    assert_eq!(requests.borrow().len(), 3);
+    let results = tool_results(session.history());
+    assert_eq!(results.len(), 1);
+    let cut = results[0].chars().count();
+    assert!(cut > 10_000 && cut < 10_600, "halved plus the marker: {cut}");
+    assert!(results[0].contains("(truncated again:"), "the model is told why");
+    // The turn finished on the retry rather than dying.
+    assert!(
+        matches!(events.last(), Some(AgentEvent::TurnComplete { .. })),
+        "{:?}",
+        events.last()
+    );
+}
+
+#[test]
+fn overflow_on_a_foldable_turn_compacts_and_retries() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_overflow(
+        dir.path(),
+        vec![
+            Ok(big_file(dir.path(), "a.txt", 50)),
+            Ok(big_file(dir.path(), "b.txt", 50)),
+            Ok(big_file(dir.path(), "c.txt", 50)),
+            Ok(summary_response("WORK SO FAR")),
+            Ok(done()),
+        ],
+        Some(16_000),
+        2_000,
+        None,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert!(n.iter().any(|x| x == OVERFLOW_COMPACT_MARKER), "{n:?}");
+    assert!(
+        !n.iter().any(|x| x == OVERFLOW_ELIDE_MARKER),
+        "arm (a) succeeded, so arm (b) never ran: {n:?}"
+    );
+    assert!(
+        n.iter().any(|x| x.starts_with("compacted: 1 round-trip(s) summarized, 2 kept, ~")),
+        "{n:?}"
+    );
+    // 3 turn round-trips, the rejected send, the summary call, the retry.
+    assert_eq!(requests.borrow().len(), 6);
+    // The summary call carried no tools, and the retry went out on the
+    // rewritten history: prompt, summary, resume, two kept round-trips.
+    let reqs = requests.borrow();
+    assert!(reqs[4].tools.is_empty(), "the summary call omits tools");
+    assert_eq!(reqs[5].messages.len(), 7);
+    // The oldest result was folded away; the two most recent survive.
+    assert_eq!(tool_results(&reqs[5].messages).len(), 2);
+}
+
+#[test]
+fn overflow_recovery_respects_the_per_turn_bound() {
+    let dir = tempfile::tempdir().unwrap();
+    // The T40 shape: three crossings compact, the fourth advises, and the
+    // bound is spent. The send after that overflows and nothing may act.
+    let (mut session, requests) = session_overflow(
+        dir.path(),
+        vec![
+            Ok(rt(1, 100)),
+            Ok(rt(2, 100)),
+            Ok(rt(3, 800)),
+            Ok(summary_response("S1")),
+            Ok(rt(4, 800)),
+            Ok(summary_response("S2")),
+            Ok(rt(5, 800)),
+            Ok(summary_response("S3")),
+            Ok(rt(6, 800)),
+            Err(ProviderError::Api {
+                status: 400,
+                kind: "exceed_context_size_error".into(),
+                message: "request (13402 tokens) exceeds the available context size (12288 tokens)"
+                    .into(),
+            }),
+        ],
+        None,
+        0,
+        // A window IS needed here: the bound is spent by real crossings.
+        Some(1000),
+        true,
+    );
+    let mut events = vec![];
+    let err = session.turn("the task", &mut |e| events.push(e)).unwrap_err();
+    assert!(
+        err.to_string().contains("exceed_context_size_error"),
+        "the ORIGINAL error propagates: {err}"
+    );
+    let n = notices(&events);
+    assert!(
+        !n.iter().any(|x| x == OVERFLOW_COMPACT_MARKER || x == OVERFLOW_ELIDE_MARKER),
+        "at the bound nothing recovers: {n:?}"
+    );
+    // No retry was sent.
+    assert_eq!(requests.borrow().len(), 10);
+}
+
+#[test]
+fn a_different_api_error_is_untouched_by_overflow_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_overflow(
+        dir.path(),
+        vec![
+            Ok(big_file(dir.path(), "a.txt", 50)),
+            Err(ProviderError::Api {
+                status: 400,
+                kind: "invalid_request_error".into(),
+                message: "messages: unexpected role".into(),
+            }),
+        ],
+        None,
+        0,
+        None,
+        true,
+    );
+    let mut events = vec![];
+    let err = session.turn("the task", &mut |e| events.push(e)).unwrap_err();
+    assert!(err.to_string().contains("invalid_request_error"), "{err}");
+    let n = notices(&events);
+    assert!(
+        !n.iter().any(|x| x == OVERFLOW_COMPACT_MARKER || x == OVERFLOW_ELIDE_MARKER),
+        "{n:?}"
+    );
+    assert_eq!(requests.borrow().len(), 2, "no retry");
+    // History untouched: the one result is still whole.
+    assert_eq!(tool_results(session.history())[0].chars().count(), 5_000);
+}
+
+#[test]
+fn an_overflow_that_survives_recovery_propagates_without_looping() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_overflow(
+        dir.path(),
+        vec![Ok(big_file(dir.path(), "big.txt", 200)), Ok(done())],
+        Some(11_000), // half of the result still does not fit
+        2_000,
+        None,
+        true,
+    );
+    let mut events = vec![];
+    let err = session.turn("the task", &mut |e| events.push(e)).unwrap_err();
+    assert!(err.to_string().contains("exceed_context_size_error"), "{err}");
+    let n = notices(&events);
+    assert_eq!(
+        n.iter().filter(|x| *x == OVERFLOW_ELIDE_MARKER).count(),
+        1,
+        "exactly one recovery ran: {n:?}"
+    );
+    assert_eq!(requests.borrow().len(), 3, "one send, one retry, no loop");
+}
+
+#[test]
+fn overflow_recovery_declines_when_every_result_is_already_small() {
+    let dir = tempfile::tempdir().unwrap();
+    // 501 chars: under the 1,024 floor, so halving it would destroy the
+    // last of its meaning and still not be what filled the window.
+    let (mut session, requests) = session_overflow(
+        dir.path(),
+        vec![Ok(big_file(dir.path(), "small.txt", 5)), Ok(done())],
+        Some(100),
+        0,
+        None,
+        true,
+    );
+    let mut events = vec![];
+    let err = session.turn("the task", &mut |e| events.push(e)).unwrap_err();
+    assert!(err.to_string().contains("exceed_context_size_error"), "{err}");
+    let n = notices(&events);
+    assert!(
+        !n.iter().any(|x| x == OVERFLOW_ELIDE_MARKER),
+        "nothing was truncated, so nothing claimed to be: {n:?}"
+    );
+    assert_eq!(requests.borrow().len(), 2, "no retry");
+    assert_eq!(tool_results(session.history())[0].chars().count(), 500);
+}

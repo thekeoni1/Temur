@@ -1459,3 +1459,31 @@ fn prefix_stability_compat_requests_are_append_only() {
         );
     }
 }
+
+#[test]
+fn llama_cpp_context_overflow_parses_to_the_exact_kind_t42_matches_on() {
+    // The body llama.cpp returned in every desktop experiment 5 CTX
+    // primary, verbatim in shape. T42's overflow recovery keys on the
+    // PARSED kind and nothing else, so this pin is the contract between the
+    // wire and the agent loop: if this label ever stops coming out as
+    // `exceed_context_size_error`, recovery silently stops firing.
+    let (provider, transport) = provider_and_transport(
+        vec![Err(TransportError::Status {
+            code: 400,
+            retry_after: None,
+            body: r#"{"error":{"code":400,"message":"request (13402 tokens) exceeds the available context size (12288 tokens), try increasing it","type":"exceed_context_size_error"}}"#
+                .into(),
+        })],
+        None,
+    );
+    let err = provider.stream(&sample_request(), &mut |_| {}, &CancelToken::new()).unwrap_err();
+    match err {
+        ProviderError::Api { status, kind, message } => {
+            assert_eq!(status, 400);
+            assert_eq!(kind, "exceed_context_size_error");
+            assert!(message.contains("13402 tokens"), "{message}");
+        }
+        other => panic!("expected Api error, got {other:?}"),
+    }
+    assert_eq!(transport.bodies.borrow().len(), 1); // never retried at the wire
+}
