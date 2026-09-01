@@ -6326,6 +6326,174 @@ fn a_cancel_during_the_recovery_summary_runs_no_other_arm() {
     }
 }
 
+// ---- T44 P3: the fold is announced where it happens ----
+
+/// Index of the first notice equal to `want`, over the FULL event stream, so
+/// the announcement can be placed against the tool events around it and not
+/// only against other notices.
+fn notice_index(events: &[AgentEvent], want: &str) -> usize {
+    events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::Notice(n) if n == want))
+        .unwrap_or_else(|| panic!("notice {want:?} never fired"))
+}
+
+fn notice_index_starting(events: &[AgentEvent], prefix: &str) -> usize {
+    events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::Notice(n) if n.starts_with(prefix)))
+        .unwrap_or_else(|| panic!("no notice starting {prefix:?}"))
+}
+
+#[test]
+fn a_turn_that_ends_before_the_safe_point_announces_nothing() {
+    // Desktop experiment 6's `build-cython-ext/run2`, the only cell in that
+    // matrix reading `started=1 completed=0`: the crossing arrives on a
+    // response that turns out to be the LAST one, so the turn ends before
+    // the safe point that would have folded, and a one-shot `-p` run has no
+    // later turn to reach it. The announcement used to fire at the decision
+    // site and was therefore already on screen, describing a compaction
+    // that never happened.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_auto_compact(
+        dir.path(),
+        vec![
+            rt(1, 100),
+            rt(2, 100),
+            rt(3, 100),
+            // Crosses AND is foldable, so the decision is taken - and then
+            // the model answers with plain text and the turn is over.
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 800, "output_tokens": 0}),
+            ),
+            msg_with_usage(
+                vec![text("and again")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 100, "output_tokens": 0}),
+            ),
+        ],
+        Some(1000),
+        100,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert!(
+        !n.iter().any(|x| x.ends_with("compacting automatically")),
+        "nothing was folded, so nothing announced a fold: {n:?}"
+    );
+    assert!(
+        !n.iter().any(|x| x.starts_with("compacted: ")),
+        "and nothing claims an outcome either: {n:?}"
+    );
+    assert!(n.is_empty(), "silent, not false: {n:?}");
+    assert_eq!(requests.borrow().len(), 4, "no summary call was spent");
+
+    // And the next turn behaves exactly as it did before: the latch was
+    // consumed by the decision (unchanged by T44), the pending crossing died
+    // with the turn, and nothing folds retroactively.
+    let n2 = notices(&collect_events(&mut session, "next"));
+    assert!(n2.is_empty(), "{n2:?}");
+    assert_eq!(requests.borrow().len(), 5);
+    assert!(
+        !session
+            .history()
+            .iter()
+            .any(|m| texts_of(m).iter().any(|t| t.contains("That summary replaces"))),
+        "history was never folded"
+    );
+}
+
+#[test]
+fn the_post_response_crossing_is_announced_at_the_safe_point() {
+    // The ordinary path, and the ordering that changed: the decision is
+    // still taken right after the response that crossed, but the line is
+    // printed one iteration later, after that response's tool calls have
+    // run, immediately before the fold it describes. Exactly one line, and
+    // it carries the values measured AT the crossing, not re-derived at the
+    // safe point (where `last_context_used` is about to be reset anyway).
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_auto_compact(
+        dir.path(),
+        vec![
+            rt(1, 100),
+            rt(2, 100),
+            rt(3, 100),
+            rt(4, 800), // crosses
+            summary_response("WORK SO FAR"),
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 100, "output_tokens": 0}),
+            ),
+        ],
+        Some(1000),
+        100,
+        true,
+    );
+    let events = collect_events(&mut session, "the task");
+    let n = notices(&events);
+    let announced = "context: ~800 of 1000 tokens used; compacting automatically";
+    assert_eq!(
+        n.iter().filter(|x| x.ends_with("compacting automatically")).count(),
+        1,
+        "exactly once: {n:?}"
+    );
+    let at = notice_index(&events, announced);
+    let outcome = notice_index_starting(&events, "compacted: ");
+    assert_eq!(outcome, at + 1, "the outcome line is the very next event");
+
+    // The crossing was found after round-trip 4's response; the line is
+    // printed after that round-trip's tool call has been dispatched and
+    // answered, which is where the fold actually happens.
+    let last_tool_end = events
+        .iter()
+        .rposition(|e| matches!(e, AgentEvent::ToolEnd { .. } if true))
+        .expect("tools ran");
+    assert!(
+        at > last_tool_end,
+        "announced at the safe point, after the crossing round-trip's tools: {events:?}"
+    );
+}
+
+#[test]
+fn the_pre_send_crossing_is_announced_at_the_safe_point_too() {
+    // The other set-site (T42 P2's pre-send estimate), which sits a few
+    // lines above the safe point in the same iteration. Its announcement
+    // moved too, and the adjacency is what this pins: no path sets the latch
+    // and leaves the line somewhere else.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_auto_compact(
+        dir.path(),
+        vec![
+            rt(1, 100),
+            rt(2, 100),
+            cat_rt(dir.path(), "big.txt", 30, 100), // ~3000 chars: only the estimate sees it
+            summary_response("WORK SO FAR"),
+            done_with(100),
+        ],
+        Some(1000),
+        100,
+        true,
+    );
+    let events = collect_events(&mut session, "the task");
+    let n = notices(&events);
+    let announced = "context: ~850 of 1000 tokens used; compacting automatically";
+    assert_eq!(
+        n.iter().filter(|x| x.ends_with("compacting automatically")).count(),
+        1,
+        "exactly once: {n:?}"
+    );
+    let at = notice_index(&events, announced);
+    assert_eq!(
+        notice_index_starting(&events, "compacted: "),
+        at + 1,
+        "announced immediately before the fold it describes"
+    );
+    assert_eq!(requests.borrow().len(), 5);
+}
+
 // ---- T42 P2: the pre-send estimator fold-in ----
 
 fn done_with(used: u64) -> ResponseMessage {

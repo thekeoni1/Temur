@@ -1300,10 +1300,15 @@ impl Session {
             std::collections::HashMap::new();
         let mut futile_count: u32 = 0;
         let mut futile_notice_sent = false;
-        // T40 per-turn auto-compaction state: whether a crossing is waiting
-        // to be acted on at the next safe point, and how many compactions
-        // this turn has already spent against MAX_AUTO_COMPACTIONS_PER_TURN.
-        let mut compact_pending = false;
+        // T40 per-turn auto-compaction state: the crossing waiting to be
+        // acted on at the next safe point, and how many compactions this
+        // turn has already spent against MAX_AUTO_COMPACTIONS_PER_TURN.
+        //
+        // T44: the latch carries the crossing's MEASURED `(used, window)`
+        // rather than a bare flag, because the announcement moved to the
+        // safe point and has to be able to state the figures the decision
+        // was made on. See the safe point below for why it moved.
+        let mut compact_pending: Option<(u64, u64)> = None;
         let mut auto_compactions: u32 = 0;
         // F2 (v0.29.1): a crossing arrived that nothing could act on yet.
         // Rider 2 was right that it must not CONSUME the latch; it was
@@ -1350,8 +1355,10 @@ impl Session {
                 ) {
                     self.context_warned = true;
                     crossing_unspoken = false;
-                    compact_pending = true;
-                    ui(AgentEvent::Notice(auto_compact_notice_text(used, window)));
+                    // T44: decided here, ANNOUNCED at the safe point below,
+                    // which for this site is a few lines away in the same
+                    // iteration.
+                    compact_pending = Some((used, window));
                 } else {
                     // Crossed, nothing can act on it yet: consume nothing,
                     // say nothing, remember it for the F2 end-of-turn report.
@@ -1364,8 +1371,22 @@ impl Session {
             // and cutting there would strand them. Here, the previous
             // round-trip's results are appended and this request is not yet
             // built, so history is a clean run of completed pairs.
-            if compact_pending {
-                compact_pending = false;
+            //
+            // T44: the ANNOUNCEMENT is here too, immediately before the fold
+            // it describes, carrying the values measured at the crossing.
+            // The decision still belongs to the site above (foldability is
+            // tested there so a turn never announces a fold it then cannot
+            // perform), but saying it there left one gap the rider's comment
+            // does not cover: a turn that ENDS between the two. Desktop
+            // experiment 6's `build-cython-ext/run2` is that cell, reading
+            // `started=1 completed=0` because the model answered with plain
+            // text, the turn ended, and a one-shot `-p` run has no later
+            // turn in which to reach this point. Announcing here makes
+            // announcements equal folds attempted BY CONSTRUCTION, and a
+            // turn that ends holding a pending crossing now says nothing
+            // rather than something false.
+            if let Some((used, window)) = compact_pending.take() {
+                ui(AgentEvent::Notice(auto_compact_notice_text(used, window)));
                 match self.auto_compact(turn_start) {
                     AutoCompactOutcome::Compacted {
                         folded,
@@ -1528,8 +1549,9 @@ impl Session {
                     // then does not perform.
                     self.context_warned = true;
                     crossing_unspoken = false;
-                    compact_pending = true;
-                    ui(AgentEvent::Notice(auto_compact_notice_text(used, window)));
+                    // T44: decided here, ANNOUNCED at the safe point of the
+                    // next iteration, which is also where the fold happens.
+                    compact_pending = Some((used, window));
                 } else {
                     // Crossed, but the turn has too few round-trips to fold
                     // yet. Say NOTHING here and consume NOTHING: rider 1
@@ -2429,9 +2451,13 @@ fn auto_compact_folds(history_len: usize, turn_start: usize, k: usize) -> bool {
 /// Asked at the advisory site, where the response just received and the
 /// tool results answering it are not in history yet but will be by the time
 /// the safe point runs: two more messages, one more round-trip. Testing it
-/// HERE is what keeps a turn from announcing "compacting automatically" and
-/// then printing the ordinary advisory instead, which read as a
-/// contradiction.
+/// HERE is what keeps a turn from deciding to compact and then printing the
+/// ordinary advisory instead, which read as a contradiction.
+///
+/// T44: this test covers a crossing nothing can fold; it never covered a
+/// turn ENDING between the decision and the safe point, which is why the
+/// "compacting automatically" line is now printed at the safe point rather
+/// than here.
 fn auto_compact_will_fold(history_len: usize, turn_start: usize, k: usize) -> bool {
     auto_compact_folds(history_len + 2, turn_start, k)
 }
