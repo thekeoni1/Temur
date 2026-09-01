@@ -326,7 +326,7 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
             Style::default().fg(Color::Yellow),
         )]
     } else if app.busy {
-        if app.force_quit_armed {
+        if app.force_quit_armed() {
             vec![
                 Span::raw(format!("  {} working… ", app.spinner())),
                 Span::styled(

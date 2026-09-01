@@ -11,6 +11,11 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 /// Render-tick period the runtime aims for (spinner cadence).
 pub const TICK_MS: u64 = 100;
 
+/// T43/P3: how long a busy Ctrl+C keeps force-quit armed. Long enough that
+/// a deliberate double-press always lands, short enough that a stale press
+/// cannot quit the session minutes later.
+pub const FORCE_QUIT_WINDOW_MS: u64 = 2000;
+
 /// One rendered unit of the transcript, in OpenCode's session-view shapes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cell {
@@ -101,7 +106,11 @@ pub struct App {
     draft: String,
     // Turn state.
     pub busy: bool,
-    pub force_quit_armed: bool,
+    /// T43/P3: `now_ms` of the busy Ctrl+C that armed force-quit, if the
+    /// latch is set. A TIME window rather than a "until the next key" latch:
+    /// characters arriving between the two presses must not defeat the
+    /// escape hatch, which during a paste they always did.
+    pub armed_at_ms: Option<u64>,
     /// Esc was pressed this turn; shown as "interrupting…" until the turn
     /// actually lands (TurnComplete clears it).
     pub interrupting: bool,
@@ -157,7 +166,7 @@ impl App {
             hist_pos: None,
             draft: String::new(),
             busy: false,
-            force_quit_armed: false,
+            armed_at_ms: None,
             interrupting: false,
             approval: None,
             turn_started_ms: 0,
@@ -310,7 +319,7 @@ impl App {
             } => {
                 self.session_usage = *session_usage;
                 self.busy = false;
-                self.force_quit_armed = false;
+                self.armed_at_ms = None;
                 self.interrupting = false;
                 self.cells.push(Cell::TurnTail {
                     secs: (self.now_ms.saturating_sub(self.turn_started_ms)) / 1000,
@@ -333,7 +342,7 @@ impl App {
         self.input.clear();
         self.cursor = 0;
         self.busy = true;
-        self.force_quit_armed = false;
+        self.armed_at_ms = None;
         self.turn_started_ms = self.now_ms;
         self.stick_bottom = true;
     }
@@ -354,8 +363,18 @@ impl App {
     /// The agent is back at the prompt (authoritative idle signal).
     pub fn prompt_open(&mut self) {
         self.busy = false;
-        self.force_quit_armed = false;
+        self.armed_at_ms = None;
         self.interrupting = false;
+    }
+
+    /// T43/P3: is the force-quit latch live? Armed by a busy Ctrl+C and good
+    /// for [`FORCE_QUIT_WINDOW_MS`] from that press, whatever keys arrive in
+    /// between.
+    pub fn force_quit_armed(&self) -> bool {
+        match self.armed_at_ms {
+            Some(t) => self.now_ms.saturating_sub(t) <= FORCE_QUIT_WINDOW_MS,
+            None => false,
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
@@ -383,9 +402,16 @@ impl App {
             }
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        // Any key other than a second Ctrl+C disarms the force-quit prompt.
-        let was_armed = self.force_quit_armed;
-        self.force_quit_armed = false;
+        // T43/P3: force-quit is armed for a WINDOW, not until the next key.
+        // The operator's real sequence is Ctrl+C, more pasted characters
+        // still draining, Ctrl+C. Under the old "any key disarms" rule the
+        // second press only re-armed, so during a paste the double-press
+        // escape hatch could never fire. Expiry is the only disarm now,
+        // besides the explicit clears at submit and turn end.
+        let was_armed = self.force_quit_armed();
+        if !was_armed {
+            self.armed_at_ms = None;
+        }
         // T9: any non-Tab key ends a completion cycle — edits, cursor
         // moves, and history recalls all restart completion from whatever
         // the input then says. (history state is untouched by completion:
@@ -408,7 +434,7 @@ impl App {
                     if was_armed {
                         return Action::ForceQuit;
                     }
-                    self.force_quit_armed = true;
+                    self.armed_at_ms = Some(self.now_ms);
                 } else if self.input.is_empty() {
                     return Action::Quit;
                 } else {

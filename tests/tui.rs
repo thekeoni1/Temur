@@ -216,14 +216,16 @@ fn enter_is_disabled_while_busy_and_quit_semantics_hold() {
 
     // Ctrl+C during a turn arms force-quit; second one fires it.
     assert_eq!(a.handle_key(ctrl('c')), Action::None);
-    assert!(a.force_quit_armed);
+    assert!(a.force_quit_armed());
     assert_eq!(a.handle_key(ctrl('c')), Action::ForceQuit);
 
-    // Any other key disarms.
-    a.force_quit_armed = true;
-    a.handle_key(key(KeyCode::Char('x')));
-    assert!(!a.force_quit_armed);
+    // T43/P3: intervening keys no longer disarm; the window does.
+    a.prompt_open();
+    a.submit("second");
     assert_eq!(a.handle_key(ctrl('c')), Action::None);
+    a.handle_key(key(KeyCode::Char('x')));
+    assert!(a.force_quit_armed(), "a typed char does not disarm");
+    assert_eq!(a.handle_key(ctrl('c')), Action::ForceQuit);
 
     // Idle + empty input: Ctrl+C and Ctrl+D quit; non-empty Ctrl+C clears.
     a.prompt_open();
@@ -553,18 +555,15 @@ fn esc_interrupts_only_while_busy_and_is_idempotent() {
 }
 
 #[test]
-fn esc_disarms_force_quit_and_ctrl_c_semantics_unchanged() {
+fn esc_between_two_ctrl_c_no_longer_defeats_force_quit() {
+    // T43/P3 flips this case: Esc used to disarm, so the second Ctrl+C only
+    // re-armed. Inside the window it now force-quits, interrupting or not.
     let mut a = app();
     a.submit("go");
     assert_eq!(a.handle_key(ctrl('c')), Action::None); // arms
-    assert!(a.force_quit_armed);
-    // Esc participates in the "any key disarms" rule…
+    assert!(a.force_quit_armed());
     assert_eq!(a.handle_key(key(KeyCode::Esc)), Action::Interrupt);
-    assert!(!a.force_quit_armed);
-    // …so the next Ctrl+C re-arms instead of force-quitting.
-    assert_eq!(a.handle_key(ctrl('c')), Action::None);
-    assert!(a.force_quit_armed);
-    // Ctrl+C twice in a row still force-quits, interrupting or not.
+    assert!(a.force_quit_armed(), "Esc does not disarm any more");
     assert_eq!(a.handle_key(ctrl('c')), Action::ForceQuit);
 }
 
@@ -1505,15 +1504,15 @@ fn tab_is_a_noop_without_candidates_mid_input_or_while_busy() {
 }
 
 #[test]
-fn tab_respects_the_force_quit_disarm() {
+fn tab_does_not_defeat_the_force_quit_window() {
+    // T43/P3: Tab used to disarm like any other key. It no longer does.
     let mut a = app_with_completion();
     a.submit("go"); // busy
     assert_eq!(a.handle_key(ctrl('c')), Action::None);
-    assert!(a.force_quit_armed);
-    a.handle_key(key(KeyCode::Tab)); // any key disarms
-    assert!(!a.force_quit_armed, "Tab disarms like any other key");
-    assert_eq!(a.handle_key(ctrl('c')), Action::None, "so this re-arms, not force-quits");
-    assert!(a.force_quit_armed);
+    assert!(a.force_quit_armed());
+    a.handle_key(key(KeyCode::Tab));
+    assert!(a.force_quit_armed(), "Tab does not disarm");
+    assert_eq!(a.handle_key(ctrl('c')), Action::ForceQuit);
 }
 
 #[test]
@@ -2294,4 +2293,84 @@ fn key_releases_never_count_as_interrupts() {
     let before = batch.clone();
     let out = interrupt_priority(batch, true, false);
     assert_eq!(out, before, "a release is not a press");
+}
+
+// ---------------------------------------------------------------------------
+// T43/P3: the force-quit window
+// ---------------------------------------------------------------------------
+
+#[test]
+fn double_ctrl_c_force_quits_with_a_whole_paste_in_between() {
+    // The operator's actual sequence: Ctrl+C, hundreds of pasted characters
+    // still draining, Ctrl+C. Under the old any-key disarm this could never
+    // fire; inside the window it now does.
+    let mut a = app();
+    a.submit("go");
+    assert_eq!(a.handle_key(ctrl('c')), Action::None, "first press arms");
+    type_str(&mut a, &"pasted text ".repeat(30));
+    a.now_ms = temur::ui::tui::app::FORCE_QUIT_WINDOW_MS - 1;
+    assert!(a.force_quit_armed(), "still armed inside the window");
+    assert_eq!(a.handle_key(ctrl('c')), Action::ForceQuit);
+}
+
+#[test]
+fn a_stale_first_ctrl_c_past_the_window_does_not_quit() {
+    let mut a = app();
+    a.submit("go");
+    assert_eq!(a.handle_key(ctrl('c')), Action::None);
+    a.now_ms = temur::ui::tui::app::FORCE_QUIT_WINDOW_MS + 1;
+    assert!(!a.force_quit_armed(), "the window expired");
+    assert_eq!(
+        a.handle_key(ctrl('c')),
+        Action::None,
+        "a stale press re-arms rather than quitting"
+    );
+    assert!(a.force_quit_armed(), "and the re-arm is live");
+}
+
+#[test]
+fn the_window_is_measured_from_the_press_not_from_the_last_key() {
+    // Keys arriving through the window must not extend it.
+    let mut a = app();
+    a.submit("go");
+    assert_eq!(a.handle_key(ctrl('c')), Action::None); // armed at now_ms = 0
+    for t in [500u64, 1000, 1500, 2000] {
+        a.now_ms = t;
+        a.handle_key(key(KeyCode::Char('x')));
+        assert!(a.force_quit_armed(), "still armed at {t}ms");
+    }
+    a.now_ms = temur::ui::tui::app::FORCE_QUIT_WINDOW_MS + 1;
+    assert!(!a.force_quit_armed(), "typing did not extend the window");
+}
+
+#[test]
+fn submit_and_turn_end_still_clear_the_latch() {
+    let mut a = app();
+    a.submit("go");
+    assert_eq!(a.handle_key(ctrl('c')), Action::None);
+    assert!(a.force_quit_armed());
+    a.prompt_open();
+    assert!(!a.force_quit_armed(), "turn end clears the latch");
+
+    a.submit("again");
+    assert_eq!(a.handle_key(ctrl('c')), Action::None);
+    assert!(a.force_quit_armed());
+    a.submit("and again");
+    assert!(!a.force_quit_armed(), "submit clears the latch");
+}
+
+#[test]
+fn the_force_quit_hint_follows_the_window() {
+    let mut a = app();
+    a.submit("go");
+    a.handle_key(ctrl('c'));
+    let armed = render(&mut a, 80, 12).join("\n");
+    assert!(armed.contains("force-quit"), "hint while armed:\n{armed}");
+
+    a.now_ms = temur::ui::tui::app::FORCE_QUIT_WINDOW_MS + 1;
+    let expired = render(&mut a, 80, 12).join("\n");
+    assert!(
+        !expired.contains("force-quit"),
+        "hint is gone once the window expires:\n{expired}"
+    );
 }
