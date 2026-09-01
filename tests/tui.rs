@@ -2206,3 +2206,92 @@ fn oversized_burst_is_capped_per_iteration_and_nothing_is_lost() {
         "the event past the cap waited for a later iteration"
     );
 }
+
+// ---------------------------------------------------------------------------
+// T43/P2: interrupt priority
+// ---------------------------------------------------------------------------
+
+use temur::ui::tui::interrupt_priority;
+
+/// Hundreds of pasted chars with an interrupt key queued behind them: the
+/// exact shape the operator reported, where Esc landed but the queued text
+/// then started a fresh turn.
+fn burst_then(tail: KeyEvent) -> Vec<Event> {
+    let mut batch: Vec<Event> = "a very long pasted line of text"
+        .repeat(20)
+        .chars()
+        .map(|c| Event::Key(key(KeyCode::Char(c))))
+        .collect();
+    batch.push(Event::Key(tail));
+    batch
+}
+
+#[test]
+fn busy_ctrl_c_behind_a_burst_wins_and_the_rest_is_discarded() {
+    let batch = burst_then(ctrl('c'));
+    let out = interrupt_priority(batch, true, false);
+    assert_eq!(out.len(), 1, "exactly one event survives");
+    assert_eq!(out[0], Event::Key(ctrl('c')), "and it is the interrupt");
+}
+
+#[test]
+fn busy_esc_behind_a_burst_wins_and_the_input_is_not_polluted() {
+    let batch = burst_then(key(KeyCode::Esc));
+    let out = interrupt_priority(batch, true, false);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0], Event::Key(key(KeyCode::Esc)));
+    assert!(
+        !out.iter().any(|ev| matches!(ev, Event::Key(k) if matches!(k.code, KeyCode::Char(_)))),
+        "not one pasted char survives to pollute the input line"
+    );
+}
+
+#[test]
+fn only_the_first_interrupt_in_a_batch_is_honored() {
+    let mut batch = burst_then(key(KeyCode::Esc));
+    batch.push(Event::Key(ctrl('c')));
+    batch.push(Event::Key(key(KeyCode::Esc)));
+    let out = interrupt_priority(batch, true, false);
+    assert_eq!(out.len(), 1, "three interrupts collapse to one");
+    assert_eq!(out[0], Event::Key(key(KeyCode::Esc)), "the FIRST one");
+}
+
+#[test]
+fn idle_batches_are_untouched_and_process_in_order() {
+    let batch = burst_then(key(KeyCode::Enter));
+    let before = batch.clone();
+    let out = interrupt_priority(batch, false, false);
+    assert_eq!(out, before, "an idle batch is returned verbatim");
+}
+
+#[test]
+fn a_busy_batch_without_an_interrupt_is_untouched() {
+    let batch = burst_then(key(KeyCode::Enter));
+    let before = batch.clone();
+    let out = interrupt_priority(batch, true, false);
+    assert_eq!(out, before, "nothing to prioritize, nothing discarded");
+}
+
+#[test]
+fn an_open_approval_prompt_is_excluded_from_interrupt_priority() {
+    // Esc there means "deny this command", and a y/N answer is a modal
+    // answer rather than input, so the batch must not be rewritten.
+    let batch = vec![
+        Event::Key(key(KeyCode::Char('y'))),
+        Event::Key(key(KeyCode::Esc)),
+    ];
+    let before = batch.clone();
+    let out = interrupt_priority(batch, true, true);
+    assert_eq!(out, before);
+}
+
+#[test]
+fn key_releases_never_count_as_interrupts() {
+    use ratatui::crossterm::event::KeyEventKind;
+    let mut released = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    released.kind = KeyEventKind::Release;
+    let batch = vec![Event::Key(key(KeyCode::Char('a'))), Event::Key(released)];
+    let before = batch.clone();
+    let out = interrupt_priority(batch, true, false);
+    assert_eq!(out, before, "a release is not a press");
+}

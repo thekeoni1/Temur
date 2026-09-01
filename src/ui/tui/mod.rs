@@ -17,7 +17,7 @@ use crate::agent::events::AgentEvent;
 use crate::cancel::CancelToken;
 use app::{Action, App, TICK_MS};
 use ratatui::backend::Backend;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Terminal;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, Once};
@@ -176,6 +176,49 @@ impl EventSource for ScriptedSteps {
                 ScriptStep::Raw(ev) => Ok(Some(ev)),
             },
         }
+    }
+}
+
+/// T43/P2: does this event mean "stop the running turn" rather than "type
+/// this"? Esc and Ctrl+C are the two the TUI already treats that way while
+/// busy. Key RELEASES are not presses and never count.
+fn is_busy_interrupt(ev: &Event) -> bool {
+    match ev {
+        Event::Key(key) if key.kind != KeyEventKind::Release => {
+            key.code == KeyCode::Esc
+                || (key.code == KeyCode::Char('c')
+                    && key.modifiers.contains(KeyModifiers::CONTROL))
+        }
+        _ => false,
+    }
+}
+
+/// T43/P2: interrupt priority over one drained batch.
+///
+/// While a turn is running, a batch holding Esc or Ctrl+C is a user trying
+/// to STOP it, and everything else in that batch is input they no longer
+/// want delivered. So the first such key is kept and the entire rest of the
+/// batch is discarded, the keys BEFORE it included: a paste followed by Esc
+/// must not leave the paste sitting in the input line. Discarded input is
+/// lost by design and USAGE says so.
+///
+/// Idle batches are returned untouched and process in order.
+///
+/// An open approval prompt is excluded: its keys are a modal y/N answer, not
+/// input, and Esc there already means "deny this command" rather than
+/// "interrupt the turn".
+///
+/// Known bounded edge, documented rather than solved: busy-ness is evaluated
+/// once, at scan time. A batch that is idle at scan time but contains an
+/// Enter processes in order, and an Esc later in that same batch interrupts
+/// the turn the Enter just started.
+pub fn interrupt_priority(batch: Vec<Event>, busy: bool, approval_open: bool) -> Vec<Event> {
+    if !busy || approval_open {
+        return batch;
+    }
+    match batch.iter().position(is_busy_interrupt) {
+        Some(i) => vec![batch.into_iter().nth(i).expect("position is in range")],
+        None => batch,
     }
 }
 
@@ -448,6 +491,7 @@ fn render_loop<B: Backend>(
             let _ = tx_input.send(None);
             break LoopEnd::Shutdown;
         }
+        let batch = interrupt_priority(batch, app.busy, app.approval.is_some());
         for ev in batch {
             let key = match ev {
                 Event::Key(key) => key,
