@@ -94,7 +94,16 @@ impl ScriptedEvents {
 }
 
 impl EventSource for ScriptedEvents {
-    fn next(&mut self, _timeout: Duration, _ready: Readiness) -> std::io::Result<Option<Event>> {
+    fn next(&mut self, timeout: Duration, _ready: Readiness) -> std::io::Result<Option<Event>> {
+        // T43/P1: the render loop now drains queued events with a zero
+        // timeout before each draw. A scripted source models a human typing
+        // against a RENDERED frame, so it stays one event per real poll and
+        // declines the drain polls; otherwise a whole script would land in a
+        // single batch and the deliberate-timing tests (Esc mid-turn) would
+        // stop describing what they claim to. Bursts get their own source.
+        if timeout.is_zero() {
+            return Ok(None);
+        }
         Ok(self.0.pop_front())
     }
 }
@@ -133,7 +142,15 @@ impl ScriptedSteps {
 }
 
 impl EventSource for ScriptedSteps {
-    fn next(&mut self, _timeout: Duration, ready: Readiness) -> std::io::Result<Option<Event>> {
+    fn next(&mut self, timeout: Duration, ready: Readiness) -> std::io::Result<Option<Event>> {
+        // T43/P1: decline the drain polls, exactly as `ScriptedEvents` does.
+        // This source exists so a step starts only when the app state says
+        // its keys can land the way a human's would; letting a zero-timeout
+        // drain pull the NEXT step's keys into the current batch would
+        // re-open both flake modes the readiness gate was built to close.
+        if timeout.is_zero() {
+            return Ok(None);
+        }
         if let Some(ev) = self.buf.pop_front() {
             return Ok(Some(ev));
         }
@@ -161,6 +178,13 @@ impl EventSource for ScriptedSteps {
         }
     }
 }
+
+/// Cap on terminal events processed in ONE `render_loop` iteration (T43/P1).
+/// Sized well above any realistic paste, so ordinary input is never split,
+/// and far below "unbounded", so a stream that never goes quiet cannot hold
+/// the loop away from its draw. Anything past the cap stays queued for the
+/// next iteration; nothing is dropped here.
+const MAX_EVENTS_PER_ITERATION: usize = 4096;
 
 enum LoopEnd {
     Shutdown,
@@ -252,7 +276,9 @@ impl TuiUi {
         Self::headless_with_source(info, width, height, ScriptedSteps::new(steps), cancel)
     }
 
-    fn headless_with_source(
+    /// Headless runtime over an arbitrary [`EventSource`]. Public so tests
+    /// can drive the loop from a source of their own (T43/P1 burst tests).
+    pub fn headless_with_source(
         info: SessionInfo,
         width: u16,
         height: u16,
@@ -354,7 +380,7 @@ fn render_loop<B: Backend>(
     // Dropped un-answered on any loop exit, which the blocked agent thread
     // reads as a denial.
     let mut pending_approval: Option<mpsc::Sender<bool>> = None;
-    let end = loop {
+    let end = 'main: loop {
         // Drain everything the agent thread sent since the last frame; a
         // shutdown still gets one final draw below so the last frame shows
         // every folded event (the headless harness snapshots that frame).
@@ -394,8 +420,41 @@ fn render_loop<B: Backend>(
             idle: !app.busy,
             approval_open: app.approval.is_some(),
         };
+        // T43/P1: one blocking poll for the first event, then drain whatever
+        // else the terminal already has queued using a zero timeout, and draw
+        // ONCE for the whole batch. A paste arrives as thousands of key
+        // events; handling one per frame made redraw cost scale with the
+        // length of the paste instead of with the frame rate.
+        let mut batch: Vec<Event> = Vec::new();
+        let mut source_failed = false;
         match events.next(Duration::from_millis(TICK_MS), ready) {
-            Ok(Some(Event::Key(key))) => match app.handle_key(key) {
+            Ok(Some(ev)) => batch.push(ev),
+            Ok(None) => {}
+            Err(_) => source_failed = true,
+        }
+        if !source_failed && !batch.is_empty() {
+            while batch.len() < MAX_EVENTS_PER_ITERATION {
+                match events.next(Duration::ZERO, ready) {
+                    Ok(Some(ev)) => batch.push(ev),
+                    Ok(None) => break,
+                    Err(_) => {
+                        source_failed = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if source_failed {
+            let _ = tx_input.send(None);
+            break LoopEnd::Shutdown;
+        }
+        for ev in batch {
+            let key = match ev {
+                Event::Key(key) => key,
+                // Resize just needs the redraw that happens next iteration.
+                _ => continue,
+            };
+            match app.handle_key(key) {
                 Action::Submit(line) => {
                     if line == "exit" || line == "quit" {
                         let _ = tx_input.send(None);
@@ -421,7 +480,7 @@ fn render_loop<B: Backend>(
                 Action::Quit => {
                     let _ = tx_input.send(None);
                 }
-                Action::ForceQuit => break LoopEnd::ForceQuit,
+                Action::ForceQuit => break 'main LoopEnd::ForceQuit,
                 // The whole interrupt mechanism from this thread's side:
                 // set the flag; the blocked agent thread notices at its
                 // next cooperative checkpoint and lands the turn.
@@ -435,12 +494,6 @@ fn render_loop<B: Backend>(
                     }
                 }
                 Action::None => {}
-            },
-            // Resize just needs the redraw that happens next iteration.
-            Ok(Some(_)) | Ok(None) => {}
-            Err(_) => {
-                let _ = tx_input.send(None);
-                break LoopEnd::Shutdown;
             }
         }
     };

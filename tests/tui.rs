@@ -2085,3 +2085,124 @@ fn models_listing_never_puts_two_ids_on_one_row() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// T43/P1: drain-and-draw-once
+// ---------------------------------------------------------------------------
+
+/// An `EventSource` that answers BOTH the render loop's blocking poll and its
+/// zero-timeout drain polls, which is how a real terminal behaves under a
+/// paste: the bytes are already in the input queue. It stamps every delivered
+/// event with the iteration ("generation") that asked for it. The render loop
+/// draws exactly once per iteration, so counting distinct generations counts
+/// draws: a burst that lands in one generation is a burst that cost one frame.
+struct BurstSource {
+    queue: std::collections::VecDeque<Event>,
+    generation: usize,
+    stamps: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
+}
+
+impl BurstSource {
+    fn new(events: Vec<Event>) -> (Self, std::sync::Arc<std::sync::Mutex<Vec<usize>>>) {
+        let stamps = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+            BurstSource {
+                queue: events.into(),
+                generation: 0,
+                stamps: std::sync::Arc::clone(&stamps),
+            },
+            stamps,
+        )
+    }
+}
+
+impl temur::ui::tui::EventSource for BurstSource {
+    fn next(
+        &mut self,
+        timeout: std::time::Duration,
+        _ready: temur::ui::tui::Readiness,
+    ) -> std::io::Result<Option<Event>> {
+        // A non-zero timeout is the once-per-iteration blocking poll, which
+        // happens right after that iteration's draw.
+        if !timeout.is_zero() {
+            self.generation += 1;
+        }
+        match self.queue.pop_front() {
+            Some(ev) => {
+                self.stamps.lock().unwrap().push(self.generation);
+                Ok(Some(ev))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+fn burst_info(cwd: String) -> SessionInfo {
+    SessionInfo {
+        model: "claude-sonnet-5".into(),
+        thinking: false,
+        cwd,
+        version: "test".into(),
+        profiles: vec![],
+        provider: "anthropic".into(),
+    }
+}
+
+#[test]
+fn burst_of_keys_lands_in_one_iteration_and_one_draw() {
+    let text = "x".repeat(200);
+    let mut script: Vec<Event> = text
+        .chars()
+        .map(|c| Event::Key(key(KeyCode::Char(c))))
+        .collect();
+    script.push(Event::Key(key(KeyCode::Enter)));
+    let total = script.len();
+    let (source, stamps) = BurstSource::new(script);
+
+    let cancel = temur::provider::CancelToken::new();
+    let (mut ui, _snapshot) =
+        TuiUi::headless_with_source(burst_info("/tmp".into()), 100, 30, source, cancel);
+    let line = ui.read_input().expect("the burst submits");
+    drop(ui);
+
+    assert_eq!(line, text, "every pasted char reached the input");
+    let stamps = stamps.lock().unwrap().clone();
+    assert_eq!(stamps.len(), total, "every event was delivered");
+    assert!(
+        stamps.iter().all(|g| *g == stamps[0]),
+        "the whole burst landed in ONE iteration (one draw); generations seen: {:?}",
+        stamps.iter().collect::<std::collections::BTreeSet<_>>()
+    );
+}
+
+#[test]
+fn oversized_burst_is_capped_per_iteration_and_nothing_is_lost() {
+    // One event past the cap has to wait for the next iteration, and the
+    // remainder must still arrive: the cap defers, it never drops.
+    const CAP: usize = 4096;
+    let text = "x".repeat(CAP + 904);
+    let mut script: Vec<Event> = text
+        .chars()
+        .map(|c| Event::Key(key(KeyCode::Char(c))))
+        .collect();
+    script.push(Event::Key(key(KeyCode::Enter)));
+    let total = script.len();
+    let (source, stamps) = BurstSource::new(script);
+
+    let cancel = temur::provider::CancelToken::new();
+    let (mut ui, _snapshot) =
+        TuiUi::headless_with_source(burst_info("/tmp".into()), 100, 30, source, cancel);
+    let line = ui.read_input().expect("the oversized burst still submits");
+    drop(ui);
+
+    assert_eq!(line.len(), text.len(), "no pasted char was dropped");
+    let stamps = stamps.lock().unwrap().clone();
+    assert_eq!(stamps.len(), total, "every event was delivered");
+    let first = stamps[0];
+    let in_first = stamps.iter().filter(|g| **g == first).count();
+    assert_eq!(in_first, CAP, "the first iteration took exactly the cap");
+    assert!(
+        stamps[CAP] > first,
+        "the event past the cap waited for a later iteration"
+    );
+}
