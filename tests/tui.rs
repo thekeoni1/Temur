@@ -2562,3 +2562,110 @@ fn headless_a_paste_alone_starts_no_turn() {
         "the paste waited for the Enter instead of submitting itself"
     );
 }
+
+// ---------------------------------------------------------------------------
+// T43/P5: the Esc regression pin
+// ---------------------------------------------------------------------------
+
+/// The operator's exact shape. The first line is delivered while the app is
+/// idle, so it starts a turn. Everything after it, the Esc and the text
+/// queued behind it, is held back until the app is BUSY and then delivered as
+/// one drained batch, which is what a real terminal does when someone is
+/// still pasting into a running turn and reaches for Esc.
+struct BusyBurst {
+    idle_wave: std::collections::VecDeque<Event>,
+    busy_wave: std::collections::VecDeque<Event>,
+}
+
+impl temur::ui::tui::EventSource for BusyBurst {
+    fn next(
+        &mut self,
+        _timeout: std::time::Duration,
+        ready: temur::ui::tui::Readiness,
+    ) -> std::io::Result<Option<Event>> {
+        if !self.idle_wave.is_empty() {
+            return Ok(self.idle_wave.pop_front());
+        }
+        if !ready.idle {
+            return Ok(self.busy_wave.pop_front());
+        }
+        Ok(None)
+    }
+}
+
+#[test]
+fn esc_mid_turn_interrupts_once_and_the_queued_input_starts_no_new_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens: 32_000,
+        system: Some("test system".into()),
+        thinking: false,
+        cwd: dir.path().to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+        max_tokens_source: None,
+        prose_tool_calls: true,
+        cost_rates: None,
+        cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
+    };
+    let mut session = Session::new(Box::new(BlockUntilCancelled), Registry::standard(), cfg);
+
+    let mut idle_wave: std::collections::VecDeque<Event> = "interrupt me"
+        .chars()
+        .map(|c| Event::Key(key(KeyCode::Char(c))))
+        .collect();
+    idle_wave.push_back(Event::Key(key(KeyCode::Enter)));
+
+    // Esc first, then the rest of the paste still draining behind it,
+    // ending in the Enter that used to start the unstoppable next turn.
+    let mut busy_wave: std::collections::VecDeque<Event> =
+        std::collections::VecDeque::from(vec![Event::Key(key(KeyCode::Esc))]);
+    busy_wave.extend(
+        "queued chunk two"
+            .chars()
+            .map(|c| Event::Key(key(KeyCode::Char(c)))),
+    );
+    busy_wave.push_back(Event::Key(key(KeyCode::Enter)));
+
+    let source = BusyBurst {
+        idle_wave,
+        busy_wave,
+    };
+    let (mut ui, snapshot) = TuiUi::headless_with_source(
+        SessionInfo {
+            model: "claude-sonnet-5".into(),
+            thinking: false,
+            cwd: dir.path().display().to_string(),
+            version: "test".into(),
+            profiles: vec![],
+            provider: "anthropic".into(),
+        },
+        100,
+        30,
+        source,
+        session.cancel_token(),
+    );
+
+    let line = ui.read_input().expect("the first line starts a turn");
+    assert_eq!(line, "interrupt me");
+    session.turn(&line, &mut |ev| ui.event(&ev)).unwrap();
+    drop(ui);
+
+    let body = snapshot.lock().unwrap().clone().join("\n");
+    assert!(body.contains("turn interrupted"), "Esc landed:\n{body}");
+    assert!(body.contains("interrupt me"), "the one prompt is there:\n{body}");
+    assert!(
+        !body.contains("queued chunk two"),
+        "the input queued behind the Esc was discarded, not submitted and \
+         not left in the input line:\n{body}"
+    );
+    assert_eq!(
+        body.matches('\u{25a3}').count(),
+        1,
+        "exactly one turn ran, not a second one started by the queued Enter:\n{body}"
+    );
+}

@@ -215,73 +215,17 @@ payload.
 | T41 | Prompt floor | As built 2026-08-30, dequeuing **F6 (T40)**, whose two candidates were "select the compact profile automatically below a `context_window` threshold" and "report the floor in `doctor`". Both built; the operator approved the default flip on 2026-08-30. P1: `prompt_profile` accepts `"auto"` | `"full"` | `"compact"` and an ABSENT field now means `"auto"`, which is the new default. Auto resolves to compact when a `context_window` is configured and strictly below 16384, to full otherwise (an unknown window included, since guessing smaller would trim descriptions on a model that never needed them); an explicit value is never second-guessed at any window. One pure function over `Option<u64>` is the only path from a window to a profile, and `PromptProfileSpec` splits spelling validation from window resolution so a typo in the GLOBAL field is still a startup error while each selection resolves against its OWN window. `ResolvedProfile` gained `prompt_profile_source` (`Explicit`/`Auto`), read only by reporting: one startup line when auto picks compact, the same line from the same function on a `/model` switch that lands there, and `/status` becoming `compact (auto)` / `full (auto)` / `compact` / `full`. This DELIBERATELY reverses the explicit-only contract pinned in three places through v0.29.1 (the `PromptProfile` doc comment, the config resolution test, `docs/OFFLINE.md`), all three changed in place. RIPPLE, stated in the commit and the docs: any config with a window below 16384 and no explicit `prompt_profile` gets compact descriptions from this release on, `temur init`'s local template included. P2: `doctor` reports the prompt floor for the active selection, an offline estimate always (system-prompt plus definition bytes over 4) and a MEASURED figure under the tools-drop gate (one extra one-token POST carrying the real system prompt and the real definitions); PASS below 40% of the window, WARN at or above, never FAIL, and a WARN on an already-compact selection points at `context_window` instead. `probe_prompt_tokens`/`tools_drop_probe_body` gained `system: Option<&str>`, with `None` byte-identical to the pre-T41 body so the T34 tools-drop baseline cannot move. `DEFAULT_SYSTEM`/`DEFAULT_SYSTEM_COMPACT` moved from `main.rs` into `src/prompt.rs` byte-identically. The estimate NOTE deliberately does NOT quote the planned "under-reads by 15-30%": measured against this checkout the estimator reads 7,240 where F6 counted 6,991, 4% HIGH, so no percentage is defensible from one calibration point. Tests 756 -> 779, full `check.sh` green first try at every phase. Ships as v0.30.0. **Three defects in it were fixed as v0.30.1; the threshold shipped here (16384) is NOT the one that stands, see T41.1.** |
 | T41.1 | Post-ship review fixes (v0.30.1) | PATCH on T41, not a new milestone: no new capability, only defects in what T41 shipped hours earlier. As built 2026-08-30 from a code review of the shipped v0.30.0 range (`049085e..12cd7ec`), three findings, all three verified against the tree by the planning session before any was acted on, one commit each. R1 (MEDIUM, the reason this is a release and not a note): `PROMPT_AUTO_COMPACT_BELOW` and `doctor`'s `PROMPT_FLOOR_WARN_PERCENT` disagreed BY CONSTRUCTION. 16384 * 40% is 6,554, below the 6,991 tokens the full profile actually costs, so every window in [16384, 17478) measured (and [16384, 18100) estimated) got `full` from the auto rule and then a WARN against that same selection from `doctor` in the same run, telling the user to set `prompt_profile` to `"compact"` and undo the choice temur had just made. 16384 is exactly what `temur init` writes from a 16k llama.cpp `/props` allocation, so a fresh `init` followed by `doctor` produced the contradiction on the wizard's own output. Fixed by DERIVING the threshold from the warning line instead of picking it for roundness: 20480, the smallest round window at which the full floor sits under 40% (34% measured, 35% estimated), with the tie pinned by a test that runs the shipped estimator over the real full-profile prompt and the real registry at exactly the threshold, so changing either constant or growing the prompts fails loudly. The WARN itself was deliberately NOT softened for an `Auto` choice: a 44% floor is a 44% floor, and a report that excuses a number because the tool picked it is worth nothing. RIPPLE, same shape as T41's own: a config with a window from 16384 to 20479 and no `prompt_profile` moves from the full descriptions to the compact ones. R2 (LOW/MEDIUM): the floor probe carries the system prompt AND every definition, which makes it the largest prefill a doctor run asks for, and it runs FIRST, unannounced, where the tools-drop check right after it prints a NOTE and flushes before its own pair for exactly this reason; v0.30.0 could go silent for up to 300s with nothing said, and took the worst case from two large prefills to three. It now announces itself in the same style, on the networked path only, and the definitions the two probes share are built once per run instead of twice. R3 (LOW): `hop_switch` computed the auto-compact notice and emitted it on both success paths but dropped it in the arm where `raw_override` failed, although that arm's own comment says the activation stands and an activation swaps the prompt profile: a user who hopped onto an auto-compact profile and whose model override then failed was left on the compact prompts with only a failure notice. VERIFIED LIVE, not just reasoned: `~/temur-eval-archive/t41-live/REPORT.md` records the fixed binary against llama.cpp `server-b10438` (Qwen3-4B-Instruct-2507, ctx 12288) picking compact at 16384 and PASSing at 16%, while the installed 0.30.0 on the same config WARNs at 42% and advises compact. Tests 779 -> 783, full `check.sh` green first try at every commit. |
 | T42 | Context overflow recovery | As built 2026-08-31, dequeuing all three **desktop experiment 5** items plus the **T41** startup-probe item and the **v0.30.1** `max_tokens` item, offline throughout. Exp-5 decomposed temur's five remaining context-exhausted cells out of 32 into three mechanisms, and the answer is one reactive fix, two predictive ones, and two diagnostics. P1, the headline: a send that fails with a parsed wire kind of exactly `exceed_context_size_error` is recovered ONCE and retried ONCE, where before it was terminal. Arm (a) is the ordinary fold when `auto_compact` is on and the turn already holds enough round-trips, with the F1 `turn_start` reset; arm (b) is the class a fold cannot reach at all, halving the LARGEST `tool_result` in place with the T19 head+tail elision shape and a marker addressed to the model. Arm (b) is what the `gcode-to-text` cells needed: both died on round-trip ONE, where nothing is foldable and where a fold would have kept the oversized result in the verbatim tail regardless. Only `ToolResult` blocks are candidates, so the prompt-verbatim invariant holds; below a 1,024-char floor recovery declines. At most one recovery per send, counted against the same `MAX_AUTO_COMPACTIONS_PER_TURN` bound, no re-examination of the retry, and every failure inside the path propagates the ORIGINAL provider error (the T40 fail-open discipline). Both trigger lines are STABLE, greppable markers, because desktop experiments read them. P2: the crossing check runs a second time immediately before each request, folding a chars/4 estimate of the trailing non-assistant messages into `last_context_used`, which is one round-trip stale by nature; same thresholds, same latch, so one crossing still gets one speaker. Documented honestly rather than tuned: chars/4 is an average, the gcode cells measured ~1.2 chars/token, this alone would still have missed them, and P1 is the backstop. P3: the AUTO path's summary call now carries `history[..tail_start]` instead of everything, since the tail survives verbatim in the result; `adaptive-rejection-sampler` r2 is the evidence, its summarize request rejected at 13,518 tokens against a 12,288 window. `/compact` and the resume seam keep full history, because both are fail-closed and discard everything but the summary. P4: startup runs the T22 keyless `/props` GET for an `openai-compat` selection with no key file and no configured window, outside `--mock`, and feeds the answer to the resolved selection, `session_cfg.context_window`, the T19 registry cap, and the `"auto"` prompt rule; in-memory only, a configured window is never probed over, a miss is silent. P5: a `doctor` WARN when `max_tokens > context_window`, naming both numbers and the fix, never a FAIL. DELIBERATE NON-CHANGES, all recorded: `/compact` untouched (fail-closed, discards everything but the summary); the T19 cap formula untouched (its ~4 chars/token assumption is what dense content defeats, and changing it moves every model's tool output, so it is its own milestone if ever); and NO provider-general error taxonomy, since P1 classifies llama.cpp's kind alone and a wrong classification would resend a request rejected for some other reason. Ships as v0.31.0 |
+| T43 | The TUI learns what a paste is | As built 2026-09-01, dequeuing the FOUR paste-thread items from the laptop dogfooding queue below; the LaTeX/math item is deliberately left queued, being the head of a list the operator has not finished writing. All four symptoms were downstream of one fact: the TUI had no concept of a paste. P1: `render_loop` drains every already-queued terminal event and draws ONCE for the batch (cap 4096/iteration, remainder deferred, nothing dropped), so redraw cost is bounded by frame rate instead of by paste length; both scripted event sources decline the zero-timeout drain polls so their readiness contracts, and the two flake modes those close, survive unchanged. P2: while busy, a batch containing Esc or Ctrl+C collapses to that one key and the rest is discarded, keys BEFORE it included, so interruption is O(1) in paste size and the discarded text neither pollutes the input line nor starts a new turn; an open approval prompt is excluded (its keys are a modal y/N answer). P3: `force_quit_armed: bool` becomes `armed_at_ms: Option<u64>` with a 2000ms window, so a second busy Ctrl+C force-quits regardless of intervening keys; three existing tests asserted the old any-key disarm and now assert the opposite. P4: bracketed paste enabled after `try_init` and disabled before every restore (panic hook included); `Event::Paste` inserts at the cursor with CRLF/CR normalized to LF and control characters other than `\n`/`\t` stripped, never submitting; Enter END-trims only, so one multi-line prompt keeps its interior newlines and its leading indentation; slash-command detection is single-line only; `draw_input` shows each newline as a dim one-column return glyph, with the scroll window and cursor measured through the same helper. Multi-line `Cell::User` rendering and multi-line history recall were VERIFIED (wrap() already hard-breaks on `\n`) and pinned rather than rebuilt. P5: the Esc regression pin the queue asked for, driving the operator's exact shape (Esc plus queued text delivered as one batch into a running turn) and asserting one interrupt, no second turn, and no surviving queued text. check.sh gains a bracketed-paste pty smoke on both the gnu and musl paths, riding the existing fifo harness through a real `ESC[200~...ESC[201~`, and every TUI smoke now asserts `ESC[?2004h`/`ESC[?2004l` in the stream so the mode is proven on and off against a real terminal. Five phase gates, all ALL CHECKS PASSED first try; 48 suites 1833 -> 1923 passed. Ships as v0.32.0. |
 
 ### Queued from laptop dogfooding (2026-09-01)
 
-Two unrelated threads. The first is three operator-reported symptoms
-from one interaction, all of them downstream of a single fact: the TUI
-has no concept of a paste. Traced in code, NOT yet reproduced under
-test. The second is output formatting, raised as explicitly low
-priority and explicitly incomplete.
-
-- **A long paste makes the TUI deaf, Ctrl+C included.** `render_loop`
-  (`src/ui/tui/mod.rs:344`) does one full `terminal.draw()` and then
-  handles exactly ONE event per iteration, and `CrosstermEvents::next`
-  (`mod.rs:75`) is a single `poll` + `read`. Bracketed paste is never
-  enabled anywhere in the tree (no `EnableBracketedPaste`, no
-  `Event::Paste` arm), so a paste arrives as N discrete
-  `Event::Key(Char)` events: an N-character paste costs N full-frame
-  redraws, and any Ctrl+C the operator types sits BEHIND every pasted
-  character in the tty buffer. Ctrl+C is not ignored, it is unreachable
-  until the backlog drains, and there is no bypass, because TUI raw
-  mode disables ISIG so Ctrl+C never becomes a SIGINT (`main.rs:610`,
-  `signal.rs`) and the event queue is the only path in. Candidates,
-  cheapest first: (a) drain every queued event per iteration and draw
-  ONCE, which bounds redraws by frame rate rather than by paste length;
-  (b) scan the drained batch for Ctrl+C/Esc and honor it immediately,
-  discarding the rest, which makes interruption O(1) in paste size;
-  (c) the real fix, enable bracketed paste and handle
-  `Event::Paste(String)` as one event. (a) and (b) are contained and
-  independently useful. (c) is NOT a rider: it changes what a pasted
-  newline means, so multi-line input needs its own decision first.
-
-- **A pasted block is submitted as a series of turns the operator
-  cannot stop.** A pasted newline is an Enter (`app.rs:427`), and the
-  Enter arm is `if !self.busy` — so newlines arriving DURING a turn are
-  dropped, but the moment that turn ends the still-draining paste
-  submits the next chunk, and the next. The operator's report is
-  literally "breaking it down and automatically sending each chunk
-  without me being able to stop it", which is one turn per pasted line,
-  serially, with the interrupt keys stuck behind the remaining
-  characters. The busy-Enter drop bounds concurrency, not total
-  submissions, and is not the guard it looks like here. Fixed by (c)
-  above, since a paste event carries no Enter semantics at all;
-  wanted regardless is a decision on what a multi-line paste SHOULD do
-  (one prompt with embedded newlines is the obvious answer and matches
-  what the operator expected).
-
-- **Double Ctrl+C should force-quit unconditionally.**
-  `app.rs:386` disarms the force-quit latch on any key other than a
-  second Ctrl+C, so characters landing between two presses defeat the
-  double-press escape hatch — during a paste, that is guaranteed. The
-  disarm has a real purpose (a stale first Ctrl+C should not quit the
-  session minutes later) so the fix is a TIME window, both presses
-  inside ~2s force-quit regardless of what arrived between them,
-  not deleting the disarm. Note this is necessary but NOT sufficient on
-  its own: an unconditional latch still cannot fire if neither press
-  has been read yet, so it only becomes the promised escape hatch
-  together with (a)/(b) above.
-
-- **Esc-pauses-the-turn needs a regression test, not a redesign.** The
-  operator was unsure whether Esc worked during the paste. Reading the
-  code, it does: `app.rs:463` sets `interrupting` and returns
-  `Action::Interrupt` whenever `busy`. Their own guess for what they
-  saw is almost certainly right — Esc cancelled the running turn,
-  `busy` went false, and the still-draining paste immediately submitted
-  the next chunk, which reads as "Esc did nothing". No fix is implied
-  beyond the items above, but the interaction (Esc, then queued input
-  behind it) has no test and should get one, since the failure mode is
-  invisible: it looks like a broken interrupt rather than a new turn.
+ONE item left. The paste thread that made up the rest of this section,
+four bullets covering the TUI going deaf under a long paste, a pasted
+block submitted as a series of turns the operator could not stop,
+double Ctrl+C defeated by the keys arriving between the two presses,
+and the missing Esc regression test, was DEQUEUED BY T43 (see the
+ladder row above). What remains is the output-formatting thread, raised
+as explicitly low priority and explicitly incomplete.
 
 - **LaTeX math renders as its own source.** OPERATOR-FLAGGED LOW
   PRIORITY ("nitpicky and not necessarily that important"), and the

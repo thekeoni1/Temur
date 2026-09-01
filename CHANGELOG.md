@@ -4,6 +4,35 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **The TUI understands pasting.** Bracketed paste is enabled, so a
+  paste arrives as one event instead of as one key per character.
+  Pasting a multi-line block now puts the whole block in the input
+  line, newlines and all, and sends it as a SINGLE prompt when you
+  press Enter. Previously each pasted newline was an Enter, so a
+  pasted block was chopped into one turn per line and submitted
+  serially as each turn ended, with no way to stop it. A paste never
+  submits by itself, whatever it contains; only Enter submits. Enter
+  end-trims only, so pasted indentation survives, and a multi-line
+  paste opening with `/` is treated as a prompt rather than a command.
+  Pasted newlines are drawn as a dim return glyph on the input line;
+  the input line is still a single-line editor, not a multi-line one.
+- **A long paste no longer makes the TUI deaf.** The render loop drains
+  every terminal event that is already queued and draws ONCE for the
+  batch, instead of drawing a full frame per event, so redraw cost is
+  bounded by the frame rate rather than by the length of the paste.
+- **Esc and Ctrl+C are honored ahead of whatever is queued behind
+  them.** While a turn is running, a batch of input containing Esc or
+  Ctrl+C collapses to that one key and the rest is discarded, so
+  interrupting is immediate no matter how much input is still
+  draining. The discarded input does not land in the input line and
+  does not start a new turn. Interrupting while a paste was still
+  arriving used to look like it had done nothing, because the queued
+  text started the next turn the instant the interrupted one ended.
+- **Double Ctrl+C force-quits within a two-second window.** The latch
+  used to be cleared by any other key, so characters arriving between
+  the two presses defeated it, which during a paste was guaranteed.
+  Only the window expiring disarms it now.
+
 ## v0.31.0 - 2026-08-31
 
 - **A context-size rejection is no longer fatal.** When a request comes

@@ -74,6 +74,36 @@ To leave: `exit`, `quit`, or Ctrl+D (EOF); temur prints `bye`. Ctrl+C
 during a turn interrupts the turn, not the program (details in
 [TUI.md](TUI.md), "Turn interruption").
 
+### Pasting, interrupting, and the way out
+
+**A paste is one prompt.** Paste as much as you like, over as many
+lines as you like: it lands in the input line as text, with each
+newline drawn as a dim return glyph, and nothing is sent until you
+press Enter. Enter then submits the whole block as a SINGLE prompt
+with its line breaks intact. Only the trailing whitespace is trimmed,
+so pasted indentation survives; a block that is nothing but whitespace
+is not sent at all. One consequence worth knowing: a multi-line paste
+that happens to begin with `/` is a prompt, not a command. Only a
+single-line input starting with `/` is a command.
+
+The input line is not a text editor. It shows a multi-line paste on
+one row with return glyphs where the breaks are, and you can move
+through it and delete from it, but there is no cursor movement between
+lines and no editing of a block as a block.
+
+**Interrupting drops whatever was queued behind it.** Esc during a
+turn interrupts it, and Ctrl+C during a turn does too. If input was
+still arriving when you interrupt (a long paste still draining, say),
+that input is DISCARDED rather than delivered: it does not land in the
+input line and it does not start another turn once the interrupted one
+ends. This is deliberate. The alternative, which is what temur used to
+do, is that the queued text starts the next turn the moment the
+current one stops, so the interrupt reads as if it did nothing.
+
+**Double Ctrl+C force-quits.** Two Ctrl+C presses within two seconds
+during a turn quit the program, whatever else arrived between them.
+That is the escape hatch when a turn will not stop; it exits 130.
+
 ## Command reference
 
 Inside a session, any input line starting with `/` is a command: it

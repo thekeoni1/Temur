@@ -9539,3 +9539,111 @@ stands, and T42's own residuals are new:
 - **Whether the advisory's second arm should be quieted** when
   `max_tokens` exceeds the window is untouched and still open; P5 gave
   that question the WARN it wanted first.
+
+## T43 acceptance - the TUI learns what a paste is (recorded 2026-09-01, before its release)
+
+Laptop dogfooding on 2026-09-01 produced three operator-reported
+symptoms from one interaction, plus a request for a regression test.
+All four were downstream of a single fact: the TUI had no concept of a
+paste. Traced in code at queue time, NOT reproduced under test; T43
+both reproduces and fixes them. Offline throughout, no API key, no
+hosted provider, no live model. Five commits, one per phase, full
+`check.sh` at each, all five green on the FIRST attempt (gate logs
+archived to `~/temur-eval-archive/t43-gates/` as `gate-p1.log` through
+`gate-p5.log`).
+
+### What each phase answers
+
+- **The TUI went deaf under a long paste.** `render_loop` handled
+  exactly one terminal event per iteration and drew a full frame around
+  each, so an N-character paste cost N redraws and any Ctrl+C sat
+  behind every pasted character. P1 drains the queued events and draws
+  once for the batch; redraw cost is now bounded by frame rate, not by
+  paste length. Pinned by stamping each delivered event with the
+  iteration that asked for it: a 200-key burst plus Enter lands in ONE
+  generation, which is one draw.
+- **The interrupt keys were still stuck behind the backlog.** P1 alone
+  only moves the backlog into a single batch. P2 makes a busy batch
+  containing Esc or Ctrl+C collapse to that one key, discarding the
+  rest of the batch INCLUDING the keys before it, so interruption is
+  O(1) in paste size and the discarded text neither pollutes the input
+  line nor starts a turn.
+- **Double Ctrl+C could not fire during a paste.** The latch was
+  cleared by any key other than a second Ctrl+C, so characters landing
+  between the presses defeated it, which during a paste was guaranteed.
+  P3 makes it a 2000ms time window off `now_ms`. Necessary but not
+  sufficient alone, exactly as the queue entry said: an unread press
+  still cannot fire, so it is only an escape hatch together with P1
+  and P2.
+- **A pasted block became one turn per line.** A pasted newline was an
+  Enter, so a block was chopped and submitted serially as each turn
+  ended. P4 enables bracketed paste: a paste is now one `Event::Paste`
+  carrying text, with no Enter semantics at all, and Enter submits the
+  whole input as a single prompt.
+- **Esc had no regression test.** P5 adds one driving the operator's
+  exact shape.
+
+### What the gates prove that headless tests do not
+
+The bracketed-paste pty smoke rides the existing fifo harness on BOTH
+the gnu and musl paths, through the real crossterm path on a real pty:
+it waits for `ESC[?2004h`, writes a genuine `ESC[200~...ESC[201~`
+carrying a newline, waits for the return glyph to prove the newline
+stayed TEXT rather than submitting, and only then sends Enter. Every
+TUI smoke additionally asserts `ESC[?2004h` and `ESC[?2004l` in the
+stream, so the mode is proven both enabled against the terminal and
+disabled on the way out rather than left set. The plan allowed a
+headless-only fallback if the harness could not carry the sequences;
+it carried them on the first attempt and the fallback was not used.
+
+Host suite 807 -> 809 -> 816 -> 821 -> 836 -> 837 across the five
+phases; full gate 48 suites, 1833 -> 1923 passed, 0 failed.
+
+### Accepted deviations from the T43 plan
+
+- **Both scripted event sources decline the zero-timeout drain polls.**
+  The plan expected P1's drain to change scripted DELIVERY timing and
+  asked for an audit. The audit's answer was that letting the drain
+  batch them changes SEMANTICS, not just timing: `ScriptedSteps` exists
+  so a step starts only when app state says its keys can land as a
+  human's would, and a drain would pull the next step's keys into the
+  current batch, reopening both flake modes its readiness gate closes.
+  So the sources stay one event per real poll, which is what they
+  always claimed to model, and bursts get a dedicated test source. The
+  consequence, stated plainly: the existing suites exercise the
+  unbatched path, and the batched path is covered by the new burst
+  tests, the P5 two-wave test, and the pty smokes.
+- **"End-trim only" read as `trim_end`, not `trim`.** Enter used to
+  `trim()` both ends. Trimming the start would eat the leading
+  indentation of pasted code, so only the end is trimmed now. The
+  whitespace-only guard still uses `trim()`, so a blank paste still
+  refuses to submit.
+- **Control stripping is broader than "C0 except \n/\t".** The filter
+  drops every `char::is_control()` other than newline and tab, which
+  also covers DEL and the C1 range. Strictly a superset of what the
+  plan asked for, and the safer side to err on.
+- **`ScriptStep::Raw`, not `ScriptedEvents::Raw`.** The plan named a
+  constructor that does not exist; `ScriptedEvents` takes a `Vec<Event>`
+  directly, so the paste tests pass `Event::Paste` in that vector.
+
+### Residuals, named rather than fixed
+
+- **Two interrupts inside ONE drained batch collapse to one.** P2 keeps
+  the first and discards the rest, so a force-quit needs its two
+  presses in two different iterations. At a 100ms tick inside a 2000ms
+  window a human double-press always spans several, but a synthetic
+  burst carrying both presses in one batch arms only once.
+- **Busy-ness is evaluated once, at scan time.** A batch that is idle
+  when scanned but contains an Enter processes in order, and an Esc
+  later in that same batch interrupts the turn the Enter just started.
+  Documented in the plan as a known bounded edge and left as one.
+- **`draw_input`'s horizontal scroll is O(n^2) in input length.** It
+  recomputes the width of the remaining prefix per character. Never
+  noticeable at typed lengths; a multi-thousand-character paste now
+  makes it reachable. Not a correctness issue and not touched here.
+- **The input line is still single-line.** Multi-line EDITING was
+  explicitly out of scope: the glyph shows where a break is, and that
+  is all it does.
+- **Bracketed paste in `probe()` was left alone.** The plan allowed it
+  as a trivial rider; it is not needed to prove the mode and adding it
+  would have widened the surface the probe covers.
