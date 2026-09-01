@@ -5689,6 +5689,10 @@ struct OverflowProvider {
     /// `None` = no size gate at all; the script is the only source of errors.
     limit: Option<usize>,
     tool_overhead: usize,
+    /// T44: set the session's cancel token when the SUMMARY call arrives (a
+    /// summary call is the only request that carries no tools), modelling an
+    /// Esc landing while the recovery fold is in flight.
+    cancel_on_summary: bool,
 }
 
 impl Provider for OverflowProvider {
@@ -5699,6 +5703,9 @@ impl Provider for OverflowProvider {
         _cancel: &CancelToken,
     ) -> Result<ResponseMessage, ProviderError> {
         self.requests.borrow_mut().push(req.clone());
+        if self.cancel_on_summary && req.tools.is_empty() {
+            _cancel.set();
+        }
         if let Some(limit) = self.limit {
             let content: usize = req
                 .messages
@@ -5734,12 +5741,39 @@ fn session_overflow(
     context_window: Option<u64>,
     auto_compact: bool,
 ) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
+    overflow_session(
+        dir,
+        None,
+        outcomes,
+        limit,
+        tool_overhead,
+        context_window,
+        auto_compact,
+        false,
+    )
+}
+
+/// The full form behind [`session_overflow`]: `seed` resumes from an earlier
+/// session (so the turn does NOT start at index 0, which is the only place
+/// the F1 `turn_start` discipline is observable), and `cancel_on_summary`
+/// interrupts the summary call.
+fn overflow_session(
+    dir: &std::path::Path,
+    seed: Option<Vec<RequestMessage>>,
+    outcomes: Vec<Result<ResponseMessage, ProviderError>>,
+    limit: Option<usize>,
+    tool_overhead: usize,
+    context_window: Option<u64>,
+    auto_compact: bool,
+    cancel_on_summary: bool,
+) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
     let requests = Rc::new(RefCell::new(vec![]));
     let provider = OverflowProvider {
         outcomes: RefCell::new(outcomes),
         requests: requests.clone(),
         limit,
         tool_overhead,
+        cancel_on_summary,
     };
     let cfg = SessionConfig {
         model: "local-test".into(),
@@ -5759,10 +5793,14 @@ fn session_overflow(
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact,
     };
-    (
-        Session::new(Box::new(provider), Registry::standard(), cfg),
-        requests,
-    )
+    let session = match seed {
+        Some(history) => {
+            let (seed, _) = store::prepare_seed(saved(history, vec![]));
+            Session::resume(Box::new(provider), Registry::standard(), cfg, seed)
+        }
+        None => Session::new(Box::new(provider), Registry::standard(), cfg),
+    };
+    (session, requests)
 }
 
 const OVERFLOW_COMPACT_MARKER: &str =
@@ -5994,6 +6032,298 @@ fn overflow_recovery_declines_when_every_result_is_already_small() {
     );
     assert_eq!(requests.borrow().len(), 2, "no retry");
     assert_eq!(tool_results(session.history())[0].chars().count(), 500);
+}
+
+// ---- T44: the recovery fold learns whether it worked ----
+
+const OVERFLOW_FALLTHROUGH_MARKER: &str =
+    "context overflow: the compaction freed too little; truncating the largest tool result as well";
+
+/// The three T42/T44 trigger lines, byte for byte.
+///
+/// Desktop experiments grep these out of `temur.txt` and count them; a
+/// reworded one silently breaks an instrument that has already published
+/// numbers, so they are pinned here as literals and not derived from the
+/// source. The markers used by every other test in this file are the same
+/// three constants, so this test is what makes those assertions meaningful.
+#[test]
+fn the_overflow_markers_are_byte_stable() {
+    assert_eq!(
+        OVERFLOW_COMPACT_MARKER,
+        "context overflow: the server rejected the request; compacting and retrying"
+    );
+    assert_eq!(
+        OVERFLOW_ELIDE_MARKER,
+        "context overflow: the server rejected the request; truncating the largest tool result and retrying"
+    );
+    assert_eq!(
+        OVERFLOW_FALLTHROUGH_MARKER,
+        "context overflow: the compaction freed too little; truncating the largest tool result as well"
+    );
+}
+
+#[test]
+fn a_recovery_fold_that_freed_nothing_falls_through_to_arm_b() {
+    // Desktop experiment 6's arm-(a) shape, scripted end to end. An advisory
+    // fold takes the turn first; the ONE round-trip it leaves behind is what
+    // arm (a) then folds, for approximately zero bytes; and what actually
+    // filled the window is sitting in the verbatim tail, where only arm (b)
+    // can reach it. In all three live cells arm (a) reported Compacted here
+    // and returned, and the retry was rejected again.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_overflow(
+        dir.path(),
+        vec![
+            Ok(rt(1, 100)),
+            Ok(rt(2, 100)),
+            Ok(rt(3, 20_000)), // crosses 80%: the advisory fold takes the turn
+            Ok(summary_response("S1")),
+            Ok(big_file(dir.path(), "big.txt", 200)), // 20000 chars, into the tail
+            Ok(summary_response("S2")),               // the recovery fold: frees ~nothing
+            Ok(done()),
+        ],
+        Some(16_000),
+        2_000,
+        // Big enough that the T19 output cap (a quarter of the window at
+        // ~4 chars/token, floored at 4000) leaves the 20000-char result
+        // whole: capping it here would erase the thing being measured.
+        Some(24_000),
+        true,
+    );
+    let events = collect_events(&mut session, "the task");
+    let n = notices(&events);
+
+    // Both arms spoke, in order, and the fall-through named itself.
+    let seq: Vec<&String> = n
+        .iter()
+        .filter(|x| x.starts_with("context overflow: "))
+        .collect();
+    assert_eq!(
+        seq,
+        vec![
+            OVERFLOW_COMPACT_MARKER,
+            OVERFLOW_FALLTHROUGH_MARKER,
+            OVERFLOW_ELIDE_MARKER
+        ],
+        "arm (a) first, then the gate, then arm (b): {n:?}"
+    );
+    // The elision actually ran, on the result in the tail.
+    assert!(
+        n.iter().any(|x| x.starts_with("truncated the largest tool result: 20000 -> ")),
+        "{n:?}"
+    );
+
+    // The fold that fell through is REPORTED honestly first, and its own
+    // figures are what the gate read: below one sixteenth of `before`.
+    let folds: Vec<&String> = n.iter().filter(|x| x.starts_with("compacted: ")).collect();
+    assert_eq!(folds.len(), 2, "the advisory fold and the recovery fold: {n:?}");
+    let (before_b, after_b) = parse_compaction_bytes(folds[1]);
+    let freed = before_b.saturating_sub(after_b);
+    assert!(
+        freed < before_b / 16,
+        "the recovery fold freed {freed} of {before_b}, which must be under the gate"
+    );
+
+    // 3 round-trips, the advisory summary call, the send after it, the
+    // rejected send, the recovery summary call, the ONE retry.
+    assert_eq!(requests.borrow().len(), 8, "exactly one retry");
+    // Both arms acted, so the history is folded AND elided.
+    let h = session.history();
+    assert_eq!(texts_of(&h[0]), vec!["the task"], "prompt verbatim through both");
+    let results = tool_results(h);
+    let largest = results.iter().map(|r| r.chars().count()).max().unwrap();
+    assert!(largest > 10_000 && largest < 10_600, "halved plus the marker: {largest}");
+    assert!(
+        matches!(events.last(), Some(AgentEvent::TurnComplete { .. })),
+        "the turn finished on the retry: {:?}",
+        events.last()
+    );
+}
+
+#[test]
+fn a_recovery_fold_that_freed_plenty_never_reaches_arm_b() {
+    // The other side of the gate, and the behaviour T42 shipped: three full
+    // results, one folded away, a third of the history gone. Arm (b) must
+    // not run, so nothing is truncated and nothing claims to be.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_overflow(
+        dir.path(),
+        vec![
+            Ok(big_file(dir.path(), "a.txt", 50)),
+            Ok(big_file(dir.path(), "b.txt", 50)),
+            Ok(big_file(dir.path(), "c.txt", 50)),
+            Ok(summary_response("WORK SO FAR")),
+            Ok(done()),
+        ],
+        Some(16_000),
+        2_000,
+        None,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert!(n.iter().any(|x| x == OVERFLOW_COMPACT_MARKER), "{n:?}");
+    assert!(
+        !n.iter().any(|x| x == OVERFLOW_FALLTHROUGH_MARKER),
+        "a fold this size is a recovery: {n:?}"
+    );
+    assert!(!n.iter().any(|x| x == OVERFLOW_ELIDE_MARKER), "{n:?}");
+    assert!(
+        !n.iter().any(|x| x.starts_with("truncated the largest tool result")),
+        "nothing was elided: {n:?}"
+    );
+    let fold = n.iter().find(|x| x.starts_with("compacted: ")).unwrap();
+    let (before_b, after_b) = parse_compaction_bytes(fold);
+    assert!(
+        before_b.saturating_sub(after_b) >= before_b / 16,
+        "this fold cleared the gate: {fold}"
+    );
+    assert_eq!(requests.borrow().len(), 6, "one retry, no second recovery");
+    // The two kept results are whole: arm (b) never touched them.
+    for r in tool_results(session.history()) {
+        assert!(!r.contains("(truncated again:"), "nothing was halved");
+    }
+}
+
+#[test]
+fn a_fall_through_still_moves_turn_start_to_zero() {
+    // F1, on the T44 path. The fall-through REPORTS an elision but it also
+    // folded, so the caller owes it the same `turn_start = 0` reset arm (a)
+    // gets: the fold rewrote history as [prompt, summary, resume, tail] and
+    // put this turn's prompt at index 0. With the stale index a later fold
+    // in the same turn keeps a tool_result as "the prompt" and drops the
+    // real one - and here it would not even fire, because the stale index
+    // makes the turn look too short to fold.
+    //
+    // Resumed, because a turn starting at index 0 is right by accident.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = overflow_session(
+        dir.path(),
+        Some(seeded_history()), // six messages of a completed earlier turn
+        vec![
+            Ok(rt(1, 100)),
+            Ok(rt(2, 100)),
+            Ok(cat_rt(dir.path(), "big.txt", 300, 100)), // 30000 chars, into the tail
+            Ok(summary_response("S1")), // the recovery fold: frees ~nothing
+            Ok(rt(4, 28_000)),          // crosses 80%, on the retried history
+            Ok(summary_response("S2")), // the second fold, on the reset index
+            Ok(done()),
+        ],
+        Some(24_000),
+        2_000,
+        Some(34_000), // over the T19 cap ceiling, so the result stays whole
+        true,
+        false,
+    );
+    let n = notices(&collect_events(&mut session, "the real task"));
+    assert!(n.iter().any(|x| x == OVERFLOW_FALLTHROUGH_MARKER), "{n:?}");
+    assert!(n.iter().any(|x| x == OVERFLOW_ELIDE_MARKER), "{n:?}");
+    assert_eq!(
+        n.iter().filter(|x| x.starts_with("compacted: ")).count(),
+        2,
+        "the fall-through's own fold, then a second fold on the reset index: {n:?}"
+    );
+    assert_eq!(requests.borrow().len(), 8);
+
+    let h = session.history();
+    assert_eq!(h[0].role, Role::User, "history opens with the user prompt");
+    assert_eq!(
+        texts_of(&h[0]),
+        vec!["the real task"],
+        "invariant (a): the prompt survives the fall-through AND the fold after it"
+    );
+    for (i, m) in h.iter().enumerate() {
+        for b in &m.content {
+            if let ContentBlock::ToolResult { tool_use_id, .. } = b {
+                assert!(
+                    h[..i]
+                        .iter()
+                        .flat_map(|earlier| earlier.content.iter())
+                        .any(|c| matches!(c, ContentBlock::ToolUse { id, .. } if id == tool_use_id)),
+                    "orphan tool_result {tool_use_id} at message {i}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_fall_through_whose_elision_declines_propagates_the_original_error() {
+    // The fail-open contract, on the new path. Arm (a) folds and frees
+    // nothing, arm (b) finds nothing above the 1,024-char floor and declines,
+    // and what reaches the caller is the SERVER's error, not one temur
+    // invented. The fold stays applied, exactly as the `Failed` path has
+    // always left whatever it did behind.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_overflow(
+        dir.path(),
+        vec![
+            Ok(rt(1, 10)),                                 // 2 chars: folding it frees nothing
+            Ok(cat_rt(dir.path(), "a.txt", 10, 10)),       // 1000 chars: under the floor
+            Ok(cat_rt(dir.path(), "b.txt", 10, 10)),       // 1000 chars: under the floor
+            Ok(summary_response("S1")),
+        ],
+        Some(1_500),
+        0,
+        None,
+        true,
+    );
+    let mut events = vec![];
+    let err = session.turn("the task", &mut |e| events.push(e)).unwrap_err();
+    assert!(
+        err.to_string().contains("exceed_context_size_error"),
+        "the ORIGINAL error propagates: {err}"
+    );
+    let n = notices(&events);
+    assert!(n.iter().any(|x| x == OVERFLOW_FALLTHROUGH_MARKER), "{n:?}");
+    assert!(
+        !n.iter().any(|x| x == OVERFLOW_ELIDE_MARKER),
+        "nothing was truncated, so nothing claimed to be: {n:?}"
+    );
+    assert_eq!(requests.borrow().len(), 5, "no retry was sent");
+    // The fold stands, and neither result was cut.
+    assert_eq!(texts_of(&session.history()[0]), vec!["the task"]);
+    for r in tool_results(session.history()) {
+        assert!(!r.contains("(truncated again:"), "nothing was halved");
+    }
+}
+
+#[test]
+fn a_cancel_during_the_recovery_summary_runs_no_other_arm() {
+    // Unchanged by T44 and pinned because the gate sits right beside it: an
+    // interrupt during the recovery's summary call returns None, so arm (b)
+    // never runs, no retry goes out, and the caller's cancel check lands the
+    // turn. Do not start a second recovery on top of an interrupt.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = overflow_session(
+        dir.path(),
+        None,
+        vec![
+            Ok(big_file(dir.path(), "a.txt", 50)),
+            Ok(big_file(dir.path(), "b.txt", 50)),
+            Ok(big_file(dir.path(), "c.txt", 50)),
+            Ok(summary_response("NEVER USED")),
+        ],
+        Some(16_000),
+        2_000,
+        None,
+        true,
+        true, // the summary call sets the cancel token
+    );
+    let mut events = vec![];
+    session.turn("the task", &mut |e| events.push(e)).unwrap();
+    let n = notices(&events);
+    assert!(n.iter().any(|x| x == OVERFLOW_COMPACT_MARKER), "{n:?}");
+    assert!(
+        !n.iter().any(|x| x.starts_with("compacted: ")
+            || x == OVERFLOW_FALLTHROUGH_MARKER
+            || x == OVERFLOW_ELIDE_MARKER),
+        "nothing after the interrupted summary: {n:?}"
+    );
+    assert_eq!(requests.borrow().len(), 5, "3 round-trips, the rejected send, the summary");
+    // History untouched by the cancelled fold, and untouched by arm (b).
+    for r in tool_results(session.history()) {
+        assert_eq!(r.chars().count(), 5_000, "no result was folded away or halved");
+    }
 }
 
 // ---- T42 P2: the pre-send estimator fold-in ----

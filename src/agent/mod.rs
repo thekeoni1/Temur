@@ -287,6 +287,21 @@ const CONTEXT_OVERFLOW_KIND: &str = "exceed_context_size_error";
 /// or below this, recovery declines and the original error propagates.
 const OVERFLOW_ELISION_FLOOR_CHARS: usize = 1_024;
 
+/// T44: the share of `before_bytes` an overflow-recovery fold has to
+/// actually free before it counts as having recovered anything. A fold that
+/// frees less than `before_bytes / 16` (6.25%) is treated as no fold at all
+/// and arm (b) runs as well.
+///
+/// Calibrated, not chosen for roundness. Desktop experiment 6 caught arm (a)
+/// firing three times AFTER an advisory fold had already taken the same
+/// turn, leaving exactly one foldable round-trip: those folds moved the
+/// history by +95, 0 and -62 bytes (<= 0.3% of `before_bytes`) and still
+/// reported `Compacted`, which returned before arm (b) could reach the tail
+/// that was the actual problem. The folds that DID relieve the window in the
+/// same experiment freed 7% to 39%. 1/16 sits in the empty band between the
+/// two, and the boundary is pinned by test on both sides.
+const OVERFLOW_FOLD_MIN_FREED_DIVISOR: u64 = 16;
+
 /// T42 marker, STABLE and greppable: arm (a) fired. Desktop experiments
 /// grep these lines out of `temur.txt`; rewording one silently breaks an
 /// instrument, so treat it like a wire format.
@@ -297,6 +312,17 @@ const OVERFLOW_COMPACT_NOTICE: &str =
 /// [`OVERFLOW_COMPACT_NOTICE`].
 const OVERFLOW_ELIDE_NOTICE: &str =
     "context overflow: the server rejected the request; truncating the largest tool result and retrying";
+
+/// T44 marker, STABLE and greppable: arm (a) folded, freed too little to be
+/// worth calling a recovery (see [`OVERFLOW_FOLD_MIN_FREED_DIVISOR`]), and
+/// fell through to arm (b). See [`OVERFLOW_COMPACT_NOTICE`] for why the
+/// wording is a contract.
+///
+/// It does NOT replace [`OVERFLOW_ELIDE_NOTICE`], which still prints right
+/// after it: that line is how every desktop experiment counts arm (b)
+/// firings, and a fall-through IS an arm (b) firing.
+const OVERFLOW_FALLTHROUGH_NOTICE: &str =
+    "context overflow: the compaction freed too little; truncating the largest tool result as well";
 
 /// T40 P2: where and how a session persists ITSELF. `None` on the session
 /// means never persist, which is what the `--mock` replay paths and any
@@ -372,9 +398,15 @@ enum OverflowRecovery {
     /// Arm (a). History was folded, so this turn's prompt is at index 0
     /// now and `turn_start` must follow it (the F1 discipline).
     Compacted,
-    /// Arm (b). The largest tool result was halved in place; indices are
-    /// unchanged.
-    Elided,
+    /// Arm (b). The largest tool result was halved in place.
+    ///
+    /// T44: `folded` says whether arm (a) ran FIRST and freed too little to
+    /// return on (the fall-through). It is not cosmetic: the fold still
+    /// rewrote history to `[prompt, summary, resume, tail]`, so the caller
+    /// owes it the same `turn_start` reset arm (a) gets, while the turn is
+    /// still owed the truthful report that a result was elided. Neither
+    /// existing variant can say both without lying about one of them.
+    Elided { folded: bool },
     /// Nothing was done.
     None,
 }
@@ -855,6 +887,17 @@ impl Session {
     /// untouched (the prompt-verbatim invariant is not negotiable for a
     /// one-shot run, where the prompt is the only statement of the task).
     ///
+    /// T44: arm (a) still goes FIRST, because a fold that works is both
+    /// cheaper than elision and lossless, but it no longer returns on the
+    /// mere fact of having folded. Desktop experiment 6 measured arm (a)
+    /// firing three times after an advisory fold had already taken the same
+    /// turn: one foldable round-trip was left, folding it freed nothing
+    /// (+95 / 0 / -62 bytes), and reporting `Compacted` for that preempted
+    /// arm (b), which is the only arm that can touch the retained tail and
+    /// which survived both times it actually ran. So the `Compacted`
+    /// outcome is now GATED on the bytes it already carries, and a fold
+    /// that freed too little says so and falls through.
+    ///
     /// Foldability is decided BEFORE anything is announced, the same
     /// discipline as the advisory site, so the turn never says it is
     /// compacting and then does something else instead.
@@ -867,6 +910,9 @@ impl Session {
         turn_start: usize,
         ui: &mut dyn FnMut(AgentEvent),
     ) -> OverflowRecovery {
+        // T44: set when arm (a) folded but freed too little to return on, so
+        // the history HAS been rewritten by the time arm (b) speaks.
+        let mut folded_first = false;
         // The send site's history is COMPLETE (results appended, request
         // already built), which is what `auto_compact` will operate on, so
         // the plain predicate applies here and not the `will_fold`
@@ -888,7 +934,15 @@ impl Session {
                         before_bytes,
                         after_bytes,
                     )));
-                    return OverflowRecovery::Compacted;
+                    if overflow_fold_freed_enough(before_bytes, after_bytes) {
+                        return OverflowRecovery::Compacted;
+                    }
+                    // Said out loud before anything else happens, the same
+                    // discipline as every other arm here: the fold is
+                    // already applied and reported, and this names what it
+                    // did not achieve and what is being tried instead.
+                    ui(AgentEvent::Notice(OVERFLOW_FALLTHROUGH_NOTICE.into()));
+                    folded_first = true;
                 }
                 // The user interrupted the summary call. Do not start a
                 // second recovery on top of an interrupt; the caller's
@@ -911,8 +965,15 @@ impl Session {
                 ui(AgentEvent::Notice(format!(
                     "truncated the largest tool result: {before} -> {after} chars"
                 )));
-                OverflowRecovery::Elided
+                OverflowRecovery::Elided {
+                    folded: folded_first,
+                }
             }
+            // FAIL-OPEN, unchanged by T44 even after a fall-through: the
+            // original provider error propagates and no retry is sent. An
+            // insufficient fold that reached here STAYS applied, exactly as
+            // the `Failed` path has always left whatever it did behind;
+            // folding history is valid either way, it just did not help.
             None => OverflowRecovery::None,
         }
     }
@@ -1392,10 +1453,16 @@ impl Session {
                     OverflowRecovery::None => {}
                     outcome => {
                         auto_compactions += 1;
-                        if matches!(outcome, OverflowRecovery::Compacted) {
+                        if matches!(
+                            outcome,
+                            OverflowRecovery::Compacted
+                                | OverflowRecovery::Elided { folded: true }
+                        ) {
                             // Same reset as the safe point's Compacted arm,
                             // and for the same reason (F1): the fold moved
-                            // this turn's prompt to index 0.
+                            // this turn's prompt to index 0. T44's
+                            // fall-through folded too, so it owes the reset
+                            // even though what it REPORTS is the elision.
                             turn_start = 0;
                         }
                         // The pre-send save above ran against the history
@@ -2369,6 +2436,22 @@ fn auto_compact_will_fold(history_len: usize, turn_start: usize, k: usize) -> bo
     auto_compact_folds(history_len + 2, turn_start, k)
 }
 
+/// T44: did an overflow-recovery fold free enough to be worth returning on?
+///
+/// Pure, and the ONLY path from a fold's byte figures to the arm decision,
+/// so the threshold can be pinned at its exact boundary rather than inferred
+/// from a whole turn. Saturating on purpose: a fold can GROW the history,
+/// which is measured behaviour and exactly the case this gate exists for
+/// (desktop experiment 6 recorded `29756 -> 29851`).
+///
+/// `before_bytes == 0` cannot come off a real fold (a history with a task
+/// prompt in it is never zero bytes); it answers true, which is the
+/// pre-T44 behaviour and keeps the arithmetic total.
+fn overflow_fold_freed_enough(before_bytes: u64, after_bytes: u64) -> bool {
+    before_bytes.saturating_sub(after_bytes)
+        >= before_bytes / OVERFLOW_FOLD_MIN_FREED_DIVISOR
+}
+
 /// T40 merge: the history after a successful auto-compaction.
 ///
 /// `[ task prompt verbatim ] + [ assistant summary, user resume ] + [ tail ]`
@@ -2769,6 +2852,42 @@ mod tests {
             "stale index keeps an orphan tool_result: {:?}",
             stale[0]
         );
+    }
+
+    #[test]
+    fn the_overflow_fold_gate_sits_exactly_at_one_sixteenth() {
+        // The boundary itself, from both sides, at a size where 1/16 is
+        // exact: 16000/16 = 1000, so freeing 1000 passes and 999 fails.
+        assert!(overflow_fold_freed_enough(16_000, 15_000), "freed 1000 of 16000");
+        assert!(!overflow_fold_freed_enough(16_000, 15_001), "freed 999 of 16000");
+        // And the constant is what puts it there.
+        assert_eq!(OVERFLOW_FOLD_MIN_FREED_DIVISOR, 16);
+    }
+
+    #[test]
+    fn the_overflow_fold_gate_separates_the_measured_bands() {
+        // Desktop experiment 6's own numbers, both bands. The useless folds
+        // are the three that preempted arm (b); the useful ones are the
+        // advisory folds from the same cells.
+        for (before, after) in [(29_756, 29_851), (29_972, 29_972), (27_734, 27_672)] {
+            assert!(
+                !overflow_fold_freed_enough(before, after),
+                "exp-6 useless fold {before} -> {after} must fall through"
+            );
+        }
+        for (before, after) in [(48_400, 29_756), (36_119, 29_972), (29_805, 27_734)] {
+            assert!(
+                overflow_fold_freed_enough(before, after),
+                "exp-6 working fold {before} -> {after} must count as recovery"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fold_that_grew_the_history_never_counts_as_recovery() {
+        // Saturating arithmetic, not a wrap: +95 bytes is not 18 exabytes.
+        assert!(!overflow_fold_freed_enough(100, 1_000));
+        assert!(!overflow_fold_freed_enough(u64::MAX, u64::MAX));
     }
 
     #[test]
