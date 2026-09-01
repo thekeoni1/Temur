@@ -5,22 +5,33 @@
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A zero-runtime-dependency single static binary AI agent for any Linux
-system, down to 32-bit and embedded. Bring your own model: hosted or
-fully offline against local models.
+system, down to 32-bit and embedded. Bring your own model: hosted
+(Anthropic, OpenAI, Gemini, xAI) or fully offline against a local
+llama.cpp, Ollama, or LM Studio server.
 
-Mainstream Bun- and Node-based agents publish no 32-bit x86 or armv7
-builds, and their "single executable" bundles embed a runtime on the
-order of 90 MB; temur's release binary is a ~5 MB statically linked
-ELF with no interpreter and no shared-library dependencies, so it
-loads on old x86 machines, armv7 industrial controllers, OpenWrt-class
-devices, `FROM scratch` containers, and rescue/initramfs environments.
-
-Offline is a first-class mode, not a degraded one: the
-OpenAI-compatible provider runs keyless against llama.cpp, Ollama, or
-LM Studio, and quirky-local-server behavior (absent usage, missing
-tool-call IDs, malformed argument JSON) is defined, tested
-degradation. The agent loop is hardened for small models, and how well
-that works is measured by a scripted eval rather than asserted.
+- **A ~5 MB static ELF, zero dependencies.** Mainstream Bun- and
+  Node-based agents publish no 32-bit x86 or armv7 builds, and their
+  "single executable" bundles embed a runtime on the order of 90 MB.
+  temur's release binary has no interpreter and no shared libraries,
+  so it loads on old x86 machines, armv7 industrial controllers,
+  OpenWrt-class devices, `FROM scratch` containers, and
+  rescue/initramfs environments.
+- **Offline is a first-class mode, not a degraded one.** The
+  OpenAI-compatible provider runs keyless against local servers, and
+  quirky-local-server behavior (absent usage, missing tool-call IDs,
+  malformed argument JSON) is defined, tested degradation.
+- **Small models are the design target.** The agent loop is hardened
+  for weak local models: prose-call recovery, tolerant argument
+  parsing, self-healing tool errors, context-scaled output caps, and
+  automatic compaction with overflow recovery.
+- **Measured, not asserted.** A scripted nine-task eval scores the
+  agent loop against real small models, and a comparison against
+  OpenCode and Codex CLI publishes every cell, losses included. The
+  records: the next section, and the results-at-a-glance table that
+  opens [docs/COMPARISON.md](docs/COMPARISON.md).
+- **Built in the open by directing an AI agent** under working rules
+  checked into this repo, with every milestone's acceptance record
+  kept. See "How this was built" below.
 
 The honest topology: no useful LLM runs *on* a 32-bit box; temur runs
 on the constrained device where the code lives, and the model serves
@@ -268,6 +279,18 @@ server/multi-client mode, or a plugin ecosystem: each adds dependency and
 maintenance surface (several would threaten the static-musl constraint) and
 none serves constrained, offline, or weak-model use. Small surface is a
 feature.
+
+## Documentation
+
+| Document | What it holds |
+| --- | --- |
+| [docs/USAGE.md](docs/USAGE.md) | Full command reference, the whole configuration surface, the session model, key isolation rules and their limits |
+| [docs/OFFLINE.md](docs/OFFLINE.md) | Local server setup (llama.cpp, Ollama, LM Studio) and the dated per-model eval matrix |
+| [docs/COMPARISON.md](docs/COMPARISON.md) | temur against OpenCode and Codex CLI on the same local models, plus a Terminal-Bench 2 subset; opens with a results-at-a-glance table |
+| [docs/SETUP.md](docs/SETUP.md) | The build machine and its security boundary, reproducible step by step |
+| [docs/RUNBOOK.md](docs/RUNBOOK.md) | The acceptance record and ship procedure of every milestone |
+| [ROADMAP.md](ROADMAP.md) | Milestone history, the findings queue, and the project's self-analysis |
+| [CHANGELOG.md](CHANGELOG.md) | Per-release changes, newest first |
 
 ## How this was built
 

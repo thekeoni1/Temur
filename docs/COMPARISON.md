@@ -31,6 +31,23 @@ provider and no API key was used anywhere in it. The question is
 narrow on purpose. Given the same small model on the same machine, how
 much does the harness around it matter?
 
+## Results at a glance
+
+Every number here is expanded, conditioned, and caveated in its own
+section below; this table is a map, not a substitute. The first two
+rows are temur's own tasks and carry the bias note above in full; the
+Terminal-Bench rows are an externally authored suite.
+
+| Measurement | Result | Record |
+| --- | --- | --- |
+| Own 9-task eval, Qwen3-4B, two runs each | temur 9/9 and 9/9; codex 8/9 and 8/9; opencode 7/9 and 6/9 | [section](#differential-qwen3-4b-instruct-2507) |
+| Own 9-task eval, Qwen2.5-Coder-3B, a model that emits no native tool calls | temur 8/9 and 9/9; codex 0/9 and 0/9; opencode 0/9 and 0/9; the whole difference is temur's prose-call recovery | [section](#differential-qwen25-coder-3b-instruct) |
+| First tool-carrying prompt, counted server-side | temur 2761 tokens; codex 7413; opencode 7276 | [section](#prompt-size) |
+| Shipped bytes / peak RSS / warm cold-start | temur 7.5 MB / 37.1 MiB / 0.03 s; codex 258 MB / 119.2 MiB / 0.23 s; opencode 184 MB / 842.9 MiB / 2.48 s | [section](#footprint) |
+| Terminal-Bench 2 subset (16 tasks, CPU box, Qwen3-4B) | pass rate does not separate the three (temur 1/16 and 1/16; codex 1/16 and 0/16; opencode 1/16 and 1/16); wall clock does: temur 2.89 h, opencode 3.80 h, codex 6.14 h over 32 cells | [section](#terminal-bench-2-neutral-suite) |
+| Same subset, GPU box, three models (4B, 8B, 30B-A3B MoE) | scores stay within run-to-run noise on every model; temur's wall clock is 0.77 h / 1.18 h / 2.31 h against 2.51 to 6.56 h for the others | [section](#gpu-desktop-terminal-bench-2-subset) |
+| Auto-compaction differential (temur only, v0.28.0 vs v0.29.1) | compaction runs and completes but did not convert the context-exhausted cells at ctx 12288; one failure class, a single oversized tool result, is structurally beyond what compaction can address | [section](#same-rig-auto-compaction-on-temur-v0291-differential) |
+
 ## What was pinned
 
 | Thing | Value |

@@ -4,6 +4,12 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- Navigation pass on the front-door docs: the README opens with a
+  five-bullet summary and gains a documentation map, and
+  docs/COMPARISON.md gains a results-at-a-glance table linking each
+  headline number to its full section. No measurement, claim, or
+  recorded number changed.
+
 ## v0.32.0 - 2026-09-01
 
 - **The TUI understands pasting.** Bracketed paste is enabled, so a
