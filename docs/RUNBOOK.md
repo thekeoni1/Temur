@@ -9727,3 +9727,149 @@ could still contradict. The stage-2 tag message is DECIDED and recorded
 here but NOT acted on. It will be exactly one line, ASCII hyphen:
 
     temur v0.32.0 - paste and interrupt handling (T43)
+
+## v0.32.0 ship record - shipped private
+
+2026-09-01. **T43, the TUI learns what a paste is, shipped private at
+tag `v0.32.0`.** A MINOR bump: the release adds behaviour that did not
+exist on a path every interactive run takes. Stage 2 ran to completion
+with no rerun and one recorded deviation, noted at the end.
+
+Prep push and CI:
+
+- The ROADMAP queue commit pushed at `0fbaebd`. CI run **33505932998,
+  attempt 1**, both jobs green: `test` 1m14s, `release-gate` 4m37s.
+- The five T43 phase commits pushed `0fbaebd..27e6c37` from the
+  DESKTOP. CI run **33512992005, attempt 1**, both jobs green: `test`
+  1m18s, `release-gate` 4m37s.
+- The three prep commits pushed `27e6c37..c56c8a5` (bump, CHANGELOG
+  cut, close-out) from this laptop at stage 1. CI run **33516014585,
+  attempt 1**, both jobs green: `test` 2m22s, `release-gate` 7m33s.
+- With the five per-phase `check.sh` gates on the desktop, the stage-1
+  gate at 0.32.0 and `release.sh`'s own embedded gate here, every gate
+  and every CI run in this cycle was attempt 1. No kill-and-rerun
+  anywhere, and no `FAIL(` line in any log this session opened. That
+  makes this the **eleventh consecutive zero-rerun cycle**, and the
+  first one whose gate evidence is split across two machines.
+
+Tag:
+
+- Annotated tag `v0.32.0` at `c56c8a5`, tag object
+  `767e888389a457b5b0d1f64ebe94100b7a6df5c7`. Verified against the RAW
+  object BEFORE the push, not the formatted view, because
+  `git tag -l --format` appends a newline of its own and would hide a
+  trailing-blank-line mistake. `git cat-file tag v0.32.0 | od -c` shows
+  the header block, then `\n\n`, then exactly
+  `temur v0.32.0 - paste and interrupt handling (T43)\n`: **51 bytes,
+  one line, one trailing newline**, nothing after it, no non-ASCII, and
+  the separator is a plain hyphen `-`. `%(objecttype)` reads `tag` and
+  `v0.32.0^{}` reads `c56c8a5`. After the push the remote refs read
+  `767e8883...` for `refs/tags/v0.32.0` and `c56c8a5` for
+  `refs/tags/v0.32.0^{}`, equal to the local object. **F5's fifth live
+  outing.**
+
+Release build:
+
+- `release.sh` with **no SKIP_CHECK**, green first try, exit 0. The
+  embedded `check.sh` reached `== ALL CHECKS PASSED ==` with all 48
+  `test result:` lines at `0 failed` (host suite 837) and the bare
+  busybox container reporting `temur 0.32.0`; all five TUI pty smokes
+  passed on the first attempt (host, gnu container, gnu
+  bracketed-paste, musl container, musl bracketed-paste); the leak grep
+  was clean over both files and history; and the skew gate read
+  `OK: install.sh + README match version 0.32.0 and all targets`. 4/4
+  artifacts gated and staged, each with no INTERP program header and no
+  NEEDED entries. Log: `t43-gates/v0.32.0-release.log`.
+- The publish block printed `(title below is the annotated tag message
+  of v0.32.0, read back just now)`, the annotated-tag branch, not the
+  lightweight fallback. Branch one again, five outings running.
+
+Staged sha256:
+
+| Target | sha256 |
+| --- | --- |
+| i686-unknown-linux-musl | `ddc72fa16bdbadb629ea023496813c33587f837ef35071de1d97ec64028f1fee` |
+| x86_64-unknown-linux-musl | `1296edc4ae084de2a2d8a6d3633c08a217fd98bb4faf8cdf411d9a1f688d07ea` |
+| aarch64-unknown-linux-musl | `3e9ea0fe28fbd0adb668357ea14fcd3cf0dc58b821dc3ea3f17b395a56f903c0` |
+| armv7-unknown-linux-musleabihf | `6cb48d8079a8031aebd0f0c1ae8c4580483e61d749f408d765c71013698aa537` |
+| SHA256SUMS | `109d3acf3413425ade19e7e9e21397edbb05e6ab891748bf6b6e41d67699d976` |
+
+Publish:
+
+- Private release at
+  `https://github.com/thekeoni1/Temur/releases/tag/v0.32.0`, **5
+  assets**, all `uploaded`, `isDraft=false`, `isPrerelease=false`. Repo
+  `isPrivate` confirmed `true` BEFORE and AFTER the publish.
+- The release title equals the tag message byte for byte, checked by
+  string comparison rather than by eye, and the title was passed from
+  the tag object read back at publish time rather than typed.
+- Notes are the CHANGELOG `v0.32.0` section verbatim, four entries,
+  `diff`-identical to the section extracted from the tree, no
+  non-ASCII, zero U+2014.
+
+Closing gate:
+
+- Re-downloaded ALL five assets into a fresh directory with the repo
+  NAMED EXPLICITLY (`--repo thekeoni1/Temur`), since `gh` otherwise
+  resolves the repository from the working directory's git remote and
+  would silently verify something other than what was asked. **Five for
+  five `cmp`-identical** to the staged copies, and `sha256sum -c`
+  passing 4/4 inside the downloaded directory, so every published
+  artifact is byte-for-byte what the gate produced.
+- Installer matrix **6/6 twice**: once against the staged directory
+  (`t43-gates/v0.32.0-installer-staged-run1.log`) and once against the
+  fresh full download
+  (`t43-gates/v0.32.0-installer-download-run2.log`), each covering
+  pass, corrupt and unlisted on both the GNU host and the bare busybox
+  container.
+- `~/.local/bin/temur` refreshed from the DOWNLOADED i686 asset, so the
+  chain runs published to installed rather than staged to installed: it
+  prints `temur 0.32.0`, sha256 `ddc72fa1...1fee`, equal to the
+  published i686 entry in the DOWNLOADED SHA256SUMS and `cmp`-identical
+  to the downloaded i686 asset. It was `0.31.0` /
+  `c111c625...e582d` before.
+
+### The deviation from the stage-2 plan
+
+1. **`~/temur-desktop/reports/t43-report.md` does not exist on this
+   machine.** The stage-2 instructions sourced T43's named residuals
+   from that path. It is a DESKTOP path, like the per-phase gate logs
+   the close-out already recorded as absent here. The residuals below
+   are therefore quoted from the T43 acceptance record in this file,
+   which is where that report's residual list was already written down,
+   rather than from a file this session could open. Same four items the
+   instructions named, so nothing was lost; the source differs.
+
+### What this release does not establish
+
+T43's own residuals were named rather than fixed, and two older items
+carry forward unchanged:
+
+- **Two interrupts inside ONE drained batch collapse to one.** P2 keeps
+  the first and discards the rest, so a force-quit needs its two
+  presses in two different iterations. At a 100ms tick inside a 2000ms
+  window a human double-press always spans several, but a synthetic
+  burst carrying both presses in one batch arms only once.
+- **Busy-ness is evaluated once, at scan time.** A batch that is idle
+  when scanned but contains an Enter processes in order, and an Esc
+  later in that same batch interrupts the turn the Enter just started.
+  A known bounded edge, left as one.
+- **`draw_input`'s horizontal scroll is O(n^2) in input length.** It
+  recomputes the width of the remaining prefix per character. Never
+  noticeable at typed lengths; a multi-thousand-character paste now
+  makes it reachable. Not a correctness issue and not touched.
+- **The input line is still single-line.** Multi-line EDITING was
+  explicitly out of scope: the glyph shows where a break is, and that
+  is all it does.
+- **Nothing in T43 ran against a live model, and nothing in this stage
+  did either.** Every claim is proven against pty smokes, scripted
+  event vectors and canned servers, offline throughout. The three
+  dogfooded symptoms were traced in code and are now reproduced under
+  test, but no live paste into a real session was replayed to confirm
+  the fix in the environment that produced the report.
+- **Carried forward from v0.31.0: T42's overflow recovery has still
+  never fired live.** Nothing in this cycle exercised it, so the single
+  largest thing the previous release did not establish is unchanged.
+- **Carried forward from v0.30.x: no prompt-profile threshold, 16384 or
+  20480, is validated by any task score.** Still arithmetic about what
+  temur SENDS, not evidence about what it FINISHES. Still queued.
