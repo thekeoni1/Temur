@@ -9873,3 +9873,121 @@ carry forward unchanged:
 - **Carried forward from v0.30.x: no prompt-profile threshold, 16384 or
   20480, is validated by any task score.** Still arithmetic about what
   temur SENDS, not evidence about what it FINISHES. Still queued.
+
+## T44 acceptance - overflow recovery learns whether its fold worked (recorded 2026-09-01, before its release)
+
+Desktop experiment 6 (2026-09-01, `~/temur-desktop/reports/FINAL-exp6.md`)
+was the first live differential of the T42 overflow recovery shipped in
+v0.31.0: 32 of 32 cells, zero VOIDs, zero timeouts, independently
+recomputed from the cell trees alone. Recovery fired 5 times and
+retried 5 times. Arm (b) went 2 for 2. Arm (a) went 0 for 3, and the
+transcripts named the mechanism rather than leaving it to inference.
+T44 acts on that. Offline throughout, no API key, no hosted provider,
+no live model. Four commits, one per phase, full `check.sh` at each,
+all four green on the FIRST attempt (gate logs archived to
+`~/temur-eval-archive/t44-gates/` as `gate-p1.log` through
+`gate-p4.log`).
+
+### What each phase answers
+
+- **P1, the queue section.** The findings recorded with their evidence
+  before anything was built on them: the per-cell byte table, the
+  calibration bands, the arm-(b) result that is recorded and
+  deliberately NOT queued, and the two lines the experiment did not
+  measure. ROADMAP-only commit, the 0fbaebd precedent.
+- **P2, arm (a) preempted the arm that could have helped.**
+  `recover_from_context_overflow` returned `Compacted` on ANY
+  `AutoCompactOutcome::Compacted` without ever reading the
+  `before_bytes`/`after_bytes` that outcome already carried. All three
+  live arm-(a) firings had one shape: an advisory fold had ALREADY
+  taken the same turn, exactly one foldable round-trip was left,
+  folding it moved the history by `+95`, `0` and `-62` bytes, and the
+  retry was rejected again at 12957 / 12797 / 12947 tokens against a
+  12288 window. What filled the window was in the tail
+  `AUTO_COMPACT_TAIL_ROUND_TRIPS` keeps verbatim, which arm (a) cannot
+  touch by construction and arm (b) can. The `Compacted` return is now
+  gated on bytes actually freed, and a fold under the gate falls
+  through into arm (b) after saying so.
+- **P3, an announcement with nothing behind it.**
+  `build-cython-ext/run2` was the only cell reading `started=1
+  completed=0`. The advisory site decided foldability, printed
+  `compacting automatically` and set `compact_pending`; the fold runs
+  at the safe point of the NEXT round-trip; the model answered with
+  plain text and the turn ended in between, and a one-shot `-p` run has
+  no later turn in which to reach that safe point. The announcement
+  moved to the safe point, immediately before the fold, carrying the
+  values measured at the crossing.
+- **P4, the docs and the dequeue.** `docs/USAGE.md` gains the new
+  marker verbatim beside the two T42 ones and the announcement-timing
+  change; CHANGELOG under Unreleased; the ROADMAP ladder row and the
+  two dequeue marks; this record.
+
+### Why 1/16, and how the boundary is pinned
+
+The divisor is derived from the experiment, not picked for roundness.
+The three useless folds freed at most 0.3% of `before_bytes`; the folds
+that DID relieve the window in the same cells freed 7% to 39%. 1/16 is
+6.25%, inside the empty band between the two measured bands.
+
+The decision is one pure function, `overflow_fold_freed_enough`, which
+is the only path from a fold's byte figures to the arm choice. That is
+what makes the boundary pinnable exactly rather than inferred from a
+whole turn: 16000 -> 15000 passes and 16000 -> 15001 fails, both
+asserted, and both measured bands are asserted against it by their real
+figures. It saturates, so a fold that GREW the history reads as zero
+freed and not as 18 exabytes.
+
+### What the tests cover that the live experiment could not
+
+The exp-6 arm-(a) shape is scripted end to end against a canned
+llama.cpp that rejects any request over a size limit: an advisory fold
+takes the turn, the one round-trip it leaves is folded for
+approximately zero bytes, the fall-through marker fires, arm (b) halves
+the 20000-char result in the tail, and exactly one retry goes out. The
+opposite side is pinned too (a fold that frees a third of the history
+never reaches arm (b), and nothing is truncated). The F1 `turn_start`
+reset is pinned on a RESUMED session, where the turn does not start at
+index 0 and the stale index is therefore observable: with it the
+fall-through's own fold is followed by a second fold that keeps the
+real prompt at index 0 and leaves no orphan `tool_result`; without it
+the second fold does not even fire.
+
+Fail-open is pinned on the new path: arm (b) declining after an
+insufficient fold propagates the ORIGINAL server error, sends no retry,
+and leaves the fold applied. A cancel during the recovery summary still
+returns `None` and runs no other arm.
+
+For P3, both set-sites are covered, and the turn that ends between the
+decision and the safe point is asserted SILENT rather than merely
+un-folded.
+
+Differential check per commit, run rather than reasoned: against the
+previous head, three of the six P2 tests fail (the three fall-through
+ones) and three pass (the marker-stability pin, the cancel pin and the
+freed-plenty pin, all three regression pins by design); two of the
+three P3 tests fail and the third passes, its two sites having already
+been adjacent, so it is a regression pin too.
+
+Tests 1923 -> 1944 -> 1953 across the code phases; full gate 1953
+passed, 0 failed, both paths.
+
+### What this does not establish
+
+- **Whether the gate converts the three fail-open cells is NOT
+  measured.** Experiment 6 explicitly did not run that arm, and T44 ran
+  no live model at all. The mechanism is traced in transcripts and the
+  calibration comes from real byte figures, but the outcome is an
+  expectation, not a measurement. That is the next desktop experiment,
+  and until it runs this milestone claims only that the arm order and
+  the success test changed, not that any cell was converted.
+- **Nothing here ran at a context window other than 12288.** Both the
+  0.3% / 7-39% bands and the `12433 -> 6459` figure are measurements at
+  that window on that model, not constants.
+- **Arm (b)'s halving formula is unchanged and unmeasured beyond exp
+  6.** It converted the `gcode-to-text` class in both runs, which is
+  why nothing was queued against it; two cells is the whole evidence.
+- **The T19 cap formula is still untouched.** Its ~4 chars/token
+  assumption is what dense content defeats, and changing it moves every
+  model's tool output. Same ruling as T42.
+- **Carried forward: no prompt-profile threshold, 16384 or 20480, is
+  validated by any task score.** Unchanged by this cycle.

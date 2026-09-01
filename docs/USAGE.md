@@ -334,6 +334,13 @@ A successful compaction reports what it did in round-trips and bytes:
 Those byte figures are measured, not promised. Folding a single short
 round-trip can cost more than it saves, and the line will say so.
 
+Both lines print together, immediately before and after the fold they
+describe. The first one used to print earlier, as soon as the crossing
+was found, which meant a turn that ended before reaching the point
+where compaction is safe left an announcement on screen with nothing
+behind it. Nothing was lost when that happened, but the count was
+wrong; a turn that ends holding a crossing now says nothing instead.
+
 It is bounded at three compactions per turn; a fourth crossing prints
 the ordinary advisory and lets the request go out as it would have,
 which may still be rejected, and that is the honest outcome. A failed
@@ -369,6 +376,26 @@ read got shorter and re-read a narrower range. Only tool results are
 ever cut. The task prompt and the model's own messages are never
 touched, and a result already under about a thousand characters is left
 alone, because it is not what filled the window.
+
+The fold is tried first, because a fold that works is cheaper than
+cutting a result and loses nothing. But a fold only counts as a
+recovery if it actually freed space. When a compaction has already
+taken the turn, the one round-trip left to fold can be summarized for
+no saving at all, and the thing that filled the window is sitting in
+the round-trips kept verbatim, where a fold cannot reach it. So a fold
+that frees less than a sixteenth of the conversation is not treated as
+a recovery: it says so and cuts the largest tool result as well.
+
+```
+[!] context overflow: the server rejected the request; compacting and retrying
+[!] compacted: 1 round-trip(s) summarized, 2 kept, ~29756 -> ~29851 bytes
+[!] context overflow: the compaction freed too little; truncating the largest tool result as well
+[!] context overflow: the server rejected the request; truncating the largest tool result and retrying
+[!] truncated the largest tool result: 12433 -> 6459 chars
+```
+
+That is still ONE recovery and one retry: both things happen before the
+single retry goes out, not as two attempts.
 
 Bounded, like everything else here: at most one recovery per request,
 counted against the same three-per-turn limit as auto-compaction, and a

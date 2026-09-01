@@ -4,6 +4,26 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **A compaction that frees nothing no longer counts as recovering from
+  a rejected request.** When the server rejects a request as too large,
+  temur folds the conversation and retries. If a compaction has already
+  run in the same turn there may be only one round-trip left to fold,
+  and folding it can free nothing at all while what actually filled the
+  window sits in the round-trips kept verbatim, where a fold cannot
+  reach it. A fold that frees less than a sixteenth of the conversation
+  now says so and cuts the largest tool result as well, in the same
+  single recovery, before the same single retry. Measured live first:
+  across 32 cells of a local-model run the fold-and-retry arm fired
+  three times, freed at most 95 bytes each time, and survived none of
+  them, while the arm it was preempting survived both times it ran.
+- **"compacting automatically" now prints only when a compaction really
+  is about to run.** The line used to print as soon as the context
+  crossing was found, and the compaction itself runs at the next safe
+  point between round-trips; a turn that ended in between left the
+  announcement on screen with nothing behind it. Nothing was lost when
+  that happened, but it made the counts wrong. The line now prints
+  immediately before the fold, and a turn that ends holding a crossing
+  says nothing rather than something false.
 - Navigation pass on the front-door docs: the README opens with a
   five-bullet summary and gains a documentation map, and
   docs/COMPARISON.md gains a results-at-a-glance table linking each
