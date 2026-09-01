@@ -9647,3 +9647,83 @@ phases; full gate 48 suites, 1833 -> 1923 passed, 0 failed.
 - **Bracketed paste in `probe()` was left alone.** The plan allowed it
   as a trivial rider; it is not needed to prove the mode and adding it
   would have widened the surface the probe covers.
+
+## v0.32.0 close-out - recorded at stage 1, before its release
+
+2026-09-01. **T43, the TUI learns what a paste is, cut as v0.32.0.** A
+MINOR bump, not a patch: the release adds behaviour that did not exist
+on a path every interactive run takes. Bracketed paste is enabled
+against the terminal, a multi-line paste becomes one prompt instead of
+one turn per line, the render loop batches drained events, Esc and
+Ctrl+C preempt whatever is queued behind them, and the double-Ctrl+C
+latch became a time window. The T43 acceptance record above carries
+what shipped, the evidence behind each phase and the residuals; this
+section is the release-cycle bookkeeping only.
+
+Version moves 0.31.0 -> 0.32.0. Nothing else rides along: five T43
+phase commits, one ROADMAP queue commit that predates them, and the
+three prep commits.
+
+### Desktop provenance
+
+**T43 is the first milestone built, gated and pushed from the DESKTOP.**
+Every per-phase `check.sh` ran there, all five green on the FIRST
+attempt, and the desktop pushed `0fbaebd..27e6c37`. This laptop session
+did not build T43; it ran stage 1 on the pushed tree after
+`git pull --ff-only` to `27e6c37`.
+
+CI for the phase push: run **33512992005, attempt 1**, both jobs green
+(`test` 1m18s, `release-gate` 4m37s), head sha `27e6c37`. One run, one
+attempt, no reruns. Verified by the planning session before this stage
+and re-verified here through the API.
+
+### Gate log
+
+| Commit | What | Host tests | check.sh | Gate log |
+| --- | --- | --- | --- | --- |
+| `c6bd670` | P1 drain and draw once | 809 | ALL CHECKS PASSED, first try | `t43-gates/gate-p1.log` (desktop) |
+| `fead574` | P2 interrupt priority | 816 | ALL CHECKS PASSED, first try | `t43-gates/gate-p2.log` (desktop) |
+| `18ce307` | P3 force-quit time window | 821 | ALL CHECKS PASSED, first try | `t43-gates/gate-p3.log` (desktop) |
+| `db3596e` | P4 bracketed paste | 836 | ALL CHECKS PASSED, first try | `t43-gates/gate-p4.log` (desktop) |
+| `27e6c37` | P5 Esc regression + docs | 837 | ALL CHECKS PASSED, first try | `t43-gates/gate-p5.log` (desktop) |
+| `7c4959a` | stage 1, at 0.32.0 | 837 | ALL CHECKS PASSED, first try | `t43-gates/v0.32.0-stage1-7c4959a.log` (laptop) |
+
+Host suite 807 -> 837 across the milestone. The stage-1 gate reproduces
+the P5 numbers exactly on a different machine: 48 `test result:` lines,
+**1923 passed, 0 failed**, every line reading `0 failed`, no `FAIL`
+line and no `panicked` line anywhere in the log, exit 0. All five TUI
+pty smokes in that run - host, gnu container, gnu bracketed-paste,
+musl container, musl bracketed-paste - passed on the first attempt:
+**no kill-and-rerun in this stage**. The run was pty-backed (`script
+-qefc`) and teed with no tail in the pipe, so a single failure would
+have kept its name. The bare busybox container reported `temur
+0.32.0`.
+
+### Deviations, recorded
+
+1. **The five per-phase gate logs are not on this machine.** The T43
+   acceptance record names `~/temur-eval-archive/t43-gates/` without
+   saying which box. That archive is the DESKTOP's; the laptop's
+   directory did not exist before this stage and now holds exactly one
+   file, the stage-1 log. The per-phase counts in the table above are
+   read from the acceptance record, not from logs this session opened.
+   First cycle where the gate evidence is split across two machines.
+2. **The stage-1 gate log is named after the head it ran on**
+   (`7c4959a`, the CHANGELOG cut) rather than after this close-out
+   commit. Same call as the v0.31.0 cycle, for the same reason: this
+   close-out adds RUNBOOK prose and nothing else after that gate.
+3. **The bump commit was amended before the CHANGELOG commit existed.**
+   It was first written subject-only, then amended to carry the body
+   and the `Co-Authored-By` / `Claude-Session` trailers that the
+   v0.31.0 prep commits set as the shape. Nothing was pushed in
+   between, so no published history was rewritten.
+
+### Stage 2 explicitly not yet run
+
+No tag exists, local or remote, and nothing has been published. This
+record is written at stage 1, before the release, which is the standing
+procedure: the close-out has to be able to say something the release
+could still contradict. The stage-2 tag message is DECIDED and recorded
+here but NOT acted on. It will be exactly one line, ASCII hyphen:
+
+    temur v0.32.0 - paste and interrupt handling (T43)
