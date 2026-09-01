@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.32.0 - 2026-09-01
+
 - **The TUI understands pasting.** Bracketed paste is enabled, so a
   paste arrives as one event instead of as one key per character.
   Pasting a multi-line block now puts the whole block in the input
