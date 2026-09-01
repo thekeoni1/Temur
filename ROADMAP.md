@@ -216,6 +216,111 @@ payload.
 | T41.1 | Post-ship review fixes (v0.30.1) | PATCH on T41, not a new milestone: no new capability, only defects in what T41 shipped hours earlier. As built 2026-08-30 from a code review of the shipped v0.30.0 range (`049085e..12cd7ec`), three findings, all three verified against the tree by the planning session before any was acted on, one commit each. R1 (MEDIUM, the reason this is a release and not a note): `PROMPT_AUTO_COMPACT_BELOW` and `doctor`'s `PROMPT_FLOOR_WARN_PERCENT` disagreed BY CONSTRUCTION. 16384 * 40% is 6,554, below the 6,991 tokens the full profile actually costs, so every window in [16384, 17478) measured (and [16384, 18100) estimated) got `full` from the auto rule and then a WARN against that same selection from `doctor` in the same run, telling the user to set `prompt_profile` to `"compact"` and undo the choice temur had just made. 16384 is exactly what `temur init` writes from a 16k llama.cpp `/props` allocation, so a fresh `init` followed by `doctor` produced the contradiction on the wizard's own output. Fixed by DERIVING the threshold from the warning line instead of picking it for roundness: 20480, the smallest round window at which the full floor sits under 40% (34% measured, 35% estimated), with the tie pinned by a test that runs the shipped estimator over the real full-profile prompt and the real registry at exactly the threshold, so changing either constant or growing the prompts fails loudly. The WARN itself was deliberately NOT softened for an `Auto` choice: a 44% floor is a 44% floor, and a report that excuses a number because the tool picked it is worth nothing. RIPPLE, same shape as T41's own: a config with a window from 16384 to 20479 and no `prompt_profile` moves from the full descriptions to the compact ones. R2 (LOW/MEDIUM): the floor probe carries the system prompt AND every definition, which makes it the largest prefill a doctor run asks for, and it runs FIRST, unannounced, where the tools-drop check right after it prints a NOTE and flushes before its own pair for exactly this reason; v0.30.0 could go silent for up to 300s with nothing said, and took the worst case from two large prefills to three. It now announces itself in the same style, on the networked path only, and the definitions the two probes share are built once per run instead of twice. R3 (LOW): `hop_switch` computed the auto-compact notice and emitted it on both success paths but dropped it in the arm where `raw_override` failed, although that arm's own comment says the activation stands and an activation swaps the prompt profile: a user who hopped onto an auto-compact profile and whose model override then failed was left on the compact prompts with only a failure notice. VERIFIED LIVE, not just reasoned: `~/temur-eval-archive/t41-live/REPORT.md` records the fixed binary against llama.cpp `server-b10438` (Qwen3-4B-Instruct-2507, ctx 12288) picking compact at 16384 and PASSing at 16%, while the installed 0.30.0 on the same config WARNs at 42% and advises compact. Tests 779 -> 783, full `check.sh` green first try at every commit. |
 | T42 | Context overflow recovery | As built 2026-08-31, dequeuing all three **desktop experiment 5** items plus the **T41** startup-probe item and the **v0.30.1** `max_tokens` item, offline throughout. Exp-5 decomposed temur's five remaining context-exhausted cells out of 32 into three mechanisms, and the answer is one reactive fix, two predictive ones, and two diagnostics. P1, the headline: a send that fails with a parsed wire kind of exactly `exceed_context_size_error` is recovered ONCE and retried ONCE, where before it was terminal. Arm (a) is the ordinary fold when `auto_compact` is on and the turn already holds enough round-trips, with the F1 `turn_start` reset; arm (b) is the class a fold cannot reach at all, halving the LARGEST `tool_result` in place with the T19 head+tail elision shape and a marker addressed to the model. Arm (b) is what the `gcode-to-text` cells needed: both died on round-trip ONE, where nothing is foldable and where a fold would have kept the oversized result in the verbatim tail regardless. Only `ToolResult` blocks are candidates, so the prompt-verbatim invariant holds; below a 1,024-char floor recovery declines. At most one recovery per send, counted against the same `MAX_AUTO_COMPACTIONS_PER_TURN` bound, no re-examination of the retry, and every failure inside the path propagates the ORIGINAL provider error (the T40 fail-open discipline). Both trigger lines are STABLE, greppable markers, because desktop experiments read them. P2: the crossing check runs a second time immediately before each request, folding a chars/4 estimate of the trailing non-assistant messages into `last_context_used`, which is one round-trip stale by nature; same thresholds, same latch, so one crossing still gets one speaker. Documented honestly rather than tuned: chars/4 is an average, the gcode cells measured ~1.2 chars/token, this alone would still have missed them, and P1 is the backstop. P3: the AUTO path's summary call now carries `history[..tail_start]` instead of everything, since the tail survives verbatim in the result; `adaptive-rejection-sampler` r2 is the evidence, its summarize request rejected at 13,518 tokens against a 12,288 window. `/compact` and the resume seam keep full history, because both are fail-closed and discard everything but the summary. P4: startup runs the T22 keyless `/props` GET for an `openai-compat` selection with no key file and no configured window, outside `--mock`, and feeds the answer to the resolved selection, `session_cfg.context_window`, the T19 registry cap, and the `"auto"` prompt rule; in-memory only, a configured window is never probed over, a miss is silent. P5: a `doctor` WARN when `max_tokens > context_window`, naming both numbers and the fix, never a FAIL. DELIBERATE NON-CHANGES, all recorded: `/compact` untouched (fail-closed, discards everything but the summary); the T19 cap formula untouched (its ~4 chars/token assumption is what dense content defeats, and changing it moves every model's tool output, so it is its own milestone if ever); and NO provider-general error taxonomy, since P1 classifies llama.cpp's kind alone and a wrong classification would resend a request rejected for some other reason. Ships as v0.31.0 |
 
+### Queued from laptop dogfooding (2026-09-01)
+
+Two unrelated threads. The first is three operator-reported symptoms
+from one interaction, all of them downstream of a single fact: the TUI
+has no concept of a paste. Traced in code, NOT yet reproduced under
+test. The second is output formatting, raised as explicitly low
+priority and explicitly incomplete.
+
+- **A long paste makes the TUI deaf, Ctrl+C included.** `render_loop`
+  (`src/ui/tui/mod.rs:344`) does one full `terminal.draw()` and then
+  handles exactly ONE event per iteration, and `CrosstermEvents::next`
+  (`mod.rs:75`) is a single `poll` + `read`. Bracketed paste is never
+  enabled anywhere in the tree (no `EnableBracketedPaste`, no
+  `Event::Paste` arm), so a paste arrives as N discrete
+  `Event::Key(Char)` events: an N-character paste costs N full-frame
+  redraws, and any Ctrl+C the operator types sits BEHIND every pasted
+  character in the tty buffer. Ctrl+C is not ignored, it is unreachable
+  until the backlog drains, and there is no bypass, because TUI raw
+  mode disables ISIG so Ctrl+C never becomes a SIGINT (`main.rs:610`,
+  `signal.rs`) and the event queue is the only path in. Candidates,
+  cheapest first: (a) drain every queued event per iteration and draw
+  ONCE, which bounds redraws by frame rate rather than by paste length;
+  (b) scan the drained batch for Ctrl+C/Esc and honor it immediately,
+  discarding the rest, which makes interruption O(1) in paste size;
+  (c) the real fix, enable bracketed paste and handle
+  `Event::Paste(String)` as one event. (a) and (b) are contained and
+  independently useful. (c) is NOT a rider: it changes what a pasted
+  newline means, so multi-line input needs its own decision first.
+
+- **A pasted block is submitted as a series of turns the operator
+  cannot stop.** A pasted newline is an Enter (`app.rs:427`), and the
+  Enter arm is `if !self.busy` — so newlines arriving DURING a turn are
+  dropped, but the moment that turn ends the still-draining paste
+  submits the next chunk, and the next. The operator's report is
+  literally "breaking it down and automatically sending each chunk
+  without me being able to stop it", which is one turn per pasted line,
+  serially, with the interrupt keys stuck behind the remaining
+  characters. The busy-Enter drop bounds concurrency, not total
+  submissions, and is not the guard it looks like here. Fixed by (c)
+  above, since a paste event carries no Enter semantics at all;
+  wanted regardless is a decision on what a multi-line paste SHOULD do
+  (one prompt with embedded newlines is the obvious answer and matches
+  what the operator expected).
+
+- **Double Ctrl+C should force-quit unconditionally.**
+  `app.rs:386` disarms the force-quit latch on any key other than a
+  second Ctrl+C, so characters landing between two presses defeat the
+  double-press escape hatch — during a paste, that is guaranteed. The
+  disarm has a real purpose (a stale first Ctrl+C should not quit the
+  session minutes later) so the fix is a TIME window, both presses
+  inside ~2s force-quit regardless of what arrived between them,
+  not deleting the disarm. Note this is necessary but NOT sufficient on
+  its own: an unconditional latch still cannot fire if neither press
+  has been read yet, so it only becomes the promised escape hatch
+  together with (a)/(b) above.
+
+- **Esc-pauses-the-turn needs a regression test, not a redesign.** The
+  operator was unsure whether Esc worked during the paste. Reading the
+  code, it does: `app.rs:463` sets `interrupting` and returns
+  `Action::Interrupt` whenever `busy`. Their own guess for what they
+  saw is almost certainly right — Esc cancelled the running turn,
+  `busy` went false, and the still-draining paste immediately submitted
+  the next chunk, which reads as "Esc did nothing". No fix is implied
+  beyond the items above, but the interaction (Esc, then queued input
+  behind it) has no test and should get one, since the failure mode is
+  invisible: it looks like a broken interrupt rather than a new turn.
+
+- **LaTeX math renders as its own source.** OPERATOR-FLAGGED LOW
+  PRIORITY ("nitpicky and not necessarily that important"), and the
+  operator states there is more formatting feedback not yet recalled,
+  so treat this bullet as the head of a list rather than the list.
+  Reported shape: a solved integral came back as
+  `Solve $ \int 2x \cos(x^2)\,dx $` instead of anything resembling
+  `∫ 2x·cos(x²) dx`. `src/ui/tui/markdown.rs` is a real renderer (658
+  lines, pulldown-cmark, CommonMark + strikethrough) but math is not
+  CommonMark: `$…$`, `$$…$$`, `\(…\)` and `\[…\]` are not tagged by the
+  parser, so every delimiter, backslash command and `^` passes through
+  as literal text. The operator's own paste shows the degradation
+  compounding — the thin-space `\,` lost its backslash in transit and
+  became a stray comma before `dx`.
+  Scope judgment, NOT built: real LaTeX layout is out of the question
+  in a terminal, because fractions, radicals and limits on an integral
+  need two-dimensional placement that the line-based renderer has no
+  concept of. What is achievable is a SUBSTITUTION pass — recognise the
+  delimiters, drop them, map the common commands to Unicode (`\int` ∫,
+  `\alpha` α, `\cdot` ·, `\times` ×, `\leq` ≤, `\to` →, `\sum` ∑,
+  `\sqrt` √) and lift simple `^`/`_` runs into superscript/subscript
+  codepoints — which would carry the operator's example completely
+  while degrading honestly on anything structural. Known limits to
+  decide up front: Unicode super/subscripts are an INCOMPLETE alphabet,
+  so the mapping must fall back to literal `x^(n+1)` rather than emit
+  half a run; and the monochrome contract stated at `view.rs:7` and in
+  the `markdown.rs` header (no themes, no backgrounds, no syntax
+  highlighting) means this buys no colour and must stay a text
+  transform.
+  CHEAPER ALTERNATIVE worth pricing first: the model emits LaTeX
+  because it was trained to, so one sentence in the prompt profiles
+  asking for Unicode math instead of LaTeX might fix the reported case
+  with no renderer work at all. It is not free — it costs prompt tokens
+  on every turn, and on the operator's own laptop config the floor is
+  already 2,715 tokens against an 8192 window (33%, measured
+  2026-08-31), so a nudge competes directly with context. It is also
+  only advisory, where a renderer pass is deterministic. Decide between
+  them before building either; they are not complementary.
+
 ### Queued from desktop experiment 5 (2026-08-31)
 
 The auto-compaction differential (`docs/COMPARISON.md`, "Same rig,
