@@ -217,6 +217,98 @@ payload.
 | T42 | Context overflow recovery | As built 2026-08-31, dequeuing all three **desktop experiment 5** items plus the **T41** startup-probe item and the **v0.30.1** `max_tokens` item, offline throughout. Exp-5 decomposed temur's five remaining context-exhausted cells out of 32 into three mechanisms, and the answer is one reactive fix, two predictive ones, and two diagnostics. P1, the headline: a send that fails with a parsed wire kind of exactly `exceed_context_size_error` is recovered ONCE and retried ONCE, where before it was terminal. Arm (a) is the ordinary fold when `auto_compact` is on and the turn already holds enough round-trips, with the F1 `turn_start` reset; arm (b) is the class a fold cannot reach at all, halving the LARGEST `tool_result` in place with the T19 head+tail elision shape and a marker addressed to the model. Arm (b) is what the `gcode-to-text` cells needed: both died on round-trip ONE, where nothing is foldable and where a fold would have kept the oversized result in the verbatim tail regardless. Only `ToolResult` blocks are candidates, so the prompt-verbatim invariant holds; below a 1,024-char floor recovery declines. At most one recovery per send, counted against the same `MAX_AUTO_COMPACTIONS_PER_TURN` bound, no re-examination of the retry, and every failure inside the path propagates the ORIGINAL provider error (the T40 fail-open discipline). Both trigger lines are STABLE, greppable markers, because desktop experiments read them. P2: the crossing check runs a second time immediately before each request, folding a chars/4 estimate of the trailing non-assistant messages into `last_context_used`, which is one round-trip stale by nature; same thresholds, same latch, so one crossing still gets one speaker. Documented honestly rather than tuned: chars/4 is an average, the gcode cells measured ~1.2 chars/token, this alone would still have missed them, and P1 is the backstop. P3: the AUTO path's summary call now carries `history[..tail_start]` instead of everything, since the tail survives verbatim in the result; `adaptive-rejection-sampler` r2 is the evidence, its summarize request rejected at 13,518 tokens against a 12,288 window. `/compact` and the resume seam keep full history, because both are fail-closed and discard everything but the summary. P4: startup runs the T22 keyless `/props` GET for an `openai-compat` selection with no key file and no configured window, outside `--mock`, and feeds the answer to the resolved selection, `session_cfg.context_window`, the T19 registry cap, and the `"auto"` prompt rule; in-memory only, a configured window is never probed over, a miss is silent. P5: a `doctor` WARN when `max_tokens > context_window`, naming both numbers and the fix, never a FAIL. DELIBERATE NON-CHANGES, all recorded: `/compact` untouched (fail-closed, discards everything but the summary); the T19 cap formula untouched (its ~4 chars/token assumption is what dense content defeats, and changing it moves every model's tool output, so it is its own milestone if ever); and NO provider-general error taxonomy, since P1 classifies llama.cpp's kind alone and a wrong classification would resend a request rejected for some other reason. Ships as v0.31.0 |
 | T43 | The TUI learns what a paste is | As built 2026-09-01, dequeuing the FOUR paste-thread items from the laptop dogfooding queue below; the LaTeX/math item is deliberately left queued, being the head of a list the operator has not finished writing. All four symptoms were downstream of one fact: the TUI had no concept of a paste. P1: `render_loop` drains every already-queued terminal event and draws ONCE for the batch (cap 4096/iteration, remainder deferred, nothing dropped), so redraw cost is bounded by frame rate instead of by paste length; both scripted event sources decline the zero-timeout drain polls so their readiness contracts, and the two flake modes those close, survive unchanged. P2: while busy, a batch containing Esc or Ctrl+C collapses to that one key and the rest is discarded, keys BEFORE it included, so interruption is O(1) in paste size and the discarded text neither pollutes the input line nor starts a new turn; an open approval prompt is excluded (its keys are a modal y/N answer). P3: `force_quit_armed: bool` becomes `armed_at_ms: Option<u64>` with a 2000ms window, so a second busy Ctrl+C force-quits regardless of intervening keys; three existing tests asserted the old any-key disarm and now assert the opposite. P4: bracketed paste enabled after `try_init` and disabled before every restore (panic hook included); `Event::Paste` inserts at the cursor with CRLF/CR normalized to LF and control characters other than `\n`/`\t` stripped, never submitting; Enter END-trims only, so one multi-line prompt keeps its interior newlines and its leading indentation; slash-command detection is single-line only; `draw_input` shows each newline as a dim one-column return glyph, with the scroll window and cursor measured through the same helper. Multi-line `Cell::User` rendering and multi-line history recall were VERIFIED (wrap() already hard-breaks on `\n`) and pinned rather than rebuilt. P5: the Esc regression pin the queue asked for, driving the operator's exact shape (Esc plus queued text delivered as one batch into a running turn) and asserting one interrupt, no second turn, and no surviving queued text. check.sh gains a bracketed-paste pty smoke on both the gnu and musl paths, riding the existing fifo harness through a real `ESC[200~...ESC[201~`, and every TUI smoke now asserts `ESC[?2004h`/`ESC[?2004l` in the stream so the mode is proven on and off against a real terminal. Five phase gates, all ALL CHECKS PASSED first try; 48 suites 1833 -> 1923 passed. Ships as v0.32.0. |
 
+### Queued from desktop experiment 6 (2026-09-01)
+
+The first live differential of T42's overflow recovery
+(`~/temur-desktop/reports/FINAL-exp6.md`, 32 of 32 cells, zero VOIDs,
+zero timeouts, independently recomputed from the cell trees alone).
+Recovery fired 5 times, retried 5 times, and the two arms answered in
+opposite directions: arm (b) 2 for 2, arm (a) 0 for 3. Every item below
+is traced to a T42 marker in a named cell, never inferred from the
+totals, and none of it is a fail-open violation: the contract held in
+all five events and no cell is worse off than it would have been
+without T42.
+
+- **Arm (a) preempts arm (b) on an outcome enum that cannot tell a
+  useful fold from a useless one.** `recover_from_context_overflow`
+  (`src/agent/mod.rs:865`) returns `OverflowRecovery::Compacted` on ANY
+  `AutoCompactOutcome::Compacted`, without ever reading the
+  `before_bytes`/`after_bytes` that outcome already carries, so arm (b)
+  (`:908`) is unreachable once arm (a) folds anything at all. All three
+  arm-(a) firings had one shape: an advisory auto-compaction had
+  ALREADY taken the same turn, folding four or five round-trips for a
+  large reduction, and arm (a) then found exactly ONE foldable
+  round-trip left.
+
+  | cell | advisory fold, first | arm (a) fold, second | retry |
+  |---|---|---|---|
+  | adaptive-rejection-sampler r1 | 4 round-trips, `48400 -> 29756` | 1 round-trip, `29756 -> 29851` (+95) | rejected at 12957 |
+  | adaptive-rejection-sampler r2 | 5 round-trips, `36119 -> 29972` | 1 round-trip, `29972 -> 29972` (0) | rejected at 12797 |
+  | build-pmars r2 | 4 round-trips, `29805 -> 27734` | 1 round-trip, `27734 -> 27672` (-62) | rejected at 12947 |
+
+  A fold that summarized one round-trip for a net -62 bytes reports
+  `Compacted` exactly as a fold that freed 19k does. What is left over
+  is the tail `AUTO_COMPACT_TAIL_ROUND_TRIPS` keeps verbatim, which arm
+  (a) cannot touch (not touching the tail is what makes it the tail)
+  and arm (b) can, wherever the largest result sits. In all three cells
+  arm (b) was the arm that could have helped and was never reached.
+  Candidate fix, and the reason this is queued rather than merely
+  recorded: gate arm (a)'s `Compacted` return on bytes ACTUALLY freed
+  and fall through to arm (b) when the fold freed nothing, keeping arm
+  (a) first because a good fold is both cheaper and lossless. This
+  experiment supplies the calibration: useless folds freed <= 0.3% of
+  `before_bytes`, working folds freed 7-39%.
+
+- **An announcement with nothing behind it.** `build-cython-ext/run2`
+  is the only cell in the experiment reading `started=1 completed=0
+  failed=0`: a compaction announced and never performed. The advisory
+  site decides foldability, prints `compacting automatically` and sets
+  `compact_pending` (`:1292`, `:1464`); the fold itself runs at the
+  safe point of the NEXT round-trip (`:1306`). Here the model returned
+  a plain text message with no tool call, so the turn ended immediately
+  after the notice, and a one-shot `-p` run has no later turn in which
+  to reach that safe point. The source comment at the advisory site
+  ("Foldability is decided HERE, not at the safe point, so the turn
+  never announces a compaction it then does not perform") is true for
+  foldability and does not cover a turn ENDING in between. Nothing was
+  lost and no context death followed; it is an accuracy-of-notice
+  item, and it is why that run's totals read 5 started against 6
+  completed. Candidate fix: carry the crossing's measured
+  `used`/`window` on the pending latch and print the notice AT the safe
+  point, immediately before the fold, which makes the count equal by
+  construction.
+
+- **Arm (b)'s halving works on live evidence. Recorded, NOT queued.**
+  `gcode-to-text` was CTX in all FOUR prior runs (exp 3 r1/r2, exp 5
+  r1/r2), always at 49-57 s, always with zero compactions, always dead
+  on round-trip ONE. Here, both runs: `truncated the largest tool
+  result: 12433 -> 6459 chars`, the halved read let the task proceed,
+  and the context death is gone in both. The figure is byte-identical
+  across run 1, run 2 and the pre-matrix smoke on the same file. Both
+  cells still score `reward=0` (the model answers `"MK4S"` and
+  `"Input shaper"` and the verifier rejects it), so this is
+  recovered-and-failed and not a pass, and the two claims stay apart.
+  The numbers name the mechanism: T19 budgets the tool-output cap at a
+  quarter of the window at roughly 4 chars per token, capping the read
+  at 12433 chars, and this G-code runs about 1.08 chars per token, so
+  those chars arrived as roughly 13400 tokens against a 12288 window.
+  Halving is what made it fit. NO change is queued here: the formula
+  did the job it was built for, and the T19 cap formula itself stays
+  untouched for the reason T42 already recorded (its ~4 chars/token
+  assumption is what dense content defeats, and changing it moves every
+  model's tool output).
+
+- **Two things this experiment did NOT measure, stated so that neither
+  gets assumed later.** (1) Whether reversing the arm order, or gating
+  arm (a) on bytes actually freed, would convert the three fail-open
+  cells: that is the obvious next experiment and this one did not run
+  it, so the queued fix above is a design change with a mechanism
+  behind it and no live outcome behind it. (2) Anything at a context
+  window other than 12288: every one of the 32 cells ran at ctx 12288,
+  and both the 0.3%/7-39% calibration and the 12433 -> 6459 figure are
+  measurements at that window on that model, not constants.
+
+
 ### Queued from laptop dogfooding (2026-09-01)
 
 ONE item left. The paste thread that made up the rest of this section,
