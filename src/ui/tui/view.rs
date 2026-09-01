@@ -262,6 +262,29 @@ fn draw_approval(cmd: &str, frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+/// T43/P4: a pasted newline is drawn as this one-column glyph, so a
+/// multi-line prompt stays legible on the single-line input row. A full
+/// multi-line editor is deliberately out of scope; this only has to SHOW
+/// that the break is there.
+const RETURN_GLYPH: char = '\u{21b5}';
+
+/// How wide a character is ON THE INPUT LINE. Newlines render as the return
+/// glyph, so they measure one column rather than the zero that a raw control
+/// character would; everything else measures as itself. The horizontal
+/// scroll window and the cursor both go through this, so they cannot
+/// disagree with what is drawn.
+fn input_char_width(c: char) -> usize {
+    if c == '\n' {
+        1
+    } else {
+        display_width(&c.to_string())
+    }
+}
+
+fn input_width(s: &str) -> usize {
+    s.chars().map(input_char_width).sum()
+}
+
 fn draw_input(app: &App, frame: &mut Frame, area: Rect) {
     if let Some(cmd) = &app.approval {
         draw_approval(cmd, frame, area);
@@ -284,14 +307,14 @@ fn draw_input(app: &App, frame: &mut Frame, area: Rect) {
     // that contains it.
     let before = &app.input[..app.cursor];
     let mut start = 0usize;
-    while display_width(&before[start..]) > budget {
+    while input_width(&before[start..]) > budget {
         let c = before[start..].chars().next().unwrap();
         start += c.len_utf8();
     }
     let visible: String = app.input[start..]
         .chars()
         .scan(0usize, |w, c| {
-            *w += display_width(&c.to_string());
+            *w += input_char_width(c);
             if *w > budget {
                 None
             } else {
@@ -304,18 +327,25 @@ fn draw_input(app: &App, frame: &mut Frame, area: Rect) {
     // WINDOWED slice — the `/` decides, even when scrolled out of view.
     // Deleting the `/` reverts to default; the placeholder branch above and
     // the width-computed cursor position are untouched by the style.
-    let text_style = if app.input.starts_with('/') {
+    let text_style = if App::is_command_line(&app.input) {
         Style::default().fg(Color::Cyan)
     } else {
         Style::default()
     };
-    let line = Line::from(vec![
-        Span::styled(prefix.clone(), dim()),
-        Span::styled(visible, text_style),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    // T43/P4: draw the newlines as dim return glyphs between the text runs,
+    // so a pasted block reads as a block instead of running together.
+    let mut spans = vec![Span::styled(prefix.clone(), dim())];
+    for (i, seg) in visible.split('\n').enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(RETURN_GLYPH.to_string(), dim()));
+        }
+        if !seg.is_empty() {
+            spans.push(Span::styled(seg.to_string(), text_style));
+        }
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
     let cursor_x =
-        area.x + (display_width(&prefix) + display_width(&app.input[start..app.cursor])) as u16;
+        area.x + (display_width(&prefix) + input_width(&app.input[start..app.cursor])) as u16;
     frame.set_cursor_position((cursor_x.min(area.x + area.width.saturating_sub(1)), area.y));
 }
 
@@ -345,7 +375,7 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
                 Span::styled("esc interrupt · (enter disabled during turn)", dim()),
             ]
         }
-    } else if app.input.starts_with('/') {
+    } else if App::is_command_line(&app.input) {
         // T9: live command hint while typing a `/`-line (idle only; the
         // empty and non-command states keep the standard hint).
         vec![Span::styled(format!("  {}", command_hint(&app.input)), dim())]

@@ -179,6 +179,19 @@ impl EventSource for ScriptedSteps {
     }
 }
 
+/// T43/P4: turn bracketed paste on or off on the real terminal. A failure is
+/// ignored on purpose: a terminal without the mode still runs, it just keeps
+/// delivering a paste as individual key events the way it always did.
+fn set_bracketed_paste(on: bool) {
+    use ratatui::crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+    let mut out = std::io::stdout();
+    let _ = if on {
+        ratatui::crossterm::execute!(out, EnableBracketedPaste)
+    } else {
+        ratatui::crossterm::execute!(out, DisableBracketedPaste)
+    };
+}
+
 /// T43/P2: does this event mean "stop the running turn" rather than "type
 /// this"? Esc and Ctrl+C are the two the TUI already treats that way while
 /// busy. Key RELEASES are not presses and never count.
@@ -257,6 +270,7 @@ impl TuiUi {
         PANIC_HOOK.call_once(|| {
             let prev = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |panic_info| {
+                set_bracketed_paste(false); // T43/P4: before the restore
                 ratatui::restore(); // before the message, so it's readable
                 prev(panic_info);
             }));
@@ -275,11 +289,17 @@ impl TuiUi {
                         return;
                     }
                 };
+                // T43/P4: from here a paste arrives as ONE Event::Paste
+                // instead of N key events. Enabled after try_init so the
+                // alternate screen is already up, and disabled on the way
+                // out so the mode never outlives the process.
+                set_bracketed_paste(true);
                 let mut app = App::new(info.model, info.thinking, info.cwd, info.version);
                 app.profiles = info.profiles;
                 app.provider = info.provider;
                 let (_, end) =
                     render_loop(terminal, app, rx, tx_input, &mut CrosstermEvents, cancel);
+                set_bracketed_paste(false);
                 ratatui::restore();
                 if matches!(end, LoopEnd::ForceQuit) {
                     eprintln!("temur: force quit while a turn was running");
@@ -495,6 +515,13 @@ fn render_loop<B: Backend>(
         for ev in batch {
             let key = match ev {
                 Event::Key(key) => key,
+                // T43/P4: a paste is text inserted at the cursor. It never
+                // submits, whatever it contains: Enter is the only thing
+                // that submits, and it submits the whole input at once.
+                Event::Paste(text) => {
+                    app.paste(&text);
+                    continue;
+                }
                 // Resize just needs the redraw that happens next iteration.
                 _ => continue,
             };
@@ -502,7 +529,7 @@ fn render_loop<B: Backend>(
                 Action::Submit(line) => {
                     if line == "exit" || line == "quit" {
                         let _ = tx_input.send(None);
-                    } else if line.starts_with('/') {
+                    } else if App::is_command_line(&line) {
                         // T8 command line: recorded + echoed dim and
                         // recallable, but NOT a prompt — no App::submit (no
                         // User cell, no title, no busy spinner) and no

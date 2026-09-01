@@ -2374,3 +2374,191 @@ fn the_force_quit_hint_follows_the_window() {
         "hint is gone once the window expires:\n{expired}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// T43/P4: bracketed paste
+// ---------------------------------------------------------------------------
+
+#[test]
+fn paste_inserts_at_the_cursor_and_keeps_its_newlines() {
+    let mut a = app();
+    type_str(&mut a, "ab");
+    a.handle_key(key(KeyCode::Left)); // cursor between a and b
+    a.paste("X\nY");
+    assert_eq!(a.input, "aX\nYb", "inserted at the cursor, newline kept");
+    assert_eq!(a.cursor, "aX\nY".len(), "cursor sits after the paste");
+}
+
+#[test]
+fn paste_never_submits_whatever_it_contains() {
+    let mut a = app();
+    a.paste("first line\nsecond line\n");
+    assert!(!a.busy, "no turn started");
+    assert!(a.cells.is_empty(), "no user cell recorded");
+    assert_eq!(a.input, "first line\nsecond line\n", "it is just input");
+}
+
+#[test]
+fn paste_normalizes_crlf_and_lone_cr() {
+    let mut a = app();
+    a.paste("one\r\ntwo\rthree");
+    assert_eq!(a.input, "one\ntwo\nthree");
+}
+
+#[test]
+fn paste_strips_control_characters_but_keeps_newline_and_tab() {
+    let mut a = app();
+    a.paste("a\u{1b}[31mb\u{0}c\td\ne");
+    assert_eq!(a.input, "a[31mbc\td\ne", "escape and NUL gone, tab and LF kept");
+}
+
+#[test]
+fn an_all_control_paste_is_a_no_op() {
+    let mut a = app();
+    type_str(&mut a, "keep");
+    a.paste("\u{0}\u{1b}\u{7}");
+    assert_eq!(a.input, "keep");
+    assert_eq!(a.cursor, 4);
+}
+
+#[test]
+fn enter_submits_a_multi_line_paste_as_one_prompt() {
+    let mut a = app();
+    a.paste("line one\nline two\n");
+    let action = a.handle_key(key(KeyCode::Enter));
+    assert_eq!(
+        action,
+        Action::Submit("line one\nline two".into()),
+        "one prompt, trailing newline trimmed, interior newline kept"
+    );
+}
+
+#[test]
+fn submit_end_trims_only_so_pasted_indentation_survives() {
+    let mut a = app();
+    a.paste("    def f():\n        return 1\n\n");
+    assert_eq!(
+        a.handle_key(key(KeyCode::Enter)),
+        Action::Submit("    def f():\n        return 1".into()),
+        "leading indentation is part of the prompt"
+    );
+}
+
+#[test]
+fn a_whitespace_only_paste_still_refuses_to_submit() {
+    let mut a = app();
+    a.paste("   \n\t\n");
+    assert_eq!(a.handle_key(key(KeyCode::Enter)), Action::None);
+}
+
+#[test]
+fn single_line_slash_is_a_command_but_a_multi_line_paste_is_not() {
+    assert!(App::is_command_line("/model sonnet-next"));
+    assert!(!App::is_command_line("/model sonnet-next\nand more"));
+    assert!(!App::is_command_line("not a command"));
+    assert!(
+        !App::is_command_line("/usr/bin/env\nls"),
+        "a pasted path block opening with / is a prompt"
+    );
+}
+
+#[test]
+fn a_multi_line_paste_opening_with_slash_does_not_style_as_a_command() {
+    let mut a = app();
+    a.paste("/etc/hosts\nsecond line");
+    let rows = render(&mut a, 80, 12).join("\n");
+    assert!(
+        !rows.contains("unknown command") && !rows.contains("/etc/hosts ·"),
+        "no command hint for a multi-line paste:\n{rows}"
+    );
+}
+
+#[test]
+fn the_input_line_shows_a_return_glyph_for_each_pasted_newline() {
+    let mut a = app();
+    a.paste("alpha\nbeta");
+    let rows = render(&mut a, 80, 12);
+    let input_row = rows
+        .iter()
+        .find(|r| r.contains("alpha"))
+        .expect("the input row is drawn");
+    assert!(
+        input_row.contains('\u{21b5}'),
+        "the newline is visible as a glyph: {input_row:?}"
+    );
+    assert!(
+        input_row.contains("alpha") && input_row.contains("beta"),
+        "both sides of the break are drawn: {input_row:?}"
+    );
+}
+
+#[test]
+fn a_multi_line_user_cell_renders_one_transcript_line_per_paste_line() {
+    let mut a = app();
+    a.submit("line one\nline two");
+    let rows = render(&mut a, 80, 12);
+    // The header claims the title too, flattened to one line; only the
+    // transcript rows (the ones carrying the user bar) are under test here.
+    let bars: Vec<&String> = rows
+        .iter()
+        .filter(|r| r.contains('\u{258c}') && r.contains("line "))
+        .collect();
+    assert_eq!(bars.len(), 2, "two transcript lines, not one run-on: {bars:?}");
+    assert!(bars[0].contains("line one") && !bars[0].contains("line two"));
+    assert!(bars[1].contains("line two"));
+}
+
+#[test]
+fn history_recall_round_trips_a_multi_line_prompt() {
+    let mut a = app();
+    a.submit("first\nsecond");
+    a.prompt_open();
+    a.handle_key(key(KeyCode::Up));
+    assert_eq!(a.input, "first\nsecond", "recalled with its newline intact");
+    assert_eq!(a.cursor, a.input.len(), "cursor at the end");
+    assert_eq!(
+        a.handle_key(key(KeyCode::Enter)),
+        Action::Submit("first\nsecond".into()),
+        "and it resubmits as one prompt"
+    );
+}
+
+#[test]
+fn headless_a_pasted_block_reaches_read_input_as_one_prompt() {
+    let script = vec![
+        Event::Paste("do the smoke task\nwith a second line".into()),
+        Event::Key(key(KeyCode::Enter)),
+    ];
+    let cancel = temur::provider::CancelToken::new();
+    let (mut ui, snapshot) =
+        TuiUi::headless(burst_info("/tmp".into()), 100, 30, script, cancel);
+    let line = ui.read_input().expect("the paste submits on Enter");
+    drop(ui);
+    assert_eq!(line, "do the smoke task\nwith a second line");
+    let rows = snapshot.lock().unwrap().clone().join("\n");
+    assert!(rows.contains("do the smoke task"), "user cell line 1:\n{rows}");
+    assert!(rows.contains("with a second line"), "user cell line 2:\n{rows}");
+}
+
+#[test]
+fn headless_a_paste_alone_starts_no_turn() {
+    // A character typed AFTER the paste is the proof: if the paste had
+    // submitted on its own, read_input would yield the pasted text without
+    // the trailing "!", and it would yield it before this Enter. (Asserting
+    // on a final frame with no submit in the script would race the shutdown
+    // that captures it, so the assertion is on what reaches the agent.)
+    let script = vec![
+        Event::Paste("nothing should submit this".into()),
+        Event::Key(key(KeyCode::Char('!'))),
+        Event::Key(key(KeyCode::Enter)),
+    ];
+    let cancel = temur::provider::CancelToken::new();
+    let (mut ui, _snapshot) =
+        TuiUi::headless(burst_info("/tmp".into()), 100, 30, script, cancel);
+    let line = ui.read_input().expect("the Enter submits");
+    drop(ui);
+    assert_eq!(
+        line, "nothing should submit this!",
+        "the paste waited for the Enter instead of submitting itself"
+    );
+}

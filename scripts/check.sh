@@ -100,6 +100,9 @@ mock_repl_openai() { # $1 = bin dir, $2 = image, $3 = label
 # pty (script(1)/podman -t leave it 0x0 when stdin is a pipe). ratatui
 # draws diffs with per-word cursor jumps, so greps use single tokens only.
 ESC=$(printf '\033')
+# T43/P4: the one-column glyph the input line draws for a pasted newline
+# (U+21B5). Seeing it proves the newline stayed TEXT instead of submitting.
+RETURN_GLYPH=$(printf '\342\206\265')
 # Single-quote the fixture list so the inner sh -c survives spaces in $PROJ.
 MOCKARGS="--tui --mock '$FIXTURES'"
 # Wall-clock bound on any one pty smoke. Nothing here should take close to
@@ -110,6 +113,10 @@ tui_input() { sleep 1; printf 'do the smoke task\r'; sleep 2; printf 'exit\r'; s
 check_tui_log() {
     grep -aq "${ESC}\[?1049h" "$1" || { echo "FAIL($2): no alt-screen enter"; exit 1; }
     grep -aq "${ESC}\[?1049l" "$1" || { echo "FAIL($2): no alt-screen leave"; exit 1; }
+    # T43/P4: bracketed paste really was turned on against the tty, and
+    # turned back off on the way out rather than left set on the terminal.
+    grep -aq "${ESC}\[?2004h" "$1" || { echo "FAIL($2): bracketed paste never enabled"; exit 1; }
+    grep -aq "${ESC}\[?2004l" "$1" || { echo "FAIL($2): bracketed paste never disabled"; exit 1; }
     for tok in "working" "bash" "Hello," "world!" "▣"; do
         grep -aq "$tok" "$1" || { echo "FAIL($2): missing '$tok'"; exit 1; }
     done
@@ -169,6 +176,45 @@ container_tui() { # $1 = bin dir, $2 = label, $3 = log file
     echo "TUI pty smoke OK ($2)"
 }
 
+# T43/P4: the same fifo harness, carrying a real bracketed paste. Pre-T43 a
+# pasted newline WAS an Enter, so this block would have submitted as two turns
+# with the second unstoppable; it must now be one prompt that has not been
+# submitted at all until the Enter at the end.
+container_tui_paste() { # $1 = bin dir, $2 = label, $3 = log file
+    CT_DIR=$(mktemp -d)
+    CT_NAME="temur-tui-paste-$2-$$"
+    CT_DEADLINE=$(( $(date +%s) + TUI_TIMEOUT ))
+    mkfifo "$CT_DIR/in"
+    : > "$3"
+    timeout -k 5 "$TUI_TIMEOUT" podman run --rm -i -t --name "$CT_NAME" \
+        -v "$1":/app:ro -v "$PROJ":"$PROJ":ro "$IMG" \
+        sh -c "stty rows 24 cols 100; /app/temur $MOCKARGS" \
+        < "$CT_DIR/in" > "$3" 2>&1 &
+    CT_PID=$!
+    exec 3<> "$CT_DIR/in"
+    tui_wait "$3" "${ESC}\[?1049h" "the alternate screen" "$2"
+    tui_wait "$3" "${ESC}\[?2004h" "bracketed paste to be enabled" "$2"
+    printf "%s[200~do the smoke task\nsecond pasted line%s[201~" "$ESC" "$ESC" >&3
+    tui_wait "$3" "$RETURN_GLYPH" "the pasted newline drawn as a return glyph" "$2"
+    printf '\r' >&3
+    tui_wait "$3" "world!" "the turn output" "$2"
+    printf 'exit\r' >&3
+    CT_RC=0
+    wait "$CT_PID" || CT_RC=$?
+    exec 3>&-
+    podman rm -f "$CT_NAME" >/dev/null 2>&1 || true
+    rm -rf "$CT_DIR"
+    [ "$CT_RC" -eq 0 ] || {
+        echo "FAIL($2): paste container run exited $CT_RC (timeout is ${TUI_TIMEOUT}s)"
+        tui_diagnose "$3"; exit 1; }
+    check_tui_log "$3" "$2"
+    # Both pasted lines belong to ONE prompt, so both are on screen.
+    grep -aq "second pasted line" "$3" || {
+        echo "FAIL($2): the second pasted line never reached the prompt"
+        tui_diagnose "$3"; exit 1; }
+    echo "TUI bracketed-paste smoke OK ($2)"
+}
+
 # --- path 1: gnu-debug (fast inner loop) -------------------------------------
 
 echo "==== PATH 1: gnu-debug (fast inner loop) ===="
@@ -225,6 +271,9 @@ echo "TUI pty smoke OK (host)"
 echo "== container: TUI pty smoke (gnu-debug) =="
 container_tui "$(dirname "$GNU_BIN")" gnu "$CHECK_TMP/tui-check-cont.log"
 
+echo "== container: TUI bracketed-paste smoke (gnu-debug) =="
+container_tui_paste "$(dirname "$GNU_BIN")" gnu-paste "$CHECK_TMP/tui-paste-cont.log"
+
 # --- path 2: musl-release (acceptance gate for the shipped artifact) ---------
 
 echo "==== PATH 2: musl-release (acceptance gate) ===="
@@ -263,6 +312,9 @@ mock_repl_openai "$(dirname "$MUSL_BIN")" "$IMG" musl
 
 echo "== container: TUI pty smoke (musl) =="
 container_tui "$(dirname "$MUSL_BIN")" musl "$CHECK_TMP/tui-check-musl.log"
+
+echo "== container: TUI bracketed-paste smoke (musl) =="
+container_tui_paste "$(dirname "$MUSL_BIN")" musl-paste "$CHECK_TMP/tui-paste-musl.log"
 
 echo "== bare container (busybox): --version =="
 podman run --rm -v "$(dirname "$MUSL_BIN")":/app:ro "$BARE_IMG" /app/temur --version

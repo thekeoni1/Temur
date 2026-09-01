@@ -367,6 +367,38 @@ impl App {
         self.interrupting = false;
     }
 
+    /// T43/P4: insert pasted text at the cursor. A paste is TEXT, never a
+    /// key sequence: it can never submit, and its newlines stay newlines
+    /// instead of becoming Enters.
+    ///
+    /// CRLF and lone CR both normalize to LF, since terminals send either.
+    /// Control characters other than newline and tab are dropped, so a paste
+    /// carrying an escape sequence or a stray NUL cannot corrupt the input
+    /// line or the frame.
+    pub fn paste(&mut self, text: &str) {
+        let cleaned: String = text
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .chars()
+            .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
+            .collect();
+        if cleaned.is_empty() {
+            return;
+        }
+        self.input.insert_str(self.cursor, &cleaned);
+        self.cursor += cleaned.len();
+        // A paste is an edit, so it ends any Tab completion cycle, exactly
+        // as typing a character does.
+        self.completion = None;
+    }
+
+    /// T43/P4: is this input a slash command? Only ever a SINGLE line. A
+    /// multi-line paste that happens to open with `/` is a prompt, not a
+    /// command, and must not be routed to the command executor.
+    pub fn is_command_line(s: &str) -> bool {
+        s.starts_with('/') && !s.contains('\n')
+    }
+
     /// T43/P3: is the force-quit latch live? Armed by a busy Ctrl+C and good
     /// for [`FORCE_QUIT_WINDOW_MS`] from that press, whatever keys arrive in
     /// between.
@@ -452,7 +484,12 @@ impl App {
             // icrnl-translated, so treat them all as Enter.
             KeyCode::Enter | KeyCode::Char('m') | KeyCode::Char('j') if key.code == KeyCode::Enter || ctrl => {
                 if !self.busy && !self.input.trim().is_empty() {
-                    let line = self.input.trim().to_string();
+                    // T43/P4: END-trim only. A multi-line paste submits as
+                    // ONE prompt with its interior newlines intact, and its
+                    // leading indentation survives, which matters the moment
+                    // anyone pastes code. The guard above still refuses an
+                    // input that is nothing but whitespace.
+                    let line = self.input.trim_end().to_string();
                     return Action::Submit(line);
                 }
             }
