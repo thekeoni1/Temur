@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.33.0 - 2026-09-02
+
 - **A compaction that frees nothing no longer counts as recovering from
   a rejected request.** When the server rejects a request as too large,
   temur folds the conversation and retries. If a compaction has already
