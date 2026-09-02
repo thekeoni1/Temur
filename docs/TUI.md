@@ -114,10 +114,10 @@ non-command input keep the standard idle hint.
   input the cycle started on; any other key (edit, cursor, history)
   ends the cycle, and the next Tab recomputes.
 - Only fires with the cursor at end-of-input; strict no-op while busy,
-  with no candidates, or mid-input. The force-quit disarm treats Tab
-  like any other key. History state (`hist_pos`/draft) is never touched
-  by completion: applying a candidate edits the input exactly like
-  typing.
+  with no candidates, or mid-input. The force-quit arm expires on its
+  own after 2 s; Tab neither disarms nor confirms it. History state
+  (`hist_pos`/draft) is never touched by completion: applying a
+  candidate edits the input exactly like typing.
 - Profile names arrive via `SessionInfo.profiles`; model ids from the
   most recent `/models` fold (session-lifetime cache, last listing
   wins).
@@ -232,8 +232,8 @@ FIFO pairing is preserved: every tool cell the stream opened gets a
 `turn interrupted` notice and the normal `TurnComplete`. The status row
 shows `esc interrupt` in the busy hint and `interrupting…` once Esc is
 pressed, until the turn lands. Esc while idle is a no-op; a second Esc is
-idempotent; Esc participates in the any-key-disarms rule for the
-force-quit prompt.
+idempotent; the force-quit arm is time-windowed (2 s), so Esc neither
+disarms nor confirms it.
 
 **Plain-REPL interruption (F4, v0.1.1, closes the T6 exclusion).** The
 plain REPL now interrupts too: a minimal SIGINT handler (`src/signal.rs`,
@@ -273,6 +273,11 @@ re-sticks to bottom) · Home/End/←/→/Backspace/Delete edit · Esc
 interrupt the running turn · Ctrl+C clear input, or quit when empty;
 twice during a turn force-quits · Ctrl+D quit (empty prompt) ·
 `exit`/`quit` as a line also quits.
+
+Pasting has its own rules, covered in [USAGE.md](USAGE.md) under
+"Pasting, interrupting, and the way out": bracketed paste is enabled, a
+multi-line paste arrives as one prompt with each newline drawn as a dim
+return glyph, and only Enter submits.
 
 ## Offline test strategy (all in `check.sh`, host + container)
 

@@ -9,7 +9,7 @@ system, down to 32-bit and embedded. Bring your own model: hosted
 (Anthropic, OpenAI, Gemini, xAI) or fully offline against a local
 llama.cpp, Ollama, or LM Studio server.
 
-- **A ~5 MB static ELF, zero dependencies.** Mainstream Bun- and
+- **A ~6 MB static ELF, zero dependencies.** Mainstream Bun- and
   Node-based agents publish no 32-bit x86 or armv7 builds, and their
   "single executable" bundles embed a runtime on the order of 90 MB.
   temur's release binary has no interpreter and no shared libraries,

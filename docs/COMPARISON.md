@@ -659,7 +659,8 @@ Read in this order:
 - **temur's ctx-exhausted failures are 16 of 32**, the largest count
   yet, and they were measured on v0.28.0, **without auto-compaction**.
   The controlled run that would say whether the feature converts them
-  is queued as desktop experiment 5.
+  is the next section,
+  ["Same rig, auto-compaction on"](#same-rig-auto-compaction-on-temur-v0291-differential).
 
 Required disclosures. The matrix halted once, 42 cells in, on three
 consecutive opencode VOIDs, all of them
@@ -777,9 +778,10 @@ measured to buy here is runway, not passes: correct capture, 11 of 12
 folds succeeding, honest and legible failure modes, and 16% more wall
 clock spent on cells that were going to fail either way. The remaining
 CTX class is dominated by the blind spot, which auto-compaction as
-built **cannot** catch, because it never sees the jump. A score-neutral
-differential is the honest headline, and it is a real answer rather
-than a null instrument.
+built in v0.29.1 **could not** catch, because it never sees the jump
+(v0.31.0 added a reactive recovery after the server's rejection). A
+score-neutral differential is the honest headline, and it is a real
+answer rather than a null instrument.
 
 Required disclosures. **The first launch was VOID and measured
 nothing.** `cell-desktop-exp5.sh` was not executable, all 32 cells

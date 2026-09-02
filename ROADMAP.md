@@ -11,6 +11,9 @@
 > than the market; the neutral-types refactor (T1) lands standalone before the
 > second provider (T2).
 
+Sections 1, 2 and 7 are the plan as adopted 2026-07-18, kept verbatim;
+the milestone ladder in section 3 records what has since shipped.
+
 ## 1. Positioning
 
 The pitch: a single static binary with no runtime, running where OpenCode
@@ -35,6 +38,7 @@ So the claim is "any Linux, down to 32-bit and embedded"; i686 is the proof,
 not the point.
 
 **"Fully offline with local models" - the strongest leg, currently unbuilt.**
+(As adopted: it was unbuilt on 2026-07-18 and has shipped since; see section 3.)
 Air-gapped, regulated, and privacy-constrained environments cannot use cloud
 agents, and no mainstream harness treats offline as a first-class mode. The
 honest topology: nobody runs a useful LLM *on* a 32-bit box. The realistic
@@ -875,11 +879,14 @@ guard was never the issue.
   headroom. Evidence: `~/temur-eval-archive/t39-terminal-bench/`,
   F4 in its `PRODUCT-FINDINGS.md`.
 
-- **T40 auto-compaction differential on Terminal-Bench.** Added
-  2026-08-29. Every Terminal-Bench number published so far was taken
-  with a v0.28.0 binary, which predates `auto_compact`, so the feature
-  built for exactly those cells has never been measured on them.
-  temur-only, v0.28.0 against v0.29.1, same GPU box, same 16-task
+- ~~**T40 auto-compaction differential on Terminal-Bench.**~~ RAN as
+  desktop experiment 5 (2026-08-31), published in docs/COMPARISON.md
+  "Same rig, auto-compaction on"; its leftover CTX cells produced the
+  exp-5 queue section above. The original entry follows for the record.
+  Added 2026-08-29. Every Terminal-Bench number published so far was
+  taken with a v0.28.0 binary, which predates `auto_compact`, so the
+  feature built for exactly those cells has never been measured on
+  them. temur-only, v0.28.0 against v0.29.1, same GPU box, same 16-task
   subset, Qwen3-8B with thinking off, two runs each: the one variable
   is the binary. Planned as desktop experiment 5.
 

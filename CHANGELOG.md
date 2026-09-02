@@ -36,6 +36,21 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   saying a neutral third-party suite did not exist yet is replaced by
   links to the two Terminal-Bench sections that now carry it. No
   measurement, claim, or recorded number changed.
+- Staleness pass over the docs: claims overtaken by T42, T43 and the
+  two desktop experiments are retired. TUI.md now says the force-quit
+  arm expires on a 2 s window rather than on any key, and points at
+  USAGE for paste behavior; OFFLINE.md scopes "advisory, not
+  enforcement" to the usage warning itself and points at the
+  auto-compaction and overflow-recovery paths where temur does act on
+  its own, names the startup `/props` probe as a third source of the
+  context window, and no longer calls the estimate blind between
+  round-trips; COMPARISON.md points at the experiment-5 section that
+  has since run rather than calling it queued, and dates the
+  auto-compaction blind spot to v0.29.1; ROADMAP.md marks the executed
+  T40 item and says which of its sections are the 2026-07-18 plan kept
+  verbatim; the README binary figure is ~6 MB, matching the published
+  v0.32.0 i686 asset. No measurement, claim, or recorded number
+  changed.
 
 ## v0.32.0 - 2026-09-01
 

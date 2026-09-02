@@ -598,7 +598,10 @@ the same unauthenticated keyless GET discipline as the model listing:
 (server down, or any non-llama.cpp server, keeps the baked 8192), and
 `temur doctor` checks a configured value against the live allocation,
 warning on a mismatch in either direction and suggesting the exact
-config line when the value is missing. Ollama's equivalent
+config line when the value is missing. Since v0.31.0 startup probes
+`/props` as well, but only for a keyless openai-compat selection that
+has no configured window: it says so once, uses the value for that run,
+and writes nothing to disk. Ollama's equivalent
 (`/api/show`) is deliberately not probed, so for Ollama and LM Studio
 you still state the value by hand. However it gets set, temur then:
 
@@ -613,11 +616,21 @@ you still state the value by hand. However it gets set, temur then:
 
 **The honest caveat:** temur ships no tokenizer. The estimate is the
 input+output token count of the most recent response, as reported by the
-server, one round-trip stale, and absent entirely on servers that never
-report usage (then the feature stays silent rather than inventing
-numbers). That's why every figure is written `~N`. It is an advisory, not
-an enforcement: temur never trims, blocks, or compacts a request on its
-own; `/compact` exists but only ever runs because you typed it.
+server, and absent entirely on servers that never report usage (then the
+feature stays silent rather than inventing numbers). That count is one
+round-trip behind by nature, so since v0.31.0 the check runs a second
+time immediately before each request goes out, adding a rough
+four-characters-per-token estimate of everything appended since; that
+average is defeated by dense content, so it catches the ordinary large
+result rather than every one. That's why every figure is written `~N`.
+
+*This warning* is an advisory, not an enforcement: it never trims or
+blocks a request, and `/compact` runs only because you typed it. temur
+does compact and cut on its own elsewhere, and those paths are
+documented rather than hidden: see [USAGE.md](USAGE.md),
+"Auto-compaction for unattended runs" (default on in one-shot `-p`) and
+"When the server rejects the request anyway" (recovery after the server
+rejects an over-sized request).
 
 ## Degradation on quirky servers
 
