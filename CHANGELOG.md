@@ -4,6 +4,12 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- The LAN topology diagram in docs/OFFLINE.md says the static binary
+  is ~6 MB rather than ~5 MB, matching the published v0.33.0 assets
+  for the constrained side of that diagram (i686 6.20 MB, aarch64
+  6.26 MB, armv7 5.55 MB). No measurement, claim, or recorded number
+  changed.
+
 ## v0.33.0 - 2026-09-02
 
 - **A compaction that frees nothing no longer counts as recovering from

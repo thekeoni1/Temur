@@ -322,7 +322,7 @@ USAGE.md, "The prompt floor".
 ```
 constrained box (i686/ARM/router/…)          capable machine (x86_64, GPU…)
 ┌──────────────────────────────┐             ┌─────────────────────────────┐
-│ temur (musl-static, ~5 MB)   │  HTTP LAN   │ llama-server -c 8192 --jinja │
+│ temur (musl-static, ~6 MB)   │  HTTP LAN   │ llama-server -c 8192 --jinja │
 │ + your code                  │────────────▶│ + model.gguf                │
 └──────────────────────────────┘   :8080     └─────────────────────────────┘
 ```
