@@ -29,6 +29,13 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   docs/COMPARISON.md gains a results-at-a-glance table linking each
   headline number to its full section. No measurement, claim, or
   recorded number changed.
+- docs/COMPARISON.md states its two evidence classes up front: the
+  nine-task eval is temur's own suite and biased by authorship, the
+  Terminal-Bench 2 sections are externally authored. The bias warning
+  is now scoped to the two own-suite sections, and the stale line
+  saying a neutral third-party suite did not exist yet is replaced by
+  links to the two Terminal-Bench sections that now carry it. No
+  measurement, claim, or recorded number changed.
 
 ## v0.32.0 - 2026-09-01
 

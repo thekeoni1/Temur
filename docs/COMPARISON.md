@@ -4,17 +4,24 @@
 
 This page compares temur against two released coding agents on two
 axes: what they cost to install and run, and how well they drive a
-small local model. Three things should shape how much weight you give
-it.
+small local model. It carries two classes of evidence, and they do not
+deserve equal weight: the nine-task eval is temur's own suite and is
+biased by authorship, while the Terminal-Bench 2 sections are an
+externally authored suite temur neither wrote nor could have tuned
+against. Three things should shape how much weight you give it.
 
-**It was built by temur's side.** The nine tasks come from temur's own
-eval suite, written months earlier to find temur's failures. A suite
-written by one project and run against three favours the one that
-wrote it, and no amount of care in the running removes that. Read the
-scores as "how do these harnesses handle tasks temur already considers
-representative", not as a general capability ranking. A neutral
-third-party suite (Terminal-Bench) is queued and does not exist yet;
-until it does, this page does not claim to be one.
+**The nine-task suite was built by temur's side.** The nine tasks come
+from temur's own eval suite, written months earlier to find temur's
+failures. A suite written by one project and run against three favours
+the one that wrote it, and no amount of care in the running removes
+that. Read those scores as "how do these harnesses handle tasks temur
+already considers representative", not as a general capability
+ranking. This warning is scoped to the two own-suite sections,
+[Qwen3-4B](#differential-qwen3-4b-instruct-2507) and
+[Qwen2.5-Coder-3B](#differential-qwen25-coder-3b-instruct). It does not
+apply to [Terminal-Bench 2](#terminal-bench-2-neutral-suite) or the
+[GPU desktop subset](#gpu-desktop-terminal-bench-2-subset), which run a
+suite temur did not write.
 
 **Delivery is pinned, not trusted.** The prompts are not copied between
 scripts. `scripts/harness_compare/tasks.sh` is generated from the eval
