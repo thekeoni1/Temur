@@ -10071,3 +10071,201 @@ stage-2 tag message is DECIDED and recorded here but NOT acted on. It
 will be exactly one line, ASCII hyphen:
 
     temur v0.33.0 - overflow recovery learns whether its fold worked (T44)
+
+## v0.33.0 ship record - shipped PUBLIC, the first public release
+
+2026-09-02. **T44, overflow recovery learns whether its fold worked,
+shipped at tag `v0.33.0`, and it is the FIRST release this project has
+ever published against a public repository.** A MINOR bump: live
+overflow-recovery behaviour changes and the "compacting automatically"
+line moves to immediately before a fold that really runs. Stage 2 ran
+to completion with no rerun. Every release v0.1.0 through v0.32.0 was
+created against the private repo; from this tag on, the artifacts, the
+notes and the tag message are world-readable the moment they land.
+Public visibility is still not a launch: the launch gates (demo GIF,
+announcement) remain queued, untouched by this stage.
+
+Prep push and CI (all three re-verified through the API this session,
+all `run_attempt: 1`, both jobs `success`):
+
+- The four T44 phase commits, pushed from the DESKTOP, head `afe1f26`.
+  CI run **33627749409, attempt 1**, `test` success, `release-gate`
+  success.
+- The two desktop docs commits, head `61231f2`. CI run **33640197156,
+  attempt 1**, `test` success, `release-gate` success.
+- The three prep commits (bump, CHANGELOG cut, close-out), head
+  `a76646b`. CI run **33646267852, attempt 1**, `test` success,
+  `release-gate` success.
+- With the four per-phase `check.sh` gates on the desktop, the stage-1
+  gate at 0.33.0, and `release.sh`'s own embedded gate here, every gate
+  and every CI run in this cycle was attempt 1. No kill-and-rerun
+  anywhere, and no `FAIL(` and no `panicked` line in any log this
+  session opened. That makes this the **twelfth consecutive zero-rerun
+  cycle**, and the second whose gate evidence is split across two
+  machines: the per-phase claims are read from the T44 acceptance
+  record above, not from logs this session could open.
+
+Tag:
+
+- Annotated tag `v0.33.0` at `a76646b`, tag object
+  `7cfb9fc33e610b63f1276f7f19dfe541bf1d9c84`. Verified against the RAW
+  object BEFORE the push, not the formatted view, because
+  `git tag -l --format` appends a newline of its own and would hide a
+  trailing-blank-line mistake. `git cat-file tag v0.33.0 | od -c` shows
+  the header block, then `\n\n`, then exactly
+  `temur v0.33.0 - overflow recovery learns whether its fold worked (T44)\n`:
+  **71 bytes, one line, one trailing newline**, nothing after it, no
+  non-ASCII byte anywhere in the object, and the separator is a plain
+  ASCII hyphen `-`. `git cat-file -t` reads `tag` and `v0.33.0^{}`
+  reads `a76646b00925a0a73876c7f6f07b1b4c07bd3b36`. After the push the
+  remote refs read `7cfb9fc3...` for `refs/tags/v0.33.0` and
+  `a76646b0...` for `refs/tags/v0.33.0^{}`, equal to the local object.
+  **F5's sixth live outing**, and the first where a wrong byte would
+  have landed in strangers' clones rather than only in ours.
+
+Release build:
+
+- `release.sh` with **no SKIP_CHECK**, green first try, exit 0. The
+  embedded `check.sh` reached `== ALL CHECKS PASSED ==` with all 48
+  `test result:` lines at `0 failed`, **1953 passed, 0 failed** in
+  total, matching the stage-1 gate count exactly; the bare busybox
+  container reported `temur 0.33.0`; all five TUI pty smokes passed on
+  the first attempt (host, gnu container, gnu bracketed-paste, musl
+  container, musl bracketed-paste); the leak grep was clean over both
+  files and history; and the skew gate read `OK: install.sh + README
+  match version 0.33.0 and all targets`. 4/4 artifacts gated and
+  staged, each with `OK: no INTERP program header` and `OK: no NEEDED
+  entries`. Log: `t44-gates/v0.33.0-release.log`.
+- The publish block printed `(title below is the annotated tag message
+  of v0.33.0, read back just now)`, the annotated-tag branch, not the
+  lightweight fallback. Branch one again, six outings running.
+
+Staged sha256 (identical to the published and re-downloaded copies):
+
+| Target | sha256 |
+| --- | --- |
+| i686-unknown-linux-musl | `16454ebdeb2641a124f55b215c68e06a7b81c744a56624a5b4e4ea3de1855d72` |
+| x86_64-unknown-linux-musl | `746b9530b213d828bd28bd82b7e68864cb2adf91cc8ba7261549a0268d6619a4` |
+| aarch64-unknown-linux-musl | `4338dd824e9ad992be1afe798c1d21c4aab418fae036d2f17bde6b82b2dfe58a` |
+| armv7-unknown-linux-musleabihf | `f9cd28b4c5752dcca3c6b0a4f93b278bc51005feb1ccd74ede19cb498126ca4d` |
+| SHA256SUMS | `538a7bebe8301494b65ba1c5b49e0bbb5ba2d7df6bd1783535fd3ffe125fc121` |
+
+Publish:
+
+- **PUBLIC** release at
+  `https://github.com/thekeoni1/Temur/releases/tag/v0.33.0`, **5
+  assets**, all `uploaded`, `isDraft=false`, `isPrerelease=false`,
+  target `main`, published `2026-09-02T16:45:51Z`. Repo `visibility`
+  confirmed `PUBLIC` / `isPrivate=false` BEFORE and AFTER the publish.
+  The check is inverted from every prior cycle, where the same two
+  readings were asserted to be `true`.
+- The release title equals the tag message byte for byte, checked by
+  `cmp` against the file the tag was written from rather than by eye.
+- Notes are the CHANGELOG `v0.33.0` section verbatim, five entries,
+  byte-identical to the section extracted from the tree after newline
+  normalisation, no non-ASCII, zero U+2014. They were written to be
+  read by strangers and now are.
+
+Closing gate:
+
+- Re-downloaded ALL five assets into a fresh directory with the repo
+  NAMED EXPLICITLY (`--repo thekeoni1/Temur`), since `gh` otherwise
+  resolves the repository from the working directory's git remote and
+  would silently verify something other than what was asked. **Five for
+  five `cmp`-identical** to the staged copies, and `sha256sum -c`
+  passing 4/4 inside the downloaded directory, so every published
+  artifact is byte-for-byte what the gate produced.
+- **New this cycle, and only possible now: the anonymous path was
+  exercised.** With no token in the environment and `gh` bypassed
+  entirely, a plain `curl` of the i686 asset and of SHA256SUMS from
+  `github.com/thekeoni1/Temur/releases/download/v0.33.0/` returned
+  **HTTP 200**, full length, `cmp`-identical to the staged copies, and
+  an unauthenticated `api.github.com` read of the repo returned
+  `private: False, visibility: public`. No download demanded auth. That
+  is the first direct evidence that the install path works for someone
+  who is not us.
+- Installer matrix **6/6 twice**: once against the staged directory
+  (`t44-gates/v0.33.0-installer-staged-run1.log`) and once against the
+  fresh full download
+  (`t44-gates/v0.33.0-installer-download-run2.log`), each covering
+  pass, corrupt and unlisted on both the GNU host and the bare busybox
+  container. 12/12 across the two runs, no failures.
+- `~/.local/bin/temur` refreshed from the DOWNLOADED i686 asset, so the
+  chain runs published to installed rather than staged to installed: it
+  prints `temur 0.33.0`, sha256 `16454ebd...5d72`, equal to the
+  published i686 entry in the DOWNLOADED SHA256SUMS. It was `0.32.0` /
+  `ddc72fa1...1fee` before.
+
+### Deviations, recorded
+
+1. **The stage-2 file's paraphrase of the residuals did not match the
+   T44 acceptance record, and the record was followed.** The stage-2
+   file named "the fall-through-then-decline uncounted auto-compaction",
+   "the silent pending-crossing turn" and "the five-line fall-through
+   notice sequence" as items to carry forward. None of those three
+   appears in the T44 acceptance record's "What this does not
+   establish" section, nor in any residuals list anywhere in this file;
+   the only "fall-through" text in the T44 record is in "What the tests
+   cover", describing mechanism rather than naming a residual. The same
+   paraphrase omitted the record's T19 cap-formula item, which does
+   appear there. Per the stage-2 instruction to follow the record where
+   the two differ and to invent nothing found in neither, the list
+   below is the record's five items, and the three unsourced ones are
+   not carried.
+2. **"T43's four TUI residuals" is a count from the v0.32.0 ship
+   record, not from the T43 acceptance record.** The T43 acceptance
+   record names FIVE residuals; the v0.32.0 ship record carried four of
+   them forward, dropping "bracketed paste in `probe()` was left
+   alone". All five are carried below, so the count in the ship records
+   now matches the count in the acceptance record.
+3. **The gate-evidence split across two machines continues** (second
+   cycle): the four per-phase logs live on the desktop, the stage-1,
+   release and installer logs on the laptop. Nothing in this stage
+   depended on a desktop log being opened.
+
+### What this release does not establish
+
+Quoted from the T44 acceptance record above, unchanged by anything this
+stage did, plus T43's TUI residuals carried forward:
+
+- **Whether the gate converts the three fail-open cells is NOT
+  measured.** Experiment 6 explicitly did not run that arm, and T44 ran
+  no live model at all. The mechanism is traced in transcripts and the
+  calibration comes from real byte figures, but the outcome is an
+  expectation, not a measurement. **That is the next desktop
+  experiment**, and until it runs this milestone claims only that the
+  arm order and the success test changed, not that any cell was
+  converted. Publishing it does not measure it either: this stage was
+  offline throughout and ran no model.
+- **Nothing here ran at a context window other than 12288.** Both the
+  0.3% / 7-39% bands and the `12433 -> 6459` figure are measurements at
+  that window on that model, not constants.
+- **Arm (b)'s halving formula is unchanged and unmeasured beyond exp
+  6.** It converted the `gcode-to-text` class in both runs, which is
+  why nothing was queued against it; two cells is the whole evidence.
+- **The T19 cap formula is still untouched.** Its ~4 chars/token
+  assumption is what dense content defeats, and changing it moves every
+  model's tool output. Same ruling as T42.
+- **Carried forward: no prompt-profile threshold, 16384 or 20480, is
+  validated by any task score.** Unchanged by this cycle, still queued.
+- **Carried forward from T43: two interrupts inside ONE drained batch
+  collapse to one.** A force-quit needs its two presses in two
+  different iterations; a synthetic burst carrying both in one batch
+  arms only once.
+- **Carried forward from T43: busy-ness is evaluated once, at scan
+  time.** An Esc later in a batch can interrupt the turn an Enter
+  earlier in that same batch just started. A known bounded edge.
+- **Carried forward from T43: `draw_input`'s horizontal scroll is
+  O(n^2) in input length.** Never noticeable at typed lengths; a
+  multi-thousand-character paste makes it reachable. Not a correctness
+  issue and not touched.
+- **Carried forward from T43: the input line is still single-line.**
+  Multi-line EDITING was out of scope; the glyph shows where a break
+  is, and that is all it does.
+- **Carried forward from T43: bracketed paste in `probe()` was left
+  alone.** Not needed to prove the mode, and adding it would widen the
+  surface the probe covers. Restored to this list per deviation 2.
+- **Going public proves nothing about the product.** The anonymous
+  download above establishes that the artifacts are reachable and
+  intact without credentials. It says nothing about whether anyone
+  runs them, and no external user has.
