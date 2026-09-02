@@ -9991,3 +9991,83 @@ passed, 0 failed, both paths.
   model's tool output. Same ruling as T42.
 - **Carried forward: no prompt-profile threshold, 16384 or 20480, is
   validated by any task score.** Unchanged by this cycle.
+
+## v0.33.0 close-out - recorded at stage 1, before its release
+
+2026-09-02. **T44, overflow recovery learns whether its fold worked, cut
+as v0.33.0.** A MINOR bump: live overflow-recovery behaviour changes (a
+fold that frees less than a sixteenth of the conversation now says so
+and cuts the largest tool result inside the same single recovery), and
+the "compacting automatically" line now prints only immediately before
+a fold that really runs. The T44 acceptance record above carries what
+shipped and the experiment-6 evidence behind it; this section is the
+release-cycle bookkeeping only.
+
+Version moves 0.32.0 -> 0.33.0. Riding along: the four T44 phase
+commits (`33fdba1` P1 queue, `9367a30` P2, `e9d6f67` P3, `afe1f26` P4),
+the two desktop docs commits (`970d708` COMPARISON evidence classes,
+`61231f2` staleness pass), the laptop docs navigation pass (`9bc7b55`),
+and the three prep commits.
+
+### The era change
+
+**This is the first ship cycle since the repository went PUBLIC.** The
+operator flipped visibility quietly between 2026-09-01 and 2026-09-02
+after the pre-flip history scan (367 commits clean of key material; all
+identities the noreply address; two accepted residual blobs, recorded
+in the planning record). Verified before this stage via the API:
+`visibility PUBLIC, isPrivate false`. Every release v0.1.0 through
+v0.32.0 was created against the private repository; the v0.33.0
+release, when stage 2 runs, will be the first published against the
+public one. Public visibility is not a launch: the launch gates (demo
+GIF, announcement) remain queued.
+
+### Desktop provenance
+
+T44 was built and gated on the DESKTOP: four phase gates, all green on
+the FIRST attempt (`t44-gates/gate-p1.log` through `gate-p4.log`,
+desktop archive). The desktop rebased the phases onto the laptop's
+`9bc7b55` with one resolved CHANGELOG conflict and pushed; CI run
+**33627749409, attempt 1**, success both jobs at `afe1f26`. The docs
+pair followed as `970d708` + `61231f2`; CI run **33640197156, attempt
+1**, success both jobs at `61231f2`. Both runs and both attempt
+numbers re-verified by this laptop session through the API before this
+stage began. This session did not build T44; it ran stage 1 on the
+pulled tree after `git pull --ff-only` to `61231f2`.
+
+### Gate log
+
+Stage-1 gate at 0.33.0 on the CHANGELOG head `8fc9495`:
+`~/temur-eval-archive/t44-gates/v0.33.0-stage1-8fc9495.log` (laptop).
+ALL CHECKS PASSED, exit 0, first try, no kill-and-rerun. 48 `test
+result:` lines, **1953 passed, 0 failed**, every line reading `0
+failed`, zero `FAIL` and zero `panicked` lines anywhere in the log.
+All five TUI pty smokes (host, gnu, gnu bracketed-paste, musl, musl
+bracketed-paste) passed first attempt. The bare busybox container
+reported `temur 0.33.0`. Host suite 1923 -> 1953 across T44. The log
+is named after the head it gated, as the stage-1 prompt ordered; this
+close-out adds RUNBOOK prose and nothing else after that gate.
+
+### Deviations, recorded
+
+1. **Stage 1 was executed by the laptop planning/ship session itself,
+   not a separate implementing session.** The prompt addresses a
+   "laptop implementing session"; since the 2026-09-01 outage window
+   the operator has this one session doing both roles on the laptop.
+   Every step, check and ordering in the prompt was followed as
+   written.
+2. **The gate-evidence split across two machines continues** (second
+   cycle): the four per-phase logs live on the desktop, the stage-1
+   log on the laptop. Per-phase claims above are read from the T44
+   acceptance record, not from logs this session opened.
+
+### Stage 2 explicitly not yet run
+
+No tag exists, local or remote, and nothing has been published. This
+record is written at stage 1, before the release, per standing
+procedure. Stage 2 waits for the desktop planning session's word after
+it verifies this push remotely, and its release WILL BE PUBLIC. The
+stage-2 tag message is DECIDED and recorded here but NOT acted on. It
+will be exactly one line, ASCII hyphen:
+
+    temur v0.33.0 - overflow recovery learns whether its fold worked (T44)
