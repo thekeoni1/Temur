@@ -4,6 +4,32 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **Math in assistant replies renders as math, not as its own source.**
+  A solved integral used to come back as `Solve $ \int 2x \cos(x^2)\,dx $`,
+  every delimiter and backslash intact, because math is not CommonMark and
+  the parser never tagged it. The TUI now recognizes `$...$`, `$$...$$`,
+  `\(...\)` and `\[...\]`, drops the delimiters, maps the common commands to
+  Unicode and lifts whole `^`/`_` runs, so that reply renders as
+  `Solve ∫ 2x cos(x²) dx`. Structural LaTeX it cannot place in one
+  dimension (`\frac`, `\lim`) stays verbatim rather than being faked, a
+  super/subscript run falls back whole rather than half-lifting, and code
+  spans and code blocks are untouched. Prices are safe: "costs $5 and $10"
+  needs a LaTeX signal between the dollars to be read as math, and has
+  none.
+- **A model that refuses a general question as "outside the scope of
+  available tools" gets asked once to just answer it.** Dogfooded on
+  qwen3-4b: "can you explain implicit differentiation to me" was refused
+  as out of tool scope, while the same question reworded was answered in
+  the same session, so the model had the knowledge and the phrasing alone
+  lost it. When a turn ends on that refusal shape having called no tool at
+  all, temur now says once that a general question needs no tool and asks
+  for the answer directly. One nudge, capped like every other, and a turn
+  that used a tool or that names the scope and then answers is left alone.
+  When it fires it works: in live replays the model went straight from the
+  refusal to a full, correct explanation. It fires on the common phrasings
+  and not on every one, because the model paraphrases its refusal freely;
+  the measured rate is recorded in the ROADMAP entry.
+
 - The Phi-4-mini chat-template defect recorded in docs/OFFLINE.md is
   no longer an unfiled draft: the report was filed with the model
   publisher on 2026-09-03 as

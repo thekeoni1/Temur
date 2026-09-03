@@ -44,6 +44,36 @@ Streaming behavior (pinned by tests): pulldown-cmark closes everything
 at end-of-input, so an unclosed fence renders as a code block until its
 closer streams in, and unclosed emphasis stays literal.
 
+**Math in responses (T45 P1).** Math is not CommonMark, so `$...$`,
+`$$...$$`, `\(...\)` and `\[...\]` are not tagged by the parser and used to
+reach the screen as literal source. A substitution pass now runs on the
+SOURCE before parsing, with code spans, code blocks and HTML excluded by
+byte range, so `Solve $ \int 2x \cos(x^2)\,dx $` renders as
+`Solve ∫ 2x cos(x²) dx`.
+
+- It runs before the parser, not on text events, because CommonMark
+  backslash escaping strips `\,` to a bare comma and splits the text node
+  around it: by the time an event arrives the span is already broken.
+- What maps: the delimiters drop; the common commands become Unicode
+  (`\int` ∫, `\sum` ∑, `\sqrt` √, `\cdot` ·, `\times` ×, `\pm` ±, `\leq` ≤,
+  `\geq` ≥, `\neq` ≠, `\approx` ≈, `\to` →, `\infty` ∞, the Greek set and
+  the usual relations); `\,` and `\;` become a space; `\cos`, `\sin`,
+  `\log` and their family lose the backslash.
+- What degrades honestly: anything structural (`\frac`, `\lim`, `\begin`,
+  `\left`) stays VERBATIM with its backslash inside the span, because a
+  line-based renderer has no two-dimensional placement to put it in.
+- `^` and `_` runs lift to Unicode super/subscript only when EVERY
+  character of the run maps. The alphabets are incomplete (no superscript
+  `q`), and parentheses are deliberately excluded, so `x^2` lifts to `x²`
+  while `x^(n+1)` falls back whole rather than emitting half a run.
+- **The currency guard.** A `$...$` span is math only when its interior
+  carries a LaTeX signal (`\`, `^` or `_`), so "costs $5 and $10" passes
+  through untouched. A span whose only signal is `^` or `_` must also have
+  no space just inside either delimiter.
+- Delimiters are not chased across a code region or a severed cell: an
+  opener with no closer in the same stretch stays literal.
+- No styling and no color: the monochrome contract is untouched.
+
 **Limitations (documented, tested where observable):**
 
 - **Severed fence.** A tool call or notice mid-reply splits one logical
