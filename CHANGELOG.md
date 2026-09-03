@@ -4,6 +4,13 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- The Phi-4-mini chat-template defect recorded in docs/OFFLINE.md is
+  no longer an unfiled draft: the report was filed with the model
+  publisher on 2026-09-03 as
+  https://huggingface.co/microsoft/Phi-4-mini-instruct/discussions/47,
+  and the bullet now links it. The defect itself was still present in
+  the published `tokenizer_config.json` at the 2026-09-02 re-check. No
+  measurement, claim, or recorded number changed.
 - The LAN topology diagram in docs/OFFLINE.md says the static binary
   is ~6 MB rather than ~5 MB, matching the published v0.33.0 assets
   for the constrained side of that diagram (i686 6.20 MB, aarch64
