@@ -27,8 +27,12 @@ fn dim() -> Style {
 }
 
 pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
+    // T45 (P1): the LaTeX pass runs on the SOURCE, before parsing, with
+    // code regions excluded by byte range. See `latex::substitute_source`
+    // for why it cannot run on Text events instead.
+    let src = latex::substitute_source(text.trim_end());
     let mut r = Renderer::new(width);
-    for ev in Parser::new_ext(text.trim_end(), Options::ENABLE_STRIKETHROUGH) {
+    for ev in Parser::new_ext(&src, Options::ENABLE_STRIKETHROUGH) {
         r.event(ev);
     }
     r.finish()
@@ -375,6 +379,377 @@ fn hard_split(s: &str, budget: usize) -> Vec<String> {
     out
 }
 
+/// T45 (P1): LaTeX-to-Unicode substitution for assistant prose.
+///
+/// Math is NOT CommonMark. pulldown-cmark does not tag `$...$`, `$$...$$`,
+/// `\(...\)` or `\[...\]`, so every delimiter, backslash command and `^`
+/// reaches the renderer as ordinary text. This module is a pure text
+/// transform applied to `Event::Text` OUTSIDE code blocks (and never to
+/// `Event::Code`, which is a different event), so it is a substitution
+/// pass rather than a parser change.
+///
+/// Scope, decided in the ROADMAP entry this implements: real LaTeX layout
+/// is out of the question on a line-based renderer, because fractions,
+/// radicals and limits need two-dimensional placement. What is achievable
+/// is recognizing the delimiters, dropping them, mapping the common
+/// commands to Unicode and lifting simple `^`/`_` runs. Anything
+/// structural degrades honestly: the reader sees the LaTeX source for
+/// what cannot map, backslash included.
+///
+/// Monochrome contract (view.rs:7 and this file's header) is untouched:
+/// text in, text out, no styling and no color.
+mod latex {
+    use super::{Event, Options, Parser, Tag};
+
+    /// Does a `$...$` interior read as math rather than money?
+    ///
+    /// THE GUARD, and the one place this file departs from its brief. The
+    /// brief specifies a spacing rule (opening `$` followed by a non-space,
+    /// closing `$` preceded by a non-space) AND an acceptance example,
+    /// `Solve $ \int 2x \cos(x^2)\,dx $`, whose delimiters are padded with
+    /// exactly the spaces that rule forbids. The two cannot both hold.
+    ///
+    /// Resolved by making the guard SIGNAL-based: a `$` span is math only
+    /// when its interior carries a LaTeX signal (`\`, `^` or `_`). That
+    /// satisfies both pinned cases. "costs $5 and $10" has no signal
+    /// anywhere between the dollars and passes through untouched, which is
+    /// what the guard is for; the acceptance example carries `\int` and is
+    /// recognized despite its padding.
+    ///
+    /// The brief's spacing rule is kept as a SECOND guard for the harder
+    /// half: a span whose only signal is `^` or `_` and which is padded
+    /// like currency stays literal. A span carrying a backslash command is
+    /// unambiguous and does not need it.
+    fn is_math(inner: &str) -> bool {
+        if inner.trim().is_empty() {
+            return false;
+        }
+        if !(inner.contains('\\') || inner.contains('^') || inner.contains('_')) {
+            return false;
+        }
+        if inner.contains('\\') {
+            return true;
+        }
+        let first = inner.chars().next().unwrap_or(' ');
+        let last = inner.chars().last().unwrap_or(' ');
+        !first.is_whitespace() && !last.is_whitespace()
+    }
+
+    /// Entry point: substitute over the SOURCE, with code regions cut out.
+    ///
+    /// WHY NOT ON `Event::Text`, which is where a substitution pass
+    /// obviously belongs. CommonMark backslash escaping runs first and
+    /// destroys the input this pass exists to read. Measured on
+    /// pulldown-cmark 0.13.4 with the brief's own acceptance example:
+    ///
+    /// ```text
+    /// Solve $ \int 2x \cos(x^2)\,dx $
+    ///   Text("Solve $ \\int 2x \\cos(x^2)")
+    ///   Text(",dx $")
+    /// ```
+    ///
+    /// `\,` is a backslash before ASCII punctuation, so the parser strips
+    /// the backslash AND splits the text node: the thin space is already a
+    /// stray comma (the exact degradation the ROADMAP entry noticed in the
+    /// operator's paste) and the closing `$` arrives in a different event
+    /// from the opening one. `\(...\)` and `\[...\]` disappear the same
+    /// way, `\(` arriving as a bare `(`. No Text-event pass can recover
+    /// any of that, so the transform runs before the parser instead.
+    ///
+    /// The exclusion contract is unchanged and is enforced by BYTE RANGE
+    /// from a first parsing pass: inline code spans, fenced and indented
+    /// code blocks, and HTML keep their source bytes exactly.
+    pub fn substitute_source(text: &str) -> String {
+        if !has_delimiter(text) {
+            return text.to_string();
+        }
+        let mut protected: Vec<std::ops::Range<usize>> = Vec::new();
+        for (ev, range) in
+            Parser::new_ext(text, Options::ENABLE_STRIKETHROUGH).into_offset_iter()
+        {
+            match ev {
+                Event::Code(_) | Event::Html(_) | Event::InlineHtml(_) => {
+                    protected.push(range)
+                }
+                Event::Start(Tag::CodeBlock(_)) | Event::Start(Tag::HtmlBlock) => {
+                    protected.push(range)
+                }
+                _ => {}
+            }
+        }
+        protected.sort_by_key(|r| r.start);
+        let mut out = String::with_capacity(text.len());
+        let mut at = 0usize;
+        for r in protected {
+            if r.start >= at {
+                out.push_str(&substitute(&text[at..r.start]));
+                out.push_str(&text[r.start..r.end.min(text.len())]);
+                at = r.end.min(text.len());
+            }
+        }
+        out.push_str(&substitute(&text[at..]));
+        out
+    }
+
+    fn has_delimiter(text: &str) -> bool {
+        text.contains('$') || text.contains("\\(") || text.contains("\\[")
+    }
+
+    /// Delimiters are only chased WITHIN one unprotected stretch. A span whose
+    /// closer landed in another markdown event passes through literally:
+    /// honest degradation on a cheap rule, and the alternative is
+    /// stitching state across events for a case nobody reported.
+    fn substitute(text: &str) -> String {
+        if !has_delimiter(text) {
+            return text.to_string();
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0usize;
+        while i < text.len() {
+            let rest = &text[i..];
+            // `$$` is tried before `$`, and unlike `$` it needs no signal:
+            // double-dollar is not a currency form.
+            if let Some(inner) = between(rest, "$$", "$$") {
+                if !inner.trim().is_empty() {
+                    out.push_str(render(inner).trim());
+                    i += 4 + inner.len();
+                    continue;
+                }
+            } else if let Some(inner) = between(rest, "\\(", "\\)") {
+                if !inner.trim().is_empty() {
+                    out.push_str(render(inner).trim());
+                    i += 4 + inner.len();
+                    continue;
+                }
+            } else if let Some(inner) = between(rest, "\\[", "\\]") {
+                if !inner.trim().is_empty() {
+                    out.push_str(render(inner).trim());
+                    i += 4 + inner.len();
+                    continue;
+                }
+            } else if let Some(inner) = between(rest, "$", "$") {
+                if is_math(inner) {
+                    out.push_str(render(inner).trim());
+                    i += 2 + inner.len();
+                    continue;
+                }
+            }
+            let c = rest.chars().next().unwrap();
+            out.push(c);
+            i += c.len_utf8();
+        }
+        out
+    }
+
+    /// The slice between `open` at the start of `s` and the next `close`,
+    /// or `None` when `s` does not open with it or the closer is absent.
+    fn between<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
+        let body = s.strip_prefix(open)?;
+        let end = body.find(close)?;
+        Some(&body[..end])
+    }
+
+    /// One recognized span's interior, with the delimiters already gone.
+    fn render(src: &str) -> String {
+        let mut out = String::with_capacity(src.len());
+        let mut i = 0usize;
+        while i < src.len() {
+            let rest = &src[i..];
+            let c = rest.chars().next().unwrap();
+            match c {
+                '\\' => {
+                    let after = &rest[1..];
+                    let name_len = after
+                        .chars()
+                        .take_while(|ch| ch.is_ascii_alphabetic())
+                        .count();
+                    if name_len > 0 {
+                        let name = &after[..name_len];
+                        if let Some(sym) = symbol(name) {
+                            out.push_str(sym);
+                        } else if is_text_operator(name) {
+                            // `\cos` reads as `cos`: the backslash is
+                            // markup, the word is the operator.
+                            out.push_str(name);
+                        } else {
+                            // Structural or unknown (\frac, \lim, \begin):
+                            // VERBATIM, backslash included. The reader sees
+                            // honest LaTeX for what cannot map.
+                            out.push('\\');
+                            out.push_str(name);
+                        }
+                        i += 1 + name_len;
+                    } else {
+                        match after.chars().next() {
+                            // Thin and medium spaces become one space.
+                            Some(',') | Some(';') | Some(':') => {
+                                out.push(' ');
+                                i += 2;
+                            }
+                            // Negative thin space: nothing to render.
+                            Some('!') => i += 2,
+                            Some(ch) => {
+                                out.push('\\');
+                                out.push(ch);
+                                i += 1 + ch.len_utf8();
+                            }
+                            None => {
+                                out.push('\\');
+                                i += 1;
+                            }
+                        }
+                    }
+                }
+                '^' | '_' => {
+                    let after = &rest[1..];
+                    match take_run(after) {
+                        Some((run, raw)) => {
+                            match lift(run, c == '^') {
+                                Some(s) => out.push_str(&s),
+                                // NEVER half a run: the whole thing falls
+                                // back to its literal source form.
+                                None => {
+                                    out.push(c);
+                                    out.push_str(&after[..raw]);
+                                }
+                            }
+                            i += 1 + raw;
+                        }
+                        None => {
+                            out.push(c);
+                            i += 1;
+                        }
+                    }
+                }
+                _ => {
+                    out.push(c);
+                    i += c.len_utf8();
+                }
+            }
+        }
+        out
+    }
+
+    /// The run a `^` or `_` applies to, plus how many bytes of source it
+    /// occupies: a braced group, or one character.
+    fn take_run(after: &str) -> Option<(&str, usize)> {
+        if let Some(body) = after.strip_prefix('{') {
+            let end = body.find('}')?;
+            return Some((&body[..end], end + 2));
+        }
+        let c = after.chars().next()?;
+        Some((&after[..c.len_utf8()], c.len_utf8()))
+    }
+
+    /// Lift a whole run, or nothing. The Unicode super/subscript alphabets
+    /// are INCOMPLETE (no superscript `q`, no subscript `b`), so a run with
+    /// one unmappable character falls back entirely.
+    fn lift(run: &str, sup: bool) -> Option<String> {
+        if run.is_empty() {
+            return None;
+        }
+        run.chars()
+            .map(|c| if sup { super_char(c) } else { sub_char(c) })
+            .collect()
+    }
+
+    /// Parentheses are deliberately ABSENT from both alphabets even though
+    /// U+207D/U+207E exist. `x^(n+1)` is the brief's pinned fallback case,
+    /// and a lifted paren would either produce `x⁽n+1)` (half a run) or
+    /// silently swallow a grouping the writer meant literally.
+    fn super_char(c: char) -> Option<char> {
+        Some(match c {
+            '0' => '\u{2070}', '1' => '\u{00b9}', '2' => '\u{00b2}', '3' => '\u{00b3}',
+            '4' => '\u{2074}', '5' => '\u{2075}', '6' => '\u{2076}', '7' => '\u{2077}',
+            '8' => '\u{2078}', '9' => '\u{2079}',
+            '+' => '\u{207a}', '-' => '\u{207b}', '=' => '\u{207c}',
+            'a' => 'ᵃ', 'b' => 'ᵇ', 'c' => 'ᶜ', 'd' => 'ᵈ', 'e' => 'ᵉ', 'f' => 'ᶠ',
+            'g' => 'ᵍ', 'h' => 'ʰ', 'i' => 'ⁱ', 'j' => 'ʲ', 'k' => 'ᵏ', 'l' => 'ˡ',
+            'm' => 'ᵐ', 'n' => 'ⁿ', 'o' => 'ᵒ', 'p' => 'ᵖ', 'r' => 'ʳ', 's' => 'ˢ',
+            't' => 'ᵗ', 'u' => 'ᵘ', 'v' => 'ᵛ', 'w' => 'ʷ', 'x' => 'ˣ', 'y' => 'ʸ',
+            'z' => 'ᶻ',
+            _ => return None,
+        })
+    }
+
+    fn sub_char(c: char) -> Option<char> {
+        Some(match c {
+            '0' => '\u{2080}', '1' => '\u{2081}', '2' => '\u{2082}', '3' => '\u{2083}',
+            '4' => '\u{2084}', '5' => '\u{2085}', '6' => '\u{2086}', '7' => '\u{2087}',
+            '8' => '\u{2088}', '9' => '\u{2089}',
+            '+' => '\u{208a}', '-' => '\u{208b}', '=' => '\u{208c}',
+            'a' => 'ₐ', 'e' => 'ₑ', 'h' => 'ₕ', 'i' => 'ᵢ', 'j' => 'ⱼ', 'k' => 'ₖ',
+            'l' => 'ₗ', 'm' => 'ₘ', 'n' => 'ₙ', 'o' => 'ₒ', 'p' => 'ₚ', 'r' => 'ᵣ',
+            's' => 'ₛ', 't' => 'ₜ', 'u' => 'ᵤ', 'v' => 'ᵥ', 'x' => 'ₓ',
+            _ => return None,
+        })
+    }
+
+    /// Text operators: the backslash is markup, the word renders as itself.
+    /// `\lim`, `\sup` and `\inf` are NOT here on purpose. They take limits
+    /// underneath, which is exactly the two-dimensional placement this pass
+    /// does not attempt, so they stay verbatim and say so.
+    fn is_text_operator(name: &str) -> bool {
+        matches!(
+            name,
+            "sin" | "cos" | "tan" | "cot" | "sec" | "csc"
+                | "arcsin" | "arccos" | "arctan"
+                | "sinh" | "cosh" | "tanh" | "coth"
+                | "exp" | "log" | "ln" | "lg"
+                | "det" | "gcd" | "arg" | "deg" | "dim" | "ker" | "max" | "min"
+        )
+    }
+
+    /// The substitution table. No entry maps to U+2014: where a command's
+    /// natural target would be an em dash it is left UNMAPPED and renders
+    /// verbatim, per this milestone's hygiene rule.
+    fn symbol(name: &str) -> Option<&'static str> {
+        Some(match name {
+            // Operators and relations
+            "int" => "∫", "iint" => "∬", "iiint" => "∭", "oint" => "∮",
+            "sum" => "∑", "prod" => "∏", "coprod" => "∐", "sqrt" => "√",
+            "cdot" => "·", "times" => "×", "div" => "÷", "ast" => "∗",
+            "pm" => "±", "mp" => "∓", "leq" => "≤", "le" => "≤",
+            "geq" => "≥", "ge" => "≥", "neq" => "≠", "ne" => "≠",
+            "approx" => "≈", "equiv" => "≡", "cong" => "≅", "sim" => "∼",
+            "simeq" => "≃", "propto" => "∝", "ll" => "≪", "gg" => "≫",
+            // Arrows
+            "to" => "→", "rightarrow" => "→", "leftarrow" => "←",
+            "leftrightarrow" => "↔", "Rightarrow" => "⇒", "Leftarrow" => "⇐",
+            "Leftrightarrow" => "⇔", "mapsto" => "↦", "implies" => "⇒",
+            "iff" => "⇔", "uparrow" => "↑", "downarrow" => "↓",
+            // Analysis and set theory
+            "infty" => "∞", "partial" => "∂", "nabla" => "∇",
+            "forall" => "∀", "exists" => "∃", "nexists" => "∄",
+            "in" => "∈", "notin" => "∉", "ni" => "∋",
+            "subset" => "⊂", "subseteq" => "⊆", "supset" => "⊃",
+            "supseteq" => "⊇", "cup" => "∪", "cap" => "∩",
+            "setminus" => "∖", "emptyset" => "∅", "varnothing" => "∅",
+            "neg" => "¬", "land" => "∧", "lor" => "∨",
+            "therefore" => "∴", "because" => "∵",
+            "angle" => "∠", "perp" => "⊥", "parallel" => "∥",
+            "circ" => "∘", "bullet" => "∙", "star" => "⋆",
+            "prime" => "′", "degree" => "°",
+            "ldots" => "…", "dots" => "…", "cdots" => "⋯", "vdots" => "⋮",
+            "aleph" => "ℵ", "hbar" => "ℏ", "ell" => "ℓ", "Re" => "ℜ", "Im" => "ℑ",
+            // Lowercase Greek
+            "alpha" => "α", "beta" => "β", "gamma" => "γ", "delta" => "δ",
+            "epsilon" => "ε", "varepsilon" => "ε", "zeta" => "ζ", "eta" => "η",
+            "theta" => "θ", "vartheta" => "ϑ", "iota" => "ι", "kappa" => "κ",
+            "lambda" => "λ", "mu" => "μ", "nu" => "ν", "xi" => "ξ",
+            "omicron" => "ο", "pi" => "π", "varpi" => "ϖ", "rho" => "ρ",
+            "varrho" => "ϱ", "sigma" => "σ", "varsigma" => "ς", "tau" => "τ",
+            "upsilon" => "υ", "phi" => "φ", "varphi" => "ϕ", "chi" => "χ",
+            "psi" => "ψ", "omega" => "ω",
+            // Uppercase Greek that differs from a Latin letter
+            "Gamma" => "Γ", "Delta" => "Δ", "Theta" => "Θ", "Lambda" => "Λ",
+            "Xi" => "Ξ", "Pi" => "Π", "Sigma" => "Σ", "Upsilon" => "Υ",
+            "Phi" => "Φ", "Psi" => "Ψ", "Omega" => "Ω",
+            _ => return None,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,6 +757,107 @@ mod tests {
     const W: usize = 80;
 
     /// Flatten rendered lines to plain text rows (trailing spaces trimmed).
+    // ------------------------------------------- T45 (P1): LaTeX pass
+
+    /// The operator's reported case, quoted in the ROADMAP entry this
+    /// milestone implements: this exact input came back as its own source.
+    /// The integral sign, the lifted square, the dropped delimiters and the
+    /// de-backslashed cos are the non-negotiable part.
+    #[test]
+    fn latex_acceptance_example_from_the_roadmap() {
+        let out = plain(&render(r"Solve $ \int 2x \cos(x^2)\,dx $", 60));
+        assert_eq!(out, vec!["   Solve ∫ 2x cos(x²) dx"]);
+    }
+
+    /// THE CURRENCY GUARD. Nothing between the dollars is a LaTeX signal,
+    /// so nothing here is a span and the line is untouched.
+    #[test]
+    fn currency_passes_through_untouched() {
+        assert_eq!(
+            plain(&render("costs $5 and $10", 60)),
+            vec!["   costs $5 and $10"]
+        );
+        // The brief's spacing rule, which still governs signal-only spans:
+        // padded like currency, no backslash command, so it stays literal.
+        assert_eq!(
+            plain(&render("worth $ 5^2 and $ 10", 60)),
+            vec!["   worth $ 5^2 and $ 10"]
+        );
+    }
+
+    /// Both directions of the incomplete-alphabet rule, pinned together.
+    #[test]
+    fn superscript_lifts_whole_runs_only() {
+        assert_eq!(plain(&render(r"$x^2$", 60)), vec!["   x²"]);
+        assert_eq!(
+            plain(&render(r"$x^(n+1)$", 60)),
+            vec!["   x^(n+1)"],
+            "a run that does not map falls back whole"
+        );
+        assert_eq!(
+            plain(&render(r"$x^{q}$", 60)),
+            vec!["   x^{q}"],
+            "there is no superscript q, so the braced run falls back verbatim"
+        );
+        assert_eq!(
+            plain(&render(r"$a_{i}$", 60)),
+            vec!["   aᵢ"],
+            "subscripts lift on the same rule"
+        );
+    }
+
+    /// Structural commands have no Unicode form and are not faked: the
+    /// delimiters drop, the backslash stays.
+    #[test]
+    fn structural_commands_stay_verbatim_inside_the_span() {
+        assert_eq!(
+            plain(&render(r"$\frac{1}{2} \to \lim$", 60)),
+            vec![r"   \frac{1}{2} → \lim"]
+        );
+    }
+
+    /// Code spans and code blocks are the pinned exclusions, enforced by
+    /// byte range before the transform runs.
+    #[test]
+    fn code_is_never_substituted() {
+        assert_eq!(
+            plain(&render("use `$x^2$` here", 60)),
+            vec!["   use $x^2$ here"],
+            "inline code span is byte-identical"
+        );
+        assert_eq!(
+            plain(&render("```\n$ \\int x^2 $\n```", 60)),
+            vec!["   ▌ $ \\int x^2 $"],
+            "fenced block is byte-identical"
+        );
+    }
+
+    /// The other three delimiter forms, and the spacing commands.
+    #[test]
+    fn other_delimiters_and_spacing_commands() {
+        assert_eq!(
+            plain(&render(r"\(\alpha \leq \beta\)", 60)),
+            vec!["   α ≤ β"]
+        );
+        assert_eq!(plain(&render(r"\[\sum x\]", 60)), vec!["   ∑ x"]);
+        assert_eq!(plain(&render(r"$$\pi r^2$$", 60)), vec!["   π r²"]);
+        assert_eq!(
+            plain(&render(r"$a\,b\;c$", 60)),
+            vec!["   a b c"],
+            "thin and medium spaces become one space each"
+        );
+    }
+
+    /// An opener with no closer in the same unprotected stretch stays
+    /// literal: honest degradation, no state carried across the document.
+    #[test]
+    fn unclosed_delimiter_passes_through() {
+        assert_eq!(
+            plain(&render(r"the cost is $\int with no closer", 60)),
+            vec![r"   the cost is $\int with no closer"]
+        );
+    }
+
     fn plain(lines: &[Line<'static>]) -> Vec<String> {
         lines
             .iter()
