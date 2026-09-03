@@ -1884,6 +1884,7 @@ impl Session {
                     let mut prose_call: Option<recover::ProseCall> = None;
                     let mut nudge = false;
                     let mut promise = false;
+                    let mut scope_denial = false;
                     let mut unknown_tool: Option<String> = None;
                     let mut tool_names: Vec<String> = Vec::new();
                     if matches!(other, Some(StopReason::EndTurn))
@@ -1933,6 +1934,16 @@ impl Session {
                             && !any_tool_dispatched
                         {
                             promise = recover::detect_promise_without_call(&text);
+                            // T45 (P2): the D12 sibling of the promise
+                            // check, and last of the predicates. Same
+                            // whole-turn condition: a turn that declined
+                            // as out of scope while dispatching nothing
+                            // refused work it could have done. A turn that
+                            // PROMISED loses priority to nothing here, the
+                            // two phrase families being disjoint.
+                            if !promise {
+                                scope_denial = recover::detect_scope_denial(&text);
+                            }
                         }
                     }
                     self.history.push(RequestMessage {
@@ -2069,6 +2080,32 @@ impl Session {
                         });
                         ui(AgentEvent::Notice(
                             "the model promised work without calling a tool; asked it to act or answer"
+                                .into(),
+                        ));
+                        continue;
+                    }
+                    if scope_denial {
+                        // Self-healing wording, the T35 P3 discipline: say
+                        // what is true about the runtime, then give the
+                        // way out. Names no subject (the refusal is not
+                        // about the subject), promises no capability the
+                        // model lacks, and is short and imperative because
+                        // the model that produces this shape is a 4B.
+                        // Counts against NUDGE_LIMIT, so a model that
+                        // declines again ends the turn normally.
+                        nudges += 1;
+                        self.history.push(RequestMessage {
+                            role: Role::User,
+                            content: vec![ContentBlock::Text {
+                                text: "You do not need a tool to answer that. The tools are \
+                                       for tasks that read or change files or run commands; a \
+                                       general question is answered directly from what you \
+                                       already know. Answer it now."
+                                    .into(),
+                            }],
+                        });
+                        ui(AgentEvent::Notice(
+                            "the model declined a question as out of tool scope without calling a tool; asked it to answer directly"
                                 .into(),
                         ));
                         continue;

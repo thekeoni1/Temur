@@ -934,6 +934,115 @@ fn a_promise_phrase_followed_by_the_work_does_not_nudge() {
     );
 }
 
+// ------------------------------------ T45 (P2): D12 scope-denial nudge
+
+#[test]
+fn the_d12_shape_is_nudged_and_then_answers() {
+    // The dogfood shape, verbatim (2026-09-03, qwen3-4b): asked to explain
+    // something it knows, the model declined as out of tool scope and
+    // called nothing. The same question reworded was answered in the same
+    // session, so the knowledge was there and the phrasing alone lost it.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(
+                vec![text(
+                    "I'm unable to explain implicit differentiation as it's outside \
+                     the scope of available tools. Would you like me to assist with \
+                     anything related to coding or file operations?",
+                )],
+                StopReason::EndTurn,
+            ),
+            msg(
+                vec![text("Implicit differentiation differentiates both sides.")],
+                StopReason::EndTurn,
+            ),
+        ],
+    );
+    let events = collect_events(&mut session, "can you explain implicit differentiation to me");
+
+    assert_eq!(requests.borrow().len(), 2, "one nudge, one more request");
+    assert!(
+        notices(&events)
+            .iter()
+            .any(|n| n.contains("declined a question as out of tool scope")),
+        "{:?}",
+        notices(&events)
+    );
+    assert!(session.history().iter().any(|m| {
+        matches!(m.role, Role::User)
+            && m.content.iter().any(|b| matches!(
+                b,
+                ContentBlock::Text { text } if text.contains("You do not need a tool to answer that")
+            ))
+    }));
+}
+
+#[test]
+fn a_scope_denial_after_a_dispatched_tool_does_not_nudge() {
+    // The turn DID work. A closing scope sentence then reads as prose
+    // about what was done, not as a refusal to start.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(
+                vec![tool_use(
+                    "tu_1",
+                    "write",
+                    serde_json::json!({"filePath": "did.txt", "content": "work"}),
+                )],
+                StopReason::ToolUse,
+            ),
+            msg(
+                vec![text("The rest is outside the scope of available tools.")],
+                StopReason::EndTurn,
+            ),
+        ],
+    );
+    let events = collect_events(&mut session, "do the work");
+
+    assert_eq!(requests.borrow().len(), 2, "no third request: no nudge");
+    assert!(
+        !notices(&events)
+            .iter()
+            .any(|n| n.contains("declined a question as out of tool scope")),
+        "{:?}",
+        notices(&events)
+    );
+}
+
+#[test]
+fn a_scope_denial_phrase_followed_by_the_answer_does_not_nudge() {
+    // The tail rule at loop level, copied from T35 P3: the phrase is
+    // present but the answer comes after it, so the reply is finished.
+    let dir = tempfile::tempdir().unwrap();
+    let body = "differentiate both sides with respect to x, treat y as a function \
+                of x, and apply the chain rule to every term containing it. "
+        .repeat(3);
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![msg(
+            vec![text(&format!(
+                "Some of that is outside the scope of available tools, but here is \
+                 the explanation: {body}"
+            ))],
+            StopReason::EndTurn,
+        )],
+    );
+    let events = collect_events(&mut session, "explain it");
+
+    assert_eq!(requests.borrow().len(), 1);
+    assert!(
+        !notices(&events)
+            .iter()
+            .any(|n| n.contains("declined a question as out of tool scope")),
+        "{:?}",
+        notices(&events)
+    );
+}
+
 #[test]
 fn a_plain_final_answer_does_not_nudge() {
     let dir = tempfile::tempdir().unwrap();
