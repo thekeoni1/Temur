@@ -4,6 +4,29 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **temur asks before a tool changes anything.** `write`, `edit` and
+  `bash` now prompt in an interactive session: the tool, what it is about
+  to do on one line, and `y` to allow this call, `a` to allow that tool
+  for the rest of the session, or anything else to decline. `read`,
+  `glob`, `grep` and `skill` never ask, having nothing to change. A
+  declined call goes back to the model as an ordinary tool error asking
+  it not to retry unchanged, so the turn continues; against qwen3-4b, 8
+  of 8 declined calls ended with the model adjusting or finishing rather
+  than resending. A short list of destructive shapes (recursive `rm`,
+  `mkfs`, `dd` to a device, `git reset --hard`, `git clean -f`, `shred`)
+  adds a warning line to the prompt, which is emphasis rather than a
+  separate gate: the base rule already asks about every mutation.
+  `"approve_mutations": "allow"` in `config.json`, or `--allow-mutations`
+  on the command line, restores the previous behaviour.
+- **One-shot `-p` declines mutating calls instead of asking.** A run with
+  nobody to ask denies rather than assumes: the first `write`, `edit` or
+  mutating `bash` fails with an error naming `--allow-mutations` and the
+  config key, in the same shape as the existing bash key-sandbox
+  refusal. Read-only `-p` runs are unaffected. **This breaks any script
+  that drives `temur -p` and expects it to write files, until the flag or
+  the config value is added.** Every script in this repository has it.
+  Two things outside this repository need it before their next run: the
+  tb-bridge experiment adapter and the capture-env `drive.py`.
 - **Math in assistant replies renders as math, not as its own source.**
   A solved integral used to come back as `Solve $ \int 2x \cos(x^2)\,dx $`,
   every delimiter and backslash intact, because math is not CommonMark and

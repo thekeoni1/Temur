@@ -296,13 +296,49 @@ cell-finalized flag or incremental parse state (per-frame re-parse of
 the streaming cell has not measured as a problem at transcript sizes:
 revisit only with evidence).
 
+## The approval modal (T46)
+
+Before a tool changes anything, the input area is replaced by a
+question, drawn in the warning style the T21 modal already used:
+
+```
+? write wants to change your system: allow? [y/a/N]
+    write /home/dev/demo/notes.txt (5 bytes)
+```
+
+The question line names the tool and the answers; the summary line under
+it is the bash command, or the path with its byte count or change
+description. `y` allows this call, `a` allows that TOOL for the rest of
+the session, `n` or Esc denies. Every OTHER key is ignored rather than
+taken as an answer, so a stray keystroke can neither approve nor deny;
+the prompt closes only on an explicit answer, or on the runtime tearing
+the channel down, which denies.
+
+A short fixed pattern list (recursive `rm`, `mkfs`, `dd` to a device,
+`git reset --hard` and `git clean -f`, `shred`) adds a `!! recursive
+delete` line between the question and the summary. It is emphasis on a
+prompt that was already appearing, not a gate of its own, and it adds no
+colour the modal did not already have: bold and the `!!` marker carry it.
+
+The T21 key-sandbox question composes into the same modal when both
+apply, and that combined form is `[y/N]`, with `a` neither offered nor
+accepted. See USAGE.md "Approval mode" for the rules and a captured
+exchange.
+
+The prompt is excluded from paste collapse (T43), so a modal opened by a
+turn submitted from a pasted block is still answerable. `read`, `glob`,
+`grep`, `skill` and the todo pair never open it.
+
 ## Keys
 
 Enter send · ↑/↓ input history · PgUp/PgDn scroll (End of scroll
 re-sticks to bottom) · Home/End/←/→/Backspace/Delete edit · Esc
-interrupt the running turn · Ctrl+C clear input, or quit when empty;
-twice during a turn force-quits · Ctrl+D quit (empty prompt) ·
-`exit`/`quit` as a line also quits.
+interrupt the running turn, or deny an open approval prompt · Ctrl+C
+clear input, or quit when empty; twice during a turn force-quits ·
+Ctrl+D quit (empty prompt) · `exit`/`quit` as a line also quits. While
+an approval prompt is open it takes every key: `y` allows once, `a`
+allows the tool for the session, `n`/Esc denies, everything else is
+ignored.
 
 Pasting has its own rules, covered in [USAGE.md](USAGE.md) under
 "Pasting, interrupting, and the way out": bracketed paste is enabled, a

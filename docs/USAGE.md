@@ -14,6 +14,16 @@ scripting recipes, skills, and the key-isolation model.
 > input inline exactly as a terminal session displays it. The startup
 > version banner (`temur <version> (model=..., thinking=...)`) is
 > omitted so this document does not go stale on version bumps.
+>
+> **These transcripts predate the approval default.** They were captured
+> before mutating tool calls started asking first, so no `write`, `edit`
+> or `bash` call in them shows an approval step. In an interactive
+> session today each of those calls is preceded by one approval
+> exchange, shown once under "Approval mode" below; nothing else about
+> the transcripts changes. The `-p` examples differ by more than a
+> prompt: a one-shot run refuses mutating calls outright unless
+> `--allow-mutations` is passed, so reproducing the `-p` transcripts
+> that call bash needs that flag. See "Approval mode" for both rules.
 
 ## A worked interactive session
 
@@ -519,6 +529,10 @@ shows the minimal keyless starter and `temur init` writes any of the
 recipes below for you. The default provider is `anthropic` (model
 `claude-sonnet-5`); any API key is read from a file path at startup,
 never from env or argv.
+
+Two safety keys are documented with the behaviour they govern rather
+than here: `approve_mutations` under "Approval mode", and
+`allow_bash_without_key_sandbox` under "Bash approval mode".
 
 The Anthropic template writes a curated profile set over the current
 model tiers, every profile reading the same key file, and asks which
@@ -1147,6 +1161,10 @@ included) and exits. The contract that makes it scriptable:
 - **The exit code reports the outcome:** 0 for a completed turn, 1 for
   a provider or startup error, 130 when interrupted with Ctrl+C (the
   shell convention for SIGINT).
+- **Mutating tool calls are refused unless you pass
+  `--allow-mutations`.** A one-shot run cannot ask, so it denies; the
+  refusal names the flag and the config key. Read-only one-shots are
+  unaffected. See "Approval mode" below.
 - Live one-shots save the session exactly like interactive runs, so
   `--continue -p` chains work. The save happens after every round-trip,
   so a killed one-shot still leaves a resumable transcript of the work
@@ -1204,7 +1222,9 @@ $ echo $?
 (Everything except the line `The script printed: "Hello, dev!".` is
 stderr.) `--resume <key> -p` works the same way against any saved
 session. `-p` is mutually exclusive with `--tui` and with the `init`
-and `doctor` subcommands.
+and `doctor` subcommands. `--allow-mutations` combines with `-p` and
+with interactive runs, and is rejected on a subcommand, which runs no
+tools.
 
 Interruption, demonstrated for real by sending SIGINT to a running
 one-shot after three seconds:
@@ -1599,17 +1619,143 @@ files in their own directory, as `temur init` sets up.
 `temur doctor` reports the guard count and the sandbox availability,
 and warns when bash would need approval or refuse.
 
+## Approval mode
+
+By default temur asks before a tool changes anything. `write`, `edit`
+and `bash` ask; `read`, `glob`, `grep`, `skill` and the todo pair never
+do, because they change nothing. The prompt shows what is about to
+happen: the command for bash, `write <path> (<n> bytes)` for a write,
+and `edit <path> (replaces "<first line>"...)` for an edit.
+
+This section's transcripts were captured 2026-09-04 against a local
+llama.cpp server (image `server-cuda-b10438`) serving
+Qwen3-4B-Instruct-2507 Q4_K_M with the compact prompt profile and a
+12,288-token context, so their context figures differ from the 8,192
+shown elsewhere. A real run, approving one command and declining the
+next (plain REPL, keyless config):
+
+```
+> Use the bash tool to run exactly this command: echo approved > allowed.txt
+  → bash
+  [!] context: ~2765 of 12288 tokens used; /compact frees the window by summarizing the conversation, or start a new session
+  [?] bash approval needed:
+        echo approved > allowed.txt
+      allow? [y/a/N] (y once, a every bash this session) y
+  ✓ bash: echo approved > allowed.txt
+The command `echo approved > allowed.txt` was executed successfully, and the file `allowed.txt` has been created with the content "approved". Since there was no output from the command, it indicates that the operation completed silently as expected. If you need further actions or verification, let me know!
+  (turn: 5522 in / 84 out, cache read 2764 write — — session: 5522 in / 84 out, cache read 2764 write —)
+> Use the bash tool to run exactly this command: rm -rf /tmp/temur-demo-dir
+  → bash
+  [?] bash approval needed:
+        rm -rf /tmp/temur-demo-dir
+      !! recursive delete
+      allow? [y/a/N] (y once, a every bash this session) n
+  ✗ bash: bash
+The command to remove `/tmp/temur-demo-dir` was declined by the user. I will not proceed with it. Let me know if you'd like an alternative action or further assistance.
+  (turn: 5801 in / 68 out, cache read 5737 write — — session: 11323 in / 152 out, cache read 8501 write —)
+```
+
+(The `y` and `n` were typed at the `[y/a/N]` prompts. `allowed.txt` was
+written; the `rm -rf` never ran.)
+
+The three answers:
+
+- `y` allows this one call.
+- `a` allows this TOOL for the rest of the session. It is per tool:
+  allowing bash does not allow write.
+- `n` denies, and so does an empty line, an unrecognized answer, or end
+  of input: the plain REPL treats anything that is not an explicit allow
+  as a refusal. The TUI is stricter about stray keys: `n` and Esc deny
+  there, and every other key is ignored rather than read as an answer,
+  so a keystroke that arrives while the prompt is opening can neither
+  approve nor deny.
+
+A denial goes back to the model as an ordinary tool error saying the
+call was declined and asking it not to retry unchanged, so the turn
+continues and the model can adjust or finish. It gets no exemption from
+the repetition guards: a model that resends the identical denied call
+gets the identical result, and the doom-loop guard ends the turn on the
+third one. Against qwen3-4b, 8 of 8 scripted denials ended with the
+model finishing rather than retrying.
+
+The `!! recursive delete` line above is emphasis, not a separate gate.
+A short fixed list (recursive `rm`, `mkfs`, `dd` to a device, `git reset
+--hard` and `git clean -f`, `shred`) adds that line to a prompt that was
+already going to appear. Missing one costs nothing, because the base
+rule already asks about every mutation; there is no list of commands
+that skips the prompt.
+
+Turning it off, in order of scope:
+
+- `"approve_mutations": "allow"` in `config.json` restores the behaviour
+  from before this default changed, for every session: nothing asks, and
+  mutating tools just run.
+  `"ask"` is the default and can be set explicitly. Any other value is a
+  startup error rather than a silent fallback.
+- `--allow-mutations` on the command line does the same for one run. It
+  is the flag form of the config value, so it also silences the
+  interactive prompt, and where the two disagree the flag wins. Neither
+  can make temur ask MORE than the default, so there is no combination
+  in which one of them tightens the other.
+
+### One-shot `-p` refuses instead of asking
+
+A one-shot run has nobody to ask, so it denies. The first mutating call
+fails with an error naming both ways out:
+
+```
+$ temur -p "Create a file called notes.txt containing the single line hello."
+  [!] context window 12288 detected from the server (/props); the context advisory, auto-compaction, and the tool-output cap now use it
+  → write
+  ✗ write: write
+I cannot create or modify files as requested due to safety restrictions in this non-interactive session. Please let me know if there's another way I can assist!
+  [!] context: ~2874 of 12288 tokens used; /compact frees the window by summarizing the conversation, or start a new session
+  (turn: 5564 in / 63 out, cache read 2831 write — — session: 5564 in / 63 out, cache read 2831 write —)
+$ ls notes.txt
+ls: cannot access 'notes.txt': No such file or directory
+$ temur --allow-mutations -p "Create a file called notes.txt containing the single line hello."
+  [!] context window 12288 detected from the server (/props); the context advisory, auto-compaction, and the tool-output cap now use it
+  → write
+  ✓ write: /home/dev/demo/notes.txt
+The file `notes.txt` has been successfully created with the content "hello".
+  [!] context: ~2794 of 12288 tokens used; /compact frees the window by summarizing the conversation, or start a new session
+  (turn: 5500 in / 47 out, cache read 5474 write — — session: 5500 in / 47 out, cache read 5474 write —)
+```
+
+(The two `[!]` lines in each run are this server's startup and advisory
+notices, on stderr with the rest of the chrome; they have nothing to do
+with approval.)
+
+What temur handed the model was the refusal text, and the model then
+described it in its own words. The text itself is the sibling of the
+bash key-sandbox refusal below: `<tool> is disabled: this call would
+change your system... For non-interactive use, pass --allow-mutations,
+or set "approve_mutations": "allow" in config.json`. Read-only `-p` runs
+are untouched: a run that only reads, globs or greps never meets this.
+
+Every script in this repository that drives temur non-interactively
+passes `--allow-mutations` for exactly this reason. A script of your own
+that mutates needs the flag or the config value.
+
 ## Bash approval mode (T21)
 
-With key files configured, bash normally runs inside the key sandbox
-("Key isolation" above). On a kernel that denies unprivileged user
-namespaces (locked-down containers and playgrounds, commonly), the
-sandbox cannot start, and an interactive session asks you about each
-bash command instead of refusing. The prompt shows the exact command;
-`y` runs that one command unsandboxed, anything else denies it. A
-denial goes back to the model as an ordinary tool error, so the turn
+This is a SECOND, independent question, about key isolation rather than
+about mutation. With key files configured, bash normally runs inside the
+key sandbox ("Key isolation" above). On a kernel that denies
+unprivileged user namespaces (locked-down containers and playgrounds,
+commonly), the sandbox cannot start, and an interactive session asks you
+about each bash command instead of refusing. The prompt shows the exact
+command; `y` runs that one command unsandboxed, anything else denies it.
+A denial goes back to the model as an ordinary tool error, so the turn
 continues and the model can adapt. Nothing is remembered: the next
 command asks again.
+
+When a command needs BOTH answers, one prompt carries both facts, and
+that combined prompt offers `y`/`N` only. No session allow is offered
+for it: needing the sandbox waiver AND changing the system is the
+riskiest combination temur has, and a session-wide answer is the wrong
+shape for it. A session allow already held for bash answers the mutation
+question only; this one still gets asked.
 
 A real transcript (plain REPL inside a container whose seccomp policy
 denies `unshare`, keyed profile with a placeholder key file, local
@@ -1640,13 +1786,18 @@ answered with a single `y`, `n`, or Esc keypress.
 
 The rules, precisely:
 
-- A working sandbox always wins: no prompt, ever, when the sandbox
-  runs. Keyless configs never prompt either (there is nothing to
-  guard).
+- A working sandbox always wins: this question is never asked when the
+  sandbox runs. Keyless configs never face it either, there being
+  nothing to guard. Both still meet the mutation prompt above, which is
+  a different question.
 - Only interactive sessions ask: the TUI, and the plain REPL when
   stdin and stdout are a real terminal. One-shot `-p` and piped runs
   never ask; with keys guarded and no sandbox they refuse bash, and
   the refusal names both this mode and the config override.
+- This refusal comes first. On a keyed host with no working sandbox, a
+  one-shot `-p` gets it rather than the mutation refusal, and
+  `--allow-mutations` is no way around it: `allow_bash_without_key_sandbox`
+  is the only override for the key sandbox.
 - `allow_bash_without_key_sandbox: true` silences the ask entirely
   and runs bash unsandboxed without asking; it exists for
   non-interactive use on sandbox-less hosts and is a real risk. See
