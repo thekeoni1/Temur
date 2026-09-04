@@ -1,3 +1,4 @@
+use crate::tools as temur_approval;
 use super::Ui;
 use crate::agent::events::AgentEvent;
 use crate::session_store::ReplayItem;
@@ -31,27 +32,63 @@ impl Default for ReplUi {
     }
 }
 
-/// The plain REPL's bash approver (T21): prompt on the terminal between
-/// tool events, showing the exact command and why it needs approval, and
-/// read one y/N line. Default is DENY: empty input, anything but y/yes
-/// (case-insensitive), EOF, and read errors all deny. Installed by main
-/// ONLY when stdin and stdout are real terminals, so piped runs (the mock
-/// e2e suites) never see it.
-pub fn stdin_bash_approver() -> Box<dyn FnMut(&str) -> bool> {
-    Box::new(|command: &str| {
-        println!("  [?] bash approval needed: the key sandbox is unavailable on this host,");
-        println!("      so this command would run with NO key isolation:");
-        for line in command.lines() {
-            println!("        {line}");
+/// The plain REPL's approver (T21, generalized by T46): prompt on the
+/// terminal between tool events, showing what is being approved and why,
+/// and read one answer line. Default is DENY: empty input, an unrecognized
+/// answer, EOF, and read errors all deny. Installed by main ONLY when stdin
+/// and stdout are real terminals, so piped runs (the mock e2e suites) never
+/// see it.
+///
+/// TWO FORMS, and the difference is the answer set:
+/// - composed (`no_key_sandbox`): the T21 lines BYTE-IDENTICAL, with T46's
+///   facts added around them, and y/N only. No session allow is offered,
+///   because sandbox-needing AND mutating is the highest-risk combination
+///   this product has.
+/// - mutation only: the tool, its summary, and y / a / n, where `a` allows
+///   that ONE tool for the rest of the session.
+pub fn stdin_approver(
+) -> Box<dyn FnMut(&temur_approval::ApprovalRequest) -> temur_approval::ApprovalAnswer> {
+    use temur_approval::ApprovalAnswer;
+    Box::new(|req: &temur_approval::ApprovalRequest| {
+        if req.no_key_sandbox {
+            println!("  [?] bash approval needed: the key sandbox is unavailable on this host,");
+            println!("      so this command would run with NO key isolation:");
+            for line in req.summary.lines() {
+                println!("        {line}");
+            }
+            println!("      it also changes your system, so it needs approval either way.");
+            if let Some(d) = req.danger {
+                println!("      !! {d}");
+            }
+            print!("      run it? [y/N] ");
+        } else {
+            println!("  [?] {} approval needed:", req.tool);
+            for line in req.summary.lines() {
+                println!("        {line}");
+            }
+            if let Some(d) = req.danger {
+                println!("      !! {d}");
+            }
+            print!(
+                "      allow? [y/a/N] (y once, a every {} this session) ",
+                req.tool
+            );
         }
-        print!("      run it? [y/N] ");
         let _ = std::io::stdout().flush();
         let mut answer = String::new();
         match std::io::stdin().lock().read_line(&mut answer) {
-            Ok(0) | Err(_) => false,
+            Ok(0) | Err(_) => ApprovalAnswer::Deny,
             Ok(_) => {
-                let answer = answer.trim();
-                answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")
+                let a = answer.trim();
+                if a.eq_ignore_ascii_case("y") || a.eq_ignore_ascii_case("yes") {
+                    ApprovalAnswer::AllowOnce
+                } else if !req.no_key_sandbox
+                    && (a.eq_ignore_ascii_case("a") || a.eq_ignore_ascii_case("all"))
+                {
+                    ApprovalAnswer::AllowSession
+                } else {
+                    ApprovalAnswer::Deny
+                }
             }
         }
     })

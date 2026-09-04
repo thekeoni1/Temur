@@ -626,15 +626,24 @@ impl Session {
         self.tool_ctx.allow_unsandboxed_bash = allow_unsandboxed_bash;
     }
 
-    /// Install the interactive bash approver (T21), in the style of
-    /// [`Session::set_key_guard`]: a setter, not a constructor parameter,
-    /// so `ToolCtx::new` keeps its `None` default and every
+    /// Install the interactive approver (T21, generalized by T46), in the
+    /// style of [`Session::set_key_guard`]: a setter, not a constructor
+    /// parameter, so `ToolCtx::new` keeps its `None` default and every
     /// approver-free construction stays byte-identical. Installed ONLY by
     /// an interactive UI (TUI, or the plain REPL on a real terminal);
-    /// one-shot -p and piped stdin never install one, so their Ask arm
-    /// stays a refusal.
-    pub fn set_bash_approver(&mut self, approver: Box<dyn FnMut(&str) -> bool>) {
-        self.tool_ctx.bash_approver = Some(approver);
+    /// one-shot -p and piped stdin never install one, so their T21 Ask arm
+    /// stays a refusal and T46's mutation question is never asked there.
+    pub fn set_approver(
+        &mut self,
+        approver: Box<dyn FnMut(&crate::tools::ApprovalRequest) -> crate::tools::ApprovalAnswer>,
+    ) {
+        self.tool_ctx.approver = Some(approver);
+    }
+
+    /// T46: is an approver installed? The interactive-default test asserts
+    /// on this rather than on a private field.
+    pub fn has_approver(&self) -> bool {
+        self.tool_ctx.approver.is_some()
     }
 
     /// Register the ACTIVE provider's credential for tool-output redaction

@@ -8,7 +8,7 @@
 //! Pure function of `App` + area, so TestBackend snapshots are
 //! deterministic.
 
-use super::app::{App, Cell};
+use super::app::{ApprovalPrompt, App, Cell};
 use super::wrap::{display_width, truncate_width, wrap};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -228,7 +228,7 @@ fn draw_transcript(app: &mut App, frame: &mut Frame, area: Rect) {
 /// wrapped command while an approval prompt is open, capped so a giant
 /// command cannot squeeze the transcript out.
 fn approval_height(app: &App, width: u16) -> u16 {
-    match &app.approval {
+    match &app.approval.as_ref().map(|p| p.summary.clone()) {
         None => 1,
         Some(cmd) => {
             let budget = (width as usize).saturating_sub(2 + 4);
@@ -241,17 +241,36 @@ fn approval_height(app: &App, width: u16) -> u16 {
     }
 }
 
-/// The modal bash approval prompt (T21): question line, then the exact
-/// command indented, all in the warning color. No cursor: the answer is a
-/// single keypress, not an edited line.
-fn draw_approval(cmd: &str, frame: &mut Frame, area: Rect) {
+/// The modal approval prompt (T21, generalized by T46): question line, then
+/// the exact command or summary indented, all in the warning color. No
+/// cursor: the answer is a single keypress, not an edited line.
+///
+/// The COMPOSED question line is the T21 line byte-identical, with T46's
+/// facts on the lines around it. Composing rather than rewording is what
+/// keeps the pinned T21 wording intact, and the composed form offers y/N
+/// only: no session allow on the highest-risk combination in the product.
+///
+/// Emphasis is text and layout only, never color beyond the warning style
+/// the modal already had: the monochrome contract is untouched.
+fn draw_approval(prompt: &ApprovalPrompt, frame: &mut Frame, area: Rect) {
     let yellow = Style::default().fg(Color::Yellow);
+    let question = if prompt.no_key_sandbox {
+        "? no key sandbox on this host: run this bash command WITHOUT it? [y/N]".to_string()
+    } else {
+        format!("? {} wants to change your system: allow? [y/a/N]", prompt.tool)
+    };
     let mut lines: Vec<Line> = vec![Line::from(Span::styled(
-        "? no key sandbox on this host: run this bash command WITHOUT it? [y/N]",
+        question,
         yellow.add_modifier(Modifier::BOLD),
     ))];
+    if let Some(d) = prompt.danger {
+        lines.push(Line::from(Span::styled(
+            format!("  !! {d}"),
+            yellow.add_modifier(Modifier::BOLD),
+        )));
+    }
     let budget = (area.width as usize).saturating_sub(2 + 4);
-    'outer: for raw in cmd.lines() {
+    'outer: for raw in prompt.summary.lines() {
         for l in wrap(raw, budget.max(1)) {
             if lines.len() >= area.height as usize {
                 break 'outer;
@@ -286,8 +305,8 @@ fn input_width(s: &str) -> usize {
 }
 
 fn draw_input(app: &App, frame: &mut Frame, area: Rect) {
-    if let Some(cmd) = &app.approval {
-        draw_approval(cmd, frame, area);
+    if let Some(prompt) = &app.approval {
+        draw_approval(prompt, frame, area);
         return;
     }
     let prefix = format!("{BAR} > ");
@@ -350,11 +369,19 @@ fn draw_input(app: &App, frame: &mut Frame, area: Rect) {
 }
 
 fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
-    let left: Vec<Span> = if app.approval.is_some() {
-        vec![Span::styled(
-            "  y approve this one command · n or esc deny",
-            Style::default().fg(Color::Yellow),
-        )]
+    let left: Vec<Span> = if let Some(prompt) = &app.approval {
+        // The T21 hint is byte-identical on the composed prompt, which is
+        // the only one those tests render; the mutation-only prompt names
+        // the session answer it actually offers.
+        let hint = if prompt.no_key_sandbox {
+            "  y approve this one command · n or esc deny".to_string()
+        } else {
+            format!(
+                "  y allow once · a allow every {} this session · n or esc deny",
+                prompt.tool
+            )
+        };
+        vec![Span::styled(hint, Style::default().fg(Color::Yellow))]
     } else if app.busy {
         if app.force_quit_armed() {
             vec![

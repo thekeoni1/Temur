@@ -1913,11 +1913,26 @@ fn force_probe_fail() {
     assert!(!temur::tools::sandbox_available());
 }
 
+/// T46: the T21 prompt these tests exercise, now a structured value.
+///
+/// Construction updated for the richer approval type; every asserted string
+/// below is byte-identical. `no_key_sandbox` is the composed form, which is
+/// what a guarded bash command produces and what the T21 wording and the
+/// y/N answer set belong to.
+fn t21_prompt(command: &str) -> temur::ui::tui::app::ApprovalPrompt {
+    temur::ui::tui::app::ApprovalPrompt {
+        tool: "bash".to_string(),
+        summary: command.to_string(),
+        no_key_sandbox: true,
+        danger: None,
+    }
+}
+
 #[test]
 fn approval_prompt_restricts_keys_to_y_n_esc() {
     let mut a = app();
     a.busy = true;
-    a.approval = Some("echo hi".into());
+    a.approval = Some(t21_prompt("echo hi"));
     // Anything that is not an answer is consumed and ignored: no typing,
     // no interrupt, no quit while the prompt is open.
     assert_eq!(a.handle_key(key(KeyCode::Char('x'))), Action::None);
@@ -1929,9 +1944,9 @@ fn approval_prompt_restricts_keys_to_y_n_esc() {
     assert_eq!(a.handle_key(key(KeyCode::Char('y'))), Action::Approval(true));
     assert!(a.approval.is_none());
     // n and Esc deny and close.
-    a.approval = Some("echo hi".into());
+    a.approval = Some(t21_prompt("echo hi"));
     assert_eq!(a.handle_key(key(KeyCode::Char('n'))), Action::Approval(false));
-    a.approval = Some("echo hi".into());
+    a.approval = Some(t21_prompt("echo hi"));
     assert_eq!(a.handle_key(key(KeyCode::Esc)), Action::Approval(false));
     // With the prompt closed, Esc while busy is an interrupt again.
     assert_eq!(a.handle_key(key(KeyCode::Esc)), Action::Interrupt);
@@ -1941,7 +1956,7 @@ fn approval_prompt_restricts_keys_to_y_n_esc() {
 fn approval_prompt_renders_question_command_and_hint() {
     let mut a = app();
     a.busy = true;
-    a.approval = Some("cat /etc/hosts && echo done".into());
+    a.approval = Some(t21_prompt("cat /etc/hosts && echo done"));
     let rows = render(&mut a, 100, 14);
     let body = rows.join("\n");
     assert!(
@@ -2011,7 +2026,7 @@ fn approval_turn(answer: KeyCode) -> (tempfile::TempDir, Vec<String>) {
         steps,
         session.cancel_token(),
     );
-    session.set_bash_approver(ui.bash_approver());
+    session.set_approver(ui.approver());
 
     let line = ui.read_input().expect("scripted submit reaches read_input");
     assert_eq!(line, "do the approval task");

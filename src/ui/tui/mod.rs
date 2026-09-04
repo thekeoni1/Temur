@@ -42,11 +42,11 @@ enum ToUi {
     Event(AgentEvent),
     /// The agent is blocked in `read_input` — authoritative idle signal.
     PromptOpen,
-    /// T21: the agent thread is blocked inside the bash approver, waiting
-    /// for a y/N answer about this exact command.
+    /// T21/T46: the agent thread is blocked inside the approver, waiting
+    /// for an answer about this exact request.
     ApprovalRequest {
-        command: String,
-        reply: mpsc::Sender<bool>,
+        prompt: crate::ui::tui::app::ApprovalPrompt,
+        reply: mpsc::Sender<crate::tools::ApprovalAnswer>,
     },
     Shutdown,
 }
@@ -385,25 +385,34 @@ impl TuiUi {
         )
     }
 
-    /// The per-command bash approver an interactive TUI session installs
-    /// (T21): sends the exact command to the render thread and blocks the
+    /// The approver an interactive TUI session installs (T21, generalized
+    /// by T46): sends the request to the render thread and blocks the
     /// calling (agent) thread until the user answers the rendered y/N
     /// prompt. Any channel breakage (render thread gone, shutdown while
     /// pending) denies.
-    pub fn bash_approver(&self) -> Box<dyn FnMut(&str) -> bool> {
+    pub fn approver(
+        &self,
+    ) -> Box<dyn FnMut(&crate::tools::ApprovalRequest) -> crate::tools::ApprovalAnswer> {
         let tx = self.tx.clone();
-        Box::new(move |command: &str| {
+        Box::new(move |req: &crate::tools::ApprovalRequest| {
             let (reply_tx, reply_rx) = mpsc::channel();
             if tx
                 .send(ToUi::ApprovalRequest {
-                    command: command.to_string(),
+                    prompt: crate::ui::tui::app::ApprovalPrompt {
+                        tool: req.tool.clone(),
+                        summary: req.summary.clone(),
+                        no_key_sandbox: req.no_key_sandbox,
+                        danger: req.danger,
+                    },
                     reply: reply_tx,
                 })
                 .is_err()
             {
-                return false;
+                return crate::tools::ApprovalAnswer::Deny;
             }
-            reply_rx.recv().unwrap_or(false)
+            reply_rx
+                .recv()
+                .unwrap_or(crate::tools::ApprovalAnswer::Deny)
         })
     }
 }
@@ -442,7 +451,7 @@ fn render_loop<B: Backend>(
     // T21: the reply channel of the approval prompt currently on screen.
     // Dropped un-answered on any loop exit, which the blocked agent thread
     // reads as a denial.
-    let mut pending_approval: Option<mpsc::Sender<bool>> = None;
+    let mut pending_approval: Option<mpsc::Sender<crate::tools::ApprovalAnswer>> = None;
     let end = 'main: loop {
         // Drain everything the agent thread sent since the last frame; a
         // shutdown still gets one final draw below so the last frame shows
@@ -455,8 +464,8 @@ fn render_loop<B: Backend>(
                     app.fold(&ev);
                 }
                 Ok(ToUi::PromptOpen) => app.prompt_open(),
-                Ok(ToUi::ApprovalRequest { command, reply }) => {
-                    app.approval = Some(command);
+                Ok(ToUi::ApprovalRequest { prompt, reply }) => {
+                    app.approval = Some(prompt);
                     pending_approval = Some(reply);
                 }
                 // Shutdown/disconnect can only follow every other message
@@ -561,7 +570,18 @@ fn render_loop<B: Backend>(
                 // denies on its own); nothing to do.
                 Action::Approval(approve) => {
                     if let Some(reply) = pending_approval.take() {
-                        let _ = reply.send(approve);
+                        let _ = reply.send(if approve {
+                            crate::tools::ApprovalAnswer::AllowOnce
+                        } else {
+                            crate::tools::ApprovalAnswer::Deny
+                        });
+                    }
+                }
+                // T46: allow this tool for the rest of the session. Only
+                // reachable from a prompt that offered it.
+                Action::ApprovalSession => {
+                    if let Some(reply) = pending_approval.take() {
+                        let _ = reply.send(crate::tools::ApprovalAnswer::AllowSession);
                     }
                 }
                 Action::None => {}

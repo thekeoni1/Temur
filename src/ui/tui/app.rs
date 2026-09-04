@@ -93,6 +93,20 @@ pub enum Action {
     /// T21: the user answered the bash approval prompt (y = true; n or
     /// Esc = false). The runtime forwards it to the blocked agent thread.
     Approval(bool),
+    /// T46: allow this TOOL for the rest of the session. Only reachable on
+    /// a prompt that offers it, which a composed (no-key-sandbox) prompt
+    /// never does.
+    ApprovalSession,
+}
+
+/// T21/T46: everything a pending approval prompt has to state.
+pub struct ApprovalPrompt {
+    pub tool: String,
+    pub summary: String,
+    /// Composed prompt: the T21 no-key-sandbox question is live too, so the
+    /// modal carries both facts and offers y/N only.
+    pub no_key_sandbox: bool,
+    pub danger: Option<&'static str>,
 }
 
 pub struct App {
@@ -114,10 +128,10 @@ pub struct App {
     /// Esc was pressed this turn; shown as "interrupting…" until the turn
     /// actually lands (TurnComplete clears it).
     pub interrupting: bool,
-    /// T21: the command a pending bash approval prompt is asking about.
+    /// T21/T46: the pending approval prompt, or `None` when none is open.
     /// While `Some`, keys answer the prompt (y/n/Esc) and nothing else;
     /// set by the runtime on an approval request, cleared by the answer.
-    pub approval: Option<String>,
+    pub approval: Option<ApprovalPrompt>,
     turn_started_ms: u64,
     // Session info for chrome.
     pub title: Option<String>,
@@ -420,11 +434,18 @@ impl App {
         // is ignored, so a stray keystroke can never approve. Deny is the
         // only default: the prompt closes exclusively on an explicit
         // answer (or the runtime's channel teardown, which also denies).
-        if self.approval.is_some() {
+        if let Some(prompt) = &self.approval {
+            // T46 adds `a` to the answer set, and ONLY on a prompt that
+            // offers it: a composed prompt is y/N exactly as T21 was.
+            let session_offered = !prompt.no_key_sandbox;
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     self.approval = None;
                     return Action::Approval(true);
+                }
+                KeyCode::Char('a') | KeyCode::Char('A') if session_offered => {
+                    self.approval = None;
+                    return Action::ApprovalSession;
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                     self.approval = None;

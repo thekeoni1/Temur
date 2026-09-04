@@ -43,6 +43,13 @@ HOST_XDG=$(mktemp -d)
 trap 'rm -rf "$HOST_XDG"' EXIT
 mkdir -p "$HOST_XDG/config" "$HOST_XDG/state"
 HOST_ISOLATION="XDG_CONFIG_HOME=$HOST_XDG/config XDG_STATE_HOME=$HOST_XDG/state"
+# T46: the host pty smoke's input is a BLIND schedule (tui_input below: sleep,
+# type, sleep, exit), so injecting an approval keystroke into it would be a
+# race by construction. It gets the config answer instead. The container
+# smokes, whose fifo harness is output-gated, answer the real modal; between
+# them the approval path is still covered by a pty smoke.
+mkdir -p "$HOST_XDG/config/temur"
+printf '{"approve_mutations": "allow"}\n' > "$HOST_XDG/config/temur/config.json"
 
 # --- shared checks, parameterized by binary/deps dir -------------------------
 
@@ -162,6 +169,12 @@ container_tui() { # $1 = bin dir, $2 = label, $3 = log file
     exec 3<> "$CT_DIR/in"
     tui_wait "$3" "${ESC}\[?1049h" "the alternate screen" "$2"
     printf 'do the smoke task\r' >&3
+    # T46: the fixture calls bash, which now asks before it mutates. This
+    # harness is already output-gated, so it ANSWERS the real modal rather
+    # than routing around it: the pty smokes keep exercising the approval
+    # path, which is worth more than configuring it away.
+    tui_wait "$3" "allow?" "the T46 approval prompt" "$2"
+    printf 'y' >&3
     tui_wait "$3" "world!" "the turn output" "$2"
     printf 'exit\r' >&3
     CT_RC=0
@@ -197,6 +210,11 @@ container_tui_paste() { # $1 = bin dir, $2 = label, $3 = log file
     printf "%s[200~do the smoke task\nsecond pasted line%s[201~" "$ESC" "$ESC" >&3
     tui_wait "$3" "$RETURN_GLYPH" "the pasted newline drawn as a return glyph" "$2"
     printf '\r' >&3
+    # T46: same as container_tui, and it matters MORE here. T43's paste
+    # exclusion already covers the approval prompt, so answering it is also
+    # a live check that a modal opened by a pasted turn is still answerable.
+    tui_wait "$3" "allow?" "the T46 approval prompt" "$2"
+    printf 'y' >&3
     tui_wait "$3" "world!" "the turn output" "$2"
     printf 'exit\r' >&3
     CT_RC=0

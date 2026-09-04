@@ -530,6 +530,11 @@ fn repl(
     // before the first prompt rather than an advisory that never fires.
     session_cfg.cost_rates = temur::cost::CostRates::for_profile(&resolved);
     session_cfg.cost_advisory_step_usd = cfg.cost_advisory_step_usd()?;
+    // T46: validated HERE, at startup, for the same reason the cost step is:
+    // a nonsense approval mode should be an error before the first prompt,
+    // not a silent fallback the user never learns about.
+    cfg.validate_approve_mutations()
+        .map_err(temur::error::Error::Config)?;
     // T40: resolved HERE because the default depends on the invocation mode,
     // which only main.rs knows. One-shot -p has nobody to act on a context
     // advisory, so it compacts itself; the REPL and TUI keep the advisory.
@@ -569,19 +574,27 @@ fn repl(
             // Esc can interrupt a running turn.
             session.cancel_token(),
         )?;
-        // T21: the TUI is interactive by construction, so it can ask
-        // per-command bash approval when the key sandbox is unavailable.
-        session.set_bash_approver(tui.bash_approver());
+        // T21/T46: the TUI is interactive by construction, so it can ask.
+        // T46 flips the DEFAULT here rather than in ToolCtx: an interactive
+        // session installs the approver unless config says "allow", which
+        // leaves every non-interactive construction (and every MockProvider
+        // test) permissive and byte-identical.
+        if cfg.approve_mutations_ask() {
+            session.set_approver(tui.approver());
+        }
         Box::new(tui)
     } else if oneshot.is_some() {
         // T21: one-shot -p NEVER installs an approver; its Ask arm stays a
         // refusal, terminal or not.
         Box::new(temur::ui::oneshot::OneShotUi::stdio())
     } else {
-        // T21: the plain REPL is interactive only on a real terminal;
+        // T21/T46: the plain REPL is interactive only on a real terminal;
         // piped runs (the mock e2e suites) stay byte-identical.
-        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-            session.set_bash_approver(temur::ui::repl::stdin_bash_approver());
+        if std::io::stdin().is_terminal()
+            && std::io::stdout().is_terminal()
+            && cfg.approve_mutations_ask()
+        {
+            session.set_approver(temur::ui::repl::stdin_approver());
         }
         Box::new(ReplUi::new())
     };

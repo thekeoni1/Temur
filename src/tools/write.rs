@@ -12,6 +12,12 @@ struct Params {
 pub struct WriteTool;
 
 impl Tool for WriteTool {
+    /// T46: The registry asks before dispatch: this tool has one
+    /// question and no second one to compose with.
+    fn approval_site(&self) -> crate::tools::ApprovalSite {
+        crate::tools::ApprovalSite::Registry
+    }
+
     fn name(&self) -> &'static str {
         "write"
     }

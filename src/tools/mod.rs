@@ -36,6 +36,83 @@ const MIN_OUTPUT_CHARS: usize = 4_000;
 /// short.
 pub const MIN_REDACTABLE_KEY_CHARS: usize = 8;
 
+/// T46: where a tool's mutation approval is asked.
+///
+/// `Tool` asks for itself. Only `bash` does, and it must: its T21 no-key-
+/// sandbox question is decided inside `bash.rs` after `decide_sandbox`, and
+/// asking the mutation question anywhere else would put TWO prompts in front
+/// of one command, which is exactly what the composition rule forbids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalSite {
+    /// Never asks (read, glob, grep, skill, the todo pair).
+    None,
+    /// The registry asks before dispatch (write, edit).
+    Registry,
+    /// The tool asks for itself, composing its own questions (bash).
+    Tool,
+}
+
+/// T46: one approval question, carrying every fact the prompt must state.
+pub struct ApprovalRequest {
+    /// The tool being approved. Session allows are PER TOOL, keyed on this.
+    pub tool: String,
+    /// One line: the bash command, or the write/edit path with its size or
+    /// change description.
+    pub summary: String,
+    /// T46 COMPOSITION: this bash command ALSO needs the T21 no-key-sandbox
+    /// approval, so one prompt carries both facts.
+    ///
+    /// It also fixes the ANSWER SET. A composed prompt offers y/N only and
+    /// never a session allow, which is a design decision and not a
+    /// concession to the tests that happen to enforce it: sandbox-needing
+    /// AND mutating is the highest-risk combination this product has, and a
+    /// session-wide allow is the wrong shape of answer for it. A session
+    /// allow already held for bash answers the MUTATION question only; the
+    /// T21 question still gets asked.
+    pub no_key_sandbox: bool,
+    /// Display-only emphasis (T46 / D13). `Some` names the matched pattern
+    /// class. A miss is cosmetic BY DESIGN: the base rule already asked, so
+    /// this is never a gate and never a bypass.
+    pub danger: Option<&'static str>,
+}
+
+/// T46: the answer to an [`ApprovalRequest`]. Default on anything that is
+/// not an explicit allow is `Deny`, as T21.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalAnswer {
+    Deny,
+    AllowOnce,
+    /// Allow this TOOL for the rest of the session. Never offered when
+    /// `no_key_sandbox` is set.
+    AllowSession,
+}
+
+/// T46 (D13) destructive-command emphasis: a short FIXED list, display only.
+///
+/// Enumeration cannot be complete, which is why the sound base is
+/// all-mutations-ask and this is only a highlighted line on a prompt that
+/// was already going to appear. A miss costs nothing; a false positive
+/// costs a scarier prompt on a command the user was being asked about
+/// anyway.
+pub fn danger_class(command: &str) -> Option<&'static str> {
+    let c = command.to_lowercase();
+    let rm_recursive = c.contains("rm ")
+        && (c.contains(" -r") || c.contains(" -fr") || c.contains(" -rf"));
+    if rm_recursive {
+        return Some("recursive delete");
+    }
+    if c.contains("mkfs") {
+        return Some("filesystem format");
+    }
+    if c.contains("dd ") && c.contains("of=/dev/") {
+        return Some("raw write to a device");
+    }
+    if c.contains("git reset --hard") || c.contains("git clean -f") {
+        return Some("discards uncommitted work");
+    }
+    Some("shred").filter(|_| c.contains("shred "))
+}
+
 /// Mutable per-session state tools may use.
 pub struct ToolCtx {
     pub cwd: PathBuf,
@@ -53,12 +130,21 @@ pub struct ToolCtx {
     /// keys guarded but no working sandbox, bash refuses unless this is
     /// set. Meaningless while the guard is empty.
     pub allow_unsandboxed_bash: bool,
-    /// T21 bash approval: an interactive UI's per-command approver, called
-    /// with the exact command string when keys are guarded, the sandbox is
-    /// unavailable, and the override is off (the Ask arm). `None` (the
-    /// default everywhere) means no UI can ask, so that arm refuses
-    /// instead: every non-interactive construction site is untouched.
-    pub bash_approver: Option<Box<dyn FnMut(&str) -> bool>>,
+    /// T21 bash approval, GENERALIZED by T46 into one mutation approver.
+    ///
+    /// An interactive UI's approver, called with a structured
+    /// [`ApprovalRequest`]. `None` (the default everywhere) means no UI can
+    /// ask: the T21 Ask arm still refuses as it always did, and T46's
+    /// mutation question is simply not asked, so every non-interactive
+    /// construction site is untouched and PERMISSIVE exactly as before. The
+    /// ask-by-default flip lives at session construction in `main.rs`, not
+    /// here: moving it into this default would break every MockProvider
+    /// test for no safety gain, since the only entry points a user reaches
+    /// go through `main`.
+    pub approver: Option<Box<dyn FnMut(&ApprovalRequest) -> ApprovalAnswer>>,
+    /// T46: tools the user has allowed for the rest of the session, keyed by
+    /// tool name. Per tool by design: allowing bash does not allow write.
+    pub session_allows: std::collections::HashSet<String>,
     /// T28: the per-result output cap in force for THIS dispatch, which
     /// [`Registry::execute`] sets from its own (context-scaled, T19) cap
     /// before calling the tool. A tool that can produce a smaller answer
@@ -85,7 +171,8 @@ impl ToolCtx {
             cancel: CancelToken::new(),
             guard: KeyGuard::empty(),
             allow_unsandboxed_bash: false,
-            bash_approver: None,
+            approver: None,
+            session_allows: std::collections::HashSet::new(),
             output_cap: MAX_OUTPUT_CHARS,
             read_paths: std::collections::HashSet::new(),
         }
@@ -165,6 +252,13 @@ pub trait Tool {
     fn truncation_hint(&self) -> &'static str {
         "narrow the command, e.g. grep or head/tail, to see the elided middle"
     }
+    /// T46: does this tool mutate, and who asks about it? Default `None`
+    /// keeps every read-only tool (read, glob, grep, skill, the todo pair)
+    /// out of the approval path by construction rather than by a name list
+    /// that could drift from the registry.
+    fn approval_site(&self) -> ApprovalSite {
+        ApprovalSite::None
+    }
     fn input_schema(&self) -> Value;
     fn execute(&self, input: Value, ctx: &mut ToolCtx) -> Result<ToolOutput, ToolError>;
 }
@@ -173,6 +267,88 @@ pub trait Tool {
 /// to model-facing `InvalidInput`.
 fn parse_input<T: serde::de::DeserializeOwned>(input: Value) -> Result<T, ToolError> {
     serde_json::from_value(input).map_err(|e| ToolError::InvalidInput(e.to_string()))
+}
+
+/// T46: ask the registry-sited mutation question for one call.
+///
+/// Returns `Some(error)` when the call must NOT run. `None` means proceed,
+/// which covers every path that does not ask at all: no approver installed
+/// (non-interactive, and the permissive default every MockProvider test
+/// constructs), or a session allow already held for this tool.
+fn approve_or_deny(tool: &str, input: &Value, ctx: &mut ToolCtx) -> Option<ToolError> {
+    if ctx.approver.is_none() || ctx.session_allows.contains(tool) {
+        return None;
+    }
+    // An interrupt already requested denies without prompting, as T21.
+    if ctx.cancel.is_set() {
+        return Some(ToolError::failed(approval_denied_text(tool)));
+    }
+    let req = ApprovalRequest {
+        tool: tool.to_string(),
+        summary: summarize(tool, input),
+        no_key_sandbox: false,
+        danger: None,
+    };
+    let answer = ctx
+        .approver
+        .as_mut()
+        .map(|ask| ask(&req))
+        .unwrap_or(ApprovalAnswer::Deny);
+    match answer {
+        ApprovalAnswer::AllowOnce => None,
+        ApprovalAnswer::AllowSession => {
+            ctx.session_allows.insert(tool.to_string());
+            None
+        }
+        ApprovalAnswer::Deny => Some(ToolError::failed(approval_denied_text(tool))),
+    }
+}
+
+/// T46: the denied-call tool result, one fixed sentence class for every
+/// tool. NO guard exemption rides with it: an identical resend produces an
+/// identical result, and T36's futile-call guard and the doom-loop guard
+/// ending that turn is the DESIGNED backstop. This wording's job is to make
+/// round one count.
+pub fn approval_denied_text(tool: &str) -> String {
+    format!(
+        "the user declined this {tool} call; do not retry it unchanged - adjust the approach or finish the turn"
+    )
+}
+
+/// T46: the one summary line a prompt shows for a registry-sited tool.
+/// bash builds its own (the command itself).
+fn summarize(tool: &str, input: &Value) -> String {
+    let path = input
+        .get("filePath")
+        .or_else(|| input.get("file_path"))
+        .or_else(|| input.get("path"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("(unnamed path)");
+    match tool {
+        "write" => {
+            let n = input
+                .get("content")
+                .and_then(|v| v.as_str())
+                .map(|c| c.len())
+                .unwrap_or(0);
+            format!("write {path} ({n} bytes)")
+        }
+        "edit" => {
+            let old = input
+                .get("oldString")
+                .or_else(|| input.get("old_string"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let one = old.lines().next().unwrap_or("").trim();
+            let shown: String = one.chars().take(48).collect();
+            if shown.is_empty() {
+                format!("edit {path}")
+            } else {
+                format!("edit {path} (replaces \"{shown}\"...)")
+            }
+        }
+        other => format!("{other} {path}"),
+    }
 }
 
 pub struct Registry {
@@ -295,6 +471,14 @@ impl Registry {
             .iter()
             .find(|t| t.name() == name)
             .ok_or_else(|| ToolError::InvalidInput(format!("unknown tool: {name}")))?;
+        // T46: the mutation question, for the tools the REGISTRY asks about
+        // (write, edit). bash asks for itself, composing this question with
+        // its T21 sandbox question so one command never draws two prompts.
+        if tool.approval_site() == ApprovalSite::Registry {
+            if let Some(denied) = approve_or_deny(tool.name(), &input, ctx) {
+                return Err(denied);
+            }
+        }
         // T28: tell the tool what it has to fit in, before it runs.
         ctx.output_cap = self.cap_chars;
         let mut out = tool.execute(input, ctx).map_err(|e| match e {

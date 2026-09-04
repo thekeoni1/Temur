@@ -1194,9 +1194,41 @@ fn approval_piped_noninteractive_still_refuses() {
 }
 
 #[test]
-fn approval_keyless_pty_never_prompts_and_runs_plain() {
+fn approval_keyless_pty_asks_the_mutation_question_not_the_sandbox_one() {
+    // T21's point here was that a KEYLESS config never asks the key-isolation
+    // question. T46 adds a second, independent question, so this now pins the
+    // DISTINCTION: the prompt that appears is the mutation one, the composed
+    // T21 wording is absent, and answering it runs the command plain.
     let sb = sandbox();
     sb.write_config("{}");
+    let (code, out) = run_pty(
+        &sb,
+        &format!("--plain --mock {}", approval_fixtures()),
+        "do it\ny\nexit\n",
+        true,
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        !out.contains("NO key isolation"),
+        "keyless must never ask the sandbox question: {out}"
+    );
+    assert!(
+        out.contains("bash approval needed:") && out.contains("[y/a/N]"),
+        "the mutation question, with its session answer offered: {out}"
+    );
+    assert!(out.contains("✓ bash"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(sb.home.join("approval-marker.txt")).unwrap(),
+        "approval-ran\n"
+    );
+}
+
+#[test]
+fn approval_allow_config_restores_pre_t46_silence() {
+    // "approve_mutations": "allow" is the documented way back to pre-T46
+    // behavior: no prompt of either kind, the command just runs.
+    let sb = sandbox();
+    sb.write_config(r#"{"approve_mutations": "allow"}"#);
     let (code, out) = run_pty(
         &sb,
         &format!("--plain --mock {}", approval_fixtures()),
@@ -1204,7 +1236,7 @@ fn approval_keyless_pty_never_prompts_and_runs_plain() {
         true,
     );
     assert_eq!(code, 0, "{out}");
-    assert!(!out.contains("[y/N]"), "keyless must never prompt: {out}");
+    assert!(!out.contains("approval needed"), "no prompt at all: {out}");
     assert!(out.contains("✓ bash"), "{out}");
     assert_eq!(
         std::fs::read_to_string(sb.home.join("approval-marker.txt")).unwrap(),

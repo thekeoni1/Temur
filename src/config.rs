@@ -60,6 +60,32 @@ pub const DEFAULT_COST_ADVISORY_STEP_USD: f64 = 5.0;
 /// something a user can read off their own config and predict.
 pub const PROMPT_AUTO_COMPACT_BELOW: u64 = 20480;
 
+/// T46: the accepted `approve_mutations` spellings.
+pub const APPROVE_MUTATIONS_VALUES: &str = "\"ask\" or \"allow\"";
+
+impl Config {
+    /// T46: does an interactive session ask before mutating tools run?
+    ///
+    /// `None` and `"ask"` both mean ask, so the DEFAULT is ask and a config
+    /// that never mentions the key gets the safe posture. Validated at
+    /// startup by [`Config::validate_approve_mutations`]; this reader
+    /// treats an unvalidated bad value as ask, which fails safe.
+    pub fn approve_mutations_ask(&self) -> bool {
+        !matches!(self.approve_mutations.as_deref(), Some("allow"))
+    }
+
+    /// Startup validation: an unknown spelling is a config error rather
+    /// than a silent fallback, exactly as `prompt_profile` is.
+    pub fn validate_approve_mutations(&self) -> Result<(), String> {
+        match self.approve_mutations.as_deref() {
+            None | Some("ask") | Some("allow") => Ok(()),
+            Some(other) => Err(format!(
+                "approve_mutations: unknown value {other:?} (expected {APPROVE_MUTATIONS_VALUES})"
+            )),
+        }
+    }
+}
+
 /// The accepted `prompt_profile` spellings, quoted once so every error
 /// message naming them cannot drift apart.
 const PROMPT_PROFILE_EXPECTED: &str = "expected \"auto\", \"full\", or \"compact\"";
@@ -229,6 +255,15 @@ pub struct Config {
     /// `"compact"` is never second-guessed. Any other value is a startup
     /// config error.
     pub prompt_profile: Option<String>,
+    /// T46 (D13): the interactive approval mode. `"ask"` (the DEFAULT, and
+    /// `None` means ask) prompts before every mutating tool call: bash,
+    /// write, edit. `"allow"` restores pre-T46 behavior and never prompts.
+    /// Any other value is a startup config error.
+    ///
+    /// INTERACTIVE SESSIONS ONLY. One-shot `-p` cannot prompt, so it has
+    /// its own rule (deny mutations unless `--allow-mutations`); this key
+    /// is honored there too, and the precedence is recorded with that flag.
+    pub approve_mutations: Option<String>,
     /// Directory holding saved sessions (T5). `None` = the default state
     /// location, `$XDG_STATE_HOME/temur/sessions` falling back to
     /// `~/.local/state/temur/sessions`. A directory override and nothing
@@ -441,6 +476,7 @@ impl Default for Config {
             skills_dir: None,
             max_turn_iterations: DEFAULT_MAX_TURN_ITERATIONS,
             prompt_profile: None,
+            approve_mutations: None,
             sessions_dir: None,
             session_max_bytes: None,
             openai_compat: None,

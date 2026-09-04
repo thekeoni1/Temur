@@ -81,6 +81,65 @@ fn decide_sandbox(
     }
 }
 
+/// T46: bash's own approval question, composed when the T21 sandbox
+/// question is live too.
+///
+/// Returns `Some(error)` when the command must not run. `None` proceeds,
+/// which covers the paths that never ask: no approver installed (every
+/// non-interactive construction, unchanged from T21) and a session allow
+/// already held for bash.
+///
+/// A session allow does NOT answer the sandbox question. When
+/// `no_key_sandbox` is set the prompt appears even for a bash the user
+/// allowed for the session, because the two questions are different
+/// questions and only one of them has been answered.
+fn ask_bash(command: &str, no_key_sandbox: bool, ctx: &mut ToolCtx) -> Option<ToolError> {
+    if ctx.approver.is_none() {
+        // T21 unchanged: the Ask arm is only reached when an approver
+        // exists, so this can only be the T46-only path with no UI to ask.
+        return None;
+    }
+    if !no_key_sandbox && ctx.session_allows.contains("bash") {
+        return None;
+    }
+    if ctx.cancel.is_set() {
+        return Some(ToolError::failed(if no_key_sandbox {
+            APPROVAL_DENIED.to_string()
+        } else {
+            crate::tools::approval_denied_text("bash")
+        }));
+    }
+    let req = crate::tools::ApprovalRequest {
+        tool: "bash".to_string(),
+        summary: command.to_string(),
+        no_key_sandbox,
+        danger: crate::tools::danger_class(command),
+    };
+    let answer = ctx
+        .approver
+        .as_mut()
+        .map(|ask| ask(&req))
+        .unwrap_or(crate::tools::ApprovalAnswer::Deny);
+    match answer {
+        crate::tools::ApprovalAnswer::AllowOnce => None,
+        crate::tools::ApprovalAnswer::AllowSession => {
+            // Never offered on a composed prompt; if a UI answers it anyway
+            // it is honored as a one-time allow and NOT recorded, so the
+            // sandbox question can never be silently pre-answered.
+            if !no_key_sandbox {
+                ctx.session_allows.insert("bash".to_string());
+            }
+            None
+        }
+        crate::tools::ApprovalAnswer::Deny => Some(ToolError::failed(if no_key_sandbox {
+            // T21's message, byte-identical, for the arm T21 owns.
+            APPROVAL_DENIED.to_string()
+        } else {
+            crate::tools::approval_denied_text("bash")
+        })),
+    }
+}
+
 /// Async-signal-safe file write for the pre_exec closure: open/write/
 /// close only, errors via errno with no allocation.
 ///
@@ -217,6 +276,14 @@ struct Params {
 pub struct BashTool;
 
 impl Tool for BashTool {
+    /// T46: bash asks for ITSELF. Its T21 no-key-sandbox question is
+    /// decided below after `decide_sandbox`, and asking the mutation
+    /// question at the registry would put two prompts in front of one
+    /// command.
+    fn approval_site(&self) -> crate::tools::ApprovalSite {
+        crate::tools::ApprovalSite::Tool
+    }
+
     fn name(&self) -> &'static str {
         "bash"
     }
@@ -278,25 +345,32 @@ impl Tool for BashTool {
         match decide_sandbox(
             !ctx.guard.is_empty(),
             ctx.allow_unsandboxed_bash,
-            ctx.bash_approver.is_some(),
+            ctx.approver.is_some(),
             sandbox_available,
         ) {
-            SandboxDecision::Plain => {}
+            SandboxDecision::Plain => {
+                // T46: no sandbox question, but bash still mutates, so the
+                // mutation question is asked here rather than at the
+                // registry. Same site as the composed case below, which is
+                // what guarantees ONE prompt per command.
+                if let Some(denied) = ask_bash(&p.command, false, ctx) {
+                    return Err(denied);
+                }
+            }
             SandboxDecision::Refuse => return Err(ToolError::failed(SANDBOX_REFUSAL)),
             SandboxDecision::Ask => {
-                // Default is DENY: an interrupt already requested (cancel
-                // token set) denies without even prompting, and the
-                // approver itself answers false for anything but an
-                // explicit yes. An approved command runs PLAIN, this one
-                // time only; the decision is never cached.
-                let approved = !ctx.cancel.is_set()
-                    && ctx
-                        .bash_approver
-                        .as_mut()
-                        .map(|approve| approve(&p.command))
-                        .unwrap_or(false);
-                if !approved {
-                    return Err(ToolError::failed(APPROVAL_DENIED));
+                // T21 default is DENY and T46 does not change it: an
+                // interrupt already requested denies without prompting, and
+                // anything but an explicit allow denies. An approved
+                // command runs PLAIN, this one time only; the decision is
+                // never cached.
+                //
+                // T46 COMPOSITION: this command needs BOTH the no-key-
+                // sandbox approval and the mutation approval, so ONE prompt
+                // carries both facts and offers y/N only. The T21 wording is
+                // pinned by tests and is composed with, never reworded.
+                if let Some(denied) = ask_bash(&p.command, true, ctx) {
+                    return Err(denied);
                 }
             }
             SandboxDecision::Sandboxed => {
