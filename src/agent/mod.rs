@@ -640,6 +640,15 @@ impl Session {
         self.tool_ctx.approver = Some(approver);
     }
 
+    /// T46: refuse mutating tool calls instead of asking, for a run with
+    /// nobody to ask (one-shot -p without `--allow-mutations`). A setter
+    /// for the same reason [`Session::set_approver`] is one: the
+    /// approver-free default stays permissive, and the policy is imposed
+    /// where sessions are constructed.
+    pub fn set_refuse_mutations(&mut self, refuse: bool) {
+        self.tool_ctx.refuse_mutations = refuse;
+    }
+
     /// T46: is an approver installed? The interactive-default test asserts
     /// on this rather than on a private field.
     pub fn has_approver(&self) -> bool {

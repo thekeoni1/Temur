@@ -325,3 +325,121 @@ fn the_permissive_default_is_untouched_and_ask_is_the_config_default() {
     // Fails SAFE: an unvalidated bad value still reads as ask.
     assert!(bad.approve_mutations_ask());
 }
+
+// ---------------------------------------------- T46 P2: the -p refusal
+
+/// The refusal a run with nobody to ask gives instead of asking. Reads the
+/// wording from the crate so this file and the message cannot drift.
+fn refusal(tool: &str) -> String {
+    temur::tools::mutation_refusal_text(tool)
+}
+
+#[test]
+fn refuse_mutations_fails_loud_and_names_the_way_out_for_every_mutating_tool() {
+    force_probe_fail();
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("nope.txt");
+    let existing = dir.path().join("edit-me.txt");
+    std::fs::write(&existing, "before\n").unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ToolCtx::new(dir.path().to_path_buf());
+    ctx.refuse_mutations = true;
+    // Not a placeholder for an ask: NO approver is installed, which before
+    // T46 meant permissive. The refusal is the whole point.
+    assert!(ctx.approver.is_none());
+
+    let cases: Vec<(&str, serde_json::Value)> = vec![
+        ("bash", json!({"command": "echo refused > r.txt"})),
+        (
+            "write",
+            json!({"filePath": target.to_str().unwrap(), "content": "nope"}),
+        ),
+        (
+            "edit",
+            json!({
+                "filePath": existing.to_str().unwrap(),
+                "oldString": "before",
+                "newString": "after"
+            }),
+        ),
+    ];
+    for (tool, input) in cases {
+        let err = reg.execute(tool, input, &mut ctx).unwrap_err();
+        let msg = match err {
+            ToolError::Failed(m) | ToolError::InvalidInput(m) => m,
+        };
+        assert_eq!(msg, refusal(tool), "{tool} must give the one refusal");
+        // The three facts the message exists to carry.
+        assert!(msg.contains("--allow-mutations"), "{tool}: {msg}");
+        assert!(msg.contains("\"approve_mutations\": \"allow\""), "{tool}: {msg}");
+        assert!(msg.contains("cannot ask"), "{tool}: {msg}");
+    }
+    assert!(!target.exists(), "a refused write must not touch the disk");
+    assert_eq!(std::fs::read_to_string(&existing).unwrap(), "before\n");
+    assert!(!dir.path().join("r.txt").exists(), "a refused bash must not run");
+}
+
+#[test]
+fn a_refusing_run_leaves_read_only_tools_untouched() {
+    force_probe_fail();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), "hello\n").unwrap();
+    let mut ctx = ToolCtx::new(dir.path().to_path_buf());
+    ctx.refuse_mutations = true;
+    let reg = Registry::standard();
+    reg.execute(
+        "read",
+        json!({"filePath": dir.path().join("f.txt").to_str().unwrap()}),
+        &mut ctx,
+    )
+    .unwrap();
+    reg.execute(
+        "glob",
+        json!({"pattern": "*.txt", "path": dir.path().to_str().unwrap()}),
+        &mut ctx,
+    )
+    .unwrap();
+    reg.execute("todoread", json!({}), &mut ctx).unwrap();
+}
+
+#[test]
+fn a_session_allow_cannot_survive_into_a_refusing_run() {
+    force_probe_fail();
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ToolCtx::new(dir.path().to_path_buf());
+    // Both of the things that mean "proceed" on the asking path, set at once:
+    // an allow already held, and no approver to consult. Neither may soften
+    // the refusal, which is why the check comes first.
+    ctx.session_allows.insert("bash".to_string());
+    ctx.session_allows.insert("write".to_string());
+    ctx.refuse_mutations = true;
+    let err = bash(&Registry::standard(), &mut ctx, "echo hi").unwrap_err();
+    assert_eq!(err, refusal("bash"));
+}
+
+#[test]
+fn t21_keeps_precedence_over_the_t46_refusal_where_both_could_speak() {
+    force_probe_fail();
+    let (_dir, _key, mut ctx) = guarded_ctx();
+    ctx.refuse_mutations = true;
+    // Keys guarded, no sandbox, nobody to ask: T21 owns this and says so.
+    // The T46 refusal is reached only where bash would otherwise have RUN,
+    // and --allow-mutations is not a way around the key sandbox.
+    let err = bash(&Registry::standard(), &mut ctx, "echo hi").unwrap_err();
+    assert_eq!(err, SANDBOX_REFUSAL);
+}
+
+#[test]
+fn the_refusal_is_a_normal_tool_error_so_the_turn_continues() {
+    force_probe_fail();
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ToolCtx::new(dir.path().to_path_buf());
+    ctx.refuse_mutations = true;
+    let err = Registry::standard()
+        .execute("bash", json!({"command": "true"}), &mut ctx)
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Failed(_)),
+        "loud, but an is_error tool_result and not a crash: {err:?}"
+    );
+}

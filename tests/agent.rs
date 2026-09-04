@@ -6675,3 +6675,158 @@ fn manual_compact_still_summarizes_the_whole_history() {
         "the MANUAL instruction, not the auto one"
     );
 }
+
+// -------------------- T46 P2: what a denied call does to the guards
+//
+// The design decision these pin is a NON-change: a denied call gets no
+// guard exemption. An identical resend produces an identical result, which
+// is exactly what T36's futile-call guard and the doom-loop guard exist to
+// end. The wording's job is to make round one count; the guards are the
+// designed backstop when it does not.
+
+/// A session whose approver answers from a scripted list, one answer per
+/// call, recording every tool it was asked about.
+fn session_with_approvals(
+    dir: &std::path::Path,
+    responses: Vec<ResponseMessage>,
+    answers: Vec<temur::tools::ApprovalAnswer>,
+) -> (Session, Rc<RefCell<Vec<ChatRequest>>>, Rc<RefCell<Vec<String>>>) {
+    let (mut session, requests) = session_with(dir, responses);
+    let asked = Rc::new(RefCell::new(Vec::<String>::new()));
+    let record = Rc::clone(&asked);
+    let queue = RefCell::new(answers.into_iter());
+    session.set_approver(Box::new(move |req: &temur::tools::ApprovalRequest| {
+        record.borrow_mut().push(req.tool.clone());
+        queue
+            .borrow_mut()
+            .next()
+            .expect("the approver was called more times than the test scripted")
+    }));
+    (session, requests, asked)
+}
+
+fn write_call(path: &std::path::Path, content: &str) -> ResponseMessage {
+    msg(
+        vec![tool_use(
+            "tu_w",
+            "write",
+            serde_json::json!({"filePath": path.to_str().unwrap(), "content": content}),
+        )],
+        StopReason::ToolUse,
+    )
+}
+
+#[test]
+fn a_denied_call_resent_unchanged_is_stopped_by_the_doom_loop_guard() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("denied.txt");
+    let (mut session, requests, asked) = session_with_approvals(
+        dir.path(),
+        vec![
+            write_call(&target, "one"),
+            write_call(&target, "one"),
+            write_call(&target, "one"),
+            write_call(&target, "one"),
+        ],
+        vec![
+            temur::tools::ApprovalAnswer::Deny,
+            temur::tools::ApprovalAnswer::Deny,
+        ],
+    );
+    let events = collect_events(&mut session, "write it");
+
+    assert_eq!(
+        requests.borrow().len(),
+        3,
+        "the third identical call is stopped BEFORE it is executed"
+    );
+    // Two dispatches reached the approver; the third never got that far.
+    assert_eq!(asked.borrow().as_slice(), ["write", "write"]);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Notice(n) if n.contains("repeated 3 times")
+        )),
+        "the doom-loop guard ends the turn: {events:?}"
+    );
+    assert!(!target.exists(), "nothing was ever written");
+}
+
+#[test]
+fn the_denial_wording_reaches_the_model_and_an_adjusted_call_proceeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let denied = dir.path().join("denied.txt");
+    let allowed = dir.path().join("allowed.txt");
+    let (mut session, requests, asked) = session_with_approvals(
+        dir.path(),
+        vec![
+            write_call(&denied, "one"),
+            write_call(&allowed, "two"),
+            msg(vec![text("done")], StopReason::EndTurn),
+        ],
+        vec![
+            temur::tools::ApprovalAnswer::Deny,
+            temur::tools::ApprovalAnswer::AllowOnce,
+        ],
+    );
+    let events = collect_events(&mut session, "write it");
+
+    assert_eq!(requests.borrow().len(), 3);
+    assert_eq!(asked.borrow().as_slice(), ["write", "write"]);
+    // The sentence rides back as the tool result, which is the only reason
+    // the model has anything to adjust from.
+    let result = session
+        .history()
+        .iter()
+        .flat_map(|m| &m.content)
+        .find_map(|b| match b {
+            ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .expect("a write tool_result");
+    assert!(
+        result.contains("the user declined this write call")
+            && result.contains("do not retry it unchanged"),
+        "the denial sentence must reach the model: {result}"
+    );
+    assert!(!denied.exists(), "the denied path was never touched");
+    assert_eq!(std::fs::read_to_string(&allowed).unwrap(), "two");
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Notice(n) if n.contains("repeated"))),
+        "an adjusted call is not a loop: {events:?}"
+    );
+}
+
+#[test]
+fn a_denial_followed_by_finishing_ends_the_turn_cleanly() {
+    let dir = tempfile::tempdir().unwrap();
+    let denied = dir.path().join("denied.txt");
+    let (mut session, requests, asked) = session_with_approvals(
+        dir.path(),
+        vec![
+            write_call(&denied, "one"),
+            msg(
+                vec![text("Understood, I will leave that file alone.")],
+                StopReason::EndTurn,
+            ),
+        ],
+        vec![temur::tools::ApprovalAnswer::Deny],
+    );
+    let events = collect_events(&mut session, "write it");
+
+    assert_eq!(requests.borrow().len(), 2);
+    assert_eq!(asked.borrow().as_slice(), ["write"]);
+    assert!(!denied.exists());
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Notice(n) if n.contains("stopped:"))),
+        "no guard fired: {events:?}"
+    );
+    assert!(
+        matches!(events.last(), Some(AgentEvent::TurnComplete { .. })),
+        "the turn ends normally: {events:?}"
+    );
+}

@@ -94,6 +94,18 @@ fn decide_sandbox(
 /// allowed for the session, because the two questions are different
 /// questions and only one of them has been answered.
 fn ask_bash(command: &str, no_key_sandbox: bool, ctx: &mut ToolCtx) -> Option<ToolError> {
+    if ctx.refuse_mutations {
+        // T46: one-shot -p without --allow-mutations. The question has moved
+        // here for bash, so the refusal moves with it; write and edit get the
+        // identical wording from the registry site.
+        //
+        // T21 keeps precedence by construction rather than by an ordering
+        // written down here: the Ask arm is only reached when an approver is
+        // installed, which -p never has, so a keyed host with no working
+        // sandbox still refuses with SANDBOX_REFUSAL and this question is
+        // never put.
+        return Some(ToolError::failed(crate::tools::mutation_refusal_text("bash")));
+    }
     if ctx.approver.is_none() {
         // T21 unchanged: the Ask arm is only reached when an approver
         // exists, so this can only be the T46-only path with no UI to ask.

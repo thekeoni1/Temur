@@ -53,6 +53,11 @@ fn run() -> Result<ExitCode, error::Error> {
     // --add <template> (T17): only meaningful for `init` (merge a template
     // into an existing config as profiles, instead of writing a fresh one).
     let mut add: Option<String> = None;
+    // --allow-mutations (T46): the flag form of `"approve_mutations":
+    // "allow"`. Interactive sessions stop asking; one-shot -p stops
+    // refusing. It can only ever WIDEN what is permitted, so there is no
+    // deny-side conflict to resolve between it and the config.
+    let mut allow_mutations = false;
     while let Some(arg) = parser.next()? {
         match arg {
             Long("version") | Short('V') => {
@@ -69,6 +74,7 @@ fn run() -> Result<ExitCode, error::Error> {
             Long("force") => force = true,
             Long("no-network") => no_network = true,
             Long("add") => add = Some(parser.value()?.string()?),
+            Long("allow-mutations") => allow_mutations = true,
             Value(v) if cmd.is_none() => cmd = Some(v.string()?),
             arg => return Err(arg.unexpected().into()),
         }
@@ -94,6 +100,13 @@ fn run() -> Result<ExitCode, error::Error> {
         return Err(error::Error::Usage(
             "--force does not combine with --add (init --add merges into the existing config)"
                 .into(),
+        ));
+    }
+    // A session flag, not a subcommand one: init/doctor/tls-probe run no
+    // tools at all, so accepting it there would let a typo look accepted.
+    if allow_mutations && cmd.is_some() {
+        return Err(error::Error::Usage(
+            "--allow-mutations is only valid for a session, not a subcommand".into(),
         ));
     }
     if force_tui && force_plain {
@@ -212,7 +225,15 @@ fn run() -> Result<ExitCode, error::Error> {
             Ok(ExitCode::SUCCESS)
         }
         Some(other) => Err(error::Error::Usage(format!("unknown command: {other}"))),
-        None => repl(mock, capture, use_tui, resume, resume_key, oneshot),
+        None => repl(
+            mock,
+            capture,
+            use_tui,
+            resume,
+            resume_key,
+            oneshot,
+            allow_mutations,
+        ),
     }
 }
 
@@ -223,6 +244,7 @@ fn repl(
     resume: bool,
     resume_key: Option<String>,
     oneshot: Option<String>,
+    allow_mutations: bool,
 ) -> Result<ExitCode, error::Error> {
     let (cfg, cfg_existed) = config::Config::load_reporting()?;
     // Validated up front: an unknown GLOBAL prompt_profile is a startup
@@ -535,6 +557,13 @@ fn repl(
     // not a silent fallback the user never learns about.
     cfg.validate_approve_mutations()
         .map_err(temur::error::Error::Config)?;
+    // T46 PRECEDENCE, recorded here because it is the only place both
+    // signals meet: either the flag or `"approve_mutations": "allow"`
+    // permits mutations, and where they disagree the FLAG wins, being the
+    // per-invocation signal against the standing one. The disagreement is
+    // one-sided by construction: no config value and no flag ever asks for
+    // MORE restriction than the default, so nothing here can tighten.
+    let approve_ask = cfg.approve_mutations_ask() && !allow_mutations;
     // T40: resolved HERE because the default depends on the invocation mode,
     // which only main.rs knows. One-shot -p has nobody to act on a context
     // advisory, so it compacts itself; the REPL and TUI keep the advisory.
@@ -576,23 +605,32 @@ fn repl(
         )?;
         // T21/T46: the TUI is interactive by construction, so it can ask.
         // T46 flips the DEFAULT here rather than in ToolCtx: an interactive
-        // session installs the approver unless config says "allow", which
-        // leaves every non-interactive construction (and every MockProvider
-        // test) permissive and byte-identical.
-        if cfg.approve_mutations_ask() {
+        // session installs the approver unless it was told not to ask
+        // (config "allow", or --allow-mutations), which leaves every
+        // non-interactive construction (and every MockProvider test)
+        // permissive and byte-identical.
+        if approve_ask {
             session.set_approver(tui.approver());
         }
         Box::new(tui)
     } else if oneshot.is_some() {
         // T21: one-shot -p NEVER installs an approver; its Ask arm stays a
         // refusal, terminal or not.
+        //
+        // T46: and since it cannot ask, it REFUSES. The first mutating call
+        // fails loud naming --allow-mutations and the config key, which is
+        // the operator's decision recorded as such: a run with nobody to ask
+        // denies rather than assumes. Read-only -p runs are untouched.
+        if approve_ask {
+            session.set_refuse_mutations(true);
+        }
         Box::new(temur::ui::oneshot::OneShotUi::stdio())
     } else {
         // T21/T46: the plain REPL is interactive only on a real terminal;
         // piped runs (the mock e2e suites) stay byte-identical.
         if std::io::stdin().is_terminal()
             && std::io::stdout().is_terminal()
-            && cfg.approve_mutations_ask()
+            && approve_ask
         {
             session.set_approver(temur::ui::repl::stdin_approver());
         }

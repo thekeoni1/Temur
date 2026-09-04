@@ -219,7 +219,9 @@ fn oneshot_tool_turn_splits_streams_openai_wire() {
         fixture("openai/tool_parallel.sse"),
         fixture("openai/text_simple.sse")
     );
-    c.args(["--mock", &fixtures, "-p", "do the smoke task"]);
+    // T46: this test is about the openai wire, not approval, so it says
+    // out loud that mutations are allowed rather than measuring a refusal.
+    c.args(["--mock", &fixtures, "--allow-mutations", "-p", "do the smoke task"]);
     let (code, stdout, stderr) = run(c, "");
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
     // OpenAI chunk streams only assemble through the compat provider, so
@@ -243,7 +245,10 @@ fn write_unread_existing_file_denied_through_the_binary() {
         fixture("write_unread.sse"),
         fixture("text_simple.sse")
     );
-    c.args(["--mock", &fixtures, "-p", "overwrite the file"]);
+    // T46: allowed, so the refusal under test is still T19's read-first
+    // rule and not the new mutation refusal (which would otherwise pass
+    // this assertion vacuously).
+    c.args(["--mock", &fixtures, "--allow-mutations", "-p", "overwrite the file"]);
     let (code, stdout, stderr) = run(c, "");
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
     assert_eq!(
@@ -263,7 +268,7 @@ fn write_after_read_succeeds_through_the_binary() {
         fixture("read_then_write.sse"),
         fixture("text_simple.sse")
     );
-    c.args(["--mock", &fixtures, "-p", "update the file"]);
+    c.args(["--mock", &fixtures, "--allow-mutations", "-p", "update the file"]);
     let (code, stdout, stderr) = run(c, "");
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
     assert_eq!(
@@ -280,7 +285,7 @@ fn oneshot_provider_error_exits_failure() {
     // exit FAILURE with the error on stderr, prose so far on stdout.
     let sb = sandbox();
     let mut c = sb.cmd();
-    c.args(["--mock", &fixture("tool_use_parallel.sse"), "-p", "go"]);
+    c.args(["--mock", &fixture("tool_use_parallel.sse"), "--allow-mutations", "-p", "go"]);
     let (code, stdout, stderr) = run(c, "");
     assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
     assert!(stderr.contains("provider error"), "{stderr}");
@@ -297,7 +302,7 @@ fn oneshot_interrupted_by_sigint_exits_130() {
     use std::io::{BufRead, BufReader, Read};
     let sb = sandbox();
     let mut c = sb.cmd();
-    c.args(["--mock", &fixture("interrupt_sleep.sse"), "-p", "go"])
+    c.args(["--mock", &fixture("interrupt_sleep.sse"), "--allow-mutations", "-p", "go"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1513,4 +1518,117 @@ fn a_configured_context_window_is_never_probed_over() {
     // The FIRST request the server saw is the completion, not a probe.
     let head = server.join().unwrap().to_ascii_lowercase();
     assert!(head.starts_with("post /v1/chat/completions "), "{head}");
+}
+
+// ------------------------------- T46 P2: one-shot -p refuses mutations
+//
+// The layering split is the risk these pin. bash asks its own question
+// (inside bash.rs, composed with T21's), write and edit are asked about at
+// the registry; the -p refusal has to arrive identically down BOTH routes,
+// and bash's is the one that could quietly diverge.
+
+#[test]
+fn oneshot_bash_without_the_flag_refuses_loud_and_names_the_flag() {
+    let sb = sandbox();
+    // Keyless: nothing about the key sandbox is in play, so the refusal on
+    // display can only be T46's own.
+    sb.write_config("{}");
+    let mut c = sb.cmd();
+    let fixtures = approval_fixtures();
+    c.args(["--mock", &fixtures, "-p", "run the command"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!stdout.contains("[y/N]"), "-p never prompts: {stdout}");
+    assert!(stderr.contains("✗ bash"), "the call failed: {stderr}");
+    assert!(
+        !sb.home.join("approval-marker.txt").exists(),
+        "a refused command must not run: {stderr}"
+    );
+    // The wording itself is pinned byte-for-byte in tests/approval.rs
+    // against `mutation_refusal_text`. It is asserted THERE and not here
+    // because the refusal is a SANDBOX_REFUSAL sibling in surfacing too:
+    // the loop renders every tool error as "name: name", so the message
+    // naming the flag reaches the MODEL, exactly as SANDBOX_REFUSAL's has
+    // since T18. What this test owns is the ROUTE, which is where bash
+    // (asked inside bash.rs) could diverge from write (asked at the
+    // registry).
+}
+
+#[test]
+fn oneshot_bash_with_the_flag_runs_the_command() {
+    let sb = sandbox();
+    sb.write_config("{}");
+    let mut c = sb.cmd();
+    let fixtures = approval_fixtures();
+    c.args([
+        "--mock",
+        &fixtures,
+        "--allow-mutations",
+        "-p",
+        "run the command",
+    ]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!stderr.contains("✗ bash"), "no refusal: {stderr}");
+    assert_eq!(
+        std::fs::read_to_string(sb.home.join("approval-marker.txt")).unwrap(),
+        "approval-ran\n",
+        "the allowed command runs exactly as it did before T46"
+    );
+}
+
+#[test]
+fn oneshot_bash_with_the_allow_config_runs_the_command_too() {
+    // The precedence, stated as a test: either signal permits, and the
+    // config one is honored in -p as well as interactively.
+    let sb = sandbox();
+    sb.write_config(r#"{"approve_mutations": "allow"}"#);
+    let mut c = sb.cmd();
+    let fixtures = approval_fixtures();
+    c.args(["--mock", &fixtures, "-p", "run the command"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(
+        std::fs::read_to_string(sb.home.join("approval-marker.txt")).unwrap(),
+        "approval-ran\n"
+    );
+}
+
+#[test]
+fn oneshot_write_without_the_flag_is_refused_at_the_other_site() {
+    // The other route. What the model reads must not depend on which side of
+    // the layering split the tool sits on, and the read in the same fixture
+    // proves read-only work is untouched by the refusal.
+    let sb = sandbox();
+    sb.write_config("{}");
+    let mut c = sb.cmd();
+    let fixtures = format!(
+        "{},{}",
+        fixture("read_then_write.sse"),
+        fixture("text_simple.sse")
+    );
+    std::fs::write(sb.home.join("existing.txt"), "original").unwrap();
+    c.args(["--mock", &fixtures, "-p", "update the file without the flag"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains("✓ read"), "the read is untouched: {stderr}");
+    assert!(stderr.contains("✗ write"), "the write is refused: {stderr}");
+    assert_eq!(
+        std::fs::read_to_string(sb.home.join("existing.txt")).unwrap(),
+        "original",
+        "a refused write must not touch the disk"
+    );
+}
+
+#[test]
+fn the_allow_mutations_flag_is_rejected_on_a_subcommand() {
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.args(["--allow-mutations", "doctor"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("--allow-mutations is only valid for a session"),
+        "{stderr}"
+    );
 }

@@ -145,6 +145,16 @@ pub struct ToolCtx {
     /// T46: tools the user has allowed for the rest of the session, keyed by
     /// tool name. Per tool by design: allowing bash does not allow write.
     pub session_allows: std::collections::HashSet<String>,
+    /// T46: refuse mutating calls outright instead of asking.
+    ///
+    /// One-shot `-p` has nobody to ask, and the operator's decision is that
+    /// silence there means DENY, not allow. Set at session construction in
+    /// `main.rs` (never here: the default stays permissive so every
+    /// approver-free construction is byte-identical), and cleared by
+    /// `--allow-mutations` or `"approve_mutations": "allow"`. When set, a
+    /// mutating call fails loud with [`mutation_refusal_text`], the sibling
+    /// of `SANDBOX_REFUSAL`.
+    pub refuse_mutations: bool,
     /// T28: the per-result output cap in force for THIS dispatch, which
     /// [`Registry::execute`] sets from its own (context-scaled, T19) cap
     /// before calling the tool. A tool that can produce a smaller answer
@@ -173,6 +183,7 @@ impl ToolCtx {
             allow_unsandboxed_bash: false,
             approver: None,
             session_allows: std::collections::HashSet::new(),
+            refuse_mutations: false,
             output_cap: MAX_OUTPUT_CHARS,
             read_paths: std::collections::HashSet::new(),
         }
@@ -276,6 +287,12 @@ fn parse_input<T: serde::de::DeserializeOwned>(input: Value) -> Result<T, ToolEr
 /// (non-interactive, and the permissive default every MockProvider test
 /// constructs), or a session allow already held for this tool.
 fn approve_or_deny(tool: &str, input: &Value, ctx: &mut ToolCtx) -> Option<ToolError> {
+    // T46: a run that cannot ask refuses BEFORE it consults anything else,
+    // so no session allow and no missing approver can turn the refusal into
+    // silent permission.
+    if ctx.refuse_mutations {
+        return Some(ToolError::failed(mutation_refusal_text(tool)));
+    }
     if ctx.approver.is_none() || ctx.session_allows.contains(tool) {
         return None;
     }
@@ -312,6 +329,20 @@ fn approve_or_deny(tool: &str, input: &Value, ctx: &mut ToolCtx) -> Option<ToolE
 pub fn approval_denied_text(tool: &str) -> String {
     format!(
         "the user declined this {tool} call; do not retry it unchanged - adjust the approach or finish the turn"
+    )
+}
+
+/// T46: the refusal a NON-interactive run gives instead of asking, and the
+/// deliberate sibling of [`SANDBOX_REFUSAL`]: same shape, same job,
+/// same promise that the way out is named in the message itself.
+///
+/// The operator's decision for one-shot `-p` is DENY-unless-told, because a
+/// new user's first `-p` is exactly the moment the protection pays. Every
+/// in-repo script that drives temur non-interactively gets the flag in the
+/// same milestone.
+pub fn mutation_refusal_text(tool: &str) -> String {
+    format!(
+        "{tool} is disabled: this call would change your system, and mutating tool calls need approval. In an interactive session temur asks per call; this non-interactive session cannot ask. Read-only tools are unaffected. For non-interactive use, pass --allow-mutations, or set \"approve_mutations\": \"allow\" in config.json, to accept mutating tool calls WITHOUT approval."
     )
 }
 
