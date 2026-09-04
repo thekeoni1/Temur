@@ -59,7 +59,7 @@ byte range, so `Solve $ \int 2x \cos(x^2)\,dx $` renders as
   `\geq` ≥, `\neq` ≠, `\approx` ≈, `\to` →, `\infty` ∞, the Greek set and
   the usual relations); `\,` and `\;` become a space; `\cos`, `\sin`,
   `\log` and their family lose the backslash.
-- What degrades honestly: anything structural (`\frac`, `\lim`, `\begin`,
+- What degrades: anything structural (`\frac`, `\lim`, `\begin`,
   `\left`) stays VERBATIM with its backslash inside the span, because a
   line-based renderer has no two-dimensional placement to put it in.
 - `^` and `_` runs lift to Unicode super/subscript only when EVERY

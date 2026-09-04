@@ -6,7 +6,7 @@ server, is a complete AI agent with no internet anywhere in the loop:
 air-gapped labs, regulated networks, ships, field sites, or just a laptop
 on a plane.
 
-The honest topology: no useful LLM runs *on* a 32-bit or embedded box.
+No useful LLM runs *on* a 32-bit or embedded box.
 temur runs where the code lives (the constrained device) and the model
 serves from a capable machine, either the same host (a modern workstation
 with no internet) or elsewhere on the LAN. Everything below assumes that
@@ -50,7 +50,7 @@ An exact basename match (`name` or `name.gguf`) wins; otherwise a unique
 substring match selects; zero or several matches fail and list every
 candidate with its size (matches marked when ambiguous). With no
 argument, a lone `.gguf` in the dir is auto-selected; zero or several
-fail and list the candidates: nothing is ever guessed between models.
+fail and list the candidates.
 `MODEL_GGUF=/path/to/model.gguf` still works as an explicit override,
 but combining it with a name argument is an error (choose one). A
 running server keeps its current model: `start` against a running
@@ -616,7 +616,7 @@ you still state the value by hand. However it gets set, temur then:
 - rewords a `max_tokens` truncation that happens near the window to name
   the likely real cause: context overflow.
 
-**The honest caveat:** temur ships no tokenizer. The estimate is the
+**One caveat:** temur ships no tokenizer. The estimate is the
 input+output token count of the most recent response, as reported by the
 server, and absent entirely on servers that never report usage (then the
 feature stays silent rather than inventing numbers). That count is one

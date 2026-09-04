@@ -16,7 +16,7 @@ llama.cpp, Ollama, or LM Studio server.
   so it loads on old x86 machines, armv7 industrial controllers,
   OpenWrt-class devices, `FROM scratch` containers, and
   rescue/initramfs environments.
-- **Offline is a first-class mode, not a degraded one.** The
+- **Offline is a first-class mode.** The
   OpenAI-compatible provider runs keyless against local servers, and
   quirky-local-server behavior (absent usage, missing tool-call IDs,
   malformed argument JSON) is defined, tested degradation.
@@ -24,7 +24,7 @@ llama.cpp, Ollama, or LM Studio server.
   for weak local models: prose-call recovery, tolerant argument
   parsing, self-healing tool errors, context-scaled output caps, and
   automatic compaction with overflow recovery.
-- **Measured, not asserted.** A scripted nine-task eval scores the
+- **Measured, with the records published.** A scripted nine-task eval scores the
   agent loop against real small models, and a comparison against
   OpenCode and Codex CLI publishes every cell, losses included. The
   records: the next section, and the results-at-a-glance table that
@@ -33,7 +33,7 @@ llama.cpp, Ollama, or LM Studio server.
   checked into this repo, with every milestone's acceptance record
   kept. See "How this was built" below.
 
-The honest topology: no useful LLM runs *on* a 32-bit box; temur runs
+No useful LLM runs *on* a 32-bit box: temur runs
 on the constrained device where the code lives, and the model serves
 from a capable machine on the same LAN or the same host.
 
@@ -109,7 +109,7 @@ losslessly parsed call to a real tool. Details and transcripts:
 Prebuilt static binaries ship for `x86_64`, `aarch64`, `armv7` (hard-float,
 Raspberry Pi 2/3+ and other 32-bit ARM userlands), and `i686` (SSE2
 required). Because they are musl-static they run on any Linux distro,
-including Alpine and other musl systems, no glibc needed. Honesty note:
+including Alpine and other musl systems, no glibc needed. One caveat:
 the `armv7` and `aarch64` binaries are built and version-asserted under
 qemu emulation and have not yet been exercised on ARM hardware.
 
@@ -204,7 +204,7 @@ local llama.cpp server (`base_url` defaults to
 
 The default provider is `anthropic` (model `claude-sonnet-5`); any API
 key is read from a file path at startup, never from env or argv.
-`context_window` is advisory-only and checked, not guessed: `temur
+`context_window` is advisory-only and always checked: `temur
 init` fills it from a running llama.cpp server's real allocation,
 `temur doctor` compares a configured value against the same source,
 and `/models` on an anthropic profile compares it against the limit
@@ -269,7 +269,7 @@ with a spend cap, rotate it on a schedule, and revoke it when the
 machine goes away. The durable pattern is a relay you control (LiteLLM
 is the common choice) holding the real provider key, with the
 untrusted host given only a revocable virtual key. The full isolation
-rules, their honest limits, and the worked patterns:
+rules, their limits, and the worked patterns:
 [docs/USAGE.md](docs/USAGE.md).
 
 ## Scope

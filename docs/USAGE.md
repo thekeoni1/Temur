@@ -343,7 +343,7 @@ wrong; a turn that ends holding a crossing now says nothing instead.
 
 It is bounded at three compactions per turn; a fourth crossing prints
 the ordinary advisory and lets the request go out as it would have,
-which may still be rejected, and that is the honest outcome. A failed
+which may still be rejected: the bound is deliberate. A failed
 summary call names the error and continues uncompacted. Compaction
 happens between round-trips, never in the middle of one, so a response
 whose tool calls are still unanswered is never cut.
@@ -495,7 +495,7 @@ state is saved immediately, like `/clear`. It is fail-closed: a
 provider error, Ctrl+C (works like interrupting a turn), or an empty
 summary leaves the history exactly as it was and says so.
 
-Two honest costs, both deliberate. First, the provider's cached prompt
+Two costs, both deliberate. First, the provider's cached prompt
 prefix (and a local server's reused KV state) was built on the old
 history, so the request after a `/compact` re-processes its now-short
 prompt from scratch; that one-time cost is why temur never trims
@@ -952,7 +952,7 @@ tokens estimates at 400000/1e6 * 5.0 + 30000/1e6 * 25.0 = $2.00 + $0.75
 estimate, so it is a startup error naming both fields, as is a negative
 rate.
 
-The line is absent, with no nag, whenever it could not be honest:
+The line is absent, with no nag, whenever computing it would mean guessing:
 
 - an unpriced profile (nothing to compute; add the two fields),
 - a keyless profile (a local server bills nobody; anthropic profiles
@@ -972,7 +972,7 @@ Both error directions, plainly:
   Gemini omits thinking tokens from its usage, so its session total is
   a floor and so is any figure derived from it (the same limit noted
   under the hosted-template caveats above). A provider that reports
-  nothing at all shows no line, which is honest rather than free.
+  nothing at all shows no line rather than a fabricated zero.
 - **It can OVERSTATE.** On the OpenAI-compatible wire, cached prompt
   tokens are reported as a SUBSET of the prompt tokens already counted,
   and the discount for them is not modeled, so a cache-heavy compat
@@ -1526,7 +1526,7 @@ Rereading a file you just wrote is never futile, because the result
 changed. Neither is a call with different arguments, however similar it
 looks. A failing call counts exactly like a succeeding one, since an
 identical error message is just as uninformative the second time. The
-honest false positive is the opposite case: if you ask a model to POLL
+real false positive is the opposite case: if you ask a model to POLL
 for something outside temur, waiting on a file another process writes
 or a server coming up, an unchanged answer is the point. That is why
 six calls buy a notice and not a stop, and why the gap to eighteen is
@@ -1586,7 +1586,7 @@ that hole, on by default whenever any key file is configured:
 The invariant: a keyless config behaves byte-identically to earlier
 releases. No guard, no namespace, no probe, no redaction.
 
-Honest limits: the identity check knows a key's identity only while the
+Known limits: the identity check knows a key's identity only while the
 file exists at its configured path, so a hardlink made beforehand
 escapes it if the key file itself is later removed; redaction covers
 the active key only (inactive profiles' keys are never read, so there

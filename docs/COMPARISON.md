@@ -718,7 +718,7 @@ score.**
 The single experiment-3 pass, `modernize-scientific-stack` run 1, did
 not repeat. A 1-to-0 move on 32 cells is inside the single-task noise
 the tables above already show, and it is recorded as such rather than
-as a regression. The +16% wall clock is the honest price: compaction
+as a regression. The +16% wall clock is the price: compaction
 keeps doomed cells alive longer.
 
 The seven cells that exhausted context in experiment 3 went four ways
@@ -775,12 +775,12 @@ Read together, the differential says that at this window and this model
 **the score is capability-bound, not context-bound**. The one cell that
 was given more runway still failed the task. What auto-compaction is
 measured to buy here is runway, not passes: correct capture, 11 of 12
-folds succeeding, honest and legible failure modes, and 16% more wall
+folds succeeding, legible failure modes, and 16% more wall
 clock spent on cells that were going to fail either way. The remaining
 CTX class is dominated by the blind spot, which auto-compaction as
 built in v0.29.1 **could not** catch, because it never sees the jump
 (v0.31.0 added a reactive recovery after the server's rejection). A
-score-neutral differential is the honest headline, and it is a real
+score-neutral differential is the headline, and it is a real
 answer rather than a null instrument.
 
 Required disclosures. **The first launch was VOID and measured
