@@ -100,13 +100,17 @@ mkdir -p "$CFG_DIR/temur"
 printf '{"provider":"openai-compat","max_tokens":1024,"openai_compat":{"model":"local-gguf","context_window":%s}}\n' "$CTX" \
     > "$CFG_DIR/temur/config.json"
 
+# T46: --allow-mutations below. The demo's whole assertion is that the
+# model's bash call really wrote proof.txt, so the one thing it must not do
+# is stop at an approval prompt. Piping to tee already means no approver is
+# installed; the flag says so out loud.
 PROMPT='Use the bash tool to run exactly this command: echo offline-demo-ok > proof.txt'
 printf '%s\n' "$PROMPT" | timeout "${DEMO_TURN_TIMEOUT:-300}" \
     podman run --rm -i --pod "$POD" \
     -v "$(dirname "$MUSL_BIN")":/app:ro \
     -v "$CFG_DIR":/cfg:ro -v "$WORK_DIR":/work \
     -e XDG_CONFIG_HOME=/cfg -w /work "$APP_IMG" \
-    /app/temur --plain | tee "$TRANSCRIPT"
+    /app/temur --allow-mutations --plain | tee "$TRANSCRIPT"
 
 # The file's content is the proof; the transcript is context, never the
 # assertion.

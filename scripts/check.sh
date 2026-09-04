@@ -43,13 +43,6 @@ HOST_XDG=$(mktemp -d)
 trap 'rm -rf "$HOST_XDG"' EXIT
 mkdir -p "$HOST_XDG/config" "$HOST_XDG/state"
 HOST_ISOLATION="XDG_CONFIG_HOME=$HOST_XDG/config XDG_STATE_HOME=$HOST_XDG/state"
-# T46: the host pty smoke's input is a BLIND schedule (tui_input below: sleep,
-# type, sleep, exit), so injecting an approval keystroke into it would be a
-# race by construction. It gets the config answer instead. The container
-# smokes, whose fifo harness is output-gated, answer the real modal; between
-# them the approval path is still covered by a pty smoke.
-mkdir -p "$HOST_XDG/config/temur"
-printf '{"approve_mutations": "allow"}\n' > "$HOST_XDG/config/temur/config.json"
 
 # --- shared checks, parameterized by binary/deps dir -------------------------
 
@@ -280,7 +273,15 @@ echo "== container: mock REPL via openai-compat provider (gnu-debug) =="
 mock_repl_openai "$(dirname "$GNU_BIN")" "$IMG" gnu
 
 echo "== host: TUI pty smoke =="
-tui_input | timeout -k 5 "$TUI_TIMEOUT" script -qec "stty rows 24 cols 100; env $HOST_ISOLATION $GNU_BIN $MOCKARGS" "$CHECK_TMP/tui-check-host.log" >/dev/null || {
+# T46: --allow-mutations, because this smoke's input is a BLIND schedule
+# (tui_input above: sleep, type, sleep, exit), so injecting an approval
+# keystroke into it would be a race by construction. The container smokes,
+# whose fifo harness is output-gated, ANSWER the real modal instead, so the
+# approval path is still covered by a pty smoke either way. P1 answered this
+# with a config file written into the isolated XDG dir; the flag replaces it,
+# which keeps the host isolation exactly as it was before T46 and uses the
+# same allow path every other script now uses.
+tui_input | timeout -k 5 "$TUI_TIMEOUT" script -qec "stty rows 24 cols 100; env $HOST_ISOLATION $GNU_BIN --allow-mutations $MOCKARGS" "$CHECK_TMP/tui-check-host.log" >/dev/null || {
     echo "FAIL(host): pty smoke exited nonzero or outlived the ${TUI_TIMEOUT}s bound"
     tui_diagnose "$CHECK_TMP/tui-check-host.log"; exit 1; }
 check_tui_log "$CHECK_TMP/tui-check-host.log" host

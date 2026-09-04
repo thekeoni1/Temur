@@ -261,13 +261,17 @@ run_task() {
     TIMED_OUT=0
     rc=0
     start=$(date +%s)
+    # T46: --allow-mutations states the allow path rather than leaving it
+    # inferred from "stdin is a pipe, so nothing asks". Every task here
+    # writes files; a run that started prompting would score zeros and the
+    # published OFFLINE.md matrix would be wrong rather than absent.
     # shellcheck disable=SC2086  # $BOUND_* are deliberately word-split
     printf '%s\n' "$prompt" | $BOUND_CMD \
         podman run --rm -i --name "$cname" $BOUND_ARG --pod "$POD" \
         -v "$(dirname "$MUSL_BIN")":/app:ro \
         -v "$CFG_DIR":/cfg:ro -v "$work":/work -v "$state":/state \
         -e XDG_CONFIG_HOME=/cfg -e XDG_STATE_HOME=/state -w /work "$APP_IMG" \
-        /app/temur --plain > "$EVAL_TRANSCRIPT_DIR/task$n.run$RUN.txt" 2>&1 || rc=$?
+        /app/temur --allow-mutations --plain > "$EVAL_TRANSCRIPT_DIR/task$n.run$RUN.txt" 2>&1 || rc=$?
     SECS=$(( $(date +%s) - start ))
     # Only the backstop can leave a container behind (measured); conmon's
     # own kill honors --rm. Unconditional, so the next task never inherits

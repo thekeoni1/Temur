@@ -153,10 +153,17 @@ adapter_temur() {
     # where 12 of 16 instructions are multi-line, and temur received only the
     # first line as its task while the rest arrived as separate user messages
     # after the turn had ended. The whole first temur matrix was invalid. A
-    # multi-line prompt needs one-shot `-p "$prompt"` instead.
+    # multi-line prompt needs one-shot `-p "$prompt"` instead, which since
+    # T46 also needs the --allow-mutations already passed below.
+    #
+    # T46: --allow-mutations states the allow path instead of leaving it to
+    # be inferred. This invocation was never broken by T46 (stdin is a pipe
+    # and stdout a redirect, so no approver is installed and nothing asks),
+    # but a driver whose scores depend on tools running must not silently
+    # start prompting the day someone runs it attached to a terminal.
     ( cd "$work" && printf '%s\n' "$prompt" | timeout -s KILL "$TASK_TIMEOUT" env \
         XDG_CONFIG_HOME="$OUT/cfg" XDG_STATE_HOME="$OUT/state" \
-        "$TEMUR_BIN" --plain ) > "$t" 2>&1
+        "$TEMUR_BIN" --allow-mutations --plain ) > "$t" 2>&1
 }
 
 # The control. Byte-identical invocation to adapter_temur: same binary,

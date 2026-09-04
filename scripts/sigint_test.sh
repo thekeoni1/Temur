@@ -43,10 +43,12 @@ wait_for() { # $1 = attempts (x100ms), $2... = command
 
 grep_out() { grep -q "$1" "$T/out"; }
 
+# T46: --allow-mutations, so the interrupt under test is always the SIGINT
+# and never an approval prompt swallowing the fifo's input.
 run_case() { # $1 = case label, $2 = number of SIGINTs
     T=$(mktemp -d)
     mkfifo "$T/in"
-    "$BIN" --plain --mock "$FIX" < "$T/in" > "$T/out" 2>&1 &
+    "$BIN" --allow-mutations --plain --mock "$FIX" < "$T/in" > "$T/out" 2>&1 &
     PID=$!
     exec 9> "$T/in" # hold the write end open so stdin stays live
     printf 'go\n' >&9
