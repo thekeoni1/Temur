@@ -26,13 +26,25 @@ fn dim() -> Style {
     Style::default().add_modifier(Modifier::DIM)
 }
 
+/// The parser options, shared by BOTH parses in this file: the render
+/// parse below and the T45 LaTeX pass's offset-iterator parse in
+/// `latex::substitute_source`.
+///
+/// ONE constant rather than two literals kept in step by hand, because the
+/// LaTeX pass computes its exclusion BYTE RANGES from its own parse: if the
+/// two option sets ever differ, the same source is divided into different
+/// events, the protected ranges no longer describe the text the renderer
+/// sees, and code inside a construct only one parser understands stops
+/// being protected. `tables_and_latex_stay_in_sync` pins it.
+const MD_OPTIONS: Options = Options::ENABLE_STRIKETHROUGH.union(Options::ENABLE_TABLES);
+
 pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
     // T45 (P1): the LaTeX pass runs on the SOURCE, before parsing, with
     // code regions excluded by byte range. See `latex::substitute_source`
     // for why it cannot run on Text events instead.
     let src = latex::substitute_source(text.trim_end());
     let mut r = Renderer::new(width);
-    for ev in Parser::new_ext(&src, Options::ENABLE_STRIKETHROUGH) {
+    for ev in Parser::new_ext(&src, MD_OPTIONS) {
         r.event(ev);
     }
     r.finish()
@@ -72,6 +84,12 @@ struct Renderer {
     /// Marker text pending for the current item's first block.
     pending_marker: Option<String>,
     code: Option<CodeState>,
+    /// T47: cells of the table row being assembled, each already styled by
+    /// the normal inline machinery. Emptied into one wrapped line per row.
+    row: Vec<Vec<(String, Style)>>,
+    /// Inside a table at all. Guards the row machinery from firing on the
+    /// stray `TagEnd::TableCell` a malformed document could produce.
+    in_table: bool,
 }
 
 impl Renderer {
@@ -92,6 +110,8 @@ impl Renderer {
             lists: Vec::new(),
             pending_marker: None,
             code: None,
+            row: Vec::new(),
+            in_table: false,
         }
     }
 
@@ -217,6 +237,32 @@ impl Renderer {
         self.need_sep = true;
     }
 
+    /// T47: emit one table row as ONE line, cells joined by a dim " | ".
+    ///
+    /// Deliberately no column widths, no alignment and no box drawing: the
+    /// gap this closes is that a table used to arrive as a single
+    /// run-together line of pipes, and vertical structure alone fixes that.
+    /// Cell content has already been through the ordinary inline machinery,
+    /// so code spans, emphasis and the T45 LaTeX pass work inside cells for
+    /// free. The joined row then wraps like any other block.
+    fn end_row(&mut self) {
+        if self.row.is_empty() {
+            return;
+        }
+        let cells = std::mem::take(&mut self.row);
+        let mut spans: Vec<(String, Style)> = Vec::new();
+        for (i, cell) in cells.into_iter().enumerate() {
+            if i > 0 {
+                spans.push((" | ".to_string(), dim()));
+            }
+            spans.extend(cell);
+        }
+        self.inline = spans;
+        self.flush_inline();
+        // Rows are consecutive lines, never separated by a blank one.
+        self.need_sep = false;
+    }
+
     fn push_text(&mut self, t: &str) {
         if let Some(code) = self.code.as_mut() {
             code.buf.push_str(t);
@@ -284,6 +330,17 @@ impl Renderer {
                     }
                 }
                 Tag::HtmlBlock => self.sep(),
+                // T47 tables. TableHead IS the header row (measured: no
+                // TableRow is nested inside it), so both it and TableRow
+                // close a row. The header's bold falls out of the existing
+                // depth counter, which is the whole of the "header styling"
+                // here: no separate style path exists to go wrong.
+                Tag::Table(_) => {
+                    self.sep();
+                    self.in_table = true;
+                }
+                Tag::TableHead => self.bold += 1,
+                Tag::TableRow | Tag::TableCell => {}
                 // Extensions that are off (tables, footnotes, definition
                 // lists, metadata, super/subscript) never start; ignore.
                 _ => {}
@@ -320,6 +377,22 @@ impl Renderer {
                     None => {}
                 },
                 TagEnd::HtmlBlock => self.flush_inline(),
+                TagEnd::Table => {
+                    self.in_table = false;
+                    self.row.clear();
+                    self.need_sep = true;
+                }
+                TagEnd::TableHead => {
+                    self.bold = self.bold.saturating_sub(1);
+                    self.end_row();
+                }
+                TagEnd::TableRow => self.end_row(),
+                TagEnd::TableCell => {
+                    if self.in_table {
+                        let cell = std::mem::take(&mut self.inline);
+                        self.row.push(cell);
+                    }
+                }
                 _ => {}
             },
             Event::Text(t) => self.push_text(&t),
@@ -399,7 +472,7 @@ fn hard_split(s: &str, budget: usize) -> Vec<String> {
 /// Monochrome contract (view.rs:7 and this file's header) is untouched:
 /// text in, text out, no styling and no color.
 mod latex {
-    use super::{Event, Options, Parser, Tag};
+    use super::{Event, Parser, Tag};
 
     /// Does a `$...$` interior read as math rather than money?
     ///
@@ -464,9 +537,7 @@ mod latex {
             return text.to_string();
         }
         let mut protected: Vec<std::ops::Range<usize>> = Vec::new();
-        for (ev, range) in
-            Parser::new_ext(text, Options::ENABLE_STRIKETHROUGH).into_offset_iter()
-        {
+        for (ev, range) in Parser::new_ext(text, super::MD_OPTIONS).into_offset_iter() {
             match ev {
                 Event::Code(_) | Event::Html(_) | Event::InlineHtml(_) => {
                     protected.push(range)
@@ -1059,11 +1130,131 @@ mod tests {
     }
 
     #[test]
-    fn table_syntax_renders_as_plain_paragraph_extension_off() {
-        // Documented limitation: tables are NOT enabled; pulldown emits the
-        // rows as one paragraph with soft breaks (reflowed as spaces).
+    fn table_renders_one_row_per_line() {
+        // T47 DELIBERATE INVERSION: this spot previously asserted the
+        // documented limitation, that tables were NOT enabled and pulldown
+        // emitted the rows as one paragraph with soft breaks reflowed to
+        // spaces ("| a | b | |---|---| | 1 | 2 |"). That run-together line
+        // is the gap T47 closes, so the assertion is inverted rather than
+        // deleted: the old string is quoted here because it is what a
+        // reader upgrading from an older build will recognize.
         let lines = render("| a | b |\n|---|---|\n| 1 | 2 |", W);
-        assert_eq!(plain(&lines), vec!["   | a | b | |---|---| | 1 | 2 |"]);
+        assert_eq!(plain(&lines), vec!["   a | b", "   1 | 2"]);
+    }
+
+    #[test]
+    fn a_model_style_table_keeps_every_cell_on_its_own_row() {
+        // The shape models actually emit for "compare A and B": a header,
+        // an alignment row, and body rows with multi-word cells.
+        let md = "\
+| Feature | Rust | Go |
+|:--------|:-----|---:|
+| GC | none | yes |
+| Build speed | slower | fast |
+";
+        let lines = render(md, W);
+        assert_eq!(
+            plain(&lines),
+            vec![
+                "   Feature | Rust | Go",
+                "   GC | none | yes",
+                "   Build speed | slower | fast",
+            ],
+            "one row per line, cells intact, alignment row consumed"
+        );
+    }
+
+    #[test]
+    fn the_header_row_is_bold_and_body_rows_are_not() {
+        let lines = render("| head | x |\n|---|---|\n| body | y |", W);
+        assert!(
+            has_mod(find_span(&lines, "head"), Modifier::BOLD),
+            "header cells are bold"
+        );
+        assert!(
+            !has_mod(find_span(&lines, "body"), Modifier::BOLD),
+            "body cells are not"
+        );
+    }
+
+    #[test]
+    fn a_table_inside_a_fenced_code_block_stays_verbatim() {
+        let md = "```\n| a | b |\n|---|---|\n| 1 | 2 |\n```";
+        let lines = render(md, W);
+        assert_eq!(
+            plain(&lines),
+            vec!["   ▌ | a | b |", "   ▌ |---|---|", "   ▌ | 1 | 2 |"],
+            "code blocks are never parsed as tables"
+        );
+    }
+
+    #[test]
+    fn latex_inside_a_table_cell_still_substitutes() {
+        // The ordinary case: a cell's math goes through the T45 pass, and a
+        // cell's code span is still protected from it.
+        let md = "\
+| expr | code |
+|------|------|
+| $x^2$ | `$y^2$` |
+";
+        let lines = render(md, W);
+        assert_eq!(
+            plain(&lines),
+            vec!["   expr | code", "   x² | $y^2$"],
+            "cell math lifts, cell code stays literal"
+        );
+    }
+
+    #[test]
+    fn tables_and_latex_stay_in_sync() {
+        // THE OPTIONS-SYNC TEST, and it is built to FAIL if the two parses
+        // ever disagree. The T45 LaTeX pass computes its exclusion BYTE
+        // RANGES from its own parse; the renderer parses again to draw. If
+        // one knows about tables and the other does not, the ranges describe
+        // a different division of the same bytes.
+        //
+        // The document below is chosen because it is exactly where the two
+        // divisions differ (measured, both option sets):
+        //   tables ON  - the backticks sit in different CELLS, never pair,
+        //                and nothing is protected, so $\alpha$ substitutes.
+        //   tables OFF - the rows are one paragraph, the backticks DO pair
+        //                into a code span over bytes 22..38, that span is
+        //                protected, and $\alpha$ survives as literal source.
+        //
+        // So the alpha below is the drift detector: it is present only while
+        // the options are identical. Verified by deliberately skewing the
+        // LaTeX pass to ENABLE_STRIKETHROUGH alone, which turns this red.
+        let md = "\
+| a | b |
+|---|---|
+| `x $\\alpha$ | y` |
+";
+        let rendered = plain(&render(md, W)).join("\n");
+        assert!(
+            rendered.contains('\u{3b1}'),
+            "cell math must substitute; a skewed LaTeX-pass option set \
+             protects a code span that does not exist in the render parse, \
+             leaving the source literal. Got: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("\\alpha"),
+            "no literal LaTeX may survive here: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn the_two_parsers_are_given_the_identical_option_set() {
+        // The structural half of the guarantee above: there is ONE constant,
+        // so the two parses cannot drift even if someone adds an extension
+        // to only one call site. This asserts the constant's contents so
+        // that adding an option is a deliberate, visible change.
+        assert!(MD_OPTIONS.contains(Options::ENABLE_TABLES));
+        assert!(MD_OPTIONS.contains(Options::ENABLE_STRIKETHROUGH));
+        assert_eq!(
+            MD_OPTIONS,
+            Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES,
+            "exactly these two; add one only with the range-skew risk in mind"
+        );
     }
 
     #[test]
