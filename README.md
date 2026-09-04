@@ -9,13 +9,14 @@ system, down to 32-bit and embedded. Bring your own model: hosted
 (Anthropic, OpenAI, Gemini, xAI) or fully offline against a local
 llama.cpp, Ollama, or LM Studio server.
 
-- **A ~6 MB static ELF, zero dependencies.** Mainstream Bun- and
+- **A single static ELF under 8 MB, zero dependencies.** Mainstream Bun- and
   Node-based agents publish no 32-bit x86 or armv7 builds, and their
   "single executable" bundles embed a runtime on the order of 90 MB.
   temur's release binary has no interpreter and no shared libraries,
   so it loads on old x86 machines, armv7 industrial controllers,
   OpenWrt-class devices, `FROM scratch` containers, and
-  rescue/initramfs environments.
+  rescue/initramfs environments. The shipped v0.33.0 binaries measure
+  6.2 MB on i686 and 7.6 MB on x86_64.
 - **Offline is a first-class mode.** The
   OpenAI-compatible provider runs keyless against local servers, and
   quirky-local-server behavior (absent usage, missing tool-call IDs,
@@ -37,8 +38,23 @@ No useful LLM runs *on* a 32-bit box: temur runs
 on the constrained device where the code lives, and the model serves
 from a capable machine on the same LAN or the same host.
 
-<!-- Demo GIF placeholder: to be recorded from scripts/offline_demo.sh
-     plus a short TUI session before the public launch. -->
+## Demo
+
+A real context overflow on a local 4B model: the server rejects the
+request, temur truncates the largest tool result, retries, and the
+turn finishes.
+
+![temur recovering from a context overflow by truncating the largest tool result and retrying](docs/demo/overflow-recovery.gif)
+
+A small real task end to end on the same model: find the file, read
+it, edit it, run it to confirm.
+
+![temur finding, reading, editing, and running a file](docs/demo/edit-and-run.gif)
+
+Both captured live against a keyless local llama.cpp server
+(Qwen3-4B-Instruct-2507, the default local model) on the shipped
+0.33.0 binary. Nothing is spliced or re-typed; pauses longer than
+2 seconds are shortened in the rendered GIFs.
 
 ## Where it fits
 
@@ -279,8 +295,10 @@ away:
   wire that omits usage altogether is still a floor, since nothing can
   recover what was never sent.
 - **xAI**: unverified. No key was available; the template is written
-  to the published spec. Server setup for llama.cpp, Ollama, and LM Studio,
-plus recommended small models: [docs/OFFLINE.md](docs/OFFLINE.md).
+  to the published spec.
+
+Server setup for llama.cpp, Ollama, and LM Studio, plus recommended
+small models: [docs/OFFLINE.md](docs/OFFLINE.md).
 
 ## Untrusted hosts
 
@@ -314,6 +332,7 @@ feature.
 | [docs/COMPARISON.md](docs/COMPARISON.md) | temur against OpenCode and Codex CLI on the same local models, plus a Terminal-Bench 2 subset; opens with a results-at-a-glance table |
 | [docs/SETUP.md](docs/SETUP.md) | The build machine and its security boundary, reproducible step by step |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | The acceptance record and ship procedure of every milestone |
+| [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) | The v1 build plan, kept as the record |
 | [ROADMAP.md](ROADMAP.md) | Milestone history, the findings queue, and the project's self-analysis |
 | [CHANGELOG.md](CHANGELOG.md) | Per-release changes, newest first |
 
