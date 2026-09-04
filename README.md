@@ -40,6 +40,31 @@ from a capable machine on the same LAN or the same host.
 <!-- Demo GIF placeholder: to be recorded from scripts/offline_demo.sh
      plus a short TUI session before the public launch. -->
 
+## Where it fits
+
+Concrete situations this design serves:
+
+- **An isolated sandbox.** A throwaway container or `--network none`
+  pod: copy one binary in, point it at a model server, and you have
+  a full agent with no package manager, no runtime, and no network
+  path except the one you chose. `scripts/offline_demo.sh` runs
+  exactly this shape.
+- **Air-gapped and regulated environments.** Labs, ships, field
+  sites, networks where nothing calls out: temur plus a local
+  llama.cpp server is a complete agent with no internet anywhere in
+  the loop.
+- **Old or small hardware.** 32-bit x86 machines, armv7 boards,
+  OpenWrt-class devices, rescue shells and initramfs environments,
+  places a 90 MB runtime bundle will never load.
+- **Code that stays home.** Against a keyless local server, prompts,
+  code, and tool output never leave your machine or LAN.
+- **Shell pipelines.** `temur -p` runs one full agentic turn and
+  exits with a meaningful code, prose on stdout and chrome on
+  stderr, so it composes with everything else in a script.
+- **Weak-model realism.** If the model you can actually run is a
+  4B, the loop is hardened and measured for exactly that, and the
+  eval records say which models hold up.
+
 ## Proven, not claimed
 
 Three claims, each with a scripted check behind it:
