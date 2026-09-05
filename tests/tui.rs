@@ -2684,3 +2684,118 @@ fn esc_mid_turn_interrupts_once_and_the_queued_input_starts_no_new_turn() {
         "exactly one turn ran, not a second one started by the queued Enter:\n{body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// T47/P2 (D14): a scroll-up burst is terminal scroll, not history walking
+// ---------------------------------------------------------------------------
+
+use temur::ui::tui::discard_scroll_burst;
+
+/// n Up presses as ONE drained batch: the shape a scroll arrives in, since
+/// its events carry no gap between them and the T43 drain collects them all.
+fn ups(n: usize) -> Vec<Event> {
+    (0..n).map(|_| Event::Key(key(KeyCode::Up))).collect()
+}
+
+/// Drive a batch through the guard and then through the key handler, which
+/// is what `render_loop` does, so these assert on the app state a user
+/// would actually see rather than only on the filtered batch.
+fn deliver(a: &mut App, batch: Vec<Event>) {
+    for ev in discard_scroll_burst(batch) {
+        if let Event::Key(k) = ev {
+            a.handle_key(k);
+        }
+    }
+}
+
+/// An app with two submitted lines behind it, so history_move has somewhere
+/// to walk and a clamp to reach.
+fn app_with_history() -> App {
+    let mut a = app();
+    a.submit("first prompt");
+    a.submit("second prompt");
+    a.prompt_open();
+    a
+}
+
+#[test]
+fn twenty_ups_in_one_drain_leave_the_input_and_history_untouched() {
+    // The D14 repro: a scroll-up over an idle TUI used to walk history to
+    // index 0 and clamp there, filling the input with the session's FIRST
+    // submitted line.
+    let mut a = app_with_history();
+    assert_eq!(a.input, "", "precondition: nothing typed");
+    deliver(&mut a, ups(20));
+    assert_eq!(a.input, "", "a scroll burst must not fill the input");
+    // And the history position did not move either, so a subsequent real
+    // Up still starts from neutral at the NEWEST entry.
+    a.handle_key(key(KeyCode::Up));
+    assert_eq!(
+        a.input, "second prompt",
+        "the burst left no history position behind it"
+    );
+}
+
+#[test]
+fn two_ups_still_walk_history_normally() {
+    // Below the threshold nothing changes, which is what keeps a real
+    // keypress working: auto-repeat measured as batches of ONE.
+    let mut a = app_with_history();
+    deliver(&mut a, ups(2));
+    assert_eq!(
+        a.input, "first prompt",
+        "two Ups walk newest then next-oldest, exactly as before T47"
+    );
+}
+
+#[test]
+fn holding_up_walks_history_however_long_it_is_held() {
+    // THE NON-NEGOTIABLE REGRESSION. Auto-repeat arrives as separate
+    // batches of one (measured at a 33ms gap), so a held key is delivered
+    // as many small batches, never one big one. Fifty of them must still
+    // walk and clamp normally.
+    let mut a = app_with_history();
+    for _ in 0..50 {
+        deliver(&mut a, ups(1));
+    }
+    assert_eq!(
+        a.input, "first prompt",
+        "held Up walks to the oldest entry and clamps there"
+    );
+}
+
+#[test]
+fn a_burst_with_any_other_key_in_it_is_delivered_untouched() {
+    let mut batch = ups(20);
+    batch.insert(10, Event::Key(key(KeyCode::Char('x'))));
+    let out = discard_scroll_burst(batch.clone());
+    assert_eq!(out, batch, "a mixed batch is never discarded");
+}
+
+#[test]
+fn a_down_burst_is_not_discarded() {
+    // Only scroll-UP is the reported defect, and scroll-down from neutral
+    // is already a no-op. Discarding Down as well would be scope this fix
+    // has no evidence for.
+    let batch: Vec<Event> = (0..20).map(|_| Event::Key(key(KeyCode::Down))).collect();
+    let out = discard_scroll_burst(batch.clone());
+    assert_eq!(out, batch);
+}
+
+#[test]
+fn a_modified_up_burst_is_not_discarded() {
+    // Shift+Up and friends are deliberate keys, not alternate-scroll output.
+    let batch: Vec<Event> = (0..20)
+        .map(|_| Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT)))
+        .collect();
+    let out = discard_scroll_burst(batch.clone());
+    assert_eq!(out, batch);
+}
+
+#[test]
+fn the_threshold_boundary_is_exact() {
+    // A gapless burst of n forms one batch of exactly n (measured), so the
+    // boundary between "walks history" and "discarded" is worth pinning.
+    assert_eq!(discard_scroll_burst(ups(9)).len(), 9, "9 is input");
+    assert!(discard_scroll_burst(ups(10)).is_empty(), "10 is scroll");
+}

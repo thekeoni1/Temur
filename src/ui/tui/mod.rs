@@ -235,6 +235,69 @@ pub fn interrupt_priority(batch: Vec<Event>, busy: bool, approval_open: bool) ->
     }
 }
 
+/// T47/P2 (D14): how many Up presses in ONE drained batch read as terminal
+/// scroll rather than as typing.
+///
+/// See [`discard_scroll_burst`] for why a count can tell them apart at all,
+/// and the T47 ROADMAP row for the measurement this number comes from.
+const SCROLL_BURST_MIN: usize = 10;
+
+/// T47/P2: discard a drained batch that is nothing but a run of Up presses.
+///
+/// D14: temur never enables mouse capture, so in the alternate screen the
+/// terminal's alternate-scroll mode delivers a wheel or touchpad scroll-up
+/// as Up-ARROW KEY PRESSES. Those reach `history_move(-1)`, walk to the
+/// oldest entry and clamp there, so an idle scroll over the terminal (or an
+/// accidental brush of a touchpad) silently fills the input with the
+/// session's first submitted line.
+///
+/// The batch is the whole signal. A scroll delivers its events with no gap
+/// between them, so the T43 drain collects them into ONE batch; a human
+/// holding Up produces separate events far enough apart that each lands in
+/// its own batch. Measured through the real drain under a pty: a gapless
+/// burst of n Up events forms ONE batch of exactly n (checked at n = 2, 3,
+/// 5, 8, 10, 15, 20, 40), the same events at a gap of 0.25ms or more arrive
+/// as n batches of ONE, and at 0.1ms as batches of at most 2. Keyboard
+/// auto-repeat is around 30Hz, a 33ms gap, measured as batches of one. So
+/// the threshold sits an order of magnitude above what a held key produces,
+/// and exactly at the burst size it is meant to catch.
+///
+/// What is measured here is the DRAIN, given events at a known arrival
+/// rate. The arrival rate of a real touchpad flick is not measured (this
+/// box has no touchpad); it is taken from the D14 record's observation that
+/// a flick emits dozens of events. If a terminal were to space a flick's
+/// events out by even a quarter of a millisecond, this guard would not fire
+/// at all, which is why the operator's live repro is the acceptance test
+/// for the fix and not this measurement.
+///
+/// Deliberately narrow, so it can only ever discard the thing it is aimed
+/// at: the batch must be ONLY Up presses. Any other key in the batch, and
+/// any batch below the threshold, is returned untouched and behaves exactly
+/// as it did before T47. Holding Up to walk history therefore still works,
+/// which is the non-negotiable behaviour here.
+///
+/// ACCEPTED MISS, recorded rather than solved: a flick that produces only a
+/// handful of events looks exactly like a few real keypresses and slips
+/// through. Its failure mode is the pre-T47 behaviour, which is no worse
+/// than before, and the alternative (mouse capture) costs terminal-native
+/// text selection, which is a real regression to trade for it.
+pub fn discard_scroll_burst(batch: Vec<Event>) -> Vec<Event> {
+    if batch.len() < SCROLL_BURST_MIN {
+        return batch;
+    }
+    let only_up = batch.iter().all(|ev| {
+        matches!(ev, Event::Key(key)
+            if key.code == KeyCode::Up
+                && key.kind != KeyEventKind::Release
+                && key.modifiers.is_empty())
+    });
+    if only_up {
+        Vec::new()
+    } else {
+        batch
+    }
+}
+
 /// Cap on terminal events processed in ONE `render_loop` iteration (T43/P1).
 /// Sized well above any realistic paste, so ordinary input is never split,
 /// and far below "unbounded", so a stream that never goes quiet cannot hold
@@ -520,6 +583,10 @@ fn render_loop<B: Backend>(
             let _ = tx_input.send(None);
             break LoopEnd::Shutdown;
         }
+        // T47/P2 (D14) before anything else looks at the batch: a scroll
+        // burst is not input, so it must not reach interrupt priority or
+        // the key handler.
+        let batch = discard_scroll_burst(batch);
         let batch = interrupt_priority(batch, app.busy, app.approval.is_some());
         for ev in batch {
             let key = match ev {
