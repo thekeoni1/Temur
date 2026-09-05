@@ -30,6 +30,97 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
+// ---------------------------------------------------------------------------
+// T48/P2: a watchdog on every seam test that drives a turn
+// ---------------------------------------------------------------------------
+
+/// How long a seam test may run before it is called wedged.
+///
+/// These tests take about 0.2s each. Thirty seconds is two orders of
+/// magnitude of headroom, which is generous against a contended CI runner
+/// and still nothing like the six-hour job ceiling that a wedged one used
+/// to burn (see ~/temur-desktop/reports/t47-ci-wedge.md).
+const SEAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+thread_local! {
+    /// Breadcrumbs for the body running on the watchdog's thread. The
+    /// parent holds the same Arc, so it can read them after the body has
+    /// stopped making progress.
+    static SEAM_MARKS: std::cell::RefCell<
+        Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Record entry to and exit from a call that can block, so a watchdog
+/// expiry can name the one that never came back.
+fn mark<T>(what: &str, f: impl FnOnce() -> T) -> T {
+    SEAM_MARKS.with(|m| {
+        if let Some(marks) = m.borrow().as_ref() {
+            marks.lock().unwrap().push(format!("-> {what}"));
+        }
+    });
+    let out = f();
+    SEAM_MARKS.with(|m| {
+        if let Some(marks) = m.borrow().as_ref() {
+            marks.lock().unwrap().push(format!("<- {what}"));
+        }
+    });
+    out
+}
+
+/// Run a seam test body under a watchdog.
+///
+/// MECHANISM, and why this one. The body runs on its own thread and the
+/// test thread joins it with a deadline. The alternatives were worse: a
+/// watchdog thread that aborts the process takes the whole suite down and
+/// loses every other test's result, and there is no portable way to unwind
+/// another thread in place. Joining with a deadline fails exactly the one
+/// test that wedged, lets the other 90-odd report normally, and leaves the
+/// stuck thread parked until the harness exits, which costs nothing.
+///
+/// The deadline covers the body, not the assertions in particular: a slow
+/// pass is still a pass, because 30s is far past what any of these do. On
+/// expiry the breadcrumbs say which blocking call never returned, so the
+/// failure names a cause instead of a duration.
+///
+/// A panic inside the body is re-raised here unchanged, so a real assertion
+/// failure reads exactly as it did before this wrapper existed.
+fn seam(name: &str, body: fn()) {
+    let marks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let theirs = std::sync::Arc::clone(&marks);
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<std::thread::Result<()>>();
+    std::thread::Builder::new()
+        .name(format!("seam-{name}"))
+        .spawn(move || {
+            SEAM_MARKS.with(|m| *m.borrow_mut() = Some(theirs));
+            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+            let _ = done_tx.send(out);
+        })
+        .expect("spawn seam test thread");
+
+    match done_rx.recv_timeout(SEAM_TIMEOUT) {
+        Ok(Ok(())) => {}
+        // The body's own panic wins: resume it untouched so its message and
+        // location are what the harness prints.
+        Ok(Err(payload)) => std::panic::resume_unwind(payload),
+        Err(_) => {
+            let marks = marks.lock().unwrap().clone();
+            let last = marks.last().cloned().unwrap_or_else(|| {
+                "(no blocking call was entered)".to_string()
+            });
+            panic!(
+                "seam test {name} wedged: no result after {:?}.\n  \
+                 outstanding: {last}\n  trail: {marks:?}\n  \
+                 A '-> x' with no matching '<- x' is the call that never \
+                 returned. This is the T47 CI wedge shape: an idle signal \
+                 that cleared a newer busy, so the event source stopped \
+                 delivering and a blocked turn was never cancelled.",
+                SEAM_TIMEOUT
+            );
+        }
+    }
+}
+
 fn ctrl(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
@@ -444,6 +535,10 @@ fn scroll_unsticks_on_pageup_and_resticks_at_bottom() {
 /// backend (TestBackend) and the key source (scripted) are substituted.
 #[test]
 fn headless_end_to_end_through_the_ui_seam() {
+    seam("headless_end_to_end_through_the_ui_seam", headless_end_to_end_through_the_ui_seam_body);
+}
+
+fn headless_end_to_end_through_the_ui_seam_body() {
     let dir = tempfile::tempdir().unwrap();
     let provider = AnthropicProvider::new(
         "https://mock.invalid",
@@ -492,9 +587,9 @@ fn headless_end_to_end_through_the_ui_seam() {
         session.cancel_token(),
     );
 
-    let line = ui.read_input().expect("scripted submit reaches read_input");
+    let line = mark("ui.read_input", || ui.read_input()).expect("scripted submit reaches read_input");
     assert_eq!(line, "do the smoke task");
-    session.turn(&line, &mut |ev| ui.event(&ev)).unwrap();
+    mark("session.turn", || session.turn(&line, &mut |ev| ui.event(&ev))).unwrap();
     drop(ui); // shutdown + join; the final frame lands in `snapshot`
 
     let rows = snapshot.lock().unwrap().clone();
@@ -627,6 +722,10 @@ impl Provider for BlockUntilCancelled {
 /// must complete normally.
 #[test]
 fn headless_submission_clears_a_stale_token() {
+    seam("headless_submission_clears_a_stale_token", headless_submission_clears_a_stale_token_body);
+}
+
+fn headless_submission_clears_a_stale_token_body() {
     let dir = tempfile::tempdir().unwrap();
     let provider = AnthropicProvider::new(
         "https://mock.invalid",
@@ -678,8 +777,8 @@ fn headless_submission_clears_a_stale_token() {
         session.cancel_token(),
     );
 
-    let line = ui.read_input().expect("scripted submit reaches read_input");
-    session.turn(&line, &mut |ev| ui.event(&ev)).unwrap();
+    let line = mark("ui.read_input", || ui.read_input()).expect("scripted submit reaches read_input");
+    mark("session.turn", || session.turn(&line, &mut |ev| ui.event(&ev))).unwrap();
     drop(ui);
 
     let rows = snapshot.lock().unwrap().clone();
@@ -700,6 +799,10 @@ fn headless_submission_clears_a_stale_token() {
 /// thread, and nothing later clears the token.
 #[test]
 fn headless_coalesced_enter_esc_interrupt_survives() {
+    seam("headless_coalesced_enter_esc_interrupt_survives", headless_coalesced_enter_esc_interrupt_survives_body);
+}
+
+fn headless_coalesced_enter_esc_interrupt_survives_body() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = SessionConfig {
         model: "claude-sonnet-5".into(),
@@ -741,8 +844,8 @@ fn headless_coalesced_enter_esc_interrupt_survives() {
         session.cancel_token(),
     );
 
-    let line = ui.read_input().expect("scripted submit reaches read_input");
-    session.turn(&line, &mut |ev| ui.event(&ev)).unwrap();
+    let line = mark("ui.read_input", || ui.read_input()).expect("scripted submit reaches read_input");
+    mark("session.turn", || session.turn(&line, &mut |ev| ui.event(&ev))).unwrap();
     drop(ui);
 
     let rows = snapshot.lock().unwrap().clone();
@@ -756,6 +859,10 @@ fn headless_coalesced_enter_esc_interrupt_survives() {
 /// and return to the prompt.
 #[test]
 fn headless_esc_interrupts_a_blocked_turn_end_to_end() {
+    seam("headless_esc_interrupts_a_blocked_turn_end_to_end", headless_esc_interrupts_a_blocked_turn_end_to_end_body);
+}
+
+fn headless_esc_interrupts_a_blocked_turn_end_to_end_body() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = SessionConfig {
         model: "claude-sonnet-5".into(),
@@ -797,8 +904,8 @@ fn headless_esc_interrupts_a_blocked_turn_end_to_end() {
         session.cancel_token(),
     );
 
-    let line = ui.read_input().expect("scripted submit reaches read_input");
-    session.turn(&line, &mut |ev| ui.event(&ev)).unwrap();
+    let line = mark("ui.read_input", || ui.read_input()).expect("scripted submit reaches read_input");
+    mark("session.turn", || session.turn(&line, &mut |ev| ui.event(&ev))).unwrap();
     drop(ui); // shutdown drains all pending events into the final frame
 
     let rows = snapshot.lock().unwrap().clone();
@@ -910,6 +1017,10 @@ fn frame_command_cell_renders_as_dim_line_not_user_block() {
 /// main.rs does: read_input → commands::run → events back through the seam.
 #[test]
 fn headless_command_flow_status_leaves_title_alone() {
+    seam("headless_command_flow_status_leaves_title_alone", headless_command_flow_status_leaves_title_alone_body);
+}
+
+fn headless_command_flow_status_leaves_title_alone_body() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = SessionConfig {
         model: "claude-sonnet-5".into(),
@@ -1005,7 +1116,7 @@ fn headless_command_flow_status_leaves_title_alone() {
     > { unreachable!("/status builds nothing") };
 
     let mut cached_models: Vec<temur::provider::ModelEntry> = Vec::new();
-    while let Some(line) = ui.read_input() {
+    while let Some(line) = mark("ui.read_input", || ui.read_input()) {
         assert!(line.starts_with('/'), "script only sends commands");
         let mut ctx = temur::commands::CommandCtx {
             session: &mut session,
@@ -1047,6 +1158,10 @@ fn headless_command_flow_status_leaves_title_alone() {
 /// echoes) and resets the title; the post-clear notice survives.
 #[test]
 fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
+    seam("headless_command_flow_switch_updates_chrome_and_clear_resets", headless_command_flow_switch_updates_chrome_and_clear_resets_body);
+}
+
+fn headless_command_flow_switch_updates_chrome_and_clear_resets_body() {
     let dir = tempfile::tempdir().unwrap();
     let provider = AnthropicProvider::new(
         "https://mock.invalid",
@@ -1154,7 +1269,7 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
     };
 
     let mut cached_models: Vec<temur::provider::ModelEntry> = Vec::new();
-    while let Some(line) = ui.read_input() {
+    while let Some(line) = mark("ui.read_input", || ui.read_input()) {
         if line.starts_with('/') {
             let mut ctx = temur::commands::CommandCtx {
                 session: &mut session,
@@ -1181,7 +1296,7 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets() {
                 ui.event(&ev);
             }
         } else {
-            session.turn(&line, &mut |ev| ui.event(&ev)).unwrap();
+            mark("session.turn", || session.turn(&line, &mut |ev| ui.event(&ev))).unwrap();
         }
     }
     drop(ui);
@@ -1306,6 +1421,10 @@ fn severed_fence_across_cells_renders_without_panic() {
 /// parsed markdown, not the raw text.
 #[test]
 fn headless_markdown_fixture_renders_in_final_frame() {
+    seam("headless_markdown_fixture_renders_in_final_frame", headless_markdown_fixture_renders_in_final_frame_body);
+}
+
+fn headless_markdown_fixture_renders_in_final_frame_body() {
     let dir = tempfile::tempdir().unwrap();
     let provider = AnthropicProvider::new(
         "https://mock.invalid",
@@ -1355,8 +1474,8 @@ fn headless_markdown_fixture_renders_in_final_frame() {
         session.cancel_token(),
     );
 
-    let line = ui.read_input().expect("scripted submit reaches read_input");
-    session.turn(&line, &mut |ev| ui.event(&ev)).unwrap();
+    let line = mark("ui.read_input", || ui.read_input()).expect("scripted submit reaches read_input");
+    mark("session.turn", || session.turn(&line, &mut |ev| ui.event(&ev))).unwrap();
     drop(ui);
 
     let rows = snapshot.lock().unwrap().clone();
@@ -1592,6 +1711,10 @@ fn frame_status_hint_tracks_command_input() {
 /// the completed command — proven by the status output in the final frame.
 #[test]
 fn headless_tab_completion_submits_the_completed_command() {
+    seam("headless_tab_completion_submits_the_completed_command", headless_tab_completion_submits_the_completed_command_body);
+}
+
+fn headless_tab_completion_submits_the_completed_command_body() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = SessionConfig {
         model: "claude-sonnet-5".into(),
@@ -1670,7 +1793,7 @@ fn headless_tab_completion_submits_the_completed_command() {
     > { unreachable!("/status builds nothing") };
 
     let mut cached_models: Vec<temur::provider::ModelEntry> = Vec::new();
-    while let Some(line) = ui.read_input() {
+    while let Some(line) = mark("ui.read_input", || ui.read_input()) {
         assert_eq!(line, "/status", "Tab completed the head word before submit");
         let mut ctx = temur::commands::CommandCtx {
             session: &mut session,
@@ -1856,6 +1979,10 @@ fn frame_resume_backscroll_tool_heavy_with_interrupt_shape() {
 /// acceptance shape for the TUI.
 #[test]
 fn headless_resume_backscroll_renders_in_final_frame() {
+    seam("headless_resume_backscroll_renders_in_final_frame", headless_resume_backscroll_renders_in_final_frame_body);
+}
+
+fn headless_resume_backscroll_renders_in_final_frame_body() {
     let mut script: Vec<Event> = Vec::new();
     script.extend("exit".chars().map(|c| Event::Key(key(KeyCode::Char(c)))));
     script.push(Event::Key(key(KeyCode::Enter)));
@@ -1886,7 +2013,7 @@ fn headless_resume_backscroll_renders_in_final_frame() {
     ui.event(&AgentEvent::Notice(
         "resumed session ended with a prompt the model never answered; it was dropped".into(),
     ));
-    while let Some(line) = ui.read_input() {
+    while let Some(line) = mark("ui.read_input", || ui.read_input()) {
         panic!("script only exits: {line}");
     }
     drop(ui);
@@ -2028,9 +2155,9 @@ fn approval_turn(answer: KeyCode) -> (tempfile::TempDir, Vec<String>) {
     );
     session.set_approver(ui.approver());
 
-    let line = ui.read_input().expect("scripted submit reaches read_input");
+    let line = mark("ui.read_input", || ui.read_input()).expect("scripted submit reaches read_input");
     assert_eq!(line, "do the approval task");
-    session.turn(&line, &mut |ev| ui.event(&ev)).unwrap();
+    mark("session.turn", || session.turn(&line, &mut |ev| ui.event(&ev))).unwrap();
     drop(ui);
     let rows = snapshot.lock().unwrap().clone();
     (dir, rows)
@@ -2038,6 +2165,10 @@ fn approval_turn(answer: KeyCode) -> (tempfile::TempDir, Vec<String>) {
 
 #[test]
 fn headless_approval_yes_runs_the_command_and_the_turn_completes() {
+    seam("headless_approval_yes_runs_the_command_and_the_turn_completes", headless_approval_yes_runs_the_command_and_the_turn_completes_body);
+}
+
+fn headless_approval_yes_runs_the_command_and_the_turn_completes_body() {
     let (dir, rows) = approval_turn(KeyCode::Char('y'));
     let body = rows.join("\n");
     assert_eq!(
@@ -2056,6 +2187,10 @@ fn headless_approval_yes_runs_the_command_and_the_turn_completes() {
 
 #[test]
 fn headless_approval_no_denies_and_the_session_continues() {
+    seam("headless_approval_no_denies_and_the_session_continues", headless_approval_no_denies_and_the_session_continues_body);
+}
+
+fn headless_approval_no_denies_and_the_session_continues_body() {
     let (dir, rows) = approval_turn(KeyCode::Char('n'));
     let body = rows.join("\n");
     assert!(
@@ -2164,6 +2299,10 @@ fn burst_info(cwd: String) -> SessionInfo {
 
 #[test]
 fn burst_of_keys_lands_in_one_iteration_and_one_draw() {
+    seam("burst_of_keys_lands_in_one_iteration_and_one_draw", burst_of_keys_lands_in_one_iteration_and_one_draw_body);
+}
+
+fn burst_of_keys_lands_in_one_iteration_and_one_draw_body() {
     let text = "x".repeat(200);
     let mut script: Vec<Event> = text
         .chars()
@@ -2176,7 +2315,7 @@ fn burst_of_keys_lands_in_one_iteration_and_one_draw() {
     let cancel = temur::provider::CancelToken::new();
     let (mut ui, _snapshot) =
         TuiUi::headless_with_source(burst_info("/tmp".into()), 100, 30, source, cancel);
-    let line = ui.read_input().expect("the burst submits");
+    let line = mark("ui.read_input", || ui.read_input()).expect("the burst submits");
     drop(ui);
 
     assert_eq!(line, text, "every pasted char reached the input");
@@ -2191,6 +2330,10 @@ fn burst_of_keys_lands_in_one_iteration_and_one_draw() {
 
 #[test]
 fn oversized_burst_is_capped_per_iteration_and_nothing_is_lost() {
+    seam("oversized_burst_is_capped_per_iteration_and_nothing_is_lost", oversized_burst_is_capped_per_iteration_and_nothing_is_lost_body);
+}
+
+fn oversized_burst_is_capped_per_iteration_and_nothing_is_lost_body() {
     // One event past the cap has to wait for the next iteration, and the
     // remainder must still arrive: the cap defers, it never drops.
     const CAP: usize = 4096;
@@ -2206,7 +2349,7 @@ fn oversized_burst_is_capped_per_iteration_and_nothing_is_lost() {
     let cancel = temur::provider::CancelToken::new();
     let (mut ui, _snapshot) =
         TuiUi::headless_with_source(burst_info("/tmp".into()), 100, 30, source, cancel);
-    let line = ui.read_input().expect("the oversized burst still submits");
+    let line = mark("ui.read_input", || ui.read_input()).expect("the oversized burst still submits");
     drop(ui);
 
     assert_eq!(line.len(), text.len(), "no pasted char was dropped");
@@ -2540,6 +2683,10 @@ fn history_recall_round_trips_a_multi_line_prompt() {
 
 #[test]
 fn headless_a_pasted_block_reaches_read_input_as_one_prompt() {
+    seam("headless_a_pasted_block_reaches_read_input_as_one_prompt", headless_a_pasted_block_reaches_read_input_as_one_prompt_body);
+}
+
+fn headless_a_pasted_block_reaches_read_input_as_one_prompt_body() {
     let script = vec![
         Event::Paste("do the smoke task\nwith a second line".into()),
         Event::Key(key(KeyCode::Enter)),
@@ -2547,7 +2694,7 @@ fn headless_a_pasted_block_reaches_read_input_as_one_prompt() {
     let cancel = temur::provider::CancelToken::new();
     let (mut ui, snapshot) =
         TuiUi::headless(burst_info("/tmp".into()), 100, 30, script, cancel);
-    let line = ui.read_input().expect("the paste submits on Enter");
+    let line = mark("ui.read_input", || ui.read_input()).expect("the paste submits on Enter");
     drop(ui);
     assert_eq!(line, "do the smoke task\nwith a second line");
     let rows = snapshot.lock().unwrap().clone().join("\n");
@@ -2557,6 +2704,10 @@ fn headless_a_pasted_block_reaches_read_input_as_one_prompt() {
 
 #[test]
 fn headless_a_paste_alone_starts_no_turn() {
+    seam("headless_a_paste_alone_starts_no_turn", headless_a_paste_alone_starts_no_turn_body);
+}
+
+fn headless_a_paste_alone_starts_no_turn_body() {
     // A character typed AFTER the paste is the proof: if the paste had
     // submitted on its own, read_input would yield the pasted text without
     // the trailing "!", and it would yield it before this Enter. (Asserting
@@ -2570,7 +2721,7 @@ fn headless_a_paste_alone_starts_no_turn() {
     let cancel = temur::provider::CancelToken::new();
     let (mut ui, _snapshot) =
         TuiUi::headless(burst_info("/tmp".into()), 100, 30, script, cancel);
-    let line = ui.read_input().expect("the Enter submits");
+    let line = mark("ui.read_input", || ui.read_input()).expect("the Enter submits");
     drop(ui);
     assert_eq!(
         line, "nothing should submit this!",
@@ -2610,6 +2761,10 @@ impl temur::ui::tui::EventSource for BusyBurst {
 
 #[test]
 fn esc_mid_turn_interrupts_once_and_the_queued_input_starts_no_new_turn() {
+    seam("esc_mid_turn_interrupts_once_and_the_queued_input_starts_no_new_turn", esc_mid_turn_interrupts_once_and_the_queued_input_starts_no_new_turn_body);
+}
+
+fn esc_mid_turn_interrupts_once_and_the_queued_input_starts_no_new_turn_body() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = SessionConfig {
         model: "claude-sonnet-5".into(),
@@ -2665,9 +2820,9 @@ fn esc_mid_turn_interrupts_once_and_the_queued_input_starts_no_new_turn() {
         session.cancel_token(),
     );
 
-    let line = ui.read_input().expect("the first line starts a turn");
+    let line = mark("ui.read_input", || ui.read_input()).expect("the first line starts a turn");
     assert_eq!(line, "interrupt me");
-    session.turn(&line, &mut |ev| ui.event(&ev)).unwrap();
+    mark("session.turn", || session.turn(&line, &mut |ev| ui.event(&ev))).unwrap();
     drop(ui);
 
     let body = snapshot.lock().unwrap().clone().join("\n");
@@ -2887,8 +3042,14 @@ fn a_prompt_open_sent_before_a_submit_does_not_clear_that_submits_busy() {
 
     // Rendezvous, not a sleep: wait for the render loop to tell us the
     // submit is done. Only `submit()` can make `ready.idle` false.
+    // Bounded on purpose: this test owns its failure mode and leans on no
+    // watchdog, so a render thread that died must fail it here rather than
+    // spin forever.
+    let mut spins = 0u64;
     while !submit_landed.load(SeqCst) {
         std::hint::spin_loop();
+        spins += 1;
+        assert!(spins < 5_000_000_000, "the submit never landed");
     }
 
     // NOW open the prompt. The line is already queued, so this returns at
@@ -2900,8 +3061,11 @@ fn a_prompt_open_sent_before_a_submit_does_not_clear_that_submits_busy() {
 
     // The drain runs at the top of every render iteration, so any poll from
     // the second one on has seen the message. Twenty is far past that.
+    let mut spins = 0u64;
     while seen.lock().unwrap().len() < 20 {
         std::hint::spin_loop();
+        spins += 1;
+        assert!(spins < 5_000_000_000, "the render loop stopped polling");
     }
     let seen = seen.lock().unwrap().clone();
     let tail = &seen[seen.len() - 10..];
