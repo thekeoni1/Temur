@@ -493,19 +493,46 @@ mod latex {
     /// half: a span whose only signal is `^` or `_` and which is padded
     /// like currency stays literal. A span carrying a backslash command is
     /// unambiguous and does not need it.
+    /// T48/P3 widening. The baked default model habitually pads its
+    /// delimiters, so the second guard above rejected every span it
+    /// produced and the LaTeX pass half-fired on the flagship model.
+    /// Symmetric padding (a space on BOTH sides of the interior) now
+    /// reads as math too; asymmetric padding stays rejected, since only
+    /// one padded side is the currency shape the guard exists for.
+    ///
+    /// The widening is CARET-ONLY, and that restriction is the whole
+    /// safety argument. Every live observation motivating it is padded
+    /// caret math ("$ x^2 + y^3 $", "$ e^u + C $", "$ u = x^2 $"); not
+    /// one is padded underscore-only. Underscore, meanwhile, is the
+    /// snake_case hazard: "costs $ 5 for basic_tier and $ 10" is
+    /// symmetric, carries an underscore, and is money to any reader. So
+    /// underscore-only spans keep the tight-delimiter rule untouched and
+    /// that sentence stays literal. A span carrying a caret has its
+    /// admission ticket, and any underscore inside it then lifts as
+    /// usual.
+    ///
+    /// DELIBERATE MISS, recorded rather than solved: padded
+    /// underscore-only math ("$ x_1 $") stays literal. Zero live
+    /// observations ask for it and one live hazard argues against it.
+    /// Revisit only if dogfooding produces a real one.
     fn is_math(inner: &str) -> bool {
         if inner.trim().is_empty() {
             return false;
         }
-        if !(inner.contains('\\') || inner.contains('^') || inner.contains('_')) {
+        let backslash = inner.contains('\\');
+        let caret = inner.contains('^');
+        if !(backslash || caret || inner.contains('_')) {
             return false;
         }
-        if inner.contains('\\') {
+        if backslash {
             return true;
         }
         let first = inner.chars().next().unwrap_or(' ');
         let last = inner.chars().last().unwrap_or(' ');
-        !first.is_whitespace() && !last.is_whitespace()
+        if !first.is_whitespace() && !last.is_whitespace() {
+            return true;
+        }
+        caret && first.is_whitespace() && last.is_whitespace()
     }
 
     /// Entry point: substitute over the SOURCE, with code regions cut out.
@@ -848,12 +875,78 @@ mod tests {
             plain(&render("costs $5 and $10", 60)),
             vec!["   costs $5 and $10"]
         );
-        // The brief's spacing rule, which still governs signal-only spans:
-        // padded like currency, no backslash command, so it stays literal.
+        // T48/P3 RE-PIN, and the one case this widening costs. T45 pinned
+        // this padded-caret line as money; symmetric padding now reads it
+        // as math, so it renders lifted. Recorded rather than worked
+        // around: the caret is the admission ticket by design, and the
+        // shapes a reader actually writes for money carry no caret. Both
+        // of those are pinned directly below.
         assert_eq!(
             plain(&render("worth $ 5^2 and $ 10", 60)),
-            vec!["   worth $ 5^2 and $ 10"]
+            vec!["   worth 5² and 10"]
         );
+    }
+
+    /// T48/P3: the money shapes the caret-only restriction exists to
+    /// protect. Both are symmetrically padded and both carry an
+    /// underscore, so the T45 rule would have been widened straight over
+    /// them had the widening keyed on `^` or `_` together.
+    #[test]
+    fn padded_snake_case_money_stays_money() {
+        assert_eq!(
+            plain(&render("costs $ 5 for basic_tier and $ 10", 60)),
+            vec!["   costs $ 5 for basic_tier and $ 10"]
+        );
+        assert_eq!(
+            plain(&render(
+                "the tiers cost $ 5_000 for team_a and $ 12_000 for team_b",
+                80
+            )),
+            vec!["   the tiers cost $ 5_000 for team_a and $ 12_000 for team_b"]
+        );
+    }
+
+    /// T48/P3 acceptance, verbatim from the operator's live transcript.
+    /// The baked default model pads its delimiters, and every one of
+    /// these was rejected before the widening.
+    #[test]
+    fn padded_caret_spans_from_the_default_model_render() {
+        assert_eq!(plain(&render("$ x^2 + y^3 $", 60)), vec!["   x² + y³"]);
+        assert_eq!(plain(&render("$ e^u + C $", 60)), vec!["   eᵘ + C"]);
+        assert_eq!(plain(&render("$ u = x^2 $", 60)), vec!["   u = x²"]);
+        // Unpadded still renders: the tight rule is untouched.
+        assert_eq!(plain(&render("$x^2$", 60)), vec!["   x²"]);
+        // The braced fallback is NOT part of this widening and does not
+        // move: a braced run that cannot be lifted stays whole and
+        // literal, padded or not.
+        assert_eq!(plain(&render("$ e^{x^2} $", 60)), vec!["   e^{x^2}"]);
+        assert_eq!(plain(&render("$e^{x^2}$", 60)), vec!["   e^{x^2}"]);
+    }
+
+    /// T48/P3: the widening is SYMMETRIC padding only, and CARET only.
+    #[test]
+    fn asymmetric_padding_and_underscore_only_padding_stay_literal() {
+        assert_eq!(
+            plain(&render("$ x^2$", 60)),
+            vec!["   $ x^2$"],
+            "one padded side is the currency shape, not math"
+        );
+        assert_eq!(
+            plain(&render("$x^2 $", 60)),
+            vec!["   $x^2 $"],
+            "and the same the other way round"
+        );
+        // DELIBERATE MISS, recorded in the T48 row: padded
+        // underscore-only math stays literal, because no live observation
+        // asks for it and snake_case money argues against it.
+        assert_eq!(
+            plain(&render("$ x_1 $", 60)),
+            vec!["   $ x_1 $"],
+            "padded underscore-only is a recorded miss, not an oversight"
+        );
+        // A mixed span is admitted by its caret, and the underscore then
+        // lifts normally inside it.
+        assert_eq!(plain(&render("$ x_1^2 $", 60)), vec!["   x₁²"]);
     }
 
     /// Both directions of the incomplete-alphabet rule, pinned together.
