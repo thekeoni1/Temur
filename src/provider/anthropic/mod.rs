@@ -223,6 +223,12 @@ fn transport_error_to_provider(e: TransportError) -> ProviderError {
             }
         }
         TransportError::Io(msg) => ProviderError::Network(msg),
+        // T50: the ordinary turn-error path, same as any other network
+        // failure. Control returns, the session stays intact, and no
+        // string pinned by T21/T43 changes.
+        TransportError::Timeout { phase, .. } => {
+            ProviderError::Network(format!("timed out waiting for {phase} from the server"))
+        }
     }
 }
 

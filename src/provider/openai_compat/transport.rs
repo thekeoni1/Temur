@@ -15,14 +15,25 @@ pub struct HttpTransport {
 
 impl HttpTransport {
     pub fn new() -> Self {
-        rustls::crypto::ring::default_provider()
-            .install_default()
-            .ok(); // idempotent: fine if already installed
-        let config = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .build();
         HttpTransport {
-            agent: config.new_agent(),
+            agent: crate::provider::transport::chat_agent(),
+        }
+    }
+
+    /// T50: the same transport with the three bounds supplied, so a test
+    /// can drive a real socket without waiting out the production
+    /// constants.
+    pub fn with_timeouts(
+        connect: std::time::Duration,
+        response_head: std::time::Duration,
+        stream_idle: std::time::Duration,
+    ) -> Self {
+        HttpTransport {
+            agent: crate::provider::transport::chat_agent_with(
+                connect,
+                response_head,
+                stream_idle,
+            ),
         }
     }
 }
@@ -50,7 +61,7 @@ impl Transport for HttpTransport {
         }
         let res = req
             .send(body)
-            .map_err(|e| TransportError::Io(e.to_string()))?;
+            .map_err(crate::provider::transport::classify_send_error)?;
 
         let status = res.status().as_u16();
         if !(200..300).contains(&status) {

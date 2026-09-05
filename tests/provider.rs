@@ -1162,3 +1162,279 @@ fn parse_models_entries_reads_max_input_tokens_zero_or_absent_is_unknown() {
         vec![ModelEntry { id: "/model.gguf".into(), context_window: None }]
     );
 }
+
+// ------------------------------- T50: chat transport timeouts (hermetic)
+
+/// Accepts one connection and NEVER writes a byte, holding it open until
+/// the returned sender is dropped. This is the shape the sandbox relay took
+/// when it went quiet mid-session on 2026-09-05: the TCP handshake
+/// completes, so nothing at the socket layer reports trouble, and the
+/// client waits forever for a status line that never comes.
+///
+/// Held open deliberately. A listener that merely closed would surface as
+/// an ordinary connection error and would prove nothing about timeouts.
+fn silent_endpoint() -> (String, std::sync::mpsc::Sender<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let _ = rx.recv();
+        drop(stream);
+    });
+    (format!("http://127.0.0.1:{port}/v1/messages"), tx)
+}
+
+/// Run `body` on its own thread and fail if it does not finish inside
+/// `bound`. The T48 P2 mechanism, for the T48 P2 reason: a hung call cannot
+/// be unwound in place, and aborting the process would lose every other
+/// result in the suite.
+fn within<T: Send + 'static>(bound: std::time::Duration, what: &str, body: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(body());
+    });
+    match rx.recv_timeout(bound) {
+        Ok(v) => v,
+        Err(_) => panic!("{what} did not return within {bound:?}"),
+    }
+}
+
+/// The short bounds every test below drives the REAL agent with. The
+/// production constants are asserted separately; waiting out 60 real
+/// seconds in the suite would buy nothing this does not already show.
+const T: std::time::Duration = std::time::Duration::from_millis(900);
+
+#[test]
+fn a_silent_endpoint_cannot_hang_a_chat_turn() {
+    // The regression. On the parent commit this call never returned: the
+    // archived probe held it for 90.00s against this exact listener shape
+    // before its watchdog fired.
+    use temur::provider::anthropic::transport::HttpTransport;
+    let (url, _keep) = silent_endpoint();
+    let (elapsed, err) = within(std::time::Duration::from_secs(20), "post_stream", move || {
+        let t = HttpTransport::with_timeouts(T, T, T);
+        let start = std::time::Instant::now();
+        let r = t.post_stream(&url, "test-key", "{}");
+        (start.elapsed(), r.err())
+    });
+    let err = err.expect("a silent endpoint must be an error, not a hang");
+    assert!(
+        matches!(err, TransportError::Timeout { .. }),
+        "a silent endpoint is a timeout, not a generic io error: {err:?}"
+    );
+    assert!(elapsed < std::time::Duration::from_secs(10), "returned in {elapsed:?}");
+}
+
+#[test]
+fn the_openai_compat_transport_is_bounded_too() {
+    // Both transports, one shared agent constructor: the point of sharing
+    // is that this cannot be true of one provider and false of the other.
+    use temur::provider::openai_compat::transport::HttpTransport;
+    let (url, _keep) = silent_endpoint();
+    let err = within(std::time::Duration::from_secs(20), "post_stream", move || {
+        HttpTransport::with_timeouts(T, T, T)
+            .post_stream(&url, "test-key", "{}")
+            .err()
+    })
+    .expect("a silent endpoint must be an error, not a hang");
+    assert!(matches!(err, TransportError::Timeout { .. }), "{err:?}");
+}
+
+#[test]
+fn a_response_timeout_is_not_retried() {
+    // The composition that would otherwise recreate the symptom this
+    // milestone removes: retrying a 60s response timeout twice is 186s of
+    // silence. A connect-phase timeout stays retryable, matching what a
+    // refused connection already does.
+    let recv = TransportError::Timeout {
+        phase: "receive response".into(),
+        retryable: false,
+    };
+    assert!(!recv.retryable(), "a silent endpoint must not be re-POSTed");
+    assert_eq!(recv.retry_after(), None);
+    let connect = TransportError::Timeout {
+        phase: "connect".into(),
+        retryable: true,
+    };
+    assert!(connect.retryable(), "an unreachable host is worth another try");
+}
+
+#[test]
+fn a_timeout_renders_as_an_ordinary_turn_error() {
+    // Control returns and the session stays intact: the timeout arrives on
+    // the normal network-error path, not as a new error class the UIs would
+    // have to learn.
+    let (url, _keep) = silent_endpoint();
+    // Built inside the thread: AnthropicProvider holds a Box<dyn Transport>,
+    // which is not Send, so only the URL crosses the boundary.
+    let err = within(std::time::Duration::from_secs(20), "turn", move || {
+        let provider = AnthropicProvider::new(
+            url.trim_end_matches("/v1/messages").to_string(),
+            "test-key".into(),
+            Box::new(temur::provider::anthropic::transport::HttpTransport::with_timeouts(T, T, T)),
+        );
+        let cancel = temur::cancel::CancelToken::new();
+        provider
+            .stream(&sample_request(), &mut |_| {}, &cancel)
+            .err()
+    })
+    .expect("a silent endpoint must end the turn, not hang it");
+    let msg = err.to_string();
+    assert!(msg.starts_with("network: "), "ordinary network error: {msg}");
+    assert!(msg.contains("timed out"), "{msg}");
+}
+
+#[test]
+fn esc_lands_within_the_timeout_bound() {
+    // ESC ACCEPTANCE. Esc sets the cancel token; the blocked read cannot be
+    // interrupted in place (see the deliberate non-goal), so what makes Esc
+    // land is that the read RETURNS within the bound and the retry loop
+    // then sees the token. Asserting elapsed against a generous multiple of
+    // the bound, not a tight one, so contention cannot make this flaky.
+    let (url, _keep) = silent_endpoint();
+    let cancel = temur::cancel::CancelToken::new();
+    let c2 = cancel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        c2.set(); // the Esc keypress
+    });
+    let (elapsed, err) = within(std::time::Duration::from_secs(20), "turn", move || {
+        let t = temur::provider::anthropic::transport::HttpTransport::with_timeouts(T, T, T);
+        let start = std::time::Instant::now();
+        let r = temur::provider::transport::post_stream_with_retries(
+            &t, &url, "test-key", "{}", &cancel,
+        );
+        (start.elapsed(), r.err())
+    });
+    assert!(err.is_some(), "the turn must end");
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "Esc landed only after {elapsed:?}"
+    );
+}
+
+#[test]
+fn the_production_bounds_are_the_documented_ones() {
+    // The tests above drive short bounds; this is what ships. A change to
+    // either number is a deliberate act that lands here.
+    assert_eq!(temur::provider::transport::CHAT_CONNECT_TIMEOUT_SECS, 10);
+    assert_eq!(temur::provider::transport::CHAT_RESPONSE_HEAD_TIMEOUT_SECS, 60);
+    assert_eq!(temur::provider::transport::CHAT_STREAM_IDLE_TIMEOUT_SECS, 120);
+}
+
+/// Sends a response head, three quick SSE chunks, then PAUSES for `pause`
+/// before a fourth chunk and close. The pause is the discriminator: it is
+/// longer than the one-second tolerance a lapsed absolute deadline degrades
+/// to, and shorter than a real idle bound.
+fn slow_but_alive_then_pause(pause: std::time::Duration) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        use std::io::Write;
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf);
+        let head = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+        if stream.write_all(head).is_err() {
+            return;
+        }
+        let _ = stream.flush();
+        for _ in 0..3 {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            if stream.write_all(b"data: {\"x\":1}\n\n").is_err() {
+                return;
+            }
+            let _ = stream.flush();
+        }
+        std::thread::sleep(pause);
+        let _ = stream.write_all(b"data: {\"x\":1}\n\n");
+        let _ = stream.flush();
+    });
+    format!("http://127.0.0.1:{port}/v1/messages")
+}
+
+#[test]
+fn a_healthy_stream_is_never_cut_off_however_long_it_runs() {
+    // THE TEST THAT CAUGHT THE FIRST IMPLEMENTATION, and it took two
+    // attempts to make it actually discriminate.
+    //
+    // Wiring the response-head bound to `timeout_recv_response` (the
+    // obvious knob, and the one the brief named) leaks into the body,
+    // because RecvBody checks RecvResponse as a preceeding phase. It does
+    // NOT hard-cap the stream, which is what made the first version of this
+    // test pass under the broken wiring and therefore prove nothing: once
+    // an absolute deadline is in the past, ureq's `NextTimeout::not_zero`
+    // degrades it to a ONE SECOND per-read timeout instead of failing. So
+    // the real symptom is subtler than a cap: after the head bound elapses,
+    // the stream silently tolerates only ~1s of silence per read.
+    //
+    // Hence these numbers. The head bound (300ms) expires early. Then a
+    // 1500ms gap arrives, longer than the 1s degraded tolerance and shorter
+    // than the real idle bound (4s). Correct wiring streams through it;
+    // the naive wiring dies on it.
+    use temur::provider::anthropic::transport::HttpTransport;
+    let head = std::time::Duration::from_millis(300);
+    let idle = std::time::Duration::from_secs(4);
+    let url = slow_but_alive_then_pause(std::time::Duration::from_millis(1500));
+    let read = within(std::time::Duration::from_secs(30), "slow stream", move || {
+        let t = HttpTransport::with_timeouts(head, head, idle);
+        let mut reader = t.post_stream(&url, "test-key", "{}").expect("head must arrive");
+        let mut all = Vec::new();
+        let mut buf = [0u8; 256];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => all.extend_from_slice(&buf[..n]),
+                Err(e) => return Err(format!("{e:?}")),
+            }
+        }
+        Ok(String::from_utf8_lossy(&all).into_owned())
+    });
+    let body = read.expect("a stream that keeps producing must not be cut off");
+    assert_eq!(
+        body.matches("data: ").count(),
+        4,
+        "every chunk must arrive, including the one after the long pause: {body:?}"
+    );
+}
+
+#[test]
+fn a_stalled_stream_is_bounded_by_the_idle_timeout() {
+    // The other half of the same knob: silence mid-stream IS bounded, and
+    // by the idle constant rather than by anything total.
+    use temur::provider::anthropic::transport::HttpTransport;
+    let (url, _keep) = stalls_after_headers();
+    let (elapsed, err) = within(std::time::Duration::from_secs(30), "stalled stream", move || {
+        let t = HttpTransport::with_timeouts(T, T, T);
+        let mut reader = t.post_stream(&url, "test-key", "{}").expect("head must arrive");
+        let start = std::time::Instant::now();
+        let mut buf = [0u8; 256];
+        let _ = reader.read(&mut buf); // the one real chunk
+        let e = reader.read(&mut buf).err();
+        (start.elapsed(), e)
+    });
+    assert!(err.is_some(), "a stalled stream must end, not hang");
+    assert!(elapsed < std::time::Duration::from_secs(15), "ended only after {elapsed:?}");
+}
+
+/// Sends a complete response head and one SSE chunk, then goes silent while
+/// holding the connection open.
+fn stalls_after_headers() -> (String, std::sync::mpsc::Sender<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        use std::io::Write;
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf);
+        let head = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+        let _ = stream.write_all(head);
+        let _ = stream.write_all(b"data: {\"x\":1}\n\n");
+        let _ = stream.flush();
+        let _ = rx.recv();
+        drop(stream);
+    });
+    (format!("http://127.0.0.1:{port}/v1/messages"), tx)
+}
