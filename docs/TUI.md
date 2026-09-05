@@ -17,8 +17,8 @@ colors: the transcript inherits whatever palette the terminal runs.
 
 Assistant prose, and ONLY assistant prose, renders as markdown in the
 transcript (`src/ui/tui/markdown.rs`, pulldown-cmark with default
-features off and strikethrough as the only extension; we wrote the
-terminal renderer). User echoes, notices, `/command` echoes, and tool
+features off and strikethrough and tables as the only extensions; we
+wrote the terminal renderer). User echoes, notices, `/command` echoes, and tool
 titles stay verbatim, and the plain REPL's output is byte-identical to
 before. The renderer is a pure function of (cell text, width), re-run
 per frame on the accumulating cell string, no incremental parser state.
@@ -38,6 +38,12 @@ Within the style contract above:
 - Blockquotes: dim `│` prefix, content wrapped inside, bar continuous
   across paragraphs.
 - Horizontal rule: dim `─` run to width.
+- Tables (T47): one row per line, cells joined by a dim ` | `, header
+  row BOLD. No column widths, no alignment, no box drawing: a table used
+  to arrive as a single run-together line of pipes, and vertical
+  structure alone is what makes it readable again. Cell content goes
+  through the ordinary inline machinery, so code spans, emphasis and the
+  math pass below all work inside cells.
 - Links: text UNDERLINED + dim ` (url)`; bare autolinks just dim.
 
 Streaming behavior (pinned by tests): pulldown-cmark closes everything
@@ -328,6 +334,44 @@ exchange.
 The prompt is excluded from paste collapse (T43), so a modal opened by a
 turn submitted from a pasted block is still answerable. `read`, `glob`,
 `grep`, `skill` and the todo pair never open it.
+
+## Scrolling, and why scroll-up used to recall history (T47 P2)
+
+temur enables no mouse capture, deliberately. That leaves the mouse to
+the terminal, so selecting and copying text works the way it does in
+every other program on that screen. The cost is that in the alternate
+screen the terminal falls back to ALTERNATE-SCROLL mode, where a wheel
+or touchpad scroll-up is delivered to the application as Up-ARROW KEY
+PRESSES. Up is history recall, so scrolling up over an idle TUI used to
+walk the input history to its oldest entry and clamp there, leaving the
+session's first submitted line sitting in the input box. An accidental
+brush of a touchpad was enough, and only a net-upward scroll left a
+trace, which is why it looked intermittent.
+
+The guard uses the shape of the events rather than their content. A
+scroll's presses arrive with no gap between them, so the T43 drain
+collects them into ONE batch; a person holding Up produces presses far
+enough apart that each lands in a batch of its own. A drained batch that
+is ONLY unmodified Up presses, ten or more of them, is therefore
+terminal scroll and is discarded, leaving the input untouched.
+
+Measured through the real render loop under a pty: a gapless burst of n
+Up events forms one batch of exactly n, while the same events at a gap
+of a quarter millisecond or more arrive as n batches of one. Keyboard
+auto-repeat is around 30Hz, a 33ms gap, so holding Up to walk back
+through history is unaffected, and that is pinned by a test.
+
+Known miss, accepted rather than solved: a very short flick that
+produces fewer than ten events is indistinguishable from a few real
+keypresses and still recalls history. It fails to the older behaviour,
+which is no worse than before the guard existed. The alternative is to
+enable mouse capture and translate the wheel into real scrollback, and
+that was considered and rejected: it would take text selection away from
+the terminal, and a user who can no longer select output with the mouse
+has lost more than a user who occasionally sees an old prompt appear in
+the input line.
+
+Scrolling the transcript itself is PgUp/PgDn, listed below.
 
 ## Keys
 

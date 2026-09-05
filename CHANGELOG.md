@@ -4,6 +4,26 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **Tables in a reply render as tables.** A model asked to compare two
+  things emits a markdown table, and until now the TUI parsed with
+  strikethrough as its only extension, so every one of them arrived as a
+  single run-together line of pipes. Each row now gets its own line with
+  its cells joined by a dim ` | ` and the header row in bold. There is no
+  column alignment and no box drawing: vertical structure alone is what
+  makes a table readable in a terminal. Code spans, emphasis and the math
+  substitution all work inside cells.
+- **Scrolling up over the TUI no longer fills the input with an old
+  prompt.** temur leaves the mouse to the terminal so that selecting and
+  copying text keeps working, and the price is that the terminal delivers
+  a wheel or touchpad scroll-up as Up-arrow presses, which is history
+  recall. A scroll-up over an idle session could therefore leave the
+  session's first submitted line sitting in the input box, and a stray
+  touchpad brush was enough to do it. A burst of ten or more Up presses
+  arriving together is now read as scroll and discarded. Holding Up to
+  walk back through history is unaffected: a held key's presses arrive far
+  enough apart to be told from a scroll, measured rather than assumed. A
+  very short flick can still slip through, which leaves the older
+  behaviour rather than anything worse.
 - **temur asks before a tool changes anything.** `write`, `edit` and
   `bash` now prompt in an interactive session: the tool, what it is about
   to do on one line, and `y` to allow this call, `a` to allow that tool
