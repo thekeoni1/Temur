@@ -1632,3 +1632,99 @@ fn the_allow_mutations_flag_is_rejected_on_a_subcommand() {
         "{stderr}"
     );
 }
+
+// ------------------------------------------------------------ T49: --help
+
+/// The one line every help pin anchors on. Short enough to survive wording
+/// changes below it, specific enough that no other output produces it.
+const HELP_ANCHOR: &str = "Usage: temur [options]";
+
+#[test]
+fn help_prints_usage_to_stdout_and_exits_zero() {
+    let sb = sandbox();
+    sb.write_config("{}");
+    let mut c = sb.cmd();
+    c.arg("--help");
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "help is a requested output, not an error: {stderr}");
+    assert!(stdout.contains(HELP_ANCHOR), "stdout: {stdout}");
+    assert!(stderr.is_empty(), "help belongs on stdout alone: {stderr}");
+    // The trust story: every flag the parser accepts and every subcommand
+    // main dispatches is named here, so the first screen is the whole
+    // surface. A flag added without a help line fails this.
+    for flag in [
+        "-h, --help",
+        "-V, --version",
+        "-p, --prompt",
+        "--continue",
+        "--resume",
+        "--allow-mutations",
+        "--tui",
+        "--plain",
+        "--force",
+        "--add",
+        "--no-network",
+        "--mock",
+        "--capture-sse",
+    ] {
+        assert!(stdout.contains(flag), "help omits {flag}: {stdout}");
+    }
+    for cmd in ["init", "doctor", "help", "tls-probe", "tui-probe"] {
+        assert!(stdout.contains(cmd), "help omits {cmd}: {stdout}");
+    }
+    // Plain text at a width any terminal can show, and no chrome.
+    assert!(
+        stdout.lines().all(|l| l.len() <= 79),
+        "a line exceeds 79 columns: {stdout}"
+    );
+    assert!(!stdout.contains('\x1b'), "no escape sequences: {stdout:?}");
+}
+
+#[test]
+fn the_short_h_and_the_help_command_print_the_same_text() {
+    let sb = sandbox();
+    sb.write_config("{}");
+    let long = {
+        let mut c = sb.cmd();
+        c.arg("--help");
+        run(c, "").1
+    };
+    for form in ["-h", "help"] {
+        let mut c = sb.cmd();
+        c.arg(form);
+        let (code, stdout, stderr) = run(c, "");
+        assert_eq!(code, 0, "{form}: {stderr}");
+        assert_eq!(stdout, long, "{form} must print the same text");
+    }
+}
+
+#[test]
+fn help_works_with_no_config_file_present() {
+    // The case that matters at launch: a machine that has never run temur.
+    // Help is answered inside the parser loop, before config load, so the
+    // first-run quickstart must not fire and nothing may reach stderr.
+    let sb = sandbox();
+    assert!(!sb.config_path().exists());
+    for form in ["--help", "-h", "help"] {
+        let mut c = sb.cmd();
+        c.arg(form);
+        let (code, stdout, stderr) = run(c, "");
+        assert_eq!(code, 0, "{form}: {stderr}");
+        assert!(stdout.contains(HELP_ANCHOR), "{form}: {stdout}");
+        assert!(!stdout.contains("no config file found"), "{form}: {stdout}");
+        assert!(stderr.is_empty(), "{form}: {stderr}");
+    }
+}
+
+#[test]
+fn an_unknown_command_is_still_unknown() {
+    // `help` became a known command; nothing else did.
+    let sb = sandbox();
+    sb.write_config("{}");
+    let mut c = sb.cmd();
+    c.arg("halp");
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 1, "stdout: {stdout}");
+    assert!(stderr.contains("unknown command: halp"), "{stderr}");
+    assert!(!stdout.contains(HELP_ANCHOR), "{stdout}");
+}

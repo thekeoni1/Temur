@@ -27,6 +27,14 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   for.** The phrase it keys on was widened to the wording every observed
   refusal shares, and the window it searches was re-measured from the
   full transcript archive rather than extrapolated from three samples.
+- **`temur --help` prints usage.** It used to answer "invalid option",
+  and `temur help` answered "unknown command", so the only usage-shaped
+  text in the binary was the first-run quickstart, which a user with a
+  working config never sees. `--help`, `-h`, and `help` now print a usage
+  page to stdout and exit 0, answered before any config is loaded so it
+  works on a machine that has never run temur. Every flag the parser
+  accepts and every subcommand it dispatches is listed, the diagnostic
+  ones included, in their own group.
 - **Tables in a reply render as tables.** A model asked to compare two
   things emits a markdown table, and until now the TUI parsed with
   strikethrough as its only extension, so every one of them arrived as a

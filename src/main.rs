@@ -60,6 +60,13 @@ fn run() -> Result<ExitCode, error::Error> {
     let mut allow_mutations = false;
     while let Some(arg) = parser.next()? {
         match arg {
+            // T49. Beside --version and for the same reason: a requested
+            // output, printed before config load and before any subcommand
+            // validation, so it works on a machine with no config at all.
+            Long("help") | Short('h') => {
+                print!("{}", usage_text());
+                return Ok(ExitCode::SUCCESS);
+            }
             Long("version") | Short('V') => {
                 println!("temur {VERSION}");
                 return Ok(ExitCode::SUCCESS);
@@ -75,6 +82,13 @@ fn run() -> Result<ExitCode, error::Error> {
             Long("no-network") => no_network = true,
             Long("add") => add = Some(parser.value()?.string()?),
             Long("allow-mutations") => allow_mutations = true,
+            // `help` is a known command, answered here rather than in the
+            // dispatch below so it shares --help's exact path. Every other
+            // value still falls through to "unknown command".
+            Value(v) if cmd.is_none() && v == "help" => {
+                print!("{}", usage_text());
+                return Ok(ExitCode::SUCCESS);
+            }
             Value(v) if cmd.is_none() => cmd = Some(v.string()?),
             arg => return Err(arg.unexpected().into()),
         }
@@ -844,6 +858,58 @@ fn persist_target(
 /// rather than keeping a second one.
 fn save_after_turn(session: &mut Session, ui: &mut dyn temur::ui::Ui) {
     session.persist_now(&mut |ev| ui.event(&ev));
+}
+
+/// The `--help` / `-h` / `help` text (T49), written for the first ten
+/// seconds of use: what temur is, how to invoke it, the subcommands, then
+/// the flags grouped by what owns them. Every flag the parser accepts and
+/// every subcommand `run` dispatches appears here, with the ones only a
+/// developer wants in their own group rather than left out. The pointers
+/// are quickstart_text()'s targets (init, doctor, README "Configure"), not
+/// a second copy of its prose.
+fn usage_text() -> &'static str {
+    r#"temur - a single static binary AI agent. Bring your own model.
+
+Usage: temur [options]              start a session
+       temur [options] <command>    run a subcommand
+
+  -h, --help            print this text and exit
+  -V, --version         print the version and exit
+
+Commands:
+  init                  create a starter config (local llama.cpp/Ollama,
+                        Anthropic, OpenAI, Gemini, or xAI)
+  doctor                check the config and environment
+  help                  print this text
+
+Session options:
+  -p, --prompt <text>   run one agentic turn over <text>, then exit
+      --continue        resume this directory's saved session
+      --resume <key>    resume a saved session by name or file prefix
+      --allow-mutations run mutating tools (write, edit, bash) without
+                        asking; -p refuses them without it
+      --tui             force the full-screen TUI (default on a terminal)
+      --plain           force the plain line REPL
+
+Subcommand options:
+      --force           init: overwrite an existing config
+      --add <template>  init: merge a template into an existing config
+      --no-network      doctor: skip the network probes
+
+Diagnostics and development:
+  tls-probe             a real TLS handshake against a neutral endpoint
+  tui-probe             enter the alternate screen and restore it
+      --mock <files>    replay recorded SSE responses instead of calling
+                        a provider (comma-separated, served in order)
+      --capture-sse <base>
+                        tee raw response streams to <base>.<n>.sse
+
+With no command temur starts a session, using the full-screen TUI on a
+terminal and the plain line REPL otherwise.
+
+First run: temur init creates a config, temur doctor checks it.
+Config format and recipes: README.md, section "Configure".
+"#
 }
 
 /// First-run guidance (T14), printed to stderr instead of the raw credential
