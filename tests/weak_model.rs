@@ -1017,10 +1017,17 @@ fn a_scope_denial_after_a_dispatched_tool_does_not_nudge() {
 fn a_scope_denial_phrase_followed_by_the_answer_does_not_nudge() {
     // The tail rule at loop level, copied from T35 P3: the phrase is
     // present but the answer comes after it, so the reply is finished.
+    //
+    // T48: the body is sized from the archive rather than from the
+    // constant, for the same reason as its sibling in recover.rs. The
+    // four real mid-message mentions measured in the T45 replay logs put
+    // their anchors 1251 to 1427 characters from the end; `.repeat(3)`
+    // put this one at 444, which only ever cleared the old 300-character
+    // window. `.repeat(11)` puts it at 1452, inside the measured range.
     let dir = tempfile::tempdir().unwrap();
     let body = "differentiate both sides with respect to x, treat y as a function \
                 of x, and apply the chain rule to every term containing it. "
-        .repeat(3);
+        .repeat(11);
     let (mut session, requests) = session_with(
         dir.path(),
         vec![msg(

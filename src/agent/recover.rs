@@ -531,9 +531,28 @@ pub fn detect_promise_without_call(text: &str) -> bool {
 ///                 coding tasks}
 /// ```
 ///
-/// So the second family is seeded on its own invariant, "capability to
-/// provide", which is the substring all four of its observations share.
-/// It is the best-evidenced entry in this table, not a guess.
+/// So the second family is seeded on its own invariant. T45 keyed it on
+/// "capability to provide", the substring all four of ITS observations
+/// shared. D15 (2026-09-05) then caught the family saying "capability to
+/// process or extract", which that key misses, and re-reading the T45
+/// archive shows two more it always missed:
+///
+/// ```text
+/// live attempt 12   ... don't have the capability to teach or explain ...
+/// sentence attempt 4 ... don't have the capability to explain mathematical ...
+/// D15               ... don't have the capability to process or extract ...
+/// ```
+///
+/// The stable constant across every observation, T45's four included, is
+/// "have the capability to", so that is the key from T48. Verified across
+/// all 24 replay transcripts: it hits the two the old key missed, and it
+/// hits nothing the old key did not already hit.
+///
+/// Honest widening note, the same shape as the one below: this key also
+/// matches an AFFIRMATIVE sentence ("yes, I have the capability to help
+/// with that"). A turn ending on that phrasing having dispatched no tool
+/// costs one request against `NUDGE_LIMIT`, which is the same bounded
+/// price every entry in this table pays.
 ///
 /// The transcripts are at ~/temur-eval-archive/t45-gates/, files
 /// d12-live-smoke-attempt1.log through -attempt7.log.
@@ -561,7 +580,7 @@ const SCOPE_DENIAL_PHRASES: [&str; 5] = [
     "beyond the scope of",
     "not within the scope of",
     "cannot provide explanations of",
-    "capability to provide",
+    "have the capability to",
 ];
 
 
@@ -572,22 +591,44 @@ const SCOPE_DENIAL_PHRASES: [&str; 5] = [
 /// FINISHED reply and must not be nudged; the same phrase as the last
 /// thing in the message is a turn that declined and stopped.
 ///
-/// The CONSTANT is not copied, because 150 is measurably wrong for this
-/// class. A scope refusal characteristically closes with an offer of help,
-/// and that boilerplate is long enough to push the anchor out of the
-/// window. Measured on the two recorded refusals of this exact prompt:
+/// The CONSTANT is measured. T45 set 300 from three samples of one prompt
+/// (117, 164, 194) by taking the max and adding margin upward, which is
+/// extrapolation from n=3 and is exactly how 150 was lost before it. T48
+/// re-measured instead of nudging.
+///
+/// All 24 replay transcripts in ~/temur-eval-archive/t45-gates/ were
+/// measured for the anchor's distance from the end of the message. The
+/// population is bimodal, and the split is the whole finding:
 ///
 /// ```text
-/// D12 recorded    frame starts 117 chars from the end
-/// live attempt 1  frame starts 164 chars from the end
-/// live attempt 2  frame starts 194 chars from the end
+/// end-declining REFUSALS (8)   119 121 127 141 164 183 194 200
+/// mid-message MENTIONS (4)     1251 1314 1315 1427
 /// ```
 ///
-/// Two of the three miss a 150-character window. 300 clears all three
-/// with room for a longer sign-off while still being far shorter than
-/// any real answer, which is what the rule actually has to separate; the
-/// negative cases below are pinned against it.
-const SCOPE_DENIAL_TAIL_CHARS: usize = 300;
+/// The four long ones are not refusals. Each mentions scope early and
+/// then answers the question in full, with LaTeX, which is precisely the
+/// finished reply this rule exists to leave alone. Counting them as
+/// refusals is what would make a naive "max plus margin" produce 1500 and
+/// match everything.
+///
+/// So the constant comes from the GAP, not from either edge. Refusals end
+/// below 200 here, and D15 (2026-09-05) extends that edge outward;
+/// mentions begin above 1250. 800 sits well clear of the refusal cluster
+/// and well below the nearest mention, which gives it margin in BOTH
+/// directions. That two-sided margin is the difference from T45's number,
+/// which had margin in one direction only and lost.
+///
+/// A fixed tail window is therefore NOT the losing instrument it might
+/// have been: the two populations are separated by roughly a factor of
+/// six, not overlapping. What loses is setting the constant from one
+/// edge of one of them.
+///
+/// KNOWN COST at this width, pinned below rather than hidden: a reply
+/// that mentions scope and then answers BRIEFLY, in a few hundred
+/// characters, now falls inside the window and costs one nudge. Every
+/// measured real answer is far longer than that, and the price is one
+/// request against `NUDGE_LIMIT`.
+const SCOPE_DENIAL_TAIL_CHARS: usize = 800;
 
 /// T45 (P2, dogfood D12 2026-09-03): did this message END by declining a
 /// question as out of tool scope?
@@ -711,14 +752,66 @@ mod tests {
         // The tail rule, which is the whole false-positive design: the
         // phrase is present, the substance follows it, so this is a
         // finished reply and not a refusal.
+        //
+        // T48 RE-PIN, and the fixture is now sized from data instead of
+        // from the constant. At `.repeat(3)` this body put the anchor 591
+        // characters from the end, which cleared a 300-character window
+        // and nothing else; it was built to the old number rather than to
+        // any observed reply. The four real mentions measured in the T45
+        // archive put their anchors 1251 to 1427 characters from the end,
+        // because a real answer to this question is long. `.repeat(7)`
+        // puts it at 1291, inside that measured range, which is what this
+        // case is supposed to represent.
         let body = "Implicit differentiation differentiates both sides of an \
                     equation with respect to x, treating y as a function of x and \
                     applying the chain rule to every term that contains it. "
-            .repeat(3);
+            .repeat(7);
         assert!(!detect_scope_denial(&format!(
             "That is outside the scope of available tools in one sense, but here \
              it is: {body}"
         )));
+    }
+
+    /// The price of an 800-character window, pinned so it is a decision
+    /// and not a surprise.
+    ///
+    /// A reply that mentions scope and then answers BRIEFLY sits inside
+    /// the window and fires. No measured reply looks like this (every
+    /// real answer in the archive runs past 1250 characters), and the
+    /// caller's other two conditions still apply: the turn must be ending
+    /// and must have dispatched no tool. The cost when it does happen is
+    /// one request against `NUDGE_LIMIT`.
+    #[test]
+    fn a_short_answer_after_a_mention_does_fire_and_that_is_the_known_cost() {
+        let brief = "Implicit differentiation differentiates both sides with \
+                     respect to x and applies the chain rule.";
+        assert!(detect_scope_denial(&format!(
+            "That is outside the scope of available tools in one sense, but here \
+             it is: {brief}"
+        )));
+    }
+
+    /// T48: the widened family-2 key hits the two archive transcripts the
+    /// old one missed, verbatim from the replay logs.
+    #[test]
+    fn the_widened_capability_key_catches_what_the_old_one_missed() {
+        assert!(detect_scope_denial(
+            "I'm sorry, but I'm not able to provide an explanation of implicit \
+             differentiation as I don't have the capability to teach or explain \
+             mathematical concepts in this context. However, I can assist with \
+             coding tasks or help you with programming-related questions. Let me \
+             know how I can assist you!"
+        ));
+        assert!(detect_scope_denial(
+            "I'm sorry, but I'm a coding agent and don't have the capability to \
+             explain mathematical concepts like implicit differentiation. I can \
+             assist with coding tasks, however. Would you like help with something \
+             related to programming?"
+        ));
+        // D15's wording, which is what sent us here.
+        assert!(detect_scope_denial(
+            "I don't have the capability to process or extract content from that."
+        ));
     }
 
     #[test]
