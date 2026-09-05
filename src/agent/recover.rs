@@ -611,12 +611,23 @@ const SCOPE_DENIAL_PHRASES: [&str; 5] = [
 /// refusals is what would make a naive "max plus margin" produce 1500 and
 /// match everything.
 ///
-/// So the constant comes from the GAP, not from either edge. Refusals end
-/// below 200 here, and D15 (2026-09-05) extends that edge outward;
-/// mentions begin above 1250. 800 sits well clear of the refusal cluster
-/// and well below the nearest mention, which gives it margin in BOTH
-/// directions. That two-sided margin is the difference from T45's number,
-/// which had margin in one direction only and lost.
+/// D15 (2026-09-05) then extended the refusal edge outward. Its anchor
+/// sits 439 characters from the end (index 69 of a 508-character reply),
+/// measured twice independently and in exact agreement: once from the
+/// session JSON, once from the operator's verbatim paste. So the
+/// corrected populations are:
+///
+/// ```text
+/// end-declining REFUSALS (9)   119 121 127 141 164 183 194 200 439
+/// mid-message MENTIONS (4)     1251 1314 1315 1427
+/// ```
+///
+/// The constant comes from the GAP, not from either edge, and the
+/// arithmetic is shown so the next person can redo it: the gap is
+/// [439, 1251], and its midpoint is (439 + 1251) / 2 = 845. That leaves
+/// 406 characters of margin on each side, which is the maximum available
+/// and is symmetric by construction. Two-sided margin is the difference
+/// from T45's number, which had margin in one direction only and lost.
 ///
 /// A fixed tail window is therefore NOT the losing instrument it might
 /// have been: the two populations are separated by roughly a factor of
@@ -624,11 +635,11 @@ const SCOPE_DENIAL_PHRASES: [&str; 5] = [
 /// edge of one of them.
 ///
 /// KNOWN COST at this width, pinned below rather than hidden: a reply
-/// that mentions scope and then answers BRIEFLY, in a few hundred
-/// characters, now falls inside the window and costs one nudge. Every
-/// measured real answer is far longer than that, and the price is one
-/// request against `NUDGE_LIMIT`.
-const SCOPE_DENIAL_TAIL_CHARS: usize = 800;
+/// that mentions scope and then answers in a few hundred characters now
+/// falls inside the window and costs one nudge, where at 300 it did not.
+/// Every measured real answer is far longer than that, and the price is
+/// one request against `NUDGE_LIMIT`.
+const SCOPE_DENIAL_TAIL_CHARS: usize = 845;
 
 /// T45 (P2, dogfood D12 2026-09-03): did this message END by declining a
 /// question as out of tool scope?
@@ -783,8 +794,16 @@ mod tests {
     /// one request against `NUDGE_LIMIT`.
     #[test]
     fn a_short_answer_after_a_mention_does_fire_and_that_is_the_known_cost() {
+        // Sized to ISOLATE the cost of the widening, which the first
+        // version of this test did not: at `.repeat(1)` the anchor sat 190
+        // characters from the end and fired at the old 300 too, so it
+        // pinned nothing about the new width. `.repeat(4)` puts it at 562,
+        // outside 300 and inside 845, which is exactly the band this
+        // milestone opened.
         let brief = "Implicit differentiation differentiates both sides with \
-                     respect to x and applies the chain rule.";
+                     respect to x and applies the chain rule to every term \
+                     containing y. "
+            .repeat(4);
         assert!(detect_scope_denial(&format!(
             "That is outside the scope of available tools in one sense, but here \
              it is: {brief}"
@@ -808,7 +827,12 @@ mod tests {
              assist with coding tasks, however. Would you like help with something \
              related to programming?"
         ));
-        // D15's wording, which is what sent us here.
+        // D15's KEY PHRASE, "don't have the capability to process or
+        // extract", in a minimal constructed sentence. Not D15's verbatim
+        // reply: that transcript is archived beside the T48 gates and its
+        // measurement is quoted in `SCOPE_DENIAL_TAIL_CHARS`, but the
+        // fixture here only needs to pin that the widened key matches this
+        // wording at all.
         assert!(detect_scope_denial(
             "I don't have the capability to process or extract content from that."
         ));
