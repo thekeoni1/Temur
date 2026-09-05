@@ -4,6 +4,29 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **A turn can no longer start out uninterruptible.** The agent thread
+  announces that it is waiting for input and only then blocks, so on a
+  fast enough machine a prompt submitted in that instant could be
+  overtaken by its own announcement: the session then ran the turn while
+  believing it was idle, which showed the wrong chrome and, worse, turned
+  Esc into a no-op for the whole turn. The idle announcement now carries
+  the point in the conversation it was true for, and one a submission has
+  already overtaken is ignored. Esc interrupts every turn again. The same
+  defect wedged a test run for six hours twice on 2026-09-05, which is
+  how it was found.
+- **Seam tests that hang now fail in thirty seconds instead of running to
+  the six-hour ceiling**, naming the call that never returned.
+- **Math the default model writes now renders.** That model pads its
+  delimiters (`$ x^2 + y^3 $`), and the guard that keeps "costs $5 and
+  $10" from being read as math required tight delimiters, so nearly every
+  formula it produced stayed literal. Padding on both sides now reads as
+  math when the span contains a caret. Money is untouched: the widening
+  is caret-only precisely because `basic_tier` in a padded sentence about
+  dollars is not a formula.
+- **The out-of-scope refusal nudge catches more of the refusals it is
+  for.** The phrase it keys on was widened to the wording every observed
+  refusal shares, and the window it searches was re-measured from the
+  full transcript archive rather than extrapolated from three samples.
 - **Tables in a reply render as tables.** A model asked to compare two
   things emits a markdown table, and until now the TUI parsed with
   strikethrough as its only extension, so every one of them arrived as a

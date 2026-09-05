@@ -271,6 +271,17 @@ pressed, until the turn lands. Esc while idle is a no-op; a second Esc is
 idempotent; the force-quit arm is time-windowed (2 s), so Esc neither
 disarms nor confirms it.
 
+**The idle signal is ordered (T48 P1).** `read_input` sends its
+`PromptOpen` and only then blocks, so on a fast machine a submission can
+overtake it and the message arrives after `submit()` has already set
+`busy`. Clearing `busy` there stranded the turn: nothing sets it back,
+because there is no second submit and the `TurnComplete` that would is
+emitted by the turn that is blocked. The turn then ran with idle chrome
+and, since Esc only interrupts while busy, could not be stopped at all.
+`PromptOpen` now carries the number of lines the agent had consumed when
+it was sent, and the render loop honors it only while no submit has
+overtaken it. Nothing about an ordinary turn changes.
+
 **Plain-REPL interruption (F4, v0.1.1, closes the T6 exclusion).** The
 plain REPL now interrupts too: a minimal SIGINT handler (`src/signal.rs`,
 `libc` sigaction WITHOUT `SA_RESTART`, installed only in plain mode) sets
