@@ -40,8 +40,11 @@ pub struct SessionInfo {
 
 enum ToUi {
     Event(AgentEvent),
-    /// The agent is blocked in `read_input` — authoritative idle signal.
-    PromptOpen,
+    /// The agent is blocked in `read_input`: an idle signal, and since
+    /// T48/P1 an ORDERED one. The payload is how many lines the agent had
+    /// already consumed when it opened the prompt, which is what lets the
+    /// render loop tell a current idle signal from one a submit overtook.
+    PromptOpen(u64),
     /// T21/T46: the agent thread is blocked inside the approver, waiting
     /// for an answer about this exact request.
     ApprovalRequest {
@@ -314,6 +317,9 @@ pub struct TuiUi {
     tx: mpsc::Sender<ToUi>,
     rx_input: mpsc::Receiver<Option<String>>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// T48/P1: lines returned by `read_input` so far. Stamped onto every
+    /// `PromptOpen` so the render loop can date it against its own submits.
+    lines_read: u64,
 }
 
 impl TuiUi {
@@ -373,6 +379,7 @@ impl TuiUi {
             tx,
             rx_input,
             thread: Some(thread),
+            lines_read: 0,
         })
     }
 
@@ -443,6 +450,7 @@ impl TuiUi {
                 tx,
                 rx_input,
                 thread: Some(thread),
+                lines_read: 0,
             },
             snapshot,
         )
@@ -486,10 +494,14 @@ impl super::Ui for TuiUi {
     }
 
     fn read_input(&mut self) -> Option<String> {
-        if self.tx.send(ToUi::PromptOpen).is_err() {
+        if self.tx.send(ToUi::PromptOpen(self.lines_read)).is_err() {
             return None; // render thread gone: quit cleanly
         }
-        self.rx_input.recv().ok().flatten()
+        let line = self.rx_input.recv().ok().flatten();
+        if line.is_some() {
+            self.lines_read += 1;
+        }
+        line
     }
 }
 
@@ -526,7 +538,7 @@ fn render_loop<B: Backend>(
                     app.now_ms = start.elapsed().as_millis() as u64;
                     app.fold(&ev);
                 }
-                Ok(ToUi::PromptOpen) => app.prompt_open(),
+                Ok(ToUi::PromptOpen(after_line)) => app.prompt_open_after(after_line),
                 Ok(ToUi::ApprovalRequest { prompt, reply }) => {
                     app.approval = Some(prompt);
                     pending_approval = Some(reply);

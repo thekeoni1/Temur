@@ -2799,3 +2799,165 @@ fn the_threshold_boundary_is_exact() {
     assert_eq!(discard_scroll_burst(ups(9)).len(), 9, "9 is input");
     assert!(discard_scroll_burst(ups(10)).is_empty(), "10 is scroll");
 }
+
+// ---------------------------------------------------------------------------
+// T48/P1: a stale PromptOpen must never clear a newer busy
+// ---------------------------------------------------------------------------
+
+/// The CI wedge of 2026-09-05, reduced to an ordering.
+///
+/// `read_input` sends `ToUi::PromptOpen` and only then blocks. If the render
+/// thread submits BEFORE it drains that message, the message arrives after
+/// `submit()` already set `busy = true` and clears it. Nothing sets it back:
+/// there is no second submit, and the turn that would send `TurnComplete` is
+/// the thing that is blocked. The turn then runs with idle chrome and with
+/// Esc-to-interrupt disabled, which in the headless seam wedges forever.
+///
+/// Deterministic by construction, with no sleeps and no timing window: the
+/// source itself reports when the submit has landed (it is handed
+/// `ready.idle == false`, which only `submit()` can cause), the test waits
+/// for exactly that before calling `read_input`, and then reads the
+/// `Readiness` handed to later polls. On the pre-fix build `idle` flips to
+/// true the moment the stale message is drained and stays true; the fix
+/// makes it stay false.
+struct SubmitBeforePromptOpen {
+    wave: std::collections::VecDeque<Event>,
+    /// Set once the render loop has processed the wave's Enter.
+    submit_landed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Set by the test once `read_input` has queued its PromptOpen.
+    prompt_open_queued: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// `ready.idle` as handed to every poll after that.
+    seen: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+}
+
+impl temur::ui::tui::EventSource for SubmitBeforePromptOpen {
+    fn next(
+        &mut self,
+        _timeout: std::time::Duration,
+        ready: temur::ui::tui::Readiness,
+    ) -> std::io::Result<Option<Event>> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if let Some(ev) = self.wave.pop_front() {
+            return Ok(Some(ev));
+        }
+        if !ready.idle {
+            self.submit_landed.store(true, SeqCst);
+        }
+        if self.prompt_open_queued.load(SeqCst) {
+            self.seen.lock().unwrap().push(ready.idle);
+        }
+        Ok(None)
+    }
+}
+
+#[test]
+fn a_prompt_open_sent_before_a_submit_does_not_clear_that_submits_busy() {
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    use std::sync::{Arc, Mutex};
+
+    let mut wave: std::collections::VecDeque<Event> = "race the prompt"
+        .chars()
+        .map(|c| Event::Key(key(KeyCode::Char(c))))
+        .collect();
+    wave.push_back(Event::Key(key(KeyCode::Enter)));
+
+    let submit_landed = Arc::new(AtomicBool::new(false));
+    let prompt_open_queued = Arc::new(AtomicBool::new(false));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+
+    let (mut ui, _snapshot) = TuiUi::headless_with_source(
+        SessionInfo {
+            model: "claude-sonnet-5".into(),
+            thinking: false,
+            cwd: "/tmp".into(),
+            version: "test".into(),
+            profiles: vec![],
+            provider: "anthropic".into(),
+        },
+        100,
+        30,
+        SubmitBeforePromptOpen {
+            wave,
+            submit_landed: Arc::clone(&submit_landed),
+            prompt_open_queued: Arc::clone(&prompt_open_queued),
+            seen: Arc::clone(&seen),
+        },
+        CancelToken::new(),
+    );
+
+    // Rendezvous, not a sleep: wait for the render loop to tell us the
+    // submit is done. Only `submit()` can make `ready.idle` false.
+    while !submit_landed.load(SeqCst) {
+        std::hint::spin_loop();
+    }
+
+    // NOW open the prompt. The line is already queued, so this returns at
+    // once, and its PromptOpen is left sitting in the channel to be drained
+    // after the submit that it predates.
+    let line = ui.read_input().expect("the submitted line comes back");
+    assert_eq!(line, "race the prompt");
+    prompt_open_queued.store(true, SeqCst);
+
+    // The drain runs at the top of every render iteration, so any poll from
+    // the second one on has seen the message. Twenty is far past that.
+    while seen.lock().unwrap().len() < 20 {
+        std::hint::spin_loop();
+    }
+    let seen = seen.lock().unwrap().clone();
+    let tail = &seen[seen.len() - 10..];
+    assert!(
+        tail.iter().all(|idle| !idle),
+        "a PromptOpen that predates the submit cleared its busy state: the \
+         turn is now unstoppable (idle flags on the last ten polls: {tail:?})"
+    );
+
+    drop(ui);
+}
+
+#[test]
+fn a_stale_idle_signal_does_not_wedge_the_next_real_one() {
+    // The ignore must not cut the other way: a session that goes idle FOR
+    // REAL still has to be able to say so. Once the agent has consumed the
+    // line, its next PromptOpen carries the higher count and is current.
+    let mut a = app();
+    a.submit("first prompt");
+    assert!(a.busy, "submit starts a turn");
+
+    a.prompt_open_after(0);
+    assert!(a.busy, "the idle signal that predates this submit is stale");
+
+    a.prompt_open_after(1);
+    assert!(!a.busy, "the idle signal sent AFTER the line was consumed lands");
+}
+
+#[test]
+fn the_ordinary_open_prompt_path_is_untouched() {
+    // Nothing about a session that never races changes: every PromptOpen is
+    // current, so every one of them opens the prompt.
+    let mut a = app();
+    a.prompt_open_after(0);
+    assert!(!a.busy, "the first prompt opens");
+
+    for n in 1..=3u64 {
+        a.submit(&format!("prompt {n}"));
+        assert!(a.busy, "turn {n} is running");
+        a.prompt_open_after(n);
+        assert!(!a.busy, "turn {n} ends and the prompt reopens");
+    }
+    assert_eq!(a.submits, 3);
+}
+
+#[test]
+fn a_turn_that_survives_the_race_is_still_interruptible() {
+    // The point of the fix, stated as behaviour rather than as a flag: Esc
+    // only interrupts while busy, so a turn whose busy state survived the
+    // stale signal is a turn the user can still stop.
+    let mut a = app();
+    a.submit("race the prompt");
+    a.prompt_open_after(0);
+    assert!(a.busy, "precondition: the stale signal was ignored");
+    assert!(
+        matches!(a.handle_key(key(KeyCode::Esc)), Action::Interrupt),
+        "Esc must still interrupt a turn that won the race"
+    );
+}

@@ -120,6 +120,10 @@ pub struct App {
     draft: String,
     // Turn state.
     pub busy: bool,
+    /// T48/P1: how many lines have been submitted here. Monotonic, and the
+    /// only thing `prompt_open_after` compares against; see there for why a
+    /// count rather than a clock.
+    pub submits: u64,
     /// T43/P3: `now_ms` of the busy Ctrl+C that armed force-quit, if the
     /// latch is set. A TIME window rather than a "until the next key" latch:
     /// characters arriving between the two presses must not defeat the
@@ -180,6 +184,7 @@ impl App {
             hist_pos: None,
             draft: String::new(),
             busy: false,
+            submits: 0,
             armed_at_ms: None,
             interrupting: false,
             approval: None,
@@ -356,6 +361,7 @@ impl App {
         self.input.clear();
         self.cursor = 0;
         self.busy = true;
+        self.submits += 1;
         self.armed_at_ms = None;
         self.turn_started_ms = self.now_ms;
         self.stick_bottom = true;
@@ -372,6 +378,28 @@ impl App {
         self.input.clear();
         self.cursor = 0;
         self.stick_bottom = true;
+    }
+
+    /// T48/P1: the ordered idle signal, and the only one the render loop
+    /// uses.
+    ///
+    /// `read_input` sends its `PromptOpen` and only THEN blocks, so the
+    /// message can lose a race with a submit and arrive after `submit()`
+    /// already set `busy`. Clearing it there strands the turn: nothing sets
+    /// `busy` back (there is no second submit, and the `TurnComplete` that
+    /// would is emitted by the turn that is blocked), so the turn runs with
+    /// idle chrome and with Esc-to-interrupt disabled. That is the CI wedge
+    /// of 2026-09-05 and, in the shipped TUI, a turn the user cannot stop.
+    ///
+    /// `after_line` is how many lines the agent had consumed when it opened
+    /// the prompt. A submit that overtook the message pushes `submits` past
+    /// that number, which dates the message exactly. Ordering only: no
+    /// clock, no window, and a signal that is still current is honored
+    /// unchanged, so the ordinary open-prompt path is untouched.
+    pub fn prompt_open_after(&mut self, after_line: u64) {
+        if self.submits <= after_line {
+            self.prompt_open();
+        }
     }
 
     /// The agent is back at the prompt (authoritative idle signal).
