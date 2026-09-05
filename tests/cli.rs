@@ -1672,6 +1672,13 @@ fn help_prints_usage_to_stdout_and_exits_zero() {
     for cmd in ["init", "doctor", "help", "tls-probe", "tui-probe"] {
         assert!(stdout.contains(cmd), "help omits {cmd}: {stdout}");
     }
+    // T50: the page names the OTHER help surface. temur has two, and a
+    // reader of the CLI usage would otherwise never learn the in-session
+    // command table exists.
+    assert!(
+        stdout.contains("/help"),
+        "the page must point at the in-session /help: {stdout}"
+    );
     // Plain text at a width any terminal can show, and no chrome.
     assert!(
         stdout.lines().all(|l| l.len() <= 79),

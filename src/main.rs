@@ -905,7 +905,8 @@ Diagnostics and development:
                         tee raw response streams to <base>.<n>.sse
 
 With no command temur starts a session, using the full-screen TUI on a
-terminal and the plain line REPL otherwise.
+terminal and the plain line REPL otherwise. Inside a session, /help
+lists the commands that session understands.
 
 First run: temur init creates a config, temur doctor checks it.
 Config format and recipes: README.md, section "Configure".

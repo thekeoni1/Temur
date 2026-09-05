@@ -1824,7 +1824,11 @@ only guards against the MODEL, not against the host.
   `openai-compat` provider and per-profile `base_url` support this
   unchanged; the untrusted host never sees the real credential, and
   killing the virtual key ends its access without touching anything
-  else.
+  else. If the relay stops answering mid-session, the turn ends with a
+  network error inside a minute rather than hanging: temur bounds
+  connecting (10s) and the wait for a response (60s), and tolerates 120
+  seconds of silence mid-stream, a limit that resets on every chunk so a
+  long answer is never cut short.
 - **Locked-down kernels.** Playground containers often deny
   unprivileged user namespaces, so the bash key sandbox cannot start.
   Interactive sessions then ask per-command approval (see "Bash

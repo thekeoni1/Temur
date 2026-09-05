@@ -4,6 +4,22 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **A dead endpoint can no longer hang a turn, and Esc lands within the
+  timeout.** Both chat transports were built with no timeouts at all, so
+  a proxy, local server, or middlebox that accepted the connection and
+  then went quiet held the turn forever, with Esc showing
+  "interrupting..." that never arrived. Connecting is now bounded at 10
+  seconds and the wait for a response is bounded at 60. Streaming is
+  bounded differently and on purpose: the limit is 120 seconds of
+  SILENCE, which resets on every chunk, so a long answer from a slow
+  local model is never cut off no matter how long it runs in total. A
+  timeout ends the turn as an ordinary network error with the session
+  intact, and is not retried, because re-sending the same request at an
+  endpoint that just ignored it for a minute only buys another minute of
+  silence.
+- **`temur --help` now points at `/help`.** temur has two help surfaces,
+  and the command-line one never mentioned that a session understands its
+  own commands.
 - **A turn can no longer start out uninterruptible.** The agent thread
   announces that it is waiting for input and only then blocks, so on a
   fast enough machine a prompt submitted in that instant could be
