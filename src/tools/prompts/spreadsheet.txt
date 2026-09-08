@@ -1,0 +1,9 @@
+Write an .xlsx workbook with multiple sheets and/or charts.
+
+Use the write tool instead for a single sheet of plain data: writing CSV
+content to a .xlsx path already produces a one-sheet workbook. Reach for
+this tool only when you need a CHART, or MORE THAN ONE SHEET.
+
+Cells are values only: numbers and text, never formulas. Ranges are A1
+notation over the sheet you name ("A2:A12"), and must lie inside the rows
+you passed.

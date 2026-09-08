@@ -10,6 +10,7 @@ mod grep;
 pub mod guard;
 mod read;
 mod skill;
+mod spreadsheet;
 mod todo;
 mod write;
 
@@ -21,6 +22,11 @@ use std::path::PathBuf;
 
 pub use bash::{sandbox_available, APPROVAL_DENIED, SANDBOX_REFUSAL};
 pub use guard::KeyGuard;
+/// T54 P3: A1 range parsing, public so the tool tests can pin the shapes
+/// a model actually writes without going through a whole workbook.
+pub mod office_a1 {
+    pub use super::office::{parse_a1_cell as cell, parse_a1_range as range};
+}
 pub use skill::SkillTool;
 pub use todo::TodoItem;
 
@@ -491,6 +497,7 @@ impl Registry {
                 Box::new(bash::BashTool),
                 Box::new(glob::GlobTool),
                 Box::new(grep::GrepTool),
+                Box::new(spreadsheet::SpreadsheetTool),
                 Box::new(todo::TodoWriteTool),
                 Box::new(todo::TodoReadTool),
             ],

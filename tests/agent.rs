@@ -102,7 +102,7 @@ fn simple_text_turn() {
     let events = collect_events(&mut session, "hello");
 
     assert_eq!(requests.borrow().len(), 1);
-    assert_eq!(requests.borrow()[0].tools.len(), 8); // full registry advertised
+    assert_eq!(requests.borrow()[0].tools.len(), 9); // full registry advertised (T54 added spreadsheet)
     assert_eq!(session.history().len(), 2); // user + assistant
     match &events[..] {
         [AgentEvent::TurnComplete {

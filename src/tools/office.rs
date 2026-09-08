@@ -469,3 +469,208 @@ fn too_big() -> ToolError {
          write it as CSV instead.",
     )
 }
+
+// ------------------------------------------------- workbooks with charts
+
+/// One cell of a `spreadsheet` call: values only, never a formula.
+///
+/// rust_xlsxwriter writes a formula WITHOUT a cached result, so a workbook
+/// carrying one reads back as 0 until a spreadsheet application opens and
+/// recalculates it (measured in the T54 P0 spike). A tool whose output
+/// reads back as zeroes is worse than one that refuses formulas, so this
+/// surface has no formula at all.
+pub enum SheetCell {
+    Number(f64),
+    Text(String),
+    Empty,
+}
+
+pub struct SheetSpec {
+    pub name: String,
+    pub rows: Vec<Vec<SheetCell>>,
+}
+
+pub struct SeriesSpec {
+    pub name: Option<String>,
+    /// (first_row, first_col, last_row, last_col), 0-indexed.
+    pub values: (u32, u16, u32, u16),
+}
+
+pub struct ChartSpec {
+    pub sheet: String,
+    pub kind: String,
+    pub title: Option<String>,
+    pub categories: Option<(u32, u16, u32, u16)>,
+    pub series: Vec<SeriesSpec>,
+    /// (row, col) of the chart's top-left corner.
+    pub anchor: (u32, u16),
+}
+
+/// Parse an A1 range ("A2:A12", or "B7" for a single cell) into 0-indexed
+/// (first_row, first_col, last_row, last_col).
+pub fn parse_a1_range(s: &str) -> Option<(u32, u16, u32, u16)> {
+    let (a, b) = match s.split_once(':') {
+        Some((a, b)) => (a, b),
+        None => (s, s),
+    };
+    let (r1, c1) = parse_a1_cell(a)?;
+    let (r2, c2) = parse_a1_cell(b)?;
+    Some((r1.min(r2), c1.min(c2), r1.max(r2), c1.max(c2)))
+}
+
+/// Parse a single A1 cell reference into 0-indexed (row, col).
+pub fn parse_a1_cell(s: &str) -> Option<(u32, u16)> {
+    let s = s.trim().trim_start_matches('$');
+    let split = s.find(|c: char| c.is_ascii_digit())?;
+    let (letters, digits) = s.split_at(split);
+    let letters = letters.trim_end_matches('$');
+    if letters.is_empty() || digits.is_empty() {
+        return None;
+    }
+    let mut col: u32 = 0;
+    for ch in letters.chars() {
+        if !ch.is_ascii_alphabetic() {
+            return None;
+        }
+        col = col
+            .checked_mul(26)?
+            .checked_add(ch.to_ascii_uppercase() as u32 - 'A' as u32 + 1)?;
+    }
+    let row: u32 = digits.parse().ok()?;
+    if row == 0 || col == 0 {
+        return None;
+    }
+    Some((row - 1, u16::try_from(col - 1).ok()?))
+}
+
+/// Write sheets and charts as one workbook.
+///
+/// Every range is validated against the sheet's real extent BEFORE
+/// anything is written, and an out-of-range range is an error naming
+/// itself. A chart pointed at cells that do not exist renders as an empty
+/// frame, which looks like a temur bug to the user and tells the model
+/// nothing; saying so is the whole point.
+pub fn write_workbook(
+    path: &Path,
+    sheets: &[SheetSpec],
+    charts: &[ChartSpec],
+) -> Result<(), ToolError> {
+    use rust_xlsxwriter::{Chart, ChartType, Workbook};
+
+    if sheets.is_empty() {
+        return Err(ToolError::failed(
+            "A workbook needs at least one sheet; pass sheets: [{\"name\": ..., \"rows\": [...]}].",
+        ));
+    }
+    let mut wb = Workbook::new();
+    for spec in sheets {
+        let ws = wb
+            .add_worksheet()
+            .set_name(&spec.name)
+            .map_err(|e| ToolError::failed(format!("sheet \"{}\": {e}", spec.name)))?;
+        for (r, row) in spec.rows.iter().enumerate() {
+            let r32 = u32::try_from(r).map_err(|_| too_big())?;
+            if r32 >= 1_048_576 {
+                return Err(too_big());
+            }
+            for (c, cell) in row.iter().enumerate() {
+                let c16 = u16::try_from(c).map_err(|_| too_big())?;
+                if c16 >= 16_384 {
+                    return Err(too_big());
+                }
+                match cell {
+                    SheetCell::Number(n) => ws.write_number(r32, c16, *n).map(|_| ()),
+                    SheetCell::Text(t) => ws.write_string(r32, c16, t).map(|_| ()),
+                    SheetCell::Empty => Ok(()),
+                }
+                .map_err(|e| ToolError::failed(format!("sheet \"{}\": {e}", spec.name)))?;
+            }
+        }
+    }
+
+    for ch in charts {
+        let target = sheets
+            .iter()
+            .find(|s| s.name == ch.sheet)
+            .ok_or_else(|| {
+                ToolError::failed(format!(
+                    "chart names sheet \"{}\", which is not one of the sheets written.",
+                    ch.sheet
+                ))
+            })?;
+        let rows = target.rows.len() as u32;
+        let cols = target.rows.iter().map(|r| r.len()).max().unwrap_or(0) as u32;
+        let check = |what: &str, r: (u32, u16, u32, u16)| -> Result<(), ToolError> {
+            if r.2 >= rows || u32::from(r.3) >= cols {
+                return Err(ToolError::failed(format!(
+                    "chart {what} {} is outside sheet \"{}\", which holds {} rows by {} columns.",
+                    a1(r),
+                    target.name,
+                    rows,
+                    cols
+                )));
+            }
+            Ok(())
+        };
+        if let Some(cat) = ch.categories {
+            check("categories", cat)?;
+        }
+        for s in &ch.series {
+            check("series", s.values)?;
+        }
+
+        let kind = match ch.kind.to_ascii_lowercase().as_str() {
+            "line" => ChartType::Line,
+            "column" => ChartType::Column,
+            "bar" => ChartType::Bar,
+            "scatter" => ChartType::Scatter,
+            "pie" => ChartType::Pie,
+            other => {
+                return Err(ToolError::failed(format!(
+                    "chart type \"{other}\" is not one of: line, column, bar, scatter, pie."
+                )))
+            }
+        };
+        let mut chart = Chart::new(kind);
+        if let Some(t) = &ch.title {
+            chart.title().set_name(t);
+        }
+        for s in &ch.series {
+            let ser = chart.add_series();
+            ser.set_values((ch.sheet.as_str(), s.values.0, s.values.1, s.values.2, s.values.3));
+            if let Some(cat) = ch.categories {
+                ser.set_categories((ch.sheet.as_str(), cat.0, cat.1, cat.2, cat.3));
+            }
+            if let Some(n) = &s.name {
+                ser.set_name(n);
+            }
+        }
+        let ws = wb
+            .worksheet_from_name(&ch.sheet)
+            .map_err(|e| ToolError::failed(format!("chart sheet \"{}\": {e}", ch.sheet)))?;
+        ws.insert_chart(ch.anchor.0, ch.anchor.1, &chart)
+            .map_err(|e| ToolError::failed(format!("chart: {e}")))?;
+    }
+
+    wb.save(path)
+        .map_err(|e| ToolError::failed(format!("temur could not write this workbook: {e}")))?;
+    Ok(())
+}
+
+/// Render a 0-indexed range back as A1, so an error names the range the
+/// caller actually wrote rather than internal coordinates.
+fn a1(r: (u32, u16, u32, u16)) -> String {
+    format!("{}{}:{}{}", col_letters(r.1), r.0 + 1, col_letters(r.3), r.2 + 1)
+}
+
+fn col_letters(mut c: u16) -> String {
+    let mut out = String::new();
+    loop {
+        out.insert(0, (b'A' + (c % 26) as u8) as char);
+        if c < 26 {
+            break;
+        }
+        c = c / 26 - 1;
+    }
+    out
+}

@@ -917,7 +917,7 @@ fn definitions_are_complete_and_ordered() {
     let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
     assert_eq!(
         names,
-        vec!["read", "write", "edit", "bash", "glob", "grep", "todowrite", "todoread"]
+        vec!["read", "write", "edit", "bash", "glob", "grep", "spreadsheet", "todowrite", "todoread"]
     );
     for d in &defs {
         assert!(!d.description.is_empty(), "{} has empty prompt", d.name);
@@ -2317,4 +2317,218 @@ fn a_non_xlsx_write_is_byte_for_byte_what_it_always_was() {
     let body = "x,f(x)\n0,3\n";
     run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": body})).unwrap();
     assert_eq!(std::fs::read_to_string(&p).unwrap(), body);
+}
+
+// --- T54 P3: charts, the one new surface (D23) -----------------------------
+
+#[test]
+fn the_d23_request_end_to_end() {
+    // "make an excel file, then create a chart mapping every x,y integer
+    // on f(x) = x^2 - 2x + 3 from 0 to 10" -- the dogfood request that
+    // dead-ended on a missing libreoffice.
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("fx.xlsx");
+
+    let mut rows = vec![json!(["x", "f(x)"])];
+    for x in 0..=10i64 {
+        rows.push(json!([x, x * x - 2 * x + 3]));
+    }
+    let out = run(
+        &reg,
+        &mut ctx,
+        "spreadsheet",
+        json!({
+            "filePath": p.to_str().unwrap(),
+            "sheets": [{"name": "Data", "rows": rows}],
+            "charts": [{
+                "sheet": "Data", "chartType": "line", "title": "f(x) = x^2 - 2x + 3",
+                "categories": "A2:A12",
+                "series": [{"name": "f(x)", "values": "B2:B12"}],
+                "anchor": "D2"
+            }]
+        }),
+    )
+    .unwrap();
+    assert!(out.output.contains("1 sheet, 1 chart"), "{}", out.output);
+
+    // Read back through P1: the values are right and no formula appears.
+    let back = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+    assert!(back.output.contains("== Sheet: Data =="), "{}", back.output);
+    for (x, y) in (0..=10i64).map(|x| (x, x * x - 2 * x + 3)) {
+        assert!(back.output.contains(&format!("{x},{y}")), "missing {x},{y}: {}", back.output);
+    }
+
+    // The chart part is really in the workbook.
+    let f = std::fs::File::open(&p).unwrap();
+    let mut zip = zip::ZipArchive::new(f).unwrap();
+    let names: Vec<String> = (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().to_string()).collect();
+    assert!(names.iter().any(|n| n == "xl/charts/chart1.xml"), "{names:?}");
+    let mut xml = String::new();
+    {
+        use std::io::Read;
+        zip.by_name("xl/charts/chart1.xml").unwrap().read_to_string(&mut xml).unwrap();
+    }
+    assert!(xml.contains("<c:lineChart>"), "chart type in xml");
+    assert!(xml.contains("f(x)"), "series name in xml");
+}
+
+#[test]
+fn multiple_sheets_and_charts_in_one_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("multi.xlsx");
+    let out = run(
+        &reg,
+        &mut ctx,
+        "spreadsheet",
+        json!({
+            "filePath": p.to_str().unwrap(),
+            "sheets": [
+                {"name": "A", "rows": [["n", "v"], [1, 10], [2, 20]]},
+                {"name": "B", "rows": [["n", "v"], [1, 5], [2, 6]]}
+            ],
+            "charts": [
+                {"sheet": "A", "chartType": "column", "series": [{"values": "B2:B3"}]},
+                {"sheet": "B", "chartType": "pie", "series": [{"values": "B2:B3"}]}
+            ]
+        }),
+    )
+    .unwrap();
+    assert!(out.output.contains("2 sheets, 2 charts"), "{}", out.output);
+    let back = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+    assert!(back.output.contains("== Sheet: A =="), "{}", back.output);
+    assert!(back.output.contains("== Sheet: B =="), "{}", back.output);
+}
+
+#[test]
+fn an_out_of_range_series_is_an_error_naming_the_range() {
+    // Never a silently empty chart: an empty frame looks like a temur bug
+    // to the user and tells the model nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("bad.xlsx");
+    let err = run(
+        &reg,
+        &mut ctx,
+        "spreadsheet",
+        json!({
+            "filePath": p.to_str().unwrap(),
+            "sheets": [{"name": "Data", "rows": [["n"], [1], [2]]}],
+            "charts": [{"sheet": "Data", "chartType": "line", "series": [{"values": "B2:B99"}]}]
+        }),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("B2:B99"), "names the range: {err}");
+    assert!(err.contains("Data"), "names the sheet: {err}");
+    assert!(!p.exists(), "nothing is written when a range is wrong");
+}
+
+#[test]
+fn bad_chart_input_is_rejected_with_the_accepted_forms() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("x.xlsx");
+    let base = |charts: serde_json::Value| {
+        json!({
+            "filePath": p.to_str().unwrap(),
+            "sheets": [{"name": "Data", "rows": [["n"], [1]]}],
+            "charts": charts
+        })
+    };
+    let err = run(&reg, &mut ctx, "spreadsheet",
+        base(json!([{"sheet": "Data", "chartType": "donut", "series": [{"values": "A1:A1"}]}])))
+        .unwrap_err().to_string();
+    assert!(err.contains("line, column, bar, scatter, pie"), "{err}");
+
+    let err = run(&reg, &mut ctx, "spreadsheet",
+        base(json!([{"sheet": "Data", "chartType": "line", "series": [{"values": "not-a-range"}]}])))
+        .unwrap_err().to_string();
+    assert!(err.contains("A1 range"), "{err}");
+
+    let err = run(&reg, &mut ctx, "spreadsheet",
+        base(json!([{"sheet": "Nope", "chartType": "line", "series": [{"values": "A1:A1"}]}])))
+        .unwrap_err().to_string();
+    assert!(err.contains("Nope"), "{err}");
+}
+
+#[test]
+fn the_spreadsheet_tool_keeps_the_same_file_rules() {
+    let (dir, key, _normal, mut ctx) = guarded_ctx();
+    let target = dir.path().join("secrets").join("book.xlsx");
+    ctx.guard = temur::tools::KeyGuard::from_paths(vec![key, target.clone()]);
+    let reg = Registry::standard();
+    let err = run(&reg, &mut ctx, "spreadsheet", json!({
+        "filePath": target.to_str().unwrap(),
+        "sheets": [{"name": "S", "rows": [[1]]}]
+    })).unwrap_err().to_string();
+    assert!(err.contains("key isolation"), "{err}");
+    assert!(!target.exists());
+
+    // Read-first governs an existing workbook in a fresh session.
+    let plain = tempfile::tempdir().unwrap();
+    let p = plain.path().join("r.xlsx");
+    let mut c1 = ctx_in(plain.path());
+    run(&reg, &mut c1, "spreadsheet", json!({
+        "filePath": p.to_str().unwrap(), "sheets": [{"name": "S", "rows": [[1]]}]
+    })).unwrap();
+    let mut c2 = ctx_in(plain.path());
+    let err = run(&reg, &mut c2, "spreadsheet", json!({
+        "filePath": p.to_str().unwrap(), "sheets": [{"name": "S", "rows": [[2]]}]
+    })).unwrap_err().to_string();
+    assert!(err.contains("has not been read in this session"), "{err}");
+}
+
+#[test]
+fn a1_parsing_covers_the_shapes_a_model_writes() {
+    use temur::tools::office_a1 as a1;
+    assert_eq!(a1::cell("A1"), Some((0, 0)));
+    assert_eq!(a1::cell("D2"), Some((1, 3)));
+    assert_eq!(a1::cell("Z10"), Some((9, 25)));
+    assert_eq!(a1::cell("AA1"), Some((0, 26)));
+    assert_eq!(a1::cell("$B$7"), Some((6, 1)));
+    assert_eq!(a1::cell("1A"), None);
+    assert_eq!(a1::cell(""), None);
+    assert_eq!(a1::range("A2:A12"), Some((1, 0, 11, 0)));
+    // Reversed corners normalize rather than erroring.
+    assert_eq!(a1::range("A12:A2"), Some((1, 0, 11, 0)));
+    assert_eq!(a1::range("B7"), Some((6, 1, 6, 1)));
+    assert_eq!(a1::range("nope"), None);
+}
+
+#[test]
+fn the_new_tool_is_served_in_both_profiles() {
+    // Registration follows the existing rule: the compact profile trims
+    // DESCRIPTIONS, never the tool set, so every profile can do everything.
+    for profile in [PromptProfile::Full, PromptProfile::Compact] {
+        let defs = Registry::standard().with_profile(profile).definitions();
+        let d = defs.iter().find(|d| d.name == "spreadsheet").expect("registered");
+        assert!(!d.description.is_empty());
+        // It must say WHEN to prefer it over write, or it will be reached
+        // for whenever a spreadsheet is mentioned.
+        assert!(d.description.contains("write tool"), "{}", d.description);
+        assert!(d.description.to_lowercase().contains("chart"), "{}", d.description);
+    }
+}
+
+#[test]
+fn the_obvious_spelling_of_chart_type_is_still_accepted() {
+    // T33: tolerance at the argument boundary, not in the declared schema.
+    // The schema says chartType (T34: no property named "type"), but a
+    // model that writes "type" is understood rather than refused.
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("alias.xlsx");
+    run(&reg, &mut ctx, "spreadsheet", json!({
+        "filePath": p.to_str().unwrap(),
+        "sheets": [{"name": "D", "rows": [["n"], [1], [2]]}],
+        "charts": [{"sheet": "D", "type": "line", "series": [{"values": "A2:A3"}]}]
+    })).unwrap();
+    assert!(p.exists());
 }
