@@ -1,6 +1,6 @@
 //! M3 tool tests — temp dirs on native tmpfs/ext4, run as i686 binaries.
 
-use temur::tools::{PromptProfile, Registry, Tool, ToolCtx, ToolError, ToolOutput};
+use temur::tools::{PromptProfile, Registry, Tool, ToolCtx, ToolError, ToolOutput, WalkLimits};
 use serde_json::json;
 
 fn ctx_in(dir: &std::path::Path) -> ToolCtx {
@@ -582,6 +582,201 @@ fn grep_regex_include_and_binary_skip() {
 
     let err = run(&reg, &mut ctx, "grep", json!({"pattern": "("})).unwrap_err();
     assert!(matches!(err, ToolError::InvalidInput(_)));
+}
+
+// --- T53 P1: a walk can be interrupted, and cannot run forever (D21) -------
+//
+// The shipped constants are deliberately large, so every limit test injects
+// its own through ToolCtx::walk_limits rather than lowering them.
+
+/// Files spread over a few directories, so the walk visits directory
+/// entries as well as file entries.
+fn generated_tree(root: &std::path::Path, files: usize) {
+    let per_dir = 100;
+    for i in 0..files {
+        let d = root.join(format!("d{}", i / per_dir));
+        if i % per_dir == 0 {
+            std::fs::create_dir_all(&d).unwrap();
+        }
+        std::fs::write(d.join(format!("f{i}.txt")), "needle here\n").unwrap();
+    }
+}
+
+#[test]
+fn glob_cancel_before_walk_is_bash_shaped_interruption() {
+    let dir = tempfile::tempdir().unwrap();
+    generated_tree(dir.path(), 20);
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    ctx.cancel.set();
+
+    let err = run(&reg, &mut ctx, "glob", json!({"pattern": "**/*.txt"})).unwrap_err();
+    // bash's shape for an Esc mid-command: an error result carrying the
+    // partial output and the same marker. Nothing was walked, so the
+    // marker stands alone; "No files found" would claim a finished search.
+    match err {
+        ToolError::Failed(msg) => assert_eq!(msg, "(interrupted by user)"),
+        other => panic!("expected Failed, got {other:?}"),
+    }
+}
+
+#[test]
+fn grep_cancel_before_walk_is_bash_shaped_interruption() {
+    let dir = tempfile::tempdir().unwrap();
+    generated_tree(dir.path(), 20);
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    ctx.cancel.set();
+
+    let err = run(&reg, &mut ctx, "grep", json!({"pattern": "needle"})).unwrap_err();
+    match err {
+        ToolError::Failed(msg) => assert_eq!(msg, "(interrupted by user)"),
+        other => panic!("expected Failed, got {other:?}"),
+    }
+}
+
+#[test]
+fn glob_cancel_midwalk_returns_promptly() {
+    // 10,000 files take far longer to walk than the 15 ms the setter
+    // sleeps (a warm 93,035-entry walk on this box is 0.7 s, so this tree
+    // is tens of ms), which keeps the cancel landing mid-walk with a wide
+    // margin. The assertion itself is only the generous wall-clock bound.
+    let dir = tempfile::tempdir().unwrap();
+    generated_tree(dir.path(), 10_000);
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+
+    let token = ctx.cancel.clone();
+    let setter = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        token.set();
+    });
+
+    let started = std::time::Instant::now();
+    let res = run(&reg, &mut ctx, "glob", json!({"pattern": "**/*.txt"}));
+    let elapsed = started.elapsed();
+    setter.join().unwrap();
+
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "a cancelled walk must return promptly, took {elapsed:?}"
+    );
+    if let Err(ToolError::Failed(msg)) = &res {
+        assert!(msg.ends_with("(interrupted by user)"), "{msg}");
+    } else {
+        // The walk beat the setter: acceptable, and still bounded above.
+        assert!(res.is_ok(), "unexpected error shape: {res:?}");
+    }
+}
+
+#[test]
+fn glob_entries_cap_returns_partial_hits_and_closing_line() {
+    let dir = tempfile::tempdir().unwrap();
+    generated_tree(dir.path(), 50);
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    ctx.walk_limits = Some(WalkLimits {
+        max_entries: 6,
+        deadline: std::time::Duration::from_secs(30),
+    });
+
+    let out = run(&reg, &mut ctx, "glob", json!({"pattern": "**/*.txt"})).unwrap();
+    assert!(out.output.contains("search stopped after"), "{}", out.output);
+    assert!(out.output.contains("entries under"), "{}", out.output);
+    assert!(
+        out.output.contains("narrow the path or pattern"),
+        "{}",
+        out.output
+    );
+    let listed = out.output.lines().filter(|l| l.ends_with(".txt")).count();
+    assert!(
+        listed > 0 && listed < 50,
+        "expected a partial listing, got {listed} of 50"
+    );
+}
+
+#[test]
+fn glob_deadline_returns_closing_line() {
+    let dir = tempfile::tempdir().unwrap();
+    generated_tree(dir.path(), 20);
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    // A zero deadline trips on the first entry, deterministically.
+    ctx.walk_limits = Some(WalkLimits {
+        max_entries: u64::MAX,
+        deadline: std::time::Duration::ZERO,
+    });
+
+    let out = run(&reg, &mut ctx, "glob", json!({"pattern": "**/*.txt"})).unwrap();
+    assert!(out.output.contains("search stopped after 0 s"), "{}", out.output);
+    // A search cut short never claims it found nothing.
+    assert!(!out.output.contains("No files found"), "{}", out.output);
+}
+
+#[test]
+fn grep_entries_cap_returns_partial_matches_and_closing_line() {
+    let dir = tempfile::tempdir().unwrap();
+    generated_tree(dir.path(), 50);
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    ctx.walk_limits = Some(WalkLimits {
+        max_entries: 6,
+        deadline: std::time::Duration::from_secs(30),
+    });
+
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "needle"})).unwrap();
+    assert!(out.output.contains("search stopped after"), "{}", out.output);
+    assert!(
+        out.output.contains("narrow the path or pattern"),
+        "{}",
+        out.output
+    );
+    let hits = out.output.lines().filter(|l| l.contains("needle here")).count();
+    assert!(hits > 0 && hits < 50, "expected partial matches, got {hits}");
+}
+
+#[test]
+fn grep_deadline_returns_closing_line() {
+    let dir = tempfile::tempdir().unwrap();
+    generated_tree(dir.path(), 20);
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    ctx.walk_limits = Some(WalkLimits {
+        max_entries: u64::MAX,
+        deadline: std::time::Duration::ZERO,
+    });
+
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "needle"})).unwrap();
+    assert!(out.output.contains("search stopped after 0 s"), "{}", out.output);
+    assert!(!out.output.contains("No matches found"), "{}", out.output);
+}
+
+#[test]
+fn guard_denied_paths_stay_absent_from_a_truncated_walk() {
+    // T18 order is unchanged by T53: the guard is consulted for every
+    // visited entry, so stopping early can never leak one. Proven both
+    // ways: guarded plus a tripped limit hides the key, and a keyless ctx
+    // over the same tree still finds it (so the file really is reachable).
+    let (dir, key, _normal, mut ctx) = guarded_ctx();
+    let reg = Registry::standard();
+    for i in 0..40 {
+        std::fs::write(dir.path().join(format!("f{i}.txt")), "bulk needle\n").unwrap();
+    }
+    ctx.walk_limits = Some(WalkLimits {
+        max_entries: 8,
+        deadline: std::time::Duration::from_secs(30),
+    });
+
+    let out = run(&reg, &mut ctx, "glob", json!({"pattern": "**/*"})).unwrap();
+    assert!(out.output.contains("search stopped after"), "{}", out.output);
+    assert!(!out.output.contains("api.key"), "{}", out.output);
+
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "placeholder-not-a-real"})).unwrap();
+    assert!(!out.output.contains("api.key"), "{}", out.output);
+
+    let mut plain = ctx_in(dir.path());
+    let out = run(&reg, &mut plain, "glob", json!({"pattern": "**/*.key"})).unwrap();
+    assert!(out.output.contains(key.to_str().unwrap()), "{}", out.output);
 }
 
 #[test]

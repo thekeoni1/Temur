@@ -1,9 +1,20 @@
-use super::{parse_input, resolve_path, Tool, ToolCtx, ToolError, ToolOutput};
+use super::{
+    parse_input, resolve_path, Tool, ToolCtx, ToolError, ToolOutput, WalkBudget, WalkLimits,
+    WalkStop,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::time::Duration;
 
 const MAX_MATCHES: usize = 100;
 const MAX_LINE_CHARS: usize = 250;
+/// T53/D21: bounds on the WALK, not on the match caps above. Same values
+/// and the same measurements as glob.rs, and they matter more here: grep
+/// READS every file it visits, so the 248,916 files under the operator's
+/// drvfs mount are 248,916 reads, not just stats. Either limit returns
+/// what was found plus a closing line.
+const WALK_MAX_ENTRIES: u64 = 200_000;
+const WALK_DEADLINE: Duration = Duration::from_secs(10);
 
 #[derive(Deserialize)]
 struct Params {
@@ -57,9 +68,28 @@ impl Tool for GrepTool {
         // exfiltrate a key wholesale.
         let guard = ctx.guard.snapshot();
 
+        // T53/D21: interruptible and bounded, exactly as glob. Limits come
+        // from ToolCtx when a test injects them, else the constants above.
+        let limits = ctx.walk_limits.unwrap_or(WalkLimits {
+            max_entries: WALK_MAX_ENTRIES,
+            deadline: WALK_DEADLINE,
+        });
+        let mut budget = WalkBudget::start(limits);
+        let mut stop: Option<WalkStop> = None;
+        let mut interrupted = false;
+
         let mut matches: Vec<String> = Vec::new();
         let mut total = 0usize;
         'walk: for entry in ignore::WalkBuilder::new(&root).build().flatten() {
+            // Before the read, and for every entry including directories.
+            if ctx.cancel.is_set() {
+                interrupted = true;
+                break 'walk;
+            }
+            if let Err(s) = budget.tick() {
+                stop = Some(s);
+                break 'walk;
+            }
             if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 continue;
             }
@@ -101,8 +131,25 @@ impl Tool for GrepTool {
             }
         }
 
-        let output = if matches.is_empty() {
-            "No matches found".to_string()
+        // T53/D21: an interrupted walk returns in bash's shape (bash.rs):
+        // what was found, the same marker, and an error result.
+        if interrupted {
+            let mut output = matches.join("\n");
+            if !output.is_empty() && !output.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push_str("(interrupted by user)");
+            return Err(ToolError::Failed(output));
+        }
+
+        // "No matches found" is a finished search's answer; a search cut
+        // short says so through the closing line instead.
+        let mut output = if matches.is_empty() {
+            if stop.is_some() {
+                String::new()
+            } else {
+                "No matches found".to_string()
+            }
         } else {
             let mut out = format!("Found {total}{} matches\n", if total >= MAX_MATCHES { "+" } else { "" });
             out.push_str(&matches.join("\n"));
@@ -111,6 +158,12 @@ impl Tool for GrepTool {
             }
             out
         };
+        if let Some(s) = stop {
+            if !output.is_empty() && !output.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push_str(&s.closing_line(&root, budget.visited()));
+        }
         Ok(ToolOutput {
             title: p.pattern,
             output,

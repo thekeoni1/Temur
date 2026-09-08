@@ -113,6 +113,84 @@ pub fn danger_class(command: &str) -> Option<&'static str> {
     Some("shred").filter(|_| c.contains("shred "))
 }
 
+/// T53/D21: bounds on the WALK ITSELF, as distinct from the output caps
+/// (`MAX_RESULTS`, `MAX_MATCHES`) that only trim what is shown. A search
+/// over a huge or slow tree used to run to completion no matter how long
+/// that took, and could not be interrupted; the operator hit this on a
+/// drvfs mount, where Esc sat for about five minutes. These bound the
+/// traversal so the tool returns on its own with a note.
+///
+/// The shipped values live beside each tool's own output cap. Tests inject
+/// their own through [`ToolCtx::walk_limits`] instead of lowering them.
+#[derive(Clone, Copy, Debug)]
+pub struct WalkLimits {
+    pub max_entries: u64,
+    pub deadline: std::time::Duration,
+}
+
+/// Why a bounded walk stopped early, for the closing line the model reads.
+#[derive(Clone, Copy, Debug)]
+pub enum WalkStop {
+    Entries,
+    Deadline(std::time::Duration),
+}
+
+/// Tracks one walk against its [`WalkLimits`]. Counts EVERY visited entry,
+/// directories included: the traversal is the cost being bounded, not the
+/// subset that happens to match.
+pub struct WalkBudget {
+    limits: WalkLimits,
+    visited: u64,
+    started: std::time::Instant,
+}
+
+impl WalkBudget {
+    /// Starts the clock. Called immediately before the walk loop, so the
+    /// deadline covers the traversal and nothing else.
+    pub fn start(limits: WalkLimits) -> Self {
+        WalkBudget {
+            limits,
+            visited: 0,
+            started: std::time::Instant::now(),
+        }
+    }
+
+    /// Counts one visited entry. `Err` means the walk must stop now.
+    pub fn tick(&mut self) -> Result<(), WalkStop> {
+        self.visited += 1;
+        if self.visited > self.limits.max_entries {
+            return Err(WalkStop::Entries);
+        }
+        // One monotonic read per entry, against a loop that already does a
+        // stat syscall per entry; the check is not what makes a walk slow.
+        if self.started.elapsed() >= self.limits.deadline {
+            return Err(WalkStop::Deadline(self.limits.deadline));
+        }
+        Ok(())
+    }
+
+    /// Entries visited so far, for the closing line.
+    pub fn visited(&self) -> u64 {
+        self.visited
+    }
+}
+
+impl WalkStop {
+    /// The one closing line appended to a search cut short by a limit. It
+    /// names what was reached and what the model can do about it, so a
+    /// truncated search is never silently mistaken for an exhaustive one.
+    pub fn closing_line(&self, root: &std::path::Path, visited: u64) -> String {
+        let reached = match self {
+            WalkStop::Entries => format!("{visited} entries"),
+            WalkStop::Deadline(d) => format!("{} s and {visited} entries", d.as_secs()),
+        };
+        format!(
+            "(search stopped after {reached} under {} (limit); narrow the path or pattern)",
+            root.display()
+        )
+    }
+}
+
 /// Mutable per-session state tools may use.
 pub struct ToolCtx {
     pub cwd: PathBuf,
@@ -163,6 +241,11 @@ pub struct ToolCtx {
     /// default here is the ceiling, so a `ToolCtx` built outside a session
     /// behaves exactly as it did before this field existed.
     pub output_cap: usize,
+    /// T53/D21 test seam: per-dispatch override of the walk bounds used by
+    /// `glob` and `grep`. `None` (the default everywhere) means each tool
+    /// uses its own shipped constants, so every construction site outside a
+    /// test behaves exactly as it did before this field existed.
+    pub walk_limits: Option<WalkLimits>,
     /// T19 read-first enforcement: canonicalized paths whose content this
     /// session has seen (read tool, edit reads its file, a successful write
     /// knows what it wrote). `write` refuses to overwrite an EXISTING file
@@ -185,6 +268,7 @@ impl ToolCtx {
             session_allows: std::collections::HashSet::new(),
             refuse_mutations: false,
             output_cap: MAX_OUTPUT_CHARS,
+            walk_limits: None,
             read_paths: std::collections::HashSet::new(),
         }
     }
