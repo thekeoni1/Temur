@@ -1268,6 +1268,62 @@ exit=130
 Nothing landed on stdout: an interrupted one-shot never emits a
 partial answer as if it were complete.
 
+## Project instructions
+
+A project can tell temur how to behave. Put a `TEMUR.md` in the
+repository and its text joins the system prompt at startup: build
+commands, conventions, what not to touch.
+
+**Two names.** `TEMUR.md` is temur's own. `AGENTS.md` is the cross-tool
+convention other agents already read, so a repository that already has
+one works here unmodified. When both names sit in the SAME directory,
+`TEMUR.md` wins and `AGENTS.md` is ignored there; the other location is
+unaffected.
+
+**Two locations, root first.** The repository root (found by walking up
+for a `.git`, so no `git` binary is needed) and the working directory.
+A monorepo's shared rules and a subdirectory's own rules therefore both
+arrive, in that order. Nothing between the two is read, and a working
+directory that IS the root contributes once, not twice.
+
+**Read once per session.** The file is loaded at startup and never
+re-read, which keeps the prompt prefix stable so a provider's prompt
+cache stays warm. The model can read and edit the file with its
+ordinary tools, but what it was TOLD does not change until you restart
+temur, and the startup line is there to make that legible.
+
+**Capped.** The combined instructions are limited the way tool output
+is, scaled by context window between 4,000 and 30,000 characters. Over
+the cap the head is kept, the tail is dropped, and the text says so
+with the true byte count; the startup line says `truncated` too.
+Nothing is ever silently shortened.
+
+**Visible.** When a file loads, one line at startup names it:
+
+```
+project instructions: TEMUR.md (1,204 bytes)
+project instructions: AGENTS.md (root) + TEMUR.md (cwd), 3,410 bytes, truncated
+```
+
+`/status` repeats that line mid-session, and `temur doctor` reports
+what it would load from the directory it runs in, saying `none here`
+out loud when there is nothing. A session with no project file prints
+nothing at all: absence is the common case and stays quiet.
+
+**Trust.** A `TEMUR.md` in a repository you cloned is text the model
+will follow. Read it before you run an agent in that directory, the way
+you would read a `Makefile` before running `make`. To refuse it:
+
+```
+temur --no-project-instructions
+```
+
+or `"project_instructions": false` in the config, top-level next to
+`provider`. The flag wins over the config in either direction.
+
+Project instructions are not a tool and not a skill: there is no way to
+load, reload, or edit them from inside a session.
+
 ## Skills
 
 A skill is a reusable instruction file the model loads on demand:

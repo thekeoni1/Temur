@@ -4,6 +4,22 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **A project can tell temur how to behave.** Put a `TEMUR.md` in your
+  repository (or an `AGENTS.md`, the cross-tool convention other agents
+  already read) and its text joins the system prompt at startup: build
+  commands, conventions, what not to touch. Both the repository root and
+  the working directory are read, root first, so a monorepo's shared
+  rules and a subdirectory's own rules both arrive; when both names sit
+  in one directory, `TEMUR.md` wins there. The file is read ONCE per
+  session, so editing it mid-session changes nothing until you restart,
+  and a startup line names what was loaded and how big it was, with
+  `/status` repeating it and `temur doctor` reporting what it would load
+  here. Long files are capped, and the line says "truncated" rather than
+  quietly shortening them. A repository you have not read yet is text
+  the model will follow, so `--no-project-instructions` (or
+  `"project_instructions": false`) refuses it. A 929-byte file measured
+  239 tokens.
+
 - **Esc now stops a file search, and a search over a huge tree stops
   itself.** `glob` and `grep` walked the whole tree under their root and
   read the interrupt only BETWEEN tools, so a search that started was a
