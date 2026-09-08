@@ -405,3 +405,67 @@ fn provider_state_never_reaches_the_anthropic_wire() {
         "provider_state changed the Anthropic request body"
     );
 }
+
+// ------------------------------------------- T55: project instructions
+//
+// Not golden captures: these use this file's recording seam to prove that
+// the assembled project block actually travels in the request's `system`
+// field, which no in-process prompt test can show.
+
+#[test]
+fn the_project_instructions_block_reaches_the_wire_in_the_system_field() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("TEMUR.md"), "Never touch vendor/.").unwrap();
+    let loaded = temur::project::load(
+        dir.path(),
+        &temur::tools::KeyGuard::empty(),
+        temur::project::cap_chars(None),
+        true,
+    );
+    let system = temur::prompt::assemble("BASE PROMPT", None, &loaded.block);
+
+    let mut req = base_request();
+    req.system = Some(system);
+    let body = body_for(&req);
+
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    // The Anthropic wire carries `system` as cache_control'd text blocks
+    // (T28), not a bare string.
+    let sent = v["system"][0]["text"].as_str().expect("system text block");
+    assert!(sent.starts_with("BASE PROMPT"), "{sent}");
+    assert!(
+        sent.contains("<project_instructions source=\"TEMUR.md\">"),
+        "opening delimiter on the wire: {sent}"
+    );
+    assert!(sent.contains("Never touch vendor/."), "file text: {sent}");
+    assert!(sent.contains("</project_instructions>"), "closing: {sent}");
+}
+
+#[test]
+fn two_turns_send_a_byte_identical_system_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("TEMUR.md"), "stable prefix").unwrap();
+    let loaded = temur::project::load(
+        dir.path(),
+        &temur::tools::KeyGuard::empty(),
+        temur::project::cap_chars(None),
+        true,
+    );
+    let system = temur::prompt::assemble("BASE", None, &loaded.block);
+
+    // T28 prefix stability: the block is captured once, so a second turn
+    // carries the same bytes even though the file changed underneath.
+    let mut req = base_request();
+    req.system = Some(system.clone());
+    let first = body_for(&req);
+    std::fs::write(dir.path().join("TEMUR.md"), "CHANGED UNDERNEATH").unwrap();
+    let second = body_for(&req);
+
+    let a: serde_json::Value = serde_json::from_str(&first).unwrap();
+    let b: serde_json::Value = serde_json::from_str(&second).unwrap();
+    assert_eq!(a["system"], b["system"], "system prefix must not drift");
+    assert!(!b["system"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("CHANGED UNDERNEATH"));
+}

@@ -295,6 +295,12 @@ pub struct Config {
     /// the sandbox on such hosts (the other tools stay guarded; a working
     /// sandbox is still used when available). Default false.
     pub allow_bash_without_key_sandbox: bool,
+    /// T55: load `TEMUR.md` / `AGENTS.md` from the working directory and
+    /// its repository root into the system prompt. Default TRUE, because
+    /// a project that ships instructions means them; `false` (or
+    /// `--no-project-instructions`, which wins) is the refusal for a
+    /// repository whose file you have not read yet.
+    pub project_instructions: bool,
     /// T19 P3 (a recorded amendment to T4's "prose is never executed"
     /// policy): execute a tool call the model wrote as plain text when it
     /// is UNAMBIGUOUS: exactly one candidate in a known shape, inner JSON
@@ -485,6 +491,7 @@ impl Default for Config {
             key_rotate_warn_days: DEFAULT_KEY_ROTATE_WARN_DAYS,
             allow_bash_without_key_sandbox: false,
             prose_tool_calls: true,
+            project_instructions: true,
             cost_advisory_step_usd: None,
             auto_compact: None,
         }

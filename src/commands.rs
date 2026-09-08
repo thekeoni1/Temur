@@ -114,6 +114,10 @@ pub struct CommandCtx<'a> {
     /// canonicalized form, so the PATH is needed, not just the display.
     pub cwd: &'a Path,
     pub cwd_display: &'a str,
+    /// T55: the project-instructions banner line, or `None` when no
+    /// TEMUR.md / AGENTS.md was loaded. `/status` repeats startup's line
+    /// verbatim, so what the model was given stays legible mid-session.
+    pub project_instructions: Option<&'a str>,
     /// The live session's name (T10); `None` = the default session. What
     /// the NEXT save records, like `provider_name`/`model` above.
     pub session_name: &'a mut Option<String>,
@@ -360,6 +364,10 @@ fn status(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
         }),
     ];
     out.extend(cost_line);
+    // Absent means absent, no placeholder: the same rule the cost line uses.
+    if let Some(line) = ctx.project_instructions {
+        out.push(notice(line.to_string()));
+    }
     out.push(notice(match ctx.persist_path.as_deref() {
         Some(p) => format!(
             "session file: {} · session: {}",

@@ -2166,6 +2166,7 @@ impl CmdHarness {
             sessions_dir: &self.sessions_dir,
             cwd: &self.cwd,
             cwd_display: &self.cwd_display,
+            project_instructions: None,
             session_name: &mut self.session_name,
             replay_mode: self.replay,
             prompt_profile: &mut self.prompt_profile,

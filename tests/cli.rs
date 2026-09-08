@@ -1761,3 +1761,179 @@ fn an_unknown_command_is_still_unknown() {
     assert!(stderr.contains("unknown command: halp"), "{stderr}");
     assert!(!stdout.contains(HELP_ANCHOR), "{stdout}");
 }
+
+// ------------------------------------------- T55: project instructions
+
+impl Sandbox {
+    /// A working directory with a `.git` marker, so the repository-root
+    /// lookup has something to find, plus the named project files.
+    fn project(&self, files: &[(&str, &str)]) -> PathBuf {
+        let root = self.home.join("proj");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        for (rel, body) in files {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        }
+        root
+    }
+}
+
+#[test]
+fn project_instructions_load_and_announce_themselves() {
+    let sb = sandbox();
+    let root = sb.project(&[("TEMUR.md", "Build with cargo build.")]);
+    let mut c = sb.cmd();
+    c.current_dir(&root)
+        .args(["--mock", &fixture("text_simple.sse"), "-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    // One line, on the chrome stream, naming the file and its size.
+    assert!(
+        stderr.contains("project instructions: TEMUR.md (23 bytes)"),
+        "stderr: {stderr}"
+    );
+    // The answer itself is untouched.
+    assert_eq!(stdout, "Hello, world!\n", "stdout: {stdout:?}");
+}
+
+#[test]
+fn absence_says_nothing_at_all() {
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.args(["--mock", &fixture("text_simple.sse"), "-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        !stderr.contains("project instructions"),
+        "absence must be silent: {stderr}"
+    );
+    assert!(!stdout.contains("project instructions"), "stdout: {stdout}");
+}
+
+#[test]
+fn the_flag_refuses_the_file_and_beats_a_config_that_allows_it() {
+    let sb = sandbox();
+    // Config explicitly ON, so this proves the flag wins rather than
+    // merely agreeing with a default.
+    sb.write_config(r#"{"provider":"anthropic","project_instructions":true}"#);
+    let root = sb.project(&[("TEMUR.md", "Build with cargo build.")]);
+    let mut c = sb.cmd();
+    c.current_dir(&root).args([
+        "--mock",
+        &fixture("text_simple.sse"),
+        "--no-project-instructions",
+        "-p",
+        "hi",
+    ]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        !stderr.contains("project instructions:"),
+        "the flag must suppress the load: {stderr}"
+    );
+}
+
+#[test]
+fn the_config_key_alone_refuses_the_file() {
+    let sb = sandbox();
+    sb.write_config(r#"{"provider":"anthropic","project_instructions":false}"#);
+    let root = sb.project(&[("TEMUR.md", "Build with cargo build.")]);
+    let mut c = sb.cmd();
+    c.current_dir(&root)
+        .args(["--mock", &fixture("text_simple.sse"), "-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        !stderr.contains("project instructions:"),
+        "the config key must suppress the load: {stderr}"
+    );
+}
+
+#[test]
+fn the_flag_is_a_session_flag_not_a_subcommand_one() {
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.args(["--no-project-instructions", "doctor"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("only valid for a session"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn both_locations_are_announced_with_their_places() {
+    let sb = sandbox();
+    let root = sb.project(&[("AGENTS.md", "root rules"), ("sub/TEMUR.md", "cwd rules")]);
+    let mut c = sb.cmd();
+    c.current_dir(root.join("sub"))
+        .args(["--mock", &fixture("text_simple.sse"), "-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("AGENTS.md (root) + TEMUR.md (cwd), 19 bytes"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn an_over_cap_file_says_truncated_on_the_banner() {
+    let sb = sandbox();
+    // The cap floors at 4,000 chars, so 5,000 exceeds it at any window.
+    let big = "x".repeat(5_000);
+    sb.write_config(
+        r#"{"provider":"openai-compat","openai_compat":{"model":"m","context_window":4096}}"#,
+    );
+    let root = sb.project(&[("TEMUR.md", &big)]);
+    let mut c = sb.cmd();
+    c.current_dir(&root)
+        .args(["--mock", &fixture("text_simple.sse"), "-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains(", truncated"), "stderr: {stderr}");
+}
+
+#[test]
+fn doctor_lists_what_it_would_load_here() {
+    let sb = sandbox();
+    sb.write_config(r#"{"provider":"anthropic"}"#);
+    let root = sb.project(&[("TEMUR.md", "Build with cargo build.")]);
+    let mut c = sb.cmd();
+    c.current_dir(&root).args(["doctor", "--no-network"]);
+    let (_code, stdout, _stderr) = run(c, "");
+    assert!(
+        stdout.contains("project instructions: TEMUR.md (23 bytes)"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn doctor_says_none_out_loud_when_there_is_nothing() {
+    let sb = sandbox();
+    sb.write_config(r#"{"provider":"anthropic"}"#);
+    let mut c = sb.cmd();
+    c.args(["doctor", "--no-network"]);
+    let (_code, stdout, _stderr) = run(c, "");
+    assert!(
+        stdout.contains("project instructions: none here"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn status_repeats_the_line_mid_session() {
+    let sb = sandbox();
+    let root = sb.project(&[("TEMUR.md", "Build with cargo build.")]);
+    let mut c = sb.cmd();
+    c.current_dir(&root)
+        .args(["--mock", &fixture("text_simple.sse"), "--plain"]);
+    let (code, stdout, stderr) = run(c, "/status\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    let all = format!("{stdout}{stderr}");
+    assert!(
+        all.matches("project instructions: TEMUR.md (23 bytes)").count() >= 2,
+        "startup line plus /status line expected:\n{all}"
+    );
+}

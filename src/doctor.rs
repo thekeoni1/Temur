@@ -274,7 +274,26 @@ fn run_with_sandbox_probe(
     // tools-drop probe below: the offline half is cheap, but the measured
     // half POSTs, and one POST per configured profile is more than a
     // report should cost.
-    prompt_floor_check(&mut r, &cfg, &active, &defs, no_network)?;
+    // T55: what a session started HERE would load into its prompt. Doctor
+    // is a diagnostic, so unlike a session it says "none" out loud.
+    {
+        let pi = crate::project::load(
+            &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            &guard,
+            crate::project::cap_chars(active.context_window),
+            cfg.project_instructions,
+        );
+        match (&pi.summary, cfg.project_instructions) {
+            (Some(line), _) => r.pass(line)?,
+            (None, false) => r.pass(
+                "project instructions: disabled by config (project_instructions: false)",
+            )?,
+            (None, true) => r.pass(
+                "project instructions: none here (looked for TEMUR.md, then AGENTS.md, in the repository root and the working directory)",
+            )?,
+        }
+    }
+    prompt_floor_check(&mut r, &cfg, &active, &defs, no_network, &guard)?;
 
     // Tools-drop probe (T31). The ACTIVE selection only, because unlike
     // the checks above this one POSTs, and two requests per configured
@@ -404,7 +423,11 @@ fn session_tool_definitions(
 /// closure (it lives in the binary, over locals main owns), so it rebuilds
 /// from the same three ingredients; [`crate::prompt`] holds the templates
 /// so at least the text itself cannot drift between the two.
-fn session_system_prompt(cfg: &Config, p: &crate::config::ResolvedProfile) -> String {
+fn session_system_prompt(
+    cfg: &Config,
+    p: &crate::config::ResolvedProfile,
+    guard: &crate::tools::KeyGuard,
+) -> String {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let base = cfg.system_prompt.clone().unwrap_or_else(|| {
         crate::prompt::system_prompt_template(p.prompt_profile)
@@ -417,10 +440,19 @@ fn session_system_prompt(cfg: &Config, p: &crate::config::ResolvedProfile) -> St
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let skill_dirs =
         crate::skills::skill_dirs(skill_override.as_deref(), &cwd, home.as_deref());
-    match crate::skills::system_prompt_section(&crate::skills::enumerate(&skill_dirs)) {
-        Some(section) => format!("{base}{section}"),
-        None => base,
-    }
+    // T55: the project block is part of the real prefix, so a floor that
+    // left it out would under-report what a turn actually costs.
+    let project = crate::project::load(
+        &cwd,
+        guard,
+        crate::project::cap_chars(p.context_window),
+        cfg.project_instructions,
+    );
+    crate::prompt::assemble(
+        &base,
+        crate::skills::system_prompt_section(&crate::skills::enumerate(&skill_dirs)).as_deref(),
+        &project.block,
+    )
 }
 
 /// Fraction of the context window the prompt floor may occupy before the
@@ -507,9 +539,10 @@ fn prompt_floor_check(
     p: &crate::config::ResolvedProfile,
     defs: &[crate::provider::ToolDef],
     no_network: bool,
+    guard: &crate::tools::KeyGuard,
 ) -> std::io::Result<()> {
     use crate::provider::ProbeOutcome;
-    let system = session_system_prompt(cfg, p);
+    let system = session_system_prompt(cfg, p, guard);
     let estimate = floor_estimate(&system, defs);
 
     // The measured half, under the tools-drop gate. Anything short of a

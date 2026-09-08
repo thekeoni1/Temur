@@ -58,6 +58,9 @@ fn run() -> Result<ExitCode, error::Error> {
     // refusing. It can only ever WIDEN what is permitted, so there is no
     // deny-side conflict to resolve between it and the config.
     let mut allow_mutations = false;
+    // T55: refuse a repository's TEMUR.md / AGENTS.md for this run. The
+    // flag WINS over the config key, in both directions of the config.
+    let mut no_project_instructions = false;
     while let Some(arg) = parser.next()? {
         match arg {
             // T49. Beside --version and for the same reason: a requested
@@ -82,6 +85,7 @@ fn run() -> Result<ExitCode, error::Error> {
             Long("no-network") => no_network = true,
             Long("add") => add = Some(parser.value()?.string()?),
             Long("allow-mutations") => allow_mutations = true,
+            Long("no-project-instructions") => no_project_instructions = true,
             // `help` is a known command, answered here rather than in the
             // dispatch below so it shares --help's exact path. Every other
             // value still falls through to "unknown command".
@@ -121,6 +125,13 @@ fn run() -> Result<ExitCode, error::Error> {
     if allow_mutations && cmd.is_some() {
         return Err(error::Error::Usage(
             "--allow-mutations is only valid for a session, not a subcommand".into(),
+        ));
+    }
+    // Same rule, same reason: a subcommand builds no system prompt, so
+    // accepting the flag there would let a typo look accepted.
+    if no_project_instructions && cmd.is_some() {
+        return Err(error::Error::Usage(
+            "--no-project-instructions is only valid for a session, not a subcommand".into(),
         ));
     }
     if force_tui && force_plain {
@@ -247,6 +258,7 @@ fn run() -> Result<ExitCode, error::Error> {
             resume_key,
             oneshot,
             allow_mutations,
+            no_project_instructions,
         ),
     }
 }
@@ -259,6 +271,7 @@ fn repl(
     resume_key: Option<String>,
     oneshot: Option<String>,
     allow_mutations: bool,
+    no_project_instructions: bool,
 ) -> Result<ExitCode, error::Error> {
     let (cfg, cfg_existed) = config::Config::load_reporting()?;
     // Validated up front: an unknown GLOBAL prompt_profile is a startup
@@ -539,14 +552,38 @@ fn repl(
     // installed skills so the model knows the skill tool is worth calling)
     // and {cwd} are captured here. Infallible, so a switch can call it after
     // its provider build already succeeded.
+    // T18: built here rather than at set_key_guard below, because T55 has
+    // to consult the SAME guard before it opens a project file. One rule,
+    // one construction, cloned into the session unchanged.
+    let key_guard = temur::tools::KeyGuard::from_selection(&resolved, &profiles);
+
+    // T55: read ONCE, here. The flag wins over the config key in both
+    // directions, and the cap is context-scaled exactly like tool output.
+    let project = temur::project::load(
+        &cwd,
+        &key_guard,
+        temur::project::cap_chars(resolved.context_window),
+        cfg.project_instructions && !no_project_instructions,
+    );
+    // Visible when it loaded, silent when it did not: absence is the
+    // common case. Routed through the notices so the TUI, the plain REPL
+    // and one-shot stderr all say the same thing in the same place.
+    if let Some(line) = &project.summary {
+        pending_notices.push(line.clone());
+    }
+
     let rebuild_system = |profile: temur::tools::PromptProfile| -> String {
         let base_system = cfg.system_prompt.clone().unwrap_or_else(|| {
             temur::prompt::system_prompt_template(profile).replace("{cwd}", &cwd_display)
         });
-        match temur::skills::system_prompt_section(&installed_skills) {
-            Some(section) => format!("{base_system}{section}"),
-            None => base_system,
-        }
+        // After the template and the skills section, from the text
+        // captured above: a /model profile swap never re-reads disk, so
+        // the prompt prefix stays byte-stable across a session (T28).
+        temur::prompt::assemble(
+            &base_system,
+            temur::skills::system_prompt_section(&installed_skills).as_deref(),
+            &project.block,
+        )
     };
     let system = rebuild_system(current_prompt_profile);
 
@@ -593,10 +630,7 @@ fn repl(
     // selection + every profile + APP_SECRET_FILE). Empty when the config
     // is keyless, and an empty guard checks nothing. The bash escape hatch
     // travels with it.
-    session.set_key_guard(
-        temur::tools::KeyGuard::from_selection(&resolved, &profiles),
-        cfg.allow_bash_without_key_sandbox,
-    );
+    session.set_key_guard(key_guard.clone(), cfg.allow_bash_without_key_sandbox);
     // T18 layer 3: the startup credential (already read above, or None)
     // registers for tool-output redaction.
     session.set_redaction_key(startup_key);
@@ -765,6 +799,7 @@ fn repl(
                     sessions_dir: &sessions_dir,
                     cwd: &cwd,
                     cwd_display: &cwd_display,
+                    project_instructions: project.summary.as_deref(),
                     session_name: &mut session_name,
                     replay_mode,
                     prompt_profile: &mut current_prompt_profile,
@@ -888,6 +923,8 @@ Session options:
       --resume <key>    resume a saved session by name or file prefix
       --allow-mutations run mutating tools (write, edit, bash) without
                         asking; -p refuses them without it
+      --no-project-instructions
+                        ignore this project's TEMUR.md / AGENTS.md
       --tui             force the full-screen TUI (default on a terminal)
       --plain           force the plain line REPL
 

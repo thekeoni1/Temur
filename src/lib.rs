@@ -6,6 +6,7 @@ pub mod cost;
 pub mod doctor;
 pub mod error;
 pub mod init;
+pub mod project;
 pub mod prompt;
 pub mod provider;
 pub mod secret;

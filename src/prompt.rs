@@ -38,6 +38,24 @@ The user's files are usually already in the working directory; find them with gl
 before asking for them, since there is no upload. \
 Working directory: {cwd}";
 
+/// The ONE assembly rule for a session's system prompt (T55).
+///
+/// Order is the contract: the base (a config `system_prompt` override, or
+/// the profile template with `{cwd}` substituted), then the skills
+/// section, then the project-instructions block. `main`'s `rebuild_system`
+/// and `doctor`'s floor both call this, so the prompt doctor weighs is the
+/// prompt a session sends; before this existed the two assembled the same
+/// ingredients separately and could drift.
+pub fn assemble(base: &str, skills: Option<&str>, project_block: &str) -> String {
+    let mut out = String::with_capacity(base.len() + project_block.len() + 256);
+    out.push_str(base);
+    if let Some(s) = skills {
+        out.push_str(s);
+    }
+    out.push_str(project_block);
+    out
+}
+
 /// The default system-prompt template for a profile, `{cwd}` unsubstituted.
 /// The ONE place the profile-to-prompt mapping lives.
 pub fn system_prompt_template(profile: crate::tools::PromptProfile) -> &'static str {
@@ -86,6 +104,18 @@ Working directory: {cwd}";
         // The substitution the callers do, on the template they get back.
         assert!(system_prompt_template(PromptProfile::Full).contains("{cwd}"));
         assert!(system_prompt_template(PromptProfile::Compact).contains("{cwd}"));
+    }
+
+    /// The order in [`assemble`] IS the contract: base, then skills, then
+    /// project instructions. A model that reads the project's rules before
+    /// it knows what tools exist is reading them out of context.
+    #[test]
+    fn assemble_orders_base_then_skills_then_project() {
+        let out = assemble("BASE", Some("SKILLS"), "PROJECT");
+        assert_eq!(out, "BASESKILLSPROJECT");
+        assert_eq!(assemble("BASE", None, "PROJECT"), "BASEPROJECT");
+        assert_eq!(assemble("BASE", None, ""), "BASE");
+        assert_eq!(assemble("BASE", Some("SKILLS"), ""), "BASESKILLS");
     }
 
     /// The reason the compact profile is worth having at all, in bytes.
