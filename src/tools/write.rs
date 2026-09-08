@@ -70,7 +70,30 @@ impl Tool for WriteTool {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| ToolError::failed(e.to_string()))?;
         }
-        std::fs::write(&path, &p.content).map_err(|e| ToolError::failed(e.to_string()))?;
+        // T54 P2 (D23): a .xlsx path means the content is CSV and the file
+        // is a workbook. No new tool, no new parameter, no prompt cost:
+        // the model already writes correct CSV today, it just had nowhere
+        // to put it. Everything above this line (the guard, read-first,
+        // the overwrite accounting) is untouched and applies unchanged.
+        let as_xlsx = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("xlsx"))
+            .unwrap_or(false);
+        if as_xlsx {
+            super::office::write_csv_as_xlsx(&path, &p.content)?;
+        } else {
+            std::fs::write(&path, &p.content).map_err(|e| ToolError::failed(e.to_string()))?;
+        }
+        // For a plain write those are the same number. For a workbook they
+        // are not, and reporting the CSV's length as the file's size would
+        // be a number the model could not reconcile with anything it later
+        // sees on disk.
+        let written_bytes: u64 = if as_xlsx {
+            std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+        } else {
+            p.content.len() as u64
+        };
         // A successful write knows the file's content: overwrites of its own
         // output (e.g. iterating on a generated file) need no re-read.
         ctx.record_read(&path);
@@ -82,10 +105,9 @@ impl Tool for WriteTool {
         Ok(ToolOutput {
             title: p.file_path,
             output: format!(
-                "{} {} ({} bytes{replaced})",
+                "{} {} ({written_bytes} bytes{replaced})",
                 if existed { "Overwrote" } else { "Created" },
-                path.display(),
-                p.content.len() as u64
+                path.display()
             ),
         })
     }

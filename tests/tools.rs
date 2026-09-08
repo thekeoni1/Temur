@@ -2210,3 +2210,111 @@ fn the_binary_refusal_still_covers_what_temur_cannot_read() {
     let err = run(&reg, &mut ctx, "read", json!({"filePath": img.to_str().unwrap()})).unwrap_err();
     assert!(format!("{err}").contains("Cannot read binary file"));
 }
+
+// --- T54 P2: the write tool writes a spreadsheet (D23) ---------------------
+
+#[test]
+fn writing_an_xlsx_round_trips_through_the_read_tool() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("out.xlsx");
+    let csv = "x,f(x)\n0,3\n1,2\n2,3\nnote,\"a, comma\"\n";
+    run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": csv})).unwrap();
+
+    // Read it back through P1 and compare cell by cell.
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+    assert!(out.output.contains("== Sheet: Sheet1 =="), "{}", out.output);
+    assert!(out.output.contains("x,f(x)"), "{}", out.output);
+    assert!(out.output.contains("0,3"), "{}", out.output);
+    assert!(out.output.contains("1,2"), "{}", out.output);
+    assert!(out.output.contains("2,3"), "{}", out.output);
+    // The quoted field with an embedded comma survives the round trip.
+    assert!(out.output.contains("note,\"a, comma\""), "{}", out.output);
+}
+
+#[test]
+fn numbers_are_numbers_and_everything_else_is_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("t.xlsx");
+    let csv = "42,-5,3.5,1e3,007,hello,2026-09-08\n";
+    run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": csv})).unwrap();
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+    // Whole numbers read back as integers, not 42.0; a negative number is a
+    // number, not a formula lead-in; a date string stays the string it was.
+    assert!(out.output.contains("42,-5,3.5,1000,7,hello,2026-09-08"), "{}", out.output);
+}
+
+#[test]
+fn a_cell_that_looks_like_a_formula_is_written_as_text() {
+    // CSV content cannot inject a formula: nothing here calls a
+    // formula-writing API, and the read side proves the cell came back as
+    // its literal text rather than as a computed value.
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("inject.xlsx");
+    let csv = "=SUM(A1:A9),+1+1,-cmd,@ref,plain\n";
+    run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": csv})).unwrap();
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+    assert!(out.output.contains("=SUM(A1:A9)"), "{}", out.output);
+    assert!(out.output.contains("+1+1"), "{}", out.output);
+    assert!(out.output.contains("-cmd"), "{}", out.output);
+    assert!(out.output.contains("@ref"), "{}", out.output);
+    // Read back as CACHED VALUES; a real formula would have produced a
+    // number (or 0), never the source text.
+    assert!(!out.output.contains(",2,"), "no formula was evaluated: {}", out.output);
+}
+
+#[test]
+fn xlsx_writing_keeps_the_write_tools_own_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("rules.xlsx");
+    let fp = p.to_str().unwrap();
+    run(&reg, &mut ctx, "write", json!({"filePath": fp, "content": "a,1\n"})).unwrap();
+
+    // Read-first still governs an existing file, in a fresh session.
+    let mut fresh = ctx_in(dir.path());
+    let err = run(&reg, &mut fresh, "write", json!({"filePath": fp, "content": "b,2\n"}))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("has not been read in this session"), "{err}");
+
+    // And the overwrite accounting still reports the bytes it replaced.
+    let out = run(&reg, &mut ctx, "write", json!({"filePath": fp, "content": "b,2\n"})).unwrap();
+    assert!(out.output.starts_with("Overwrote"), "{}", out.output);
+    assert!(out.output.contains("replaced"), "{}", out.output);
+}
+
+#[test]
+fn a_guarded_xlsx_path_is_refused_before_anything_is_written() {
+    let (dir, key, _normal, mut ctx) = guarded_ctx();
+    let target = dir.path().join("secrets").join("book.xlsx");
+    ctx.guard = temur::tools::KeyGuard::from_paths(vec![key, target.clone()]);
+    let reg = Registry::standard();
+    let err = run(
+        &reg,
+        &mut ctx,
+        "write",
+        json!({"filePath": target.to_str().unwrap(), "content": "a,1\n"}),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("key isolation"), "{err}");
+    assert!(!target.exists(), "nothing may be created under a guarded path");
+}
+
+#[test]
+fn a_non_xlsx_write_is_byte_for_byte_what_it_always_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("plain.csv");
+    let body = "x,f(x)\n0,3\n";
+    run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": body})).unwrap();
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), body);
+}

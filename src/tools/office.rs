@@ -353,3 +353,119 @@ fn zip_entry_to_string(path: &Path, entry: &str) -> Result<String, ToolError> {
         })?;
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
+
+// ------------------------------------------------------- writing xlsx
+
+/// A cell as it will be written: a number, or text.
+///
+/// The ONLY inference is numeric, and it is deliberately narrow. Anything
+/// that is not a plain integer or float stays text, including dates,
+/// currency and percentages, because guessing a format is how a
+/// spreadsheet silently changes someone's data.
+enum Cell {
+    Number(f64),
+    Text(String),
+}
+
+/// FORMULA INJECTION IS NOT POSSIBLE HERE, by construction: nothing in
+/// this module calls a formula-writing API, so a cell whose text begins
+/// with `=`, `+`, `-` or `@` is written as the literal text it is. That is
+/// the same rule a careful CSV importer applies, and it matters more here
+/// because the CSV is written by a model acting on someone else's input.
+fn classify(field: &str) -> Cell {
+    // A leading `-` is only ever a formula lead-in when what follows is
+    // NOT a number, so "-5" stays the number it obviously is.
+    if let Ok(i) = field.parse::<i64>() {
+        return Cell::Number(i as f64);
+    }
+    if let Ok(f) = field.parse::<f64>() {
+        if f.is_finite() {
+            return Cell::Number(f);
+        }
+    }
+    Cell::Text(field.to_string())
+}
+
+/// RFC-4180-ish CSV: quoted fields, doubled quotes inside them, embedded
+/// commas and newlines. The first row is DATA, not a header: temur has no
+/// way to know which it is and pretending otherwise loses a row.
+fn parse_csv(content: &str) -> Vec<Vec<String>> {
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut row: Vec<String> = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut chars = content.chars().peekable();
+    let mut any = false;
+    while let Some(c) = chars.next() {
+        any = true;
+        if quoted {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    field.push('"');
+                } else {
+                    quoted = false;
+                }
+            } else {
+                field.push(c);
+            }
+            continue;
+        }
+        match c {
+            '"' if field.is_empty() => quoted = true,
+            ',' => row.push(std::mem::take(&mut field)),
+            '\r' => {}
+            '\n' => {
+                row.push(std::mem::take(&mut field));
+                rows.push(std::mem::take(&mut row));
+            }
+            _ => field.push(c),
+        }
+    }
+    if !field.is_empty() || !row.is_empty() {
+        row.push(field);
+        rows.push(row);
+    } else if any && rows.is_empty() {
+        rows.push(vec![String::new()]);
+    }
+    // A trailing newline ends the last row; it does not add an empty one.
+    rows
+}
+
+/// Write CSV text as a one-sheet workbook. Used by the write tool when
+/// filePath ends in .xlsx, so no new tool and no new parameter exist.
+pub fn write_csv_as_xlsx(path: &Path, content: &str) -> Result<(), ToolError> {
+    let rows = parse_csv(content);
+    let mut wb = rust_xlsxwriter::Workbook::new();
+    let ws = wb.add_worksheet();
+    for (r, row) in rows.iter().enumerate() {
+        // u32 row / u16 col are rust_xlsxwriter's own types; the bounds
+        // below are Excel's, and exceeding them is a refusal rather than a
+        // silently short workbook.
+        let r32 = u32::try_from(r).map_err(|_| too_big())?;
+        if r32 >= 1_048_576 {
+            return Err(too_big());
+        }
+        for (c, field) in row.iter().enumerate() {
+            let c16 = u16::try_from(c).map_err(|_| too_big())?;
+            if c16 >= 16_384 {
+                return Err(too_big());
+            }
+            match classify(field) {
+                Cell::Number(n) => ws.write_number(r32, c16, n),
+                Cell::Text(t) => ws.write_string(r32, c16, &t),
+            }
+            .map_err(|e| ToolError::failed(format!("temur could not write this workbook: {e}")))?;
+        }
+    }
+    wb.save(path)
+        .map_err(|e| ToolError::failed(format!("temur could not write this workbook: {e}")))?;
+    Ok(())
+}
+
+fn too_big() -> ToolError {
+    ToolError::failed(
+        "That is more rows or columns than a worksheet can hold (1,048,576 by 16,384); \
+         write it as CSV instead.",
+    )
+}
