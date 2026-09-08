@@ -59,28 +59,28 @@ const TEMPLATES: [Template; 5] = [
     Template {
         number: "1",
         name: "local",
-        describe: "llama.cpp / Ollama / LM Studio (openai-compat, keyless)",
+        describe: "a llama.cpp / Ollama / LM Studio server you run",
         default_model: "qwen3-4b",
         key_slug: None,
     },
     Template {
         number: "2",
         name: "anthropic",
-        describe: "Anthropic API (key file)",
+        describe: "Anthropic API (your API key)",
         default_model: "claude-sonnet-5",
         key_slug: Some("anthropic"),
     },
     Template {
         number: "3",
         name: "openai",
-        describe: "OpenAI API (openai-compat, key file)",
+        describe: "OpenAI API (your API key)",
         default_model: "gpt-4o",
         key_slug: Some("openai"),
     },
     Template {
         number: "4",
         name: "gemini",
-        describe: "Gemini API (openai-compat, key file)",
+        describe: "Gemini API (your API key)",
         default_model: "gemini-3.6-flash",
         key_slug: Some("gemini"),
     },
@@ -90,7 +90,7 @@ const TEMPLATES: [Template; 5] = [
     Template {
         number: "5",
         name: "xai",
-        describe: "xAI Grok API (openai-compat, key file)",
+        describe: "xAI Grok API (your API key)",
         default_model: "grok-4",
         key_slug: Some("xai"),
     },
@@ -202,10 +202,10 @@ const MODEL_LIST_CAP: usize = 20;
 /// is small", and the second-highest scorer answers neither.
 const MODEL_SHORTLIST: &[&str] = &[
     "Known-good small models:",
-    "  Qwen3-4B-Instruct-2507 Q4_K_M (~3.4 GB RAM at 8k context; the primary recommendation)",
+    "  Qwen3-4B-Instruct-2507 Q4_K_M (~3.4 GB RAM at 8k context)",
     "  Qwen3-1.7B Q4_K_M (~2.1 GB RAM; the low-RAM choice)",
     "Larger is better when RAM allows; 7B+ is qualitatively different.",
-    "See docs/OFFLINE.md, section \"Recommended small models\".",
+    "More in docs/OFFLINE.md, \"Recommended small models\".",
 ];
 
 /// The one line under the hosted-compat Model question (T51). anthropic
@@ -214,8 +214,8 @@ const MODEL_SHORTLIST: &[&str] = &[
 /// other ids existed. Deliberately NOT a list: baked hosted lists rot (the
 /// TEMPLATES comment above is the record of that), so this names the live
 /// source instead of becoming one more thing to keep current.
-const HOSTED_MODEL_HINT: &str = "Enter keeps the default; any model id your account offers works. \
-     /models\nin temur lists them once your key is in.";
+const HOSTED_MODEL_HINT: &str =
+    "Any model id your account offers works; /models lists them once your key is in.";
 
 /// Render the config JSON for a template. Built by hand (not serde) so the
 /// field order matches the README recipes byte for byte; user-supplied
@@ -419,7 +419,7 @@ fn ask_local_base_and_model(
     if let Some(n) = detected {
         writeln!(
             out,
-            "Detected a context allocation of {n} tokens from the server (llama.cpp\n/props, n_ctx); writing \"context_window\": {n}."
+            "Server reports {n} tokens of context (/props n_ctx); writing \"context_window\": {n}."
         )?;
     }
     Ok((base, picked, detected, server_up))
@@ -442,11 +442,8 @@ fn looks_like_key_material(answer: &str) -> bool {
 /// It NEVER echoes the value; the value is dropped, never used or stored.
 fn warn_key_shaped(out: &mut dyn Write) -> Result<(), crate::error::Error> {
     writeln!(out)?;
-    writeln!(out, "WARNING: that answer looks like API key material, not a file path.")?;
-    writeln!(out, "This question takes the PATH of the file that will hold the key; a key")?;
-    writeln!(out, "itself is only ever accepted at the hidden key prompt. The pasted value")?;
-    writeln!(out, "was not used or stored anywhere, but it did reach this terminal, so if")?;
-    writeln!(out, "it was a real key you should rotate it.")?;
+    writeln!(out, "WARNING: that looks like a key, not a path. It was not used or stored,")?;
+    writeln!(out, "but it reached this terminal: if it was a real key, rotate it.")?;
     Ok(())
 }
 
@@ -503,13 +500,8 @@ fn ask_key_file(
             .to_string(),
         None => String::new(),
     };
-    writeln!(
-        out,
-        "Where should the key be stored? Answer with a file path; the key \
-         itself is pasted later at a hidden prompt, never here."
-    )?;
     loop {
-        let answer = ask(input, out, "API key file path", &default)?;
+        let answer = ask(input, out, "Where to save your API key", &default)?;
         if answer.is_empty() {
             return Err(crate::error::Error::Config(
                 "init: no HOME to derive a default key file path; enter one explicitly".into(),
@@ -644,7 +636,7 @@ fn prompt_key_entry(
     out: &mut dyn Write,
     term: &mut dyn KeyEntryTerminal,
 ) -> Result<bool, crate::error::Error> {
-    write!(out, "Paste your API key (input hidden; Enter to skip and add it later): ")?;
+    write!(out, "Paste your API key (hidden; Enter to skip): ")?;
     out.flush()?;
     let mut line = String::new();
     let hidden = term.is_tty() && term.begin_hidden();
@@ -654,10 +646,9 @@ fn prompt_key_entry(
         // _guard drops HERE: echo and SIGINT restored before anything
         // else happens, the error path included.
     };
-    if hidden {
-        // The newline the disabled echo swallowed.
-        writeln!(out)?;
-    }
+    // Terminate the prompt line: on a TTY this is the newline the disabled
+    // echo swallowed, and off one it is the newline no echo ever wrote.
+    writeln!(out)?;
     let n = match read {
         Ok(n) => n,
         Err(e) => {
@@ -688,7 +679,7 @@ fn prompt_key_entry(
     })();
     wipe(&mut line);
     written?;
-    writeln!(out, "key saved (hidden) to {}", key_path.display())?;
+    writeln!(out, "Saved to {}.", key_path.display())?;
     Ok(true)
 }
 
@@ -716,14 +707,11 @@ fn setup_key_file(
     if key_path.exists() {
         if std::fs::metadata(key_path)?.len() != 0 {
             replacing = term.is_tty()
-                && ask_yes_no(input, out, "A key file already exists. Replace it?")?;
+                && ask_yes_no(input, out, "Replace the key already in that file?")?;
             if !replacing {
-                writeln!(out, "Key file {} left untouched.", key_path.display())?;
+                writeln!(out, "Left {} as it is.", key_path.display())?;
                 if !term.is_tty() {
-                    writeln!(
-                        out,
-                        "To replace it: edit or delete the file, then rerun temur init."
-                    )?;
+                    writeln!(out, "Edit it, or delete it and rerun init, to replace the key.")?;
                 }
                 return Ok(());
             }
@@ -746,7 +734,7 @@ fn setup_key_file(
             .mode(0o600)
             .open(key_path)?;
         std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))?;
-        writeln!(out, "Created empty key file {} (mode 600).", key_path.display())?;
+        writeln!(out, "Created {} (mode 600).", key_path.display())?;
     }
     if prompt_key_entry(key_path, input, out, term)? {
         return Ok(());
@@ -754,14 +742,9 @@ fn setup_key_file(
     // Skipped at the hidden prompt. Replacing: the old contents survive,
     // which is the truthful thing to say. Otherwise the T14 instruction.
     if replacing {
-        writeln!(out, "Key file {} left untouched.", key_path.display())?;
+        writeln!(out, "Left {} as it is.", key_path.display())?;
     } else {
-        writeln!(out)?;
-        writeln!(
-            out,
-            "Paste your key into {} with your editor. temur reads it only by\npath at startup and never echoes, logs, or stores key material anywhere else.",
-            key_path.display()
-        )?;
+        writeln!(out, "Add it later: put your key in {}.", key_path.display())?;
     }
     Ok(())
 }
@@ -833,8 +816,7 @@ pub fn run(
         )));
     }
 
-    writeln!(out, "temur init: guided starter config")?;
-    writeln!(out, "Config will be written to: {}", cfg_path.display())?;
+    writeln!(out, "temur init: config goes to {}", cfg_path.display())?;
     writeln!(out)?;
     writeln!(out, "Templates:")?;
     for t in &TEMPLATES {
@@ -924,7 +906,7 @@ pub fn run(
             if undone {
                 writeln!(
                     out,
-                    "Rolled back {}: init writes a config only when the key step succeeds.",
+                    "Rolled back {}: no config without a usable key file.",
                     cfg_path.display()
                 )?;
             }
@@ -933,24 +915,16 @@ pub fn run(
     }
 
     writeln!(out)?;
-    if template.key_slug.is_some() {
-        writeln!(out, "Next: temur doctor to check the setup, then temur to start.")?;
-    } else if server_up {
-        // The wizard just listed this server's models, or read its n_ctx.
-        // Telling the operator to go start it contradicts what they saw.
+    // Hosted, and local with a server that just answered, are the SAME
+    // state: ready. Only a local server nobody could reach needs starting.
+    if template.key_slug.is_some() || server_up {
         writeln!(out, "Next: temur to start (temur doctor checks the setup first).")?;
     } else {
-        writeln!(
-            out,
-            "Next: start your local server (see docs/OFFLINE.md), run temur doctor\nto check the setup, then temur to start."
-        )?;
+        writeln!(out, "Next: start your server (docs/OFFLINE.md), then temur.")?;
     }
-    // T16: sessions discoverability — autosave was routinely discovered by
+    // T16: sessions discoverability - autosave was routinely discovered by
     // accident, so the wizard says it once at the end.
-    writeln!(
-        out,
-        "Conversations are saved automatically per working directory; temur --continue\nresumes the last one."
-    )?;
+    writeln!(out, "Sessions save per directory; temur --continue resumes the last.")?;
     Ok(())
 }
 
@@ -1430,7 +1404,7 @@ mod tests {
         assert!(cfg.contains("\"context_window\": 16384"), "{cfg}");
         assert!(!cfg.contains("8192"), "{cfg}");
         assert!(
-            out.contains("Detected a context allocation of 16384 tokens"),
+            out.contains("Server reports 16384 tokens of context"),
             "{out}"
         );
         assert!(out.contains("/props"), "source named: {out}");
@@ -1442,7 +1416,7 @@ mod tests {
         let list = |_: &str| Ok(ids(&["served-model"]));
         let (cfg, out) = run_wizard_probed("\n\n\n", &list, &|_| None).unwrap();
         assert!(cfg.contains("\"context_window\": 8192"), "{cfg}");
-        assert!(!out.contains("Detected a context allocation"), "{out}");
+        assert!(!out.contains("tokens of context"), "{out}");
         assert!(!out.contains("/props"), "{out}");
     }
 
@@ -1455,7 +1429,7 @@ mod tests {
         };
         let (cfg, out) = run_wizard_probed("\n\n\n", &list, &|_| Some(4096)).unwrap();
         assert!(cfg.contains("\"context_window\": 4096"), "{cfg}");
-        assert!(out.contains("Detected a context allocation of 4096 tokens"), "{out}");
+        assert!(out.contains("Server reports 4096 tokens of context"), "{out}");
     }
 
     #[test]
@@ -1684,12 +1658,9 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("/model <name> switches to one"), "{out}");
-        assert!(out.contains("Paste your key into"), "{out}");
-        // The T13 path explainer shows on the --add wizard path too.
-        assert!(
-            out.contains("pasted later at a hidden prompt, never here"),
-            "{out}"
-        );
+        assert!(out.contains("Add it later: put your key in"), "{out}");
+        // The path question carries what the T13 explainer used to say.
+        assert!(out.contains("Where to save your API key ["), "{out}");
     }
 
     #[test]
@@ -1783,7 +1754,7 @@ mod tests {
         let parsed: crate::config::Config = serde_json::from_str(&cfg).unwrap();
         let profiles = parsed.resolved_profiles().unwrap();
         assert_eq!(profiles["local"].context_window, Some(32768));
-        assert!(out.contains("Detected a context allocation of 32768 tokens"), "{out}");
+        assert!(out.contains("Server reports 32768 tokens of context"), "{out}");
         // The existing profile's fields are untouched by the merge.
         assert!(profiles["sonnet"].context_window.is_none(), "{cfg}");
     }
@@ -1892,14 +1863,14 @@ mod tests {
             std::fs::metadata(&key).unwrap().permissions().mode() & 0o7777,
             0o600
         );
-        assert!(out.contains("Paste your API key (input hidden; Enter to skip"), "{out}");
+        assert!(out.contains("Paste your API key (hidden; Enter to skip)"), "{out}");
         assert!(
-            out.contains(&format!("key saved (hidden) to {}", key.display())),
+            out.contains(&format!("Saved to {}.", key.display())),
             "{out}"
         );
         assert!(!out.contains(PLACEHOLDER), "the key must never be echoed: {out}");
         assert!(
-            !out.contains("with your editor"),
+            !out.contains("Add it later"),
             "a saved key needs no editor instruction: {out}"
         );
     }
@@ -1917,8 +1888,7 @@ mod tests {
         );
         result.unwrap();
         assert_eq!(std::fs::metadata(&key).unwrap().len(), 0, "skip leaves it empty");
-        assert!(out.contains("Paste your key into"), "editor instruction kept: {out}");
-        assert!(out.contains("with your editor"), "{out}");
+        assert!(out.contains("Add it later: put your key in"), "editor instruction kept: {out}");
 
         // EOF right at the prompt (the pre-T17 answer scripts): same skip.
         let tmp = tempfile::tempdir().unwrap();
@@ -1931,7 +1901,7 @@ mod tests {
         );
         result.unwrap();
         assert_eq!(std::fs::metadata(&key).unwrap().len(), 0);
-        assert!(out.contains("with your editor"), "{out}");
+        assert!(out.contains("Add it later"), "{out}");
     }
 
     #[test]
@@ -1949,7 +1919,7 @@ mod tests {
         result.unwrap();
         assert_eq!(std::fs::read_to_string(&key).unwrap(), "EXISTING-MATERIAL\n");
         assert!(!out.contains("Paste your API key"), "no prompt: {out}");
-        assert!(out.contains("left untouched"), "{out}");
+        assert!(out.contains("as it is"), "{out}");
         assert!(!out.contains("EXISTING-MATERIAL"), "{out}");
     }
 
@@ -1972,7 +1942,7 @@ mod tests {
             0o600,
             "mode pinned even for a found file"
         );
-        assert!(out.contains("key saved (hidden)"), "{out}");
+        assert!(out.contains("Saved to"), "{out}");
     }
 
     #[test]
@@ -1988,7 +1958,7 @@ mod tests {
             .unwrap();
         assert_eq!(std::fs::read_to_string(&key).unwrap(), format!("{PLACEHOLDER}\n"));
         let printed = String::from_utf8(out).unwrap();
-        assert!(printed.contains("key saved (hidden)"), "{printed}");
+        assert!(printed.contains("Saved to"), "{printed}");
         assert!(!printed.contains(PLACEHOLDER), "{printed}");
     }
 
@@ -2048,7 +2018,7 @@ mod tests {
         // The prompt line ends with the hand-printed newline the disabled
         // echo swallowed, BEFORE the confirmation line.
         assert!(
-            printed.contains("add it later): \nkey saved (hidden)"),
+            printed.contains("Enter to skip): \nSaved to"),
             "{printed}"
         );
         assert!(!printed.contains(PLACEHOLDER), "{printed}");
@@ -2115,7 +2085,7 @@ mod tests {
         )
         .unwrap_err();
         let printed = String::from_utf8(out).unwrap();
-        assert!(printed.contains("WARNING: that answer looks like API key material"), "{printed}");
+        assert!(printed.contains("WARNING: that looks like a key, not a path"), "{printed}");
         assert!(printed.contains("rotate"), "{printed}");
         let msg = err.to_string();
         assert!(msg.contains("key-shaped"), "{msg}");
@@ -2157,16 +2127,16 @@ mod tests {
         )
         .unwrap();
         let printed = String::from_utf8(out).unwrap();
-        assert!(printed.contains("WARNING: that answer looks like API key material"), "{printed}");
-        assert!(printed.contains("only ever accepted at the hidden key prompt"), "{printed}");
+        assert!(printed.contains("WARNING: that looks like a key, not a path"), "{printed}");
+        assert!(printed.contains("if it was a real key, rotate it"), "{printed}");
         // Re-asked: the question printed twice, and the good answer won.
-        assert_eq!(printed.matches("API key file path [").count(), 2, "{printed}");
+        assert_eq!(printed.matches("Where to save your API key [").count(), 2, "{printed}");
         // The T13 explainer precedes the question, once per call: the
         // re-ask after the mis-paste does not repeat it (the warning
         // already explains).
         assert_eq!(
-            printed.matches("pasted later at a hidden prompt, never here").count(),
-            1,
+            printed.matches("Where to save your API key [").count(),
+            2,
             "{printed}"
         );
         let cfg = std::fs::read_to_string(&cfg_path).unwrap();
@@ -2259,7 +2229,7 @@ mod tests {
             .unwrap();
         assert_eq!(std::fs::read_to_string(&key).unwrap(), "EXISTING-MATERIAL\n");
         let printed = String::from_utf8(out).unwrap();
-        assert!(printed.contains("left untouched"), "{printed}");
+        assert!(printed.contains("as it is"), "{printed}");
         assert!(printed.contains("rerun"), "the way out is named: {printed}");
         assert!(!printed.contains("[y/N]"), "no question off a TTY: {printed}");
         assert!(!printed.contains(REPLACEMENT), "{printed}");
@@ -2310,7 +2280,7 @@ mod tests {
             1,
             "reported once, not once per sink: {printed}"
         );
-        assert_eq!(printed.matches("API key file path [").count(), 2, "{printed}");
+        assert_eq!(printed.matches("Where to save your API key [").count(), 2, "{printed}");
         assert!(good.is_file(), "{printed}");
         let cfg = std::fs::read_to_string(&cfg_path).unwrap();
         assert!(cfg.contains(&good.display().to_string()), "{cfg}");
@@ -2366,7 +2336,7 @@ mod tests {
     fn local_next_steps_drop_the_start_clause_when_the_server_answered() {
         let list = |_: &str| Ok(ids(&["served-model"]));
         let (_cfg, out) = run_wizard_probed("\n\n\n", &list, &|_| Some(12288)).unwrap();
-        assert!(!out.contains("start your local server"), "{out}");
+        assert!(!out.contains("start your server"), "{out}");
         assert!(out.contains("Next:"), "{out}");
         assert!(out.contains("doctor"), "doctor still named: {out}");
     }
@@ -2378,7 +2348,7 @@ mod tests {
             Err(crate::error::Error::Models("connection refused".into()))
         };
         let (_cfg, out) = run_wizard_probed("\n\n\n", &list, &|_| None).unwrap();
-        assert!(out.contains("start your local server"), "{out}");
+        assert!(out.contains("start your server"), "{out}");
     }
 
     /// A listing that answered is enough on its own: /props is silent on a
@@ -2387,7 +2357,7 @@ mod tests {
     fn a_listing_alone_counts_as_a_live_server() {
         let list = |_: &str| Ok(ids(&["served-model"]));
         let (_cfg, out) = run_wizard_probed("\n\n\n", &list, &|_| None).unwrap();
-        assert!(!out.contains("start your local server"), "{out}");
+        assert!(!out.contains("start your server"), "{out}");
     }
 
     /// The hosted-compat templates print a bare "Model [default]:" today.

@@ -500,12 +500,13 @@ fn init_anthropic_template_exact_config_and_empty_600_key_file() {
     assert_eq!(std::fs::metadata(&key).unwrap().len(), 0);
     assert_eq!(mode_of(&key), 0o600);
     assert_eq!(mode_of(&sb.home.join(".secrets")), 0o700);
-    assert!(stdout.contains("Paste your key into"), "{stdout}");
-    assert!(stdout.contains("with your editor"), "{stdout}");
+    assert!(stdout.contains("Add it later: put your key in"), "{stdout}");
+    // T51: "your API key" reaches the user before "key file" ever does.
+    assert!(stdout.contains("Where to save your API key ["), "{stdout}");
+    assert!(!stdout.contains("key file"), "{stdout}");
     // T16: the closing sessions-discoverability line.
     assert!(
-        stdout.contains("saved automatically per working directory")
-            && stdout.contains("temur --continue"),
+        stdout.contains("Sessions save per directory") && stdout.contains("temur --continue"),
         "{stdout}"
     );
 }
@@ -641,7 +642,10 @@ fn init_leaves_an_existing_key_file_untouched() {
         "REAL-KEY-MATERIAL\n",
         "an existing key file must never be truncated or rewritten"
     );
-    assert!(stdout.contains("left untouched"), "{stdout}");
+    assert!(stdout.contains("as it is"), "{stdout}");
+    // T51/D17: off a TTY there is no replace question, so the message
+    // itself has to carry the way out.
+    assert!(stdout.contains("rerun init"), "{stdout}");
     // And the key material must never appear in any output stream.
     assert!(!stdout.contains("REAL-KEY-MATERIAL"), "{stdout}");
     assert!(!stderr.contains("REAL-KEY-MATERIAL"), "{stderr}");
@@ -779,7 +783,7 @@ fn init_key_entry_piped_placeholder_lands_in_the_key_file_only() {
         "placeholder-not-a-real-key\n"
     );
     assert_eq!(mode_of(&key), 0o600);
-    assert!(stdout.contains("key saved (hidden)"), "{stdout}");
+    assert!(stdout.contains("Saved to"), "{stdout}");
     assert!(!stdout.contains("placeholder-not-a-real-key"), "{stdout}");
     assert!(!stderr.contains("placeholder-not-a-real-key"), "{stderr}");
 }
