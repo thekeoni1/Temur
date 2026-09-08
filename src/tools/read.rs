@@ -72,7 +72,22 @@ impl Tool for ReadTool {
         if meta.is_dir() {
             return read_dir(&path, offset, limit, title);
         }
-        if is_binary(&path)? {
+        // T54 (D20): a PDF or office document becomes text HERE, before the
+        // binary refusal that used to be the whole answer. The guard has
+        // already run above, so this opens nothing the guard denies.
+        let mut source_complete = true;
+        let document = match path.extension().and_then(|e| e.to_str()) {
+            Some(ext) if super::office::is_document(ext) => {
+                // Only the caller's own window is worth extracting.
+                let want_lines = offset.saturating_sub(1).saturating_add(limit);
+                let (text, complete) = super::office::extract(&path, want_lines)?;
+                source_complete = complete;
+                Some(text)
+            }
+            _ => None,
+        };
+
+        if document.is_none() && is_binary(&path)? {
             return Err(ToolError::failed(format!(
                 "Cannot read binary file: {}. {}",
                 path.display(),
@@ -87,7 +102,18 @@ impl Tool for ReadTool {
         let mut lines: u64 = 0;
         let mut truncated_by_bytes = false;
         let mut has_more = false;
-        for line in reader.split(b'\n') {
+        // One pipeline, two sources: a document's extracted text is paged
+        // exactly the way a long log file is, so offset/limit, per-line
+        // truncation and the byte cap all behave identically.
+        let doc_lines: Vec<Vec<u8>> = match &document {
+            Some(text) => text.split('\n').map(|l| l.as_bytes().to_vec()).collect(),
+            None => Vec::new(),
+        };
+        let source: Box<dyn Iterator<Item = std::io::Result<Vec<u8>>>> = match &document {
+            Some(_) => Box::new(doc_lines.into_iter().map(Ok)),
+            None => Box::new(reader.split(b'\n')),
+        };
+        for line in source {
             let line = line.map_err(|e| ToolError::failed(e.to_string()))?;
             lines += 1;
             if lines < offset {
@@ -133,6 +159,14 @@ impl Tool for ReadTool {
             output.push_str(&format!(
                 "\n(Output capped at {} KB. Showing lines {offset}-{last}. Use offset={} to continue.)\n",
                 MAX_BYTES / 1024,
+                last + 1
+            ));
+        } else if has_more && !source_complete {
+            // Extraction stopped at the caller's window, so `lines` is a
+            // floor, not a total: quoting it as one would be a lie the
+            // model would plan around.
+            output.push_str(&format!(
+                "\n(Showing lines {offset}-{last}. More of this document was not extracted; use offset={} to continue.)\n",
                 last + 1
             ));
         } else if has_more {
@@ -197,10 +231,6 @@ fn binary_hint(path: &std::path::Path) -> &'static str {
         return GENERIC;
     };
     match ext.to_ascii_lowercase().as_str() {
-        "pdf" => {
-            "Its text is compressed, so convert it with bash first (e.g. pdftotext file.pdf -) \
-             or ask the user for the text."
-        }
         "zip" | "jar" | "war" => "List its contents with bash (e.g. unzip -l).",
         "gz" => "Decompress it with bash (e.g. zcat, or gunzip -c for a copy).",
         "tar" => "List its contents with bash (e.g. tar -tf).",
@@ -212,9 +242,12 @@ fn binary_hint(path: &std::path::Path) -> &'static str {
 }
 
 fn is_binary(path: &std::path::Path) -> Result<bool, ToolError> {
+    // T54: docx, xls, xlsx and ods are gone from this list because the
+    // read tool now turns them into text. doc (the pre-2007 binary format),
+    // ppt/pptx, odt and odp stay: nothing here reads them.
     const BINARY_EXTS: &[&str] = &[
-        "zip", "tar", "gz", "exe", "dll", "so", "class", "jar", "war", "7z", "doc", "docx",
-        "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "bin", "dat", "obj", "o", "a",
+        "zip", "tar", "gz", "exe", "dll", "so", "class", "jar", "war", "7z", "doc",
+        "ppt", "pptx", "odt", "odp", "bin", "dat", "obj", "o", "a",
         "lib", "wasm", "pyc", "pyo",
     ];
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {

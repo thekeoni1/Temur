@@ -5,6 +5,7 @@ mod bash;
 mod coerce;
 mod edit;
 mod glob;
+mod office;
 mod grep;
 pub mod guard;
 mod read;

@@ -435,11 +435,11 @@ fn read_binary_denial_names_bash_inspection() {
     let err = refuse(&mut ctx, "noext");
     assert!(err.contains("Inspect it with bash instead"), "{err}");
 
-    // T31 (D3): known types get a remedy they can actually run. Sending a
-    // model toward `unzip -l` on a PDF is what this replaces.
-    let err = refuse(&mut ctx, "paper.pdf");
-    assert!(err.contains("pdftotext"), "{err}");
-    assert!(!err.contains("unzip -l"), "{err}");
+    // T31 (D3): known types get a remedy they can actually run. The PDF
+    // branch is GONE as of T54, deliberately: a PDF is no longer refused,
+    // it is read, so there is no hint to give. Garbage with a .pdf name
+    // now fails as an unreadable PDF rather than as a binary file, which
+    // is the T54 P1 sentence and is asserted with the others there.
     let err = refuse(&mut ctx, "bundle.zip");
     assert!(err.contains("unzip -l"), "{err}");
     let err = refuse(&mut ctx, "blob.gz");
@@ -2002,4 +2002,211 @@ fn t33_string_fields_named_false_are_never_coerced() {
         "filePath": fp, "oldString": "false", "newString": "600000"
     })).unwrap();
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "enabled = 600000\n");
+}
+
+// --- T54 P1: the read tool reads documents (D20) ---------------------------
+
+fn office_fixture(name: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/office")
+        .join(name)
+}
+
+/// Read a fixture through the REAL tool, from its own directory.
+fn read_doc(name: &str, extra: serde_json::Value) -> Result<ToolOutput, ToolError> {
+    let reg = Registry::standard();
+    let dir = office_fixture(name);
+    let mut ctx = ctx_in(dir.parent().unwrap());
+    let mut input = json!({"filePath": dir.to_str().unwrap()});
+    for (k, v) in extra.as_object().unwrap() {
+        input[k] = v.clone();
+    }
+    run(&reg, &mut ctx, "read", input)
+}
+
+#[test]
+fn a_pdf_with_a_flate_stream_reads_as_text() {
+    let out = read_doc("synth-flate.pdf", json!({})).unwrap();
+    assert!(out.output.contains("Quarterly Revenue Report"), "{}", out.output);
+    assert!(out.output.contains("Total units shipped: 1842"), "{}", out.output);
+}
+
+#[test]
+fn an_uncompressed_pdf_reads_the_same_way() {
+    let out = read_doc("synth-plain.pdf", json!({})).unwrap();
+    assert!(out.output.contains("Quarterly Revenue Report"), "{}", out.output);
+}
+
+#[test]
+fn a_real_shaped_resume_pdf_reads_as_recognisable_text() {
+    let out = read_doc("sample-resume.pdf", json!({})).unwrap();
+    assert!(out.output.contains("Jordan Q. Sample"), "{}", out.output);
+    assert!(out.output.contains("Experience"), "{}", out.output);
+}
+
+#[test]
+fn a_workbook_reads_one_block_per_sheet_with_cached_values() {
+    let out = read_doc("sample-timesheet.xlsx", json!({})).unwrap();
+    assert!(out.output.contains("== Sheet: Timesheet =="), "{}", out.output);
+    assert!(out.output.contains("== Sheet: Summary =="), "{}", out.output);
+    // SUM/SUMIF cells arrive as the CACHED value, never as a formula.
+    assert!(out.output.contains("34.5"), "{}", out.output);
+    assert!(!out.output.contains("=SUM"), "formulas must never appear: {}", out.output);
+    assert!(!out.output.contains("SUMIF"), "{}", out.output);
+}
+
+#[test]
+fn an_ods_reads_through_the_same_path() {
+    let out = read_doc("synth.ods", json!({})).unwrap();
+    assert!(out.output.contains("== Sheet: Sheet1 =="), "{}", out.output);
+    assert!(out.output.contains("alpha,1"), "{}", out.output);
+}
+
+#[test]
+fn a_docx_reads_paragraphs_as_lines_and_tables_as_tabs() {
+    let out = read_doc("synth.docx", json!({})).unwrap();
+    assert!(out.output.contains("Project Kickoff Notes"), "{}", out.output);
+    // The entity reference must survive: quick-xml emits it as its own
+    // event and dropping it silently loses the character (T54 P0 finding).
+    assert!(
+        out.output.contains("schedule & budget"),
+        "entity refs must resolve: {}",
+        out.output
+    );
+    assert!(out.output.contains("Task\tOwner"), "{}", out.output);
+    assert!(out.output.contains("Draft spec\tDana"), "{}", out.output);
+}
+
+#[test]
+fn a_real_shaped_docx_reads_its_table_too() {
+    let out = read_doc("sample-notes.docx", json!({})).unwrap();
+    assert!(out.output.contains("Meeting notes"), "{}", out.output);
+    assert!(out.output.contains("Widget\t4\t12.50"), "{}", out.output);
+}
+
+#[test]
+fn a_document_pages_like_any_long_file() {
+    let whole = read_doc("sample-resume.pdf", json!({})).unwrap();
+    let first = read_doc("sample-resume.pdf", json!({"limit": 3})).unwrap();
+    // Same pipeline: 1-indexed line numbers, a limit, and a continuation hint.
+    assert!(first.output.contains("1: "), "{}", first.output);
+    assert!(first.output.contains("offset=4"), "{}", first.output);
+    assert!(first.output.len() < whole.output.len());
+
+    let second = read_doc("sample-resume.pdf", json!({"offset": 4, "limit": 3})).unwrap();
+    assert!(second.output.contains("4: "), "{}", second.output);
+    assert!(!second.output.contains("\n1: "), "{}", second.output);
+}
+
+#[test]
+fn the_input_cap_refuses_and_names_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let big = dir.path().join("huge.pdf");
+    // Sparse-ish write just over the 32 MiB cap; content is irrelevant
+    // because the cap is checked from metadata before any parse.
+    let f = std::fs::File::create(&big).unwrap();
+    f.set_len(33 * 1024 * 1024).unwrap();
+    drop(f);
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let err = run(&reg, &mut ctx, "read", json!({"filePath": big.to_str().unwrap()})).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("32 MiB"), "the cap names itself: {msg}");
+}
+
+#[test]
+fn a_pdf_with_no_text_layer_says_so_in_one_sentence() {
+    // A structurally valid PDF whose single page carries no text operators,
+    // which is what a scan looks like to a text extractor.
+    let err = read_doc("synth-notext.pdf", json!({})).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("no text layer"), "{msg}");
+    assert!(msg.contains("Ask the user for the text"), "{msg}");
+    assert_eq!(msg.lines().count(), 1, "one sentence, one line: {msg}");
+}
+
+#[test]
+fn a_corrupt_workbook_says_so_without_leaking_the_crate_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("broken.xlsx");
+    std::fs::write(&p, b"PK\x03\x04 this is not a workbook").unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let err = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("could not read this workbook"), "{msg}");
+    assert_eq!(msg.lines().count(), 1, "{msg}");
+}
+
+#[test]
+fn a_document_under_a_secrets_dir_is_still_guarded() {
+    // T54 changes nothing about T18: the guard runs before any open, so a
+    // document is refused exactly as a text file under the same path is.
+    let (dir, key, _normal, mut ctx) = guarded_ctx();
+    let doc = dir.path().join("secrets").join("private.pdf");
+    std::fs::copy(office_fixture("sample-resume.pdf"), &doc).unwrap();
+    ctx.guard = temur::tools::KeyGuard::from_paths(vec![key, doc.clone()]);
+    let reg = Registry::standard();
+    let err = run(&reg, &mut ctx, "read", json!({"filePath": doc.to_str().unwrap()})).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("key isolation"), "{msg}");
+    assert!(!msg.contains("Jordan"), "no content may leak: {msg}");
+}
+
+#[test]
+fn hostile_input_never_panics_and_always_answers() {
+    // The T54 P0 spike found pdf-extract panicking on 3 of 25 seeded
+    // corruptions (its own expect()s). Extraction runs under catch_unwind
+    // now; this replays the same seed across all four parsers and asserts
+    // the process survives every one with an ordinary Ok or Err.
+    let reg = Registry::standard();
+    let dir = tempfile::tempdir().unwrap();
+    let mut state: u64 = 20260908; // the spike's seed
+    let mut next = || {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (state >> 33) as usize
+    };
+    for src in [
+        "sample-resume.pdf",
+        "sample-timesheet.xlsx",
+        "sample-notes.docx",
+        "synth.ods",
+    ] {
+        let bytes = std::fs::read(office_fixture(src)).unwrap();
+        let ext = std::path::Path::new(src).extension().unwrap().to_str().unwrap();
+        for i in 0..50 {
+            let mut b = bytes.clone();
+            if i % 2 == 0 {
+                let keep = 1 + next() % b.len();
+                b.truncate(keep);
+            } else {
+                for _ in 0..(1 + next() % 8) {
+                    let at = next() % b.len();
+                    b[at] ^= 1u8 << (next() % 8);
+                }
+            }
+            let p = dir.path().join(format!("case.{ext}"));
+            std::fs::write(&p, &b).unwrap();
+            let mut ctx = ctx_in(dir.path());
+            // The assertion IS that this returns rather than aborting.
+            let _ = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()}));
+        }
+    }
+}
+
+#[test]
+fn the_binary_refusal_still_covers_what_temur_cannot_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("deck.pptx");
+    std::fs::write(&p, b"PK\x03\x04 not readable here").unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let err = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("Cannot read binary file"), "{msg}");
+    // The image line stays true: temur still cannot see images.
+    let img = dir.path().join("shot.png");
+    std::fs::write(&img, [0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3]).unwrap();
+    let err = run(&reg, &mut ctx, "read", json!({"filePath": img.to_str().unwrap()})).unwrap_err();
+    assert!(format!("{err}").contains("Cannot read binary file"));
 }

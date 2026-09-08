@@ -43,6 +43,20 @@ libc = "0.2"
 # Adds only unicase beyond crates already in the tree (bitflags, memchr).
 pulldown-cmark = { version = "0.13.4", default-features = false }
 
+# T54 (D20): documents the read tool can open, all pure Rust, all
+# permissive. calamine reads xlsx/xlsm/xls/ods and yields CACHED values, so
+# temur never evaluates a formula. pdf-extract (which pulls lopdf) turns a
+# PDF content stream into text and exposes output_doc_page, so a long PDF is
+# paged rather than extracted whole. zip + quick-xml walk docx by hand:
+# word/document.xml is simple enough that a docx crate would be more
+# dependency than parser. quick-xml is pinned to 0.41 to match calamine's
+# own pin; a second major version in the tree costs 21,376 bytes of binary
+# for nothing (measured, T54 P0 trim pass).
+calamine = { version = "0.36", default-features = false }
+pdf-extract = { version = "0.12", default-features = false }
+zip = { version = "8", default-features = false, features = ["deflate"] }
+quick-xml = { version = "0.41", default-features = false }
+
 [dev-dependencies]
 tempfile = "3"
 
