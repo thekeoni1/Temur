@@ -510,6 +510,28 @@ fn init_anthropic_template_exact_config_and_empty_600_key_file() {
     );
 }
 
+/// T51/D18, live: a bare relative answer like "cow" made
+/// `key_path.parent()` `Some("")`, the directory create failed with
+/// "No such file or directory (os error 2)" naming nothing, and the
+/// config had already been written pointing at the unusable path. A path
+/// with no directory part means the working directory.
+#[test]
+fn init_bare_relative_key_path_lands_in_the_working_directory() {
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.arg("init");
+    // openai, default model, a key path with no directory part at all.
+    let (code, stdout, stderr) = run(c, "3\n\ncow\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    // sb.cmd() runs with the sandbox home as the working directory.
+    let key = sb.home.join("cow");
+    assert!(key.is_file(), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(std::fs::metadata(&key).unwrap().len(), 0);
+    assert_eq!(mode_of(&key), 0o600);
+    let written = std::fs::read_to_string(sb.config_path()).unwrap();
+    assert!(written.contains("cow"), "{written}");
+}
+
 #[test]
 fn init_hosted_compat_templates_exact_configs() {
     // The fourth field is the baked "max_tokens" line, present only where

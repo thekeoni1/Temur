@@ -9,8 +9,11 @@
 //! no other surface, may additionally accept the key at a hidden prompt
 //! right after creating (or finding) an EMPTY key file, writing it straight
 //! to that file; see [`prompt_key_entry`] and the RUNBOOK amendment record.
-//! It never echoes, logs, or stores key material anywhere else, never takes
-//! it from argv or env, and never touches a non-empty key file.
+//! It never echoes, logs, or stores key material anywhere else and never
+//! takes it from argv or env. T51 amendment: a NON-empty key file can be
+//! replaced, but only after an explicit `y` to a question that defaults to
+//! No, and only in the interactive wizard. `--force` still governs the
+//! config alone; that fence is deliberate (see [`setup_key_file`]).
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -205,6 +208,15 @@ const MODEL_SHORTLIST: &[&str] = &[
     "See docs/OFFLINE.md, section \"Recommended small models\".",
 ];
 
+/// The one line under the hosted-compat Model question (T51). anthropic
+/// has its profile table; openai/gemini/xai printed a bare
+/// "Model [default]:" and an operator pressed Enter blind, not knowing
+/// other ids existed. Deliberately NOT a list: baked hosted lists rot (the
+/// TEMPLATES comment above is the record of that), so this names the live
+/// source instead of becoming one more thing to keep current.
+const HOSTED_MODEL_HINT: &str = "Enter keeps the default; any model id your account offers works. \
+     /models\nin temur lists them once your key is in.";
+
 /// Render the config JSON for a template. Built by hand (not serde) so the
 /// field order matches the README recipes byte for byte; user-supplied
 /// strings go through serde_json escaping. `base_url` is the local
@@ -296,6 +308,24 @@ fn ask(
     })
 }
 
+/// One yes/no question, default No (T51). Interactive wizard only, so
+/// nothing here can consume a piped answer; EOF and an empty answer are
+/// both No, which is always the do-nothing branch.
+fn ask_yes_no(
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    question: &str,
+) -> Result<bool, crate::error::Error> {
+    write!(out, "{question} [y/N]: ")?;
+    out.flush()?;
+    let mut line = String::new();
+    if input.read_line(&mut line)? == 0 {
+        return Ok(false);
+    }
+    let answer = line.trim();
+    Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
+}
+
 /// Expand a leading `~/` against `home`. Anything else passes through.
 fn expand_tilde(path: &str, home: Option<&Path>) -> PathBuf {
     match (path.strip_prefix("~/"), home) {
@@ -348,7 +378,10 @@ fn pick_model(
 /// T22: then probe the same server's `/props` for its actual context
 /// allocation: found, it is announced and returned for the render to
 /// write verbatim; not found (server down, or not llama.cpp) is silent
-/// and the baked value applies. Returns `(base_url, model, n_ctx)`.
+/// and the baked value applies. Returns `(base_url, model, n_ctx,
+/// server_up)`, where `server_up` records that the listing or /props
+/// actually answered: T51 makes the closing lines depend on it, so the
+/// wizard never tells you to start a server it just talked to.
 /// Shared by the fresh wizard and `init --add`.
 fn ask_local_base_and_model(
     template: &Template,
@@ -356,15 +389,19 @@ fn ask_local_base_and_model(
     out: &mut dyn Write,
     list_models: &dyn Fn(&str) -> Result<Vec<String>, crate::error::Error>,
     probe_context: &dyn Fn(&str) -> Option<u64>,
-) -> Result<(String, String, Option<u64>), crate::error::Error> {
+) -> Result<(String, String, Option<u64>, bool), crate::error::Error> {
     let base = ask(
         input,
         out,
         "Base URL",
         crate::config::DEFAULT_OPENAI_COMPAT_BASE_URL,
     )?;
+    let mut server_up = false;
     let picked = match list_models(&base) {
-        Ok(ids) if !ids.is_empty() => pick_model(&ids, template.default_model, &base, input, out)?,
+        Ok(ids) if !ids.is_empty() => {
+            server_up = true;
+            pick_model(&ids, template.default_model, &base, input, out)?
+        }
         outcome => {
             let why = match outcome {
                 Ok(_) => "the server returned an empty listing".to_string(),
@@ -378,13 +415,14 @@ fn ask_local_base_and_model(
         }
     };
     let detected = probe_context(&base);
+    server_up |= detected.is_some();
     if let Some(n) = detected {
         writeln!(
             out,
             "Detected a context allocation of {n} tokens from the server (llama.cpp\n/props, n_ctx); writing \"context_window\": {n}."
         )?;
     }
-    Ok((base, picked, detected))
+    Ok((base, picked, detected, server_up))
 }
 
 /// Does an answer to the key file PATH question look like pasted API key
@@ -410,6 +448,39 @@ fn warn_key_shaped(out: &mut dyn Write) -> Result<(), crate::error::Error> {
     writeln!(out, "was not used or stored anywhere, but it did reach this terminal, so if")?;
     writeln!(out, "it was a real key you should rotate it.")?;
     Ok(())
+}
+
+/// A path with no directory part at all (`cow`) has
+/// `Path::parent() == Some("")`, which no directory API can create: T51/D18
+/// turned that into "No such file or directory (os error 2)" naming nothing.
+/// A directory-less path means the working directory, so say so.
+fn normalize_key_path(path: PathBuf) -> PathBuf {
+    match path.parent() {
+        Some(dir) if dir.as_os_str().is_empty() => Path::new(".").join(path),
+        _ => path,
+    }
+}
+
+/// Everything about a key path that can be known before anything is
+/// written. T51 makes init all-or-nothing, so a path that cannot work is
+/// rejected while there is still no config to take back. Returns the plain
+/// reason, not an `Error`: interactive callers print it and re-ask, and
+/// only the piped path wraps it, so it is never printed twice.
+fn check_key_path(path: &Path) -> Result<(), String> {
+    if path.is_dir() {
+        return Err(format!(
+            "init: {} is a directory; give the path of the key file itself",
+            path.display()
+        ));
+    }
+    match path.parent() {
+        Some(dir) if dir.exists() && !dir.is_dir() => Err(format!(
+            "init: {} is not a directory, so the key file {} cannot be created",
+            dir.display(),
+            path.display()
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// The key FILE PATH question for keyed templates. The key itself never
@@ -453,7 +524,15 @@ fn ask_key_file(
                 "init: the answer to the key file path question was key-shaped; nothing was stored. Re-run init and answer with a file path".into(),
             ));
         }
-        return Ok(expand_tilde(&answer, home));
+        let path = normalize_key_path(expand_tilde(&answer, home));
+        if let Err(why) = check_key_path(&path) {
+            if interactive {
+                writeln!(out, "{why}")?;
+                continue;
+            }
+            return Err(crate::error::Error::Config(why));
+        }
+        return Ok(path);
     }
 }
 
@@ -555,9 +634,10 @@ fn wipe(s: &mut String) {
 /// The hidden key prompt (T17 P3): the one place in the whole product that
 /// accepts key material, a deliberate NARROW amendment of the T14 rule
 /// "init never accepts key material" (contract in the RUNBOOK amendment
-/// record). Only ever called for a key file known to be empty. Returns
-/// whether a key was saved. Empty answer or EOF = skip; the answer is
-/// never echoed, logged, or included in any notice.
+/// record). Called for a key file known to be empty, or for a non-empty one
+/// the user has just consented to replace (T51); the write truncates either
+/// way. Returns whether a key was saved. Empty answer or EOF = skip; the
+/// answer is never echoed, logged, or included in any notice.
 fn prompt_key_entry(
     key_path: &Path,
     input: &mut dyn BufRead,
@@ -613,20 +693,41 @@ fn prompt_key_entry(
 }
 
 /// Key file creation plus key entry, shared by the fresh wizard and
-/// `init --add`: created EMPTY with tight modes, and never touched if it
-/// already exists non-empty (it may hold a real key, which temur must not
-/// read, truncate, or rewrite). An empty key file, fresh or found, gets
-/// the hidden prompt (T17); skipping it keeps the T14 editor instruction.
+/// `init --add`: created EMPTY with tight modes. An empty key file, fresh
+/// or found, gets the hidden prompt (T17); skipping it keeps the T14
+/// editor instruction.
+///
+/// A NON-empty file may hold a real key, which temur must never read. T51
+/// (D17: a wrong key was pasted and `init --force` answered "left
+/// untouched", stranding the operator) adds the one way through: the
+/// interactive wizard asks once, defaulting to No, and only an explicit
+/// `y` reaches the hidden prompt, which truncates and rewrites at 0600.
+/// Off a TTY there is no question, so the message carries the way out
+/// instead. `--force` is NOT that way through and never becomes it: it
+/// governs the config only (see [`run`]), so a config overwrite can never
+/// silently take a key file with it.
 fn setup_key_file(
     key_path: &Path,
     input: &mut dyn BufRead,
     out: &mut dyn Write,
     term: &mut dyn KeyEntryTerminal,
 ) -> Result<(), crate::error::Error> {
-    let offer_entry;
+    let mut replacing = false;
     if key_path.exists() {
-        writeln!(out, "Key file {} already exists; left untouched.", key_path.display())?;
-        offer_entry = std::fs::metadata(key_path)?.len() == 0;
+        if std::fs::metadata(key_path)?.len() != 0 {
+            replacing = term.is_tty()
+                && ask_yes_no(input, out, "A key file already exists. Replace it?")?;
+            if !replacing {
+                writeln!(out, "Key file {} left untouched.", key_path.display())?;
+                if !term.is_tty() {
+                    writeln!(
+                        out,
+                        "To replace it: edit or delete the file, then rerun temur init."
+                    )?;
+                }
+                return Ok(());
+            }
+        }
     } else {
         use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
         if let Some(dir) = key_path.parent() {
@@ -646,10 +747,15 @@ fn setup_key_file(
             .open(key_path)?;
         std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))?;
         writeln!(out, "Created empty key file {} (mode 600).", key_path.display())?;
-        offer_entry = true;
     }
-    let saved = offer_entry && prompt_key_entry(key_path, input, out, term)?;
-    if !saved {
+    if prompt_key_entry(key_path, input, out, term)? {
+        return Ok(());
+    }
+    // Skipped at the hidden prompt. Replacing: the old contents survive,
+    // which is the truthful thing to say. Otherwise the T14 instruction.
+    if replacing {
+        writeln!(out, "Key file {} left untouched.", key_path.display())?;
+    } else {
         writeln!(out)?;
         writeln!(
             out,
@@ -752,11 +858,13 @@ pub fn run(
     // offline. Keyed templates: free text, unchanged (see `list_models`).
     let mut base_url: Option<String> = None;
     let mut detected_window: Option<u64> = None;
+    let mut server_up = false;
     let model = if template.key_slug.is_none() {
-        let (base, picked, detected) =
+        let (base, picked, detected, up) =
             ask_local_base_and_model(template, input, out, list_models, probe_context)?;
         base_url = Some(base);
         detected_window = detected;
+        server_up = up;
         picked
     } else if template.name == "anthropic" {
         // T16: the anthropic template writes a fixed profile set, so the
@@ -764,6 +872,11 @@ pub fn run(
         // the chosen profile NAME from here on (see render_config).
         pick_startup_profile(input, out)?.to_string()
     } else {
+        // T51: the hosted-compat templates used to print a bare
+        // "Model [default]:" and an operator pressed Enter blind. No baked
+        // list (the init.rs:33 comment says why those rot); just where the
+        // real one lives.
+        writeln!(out, "{HOSTED_MODEL_HINT}")?;
         ask(input, out, "Model id", template.default_model)?
     };
 
@@ -786,22 +899,51 @@ pub fn run(
         base_url.as_deref(),
         detected_window,
     );
+    // T51/D18: init is all-or-nothing. The key path was validated before
+    // this write, and anything the key step still fails on puts the file
+    // back the way it was found - deleted when init created it, restored
+    // byte for byte when --force overwrote one the user already had.
+    let previous = if cfg_path.exists() {
+        Some(std::fs::read(cfg_path)?)
+    } else {
+        None
+    };
     std::fs::write(cfg_path, &rendered)?;
     writeln!(out)?;
     writeln!(out, "Wrote {}", cfg_path.display())?;
 
     if let Some(key_path) = &key_file {
-        setup_key_file(key_path, input, out, term)?;
+        if let Err(e) = setup_key_file(key_path, input, out, term) {
+            // The undo is best-effort and only ever CLAIMED when it
+            // happened: an undo that itself failed must not mask the error
+            // that caused it.
+            let undone = match &previous {
+                Some(bytes) => std::fs::write(cfg_path, bytes).is_ok(),
+                None => std::fs::remove_file(cfg_path).is_ok(),
+            };
+            if undone {
+                writeln!(
+                    out,
+                    "Rolled back {}: init writes a config only when the key step succeeds.",
+                    cfg_path.display()
+                )?;
+            }
+            return Err(e);
+        }
     }
 
     writeln!(out)?;
-    if template.key_slug.is_none() {
+    if template.key_slug.is_some() {
+        writeln!(out, "Next: temur doctor to check the setup, then temur to start.")?;
+    } else if server_up {
+        // The wizard just listed this server's models, or read its n_ctx.
+        // Telling the operator to go start it contradicts what they saw.
+        writeln!(out, "Next: temur to start (temur doctor checks the setup first).")?;
+    } else {
         writeln!(
             out,
             "Next: start your local server (see docs/OFFLINE.md), run temur doctor\nto check the setup, then temur to start."
         )?;
-    } else {
-        writeln!(out, "Next: temur doctor to check the setup, then temur to start.")?;
     }
     // T16: sessions discoverability — autosave was routinely discovered by
     // accident, so the wizard says it once at the end.
@@ -910,7 +1052,7 @@ pub fn run_add(
     let mut key_file: Option<PathBuf> = None;
     match template.name {
         "local" => {
-            let (base, model, detected) =
+            let (base, model, detected, _up) =
                 ask_local_base_and_model(template, input, out, list_models, probe_context)?;
             let mut p = serde_json::Map::new();
             p.insert("provider".to_string(), "openai-compat".into());
@@ -948,6 +1090,7 @@ pub fn run_add(
             key_file = Some(key);
         }
         hosted => {
+            writeln!(out, "{HOSTED_MODEL_HINT}")?;
             let model = ask(input, out, "Model id", template.default_model)?;
             let key = ask_key_file(
                 template.key_slug.expect("hosted templates are keyed"),
@@ -2037,5 +2180,253 @@ mod tests {
             0,
             "key file created empty; the mis-paste never landed anywhere"
         );
+    }
+
+    // ------------------------- T51 P1: repro-first (red on the parent)
+
+    /// A replacement that is never real key material.
+    const REPLACEMENT: &str = "placeholder-replacement-key";
+
+    /// D17, live on the desktop dogfood: a wrong key had been pasted into
+    /// the key file, `init --force` answered "left untouched" (--force
+    /// governs only the config), and the wizard offered no way through.
+    /// Consent, asked once, is that way through.
+    #[test]
+    fn interactive_replace_consent_rewrites_an_existing_key_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.json");
+        let key = tmp.path().join("k");
+        std::fs::write(&key, "WRONG-MATERIAL\n").unwrap();
+        // openai, default model, the existing key path, yes, the new key.
+        let mut input = std::io::Cursor::new(
+            format!("3\n\n{}\ny\n{REPLACEMENT}\n", key.display()).into_bytes(),
+        );
+        let mut out: Vec<u8> = Vec::new();
+        let mut term = FakeTty::new();
+        run(&cfg_path, None, false, &mut input, &mut out, &no_listing, &|_| None, &mut term)
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&key).unwrap(), format!("{REPLACEMENT}\n"));
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&key).unwrap().permissions().mode() & 0o7777,
+            0o600,
+            "the replacement is written under the same mode as a fresh key file"
+        );
+        // The hidden path was used, and neither the old nor the new
+        // material reached the transcript.
+        assert_eq!((term.begins, term.restores), (1, 1));
+        let printed = String::from_utf8(out).unwrap();
+        assert!(!printed.contains(REPLACEMENT), "{printed}");
+        assert!(!printed.contains("WRONG-MATERIAL"), "{printed}");
+    }
+
+    /// The never-overwrite-without-consent invariant: Enter is No, and No
+    /// writes nothing and never even suppresses echo.
+    #[test]
+    fn interactive_replace_defaults_to_no_and_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.json");
+        let key = tmp.path().join("k");
+        std::fs::write(&key, "EXISTING-MATERIAL\n").unwrap();
+        let mut input =
+            std::io::Cursor::new(format!("3\n\n{}\n\n", key.display()).into_bytes());
+        let mut out: Vec<u8> = Vec::new();
+        let mut term = FakeTty::new();
+        run(&cfg_path, None, false, &mut input, &mut out, &no_listing, &|_| None, &mut term)
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&key).unwrap(), "EXISTING-MATERIAL\n");
+        assert_eq!(term.begins, 0, "no hidden read happens on the No path");
+        let printed = String::from_utf8(out).unwrap();
+        assert!(printed.contains("[y/N]"), "a No-defaulted question was asked: {printed}");
+        assert!(!printed.contains("Paste your API key"), "{printed}");
+        assert!(!printed.contains("EXISTING-MATERIAL"), "{printed}");
+    }
+
+    /// Off a TTY there is no question to ask, so the message itself has to
+    /// carry the way out. This is the exact state D17 was stranded in.
+    #[test]
+    fn piped_existing_key_file_is_told_how_to_be_replaced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.json");
+        let key = tmp.path().join("k");
+        std::fs::write(&key, "EXISTING-MATERIAL\n").unwrap();
+        // A key answer IS piped; it must never be consumed or written.
+        let mut input = std::io::Cursor::new(
+            format!("3\n\n{}\n{REPLACEMENT}\n", key.display()).into_bytes(),
+        );
+        let mut out: Vec<u8> = Vec::new();
+        run(&cfg_path, None, false, &mut input, &mut out, &no_listing, &|_| None, &mut NoTty)
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&key).unwrap(), "EXISTING-MATERIAL\n");
+        let printed = String::from_utf8(out).unwrap();
+        assert!(printed.contains("left untouched"), "{printed}");
+        assert!(printed.contains("rerun"), "the way out is named: {printed}");
+        assert!(!printed.contains("[y/N]"), "no question off a TTY: {printed}");
+        assert!(!printed.contains(REPLACEMENT), "{printed}");
+    }
+
+    /// D18 half one: a key path whose parent cannot hold a file is caught
+    /// while there is still nothing to undo.
+    #[test]
+    fn a_key_path_under_a_regular_file_is_rejected_before_the_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.json");
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, "not a directory\n").unwrap();
+        let key = blocker.join("k");
+        let mut input =
+            std::io::Cursor::new(format!("3\n\n{}\n", key.display()).into_bytes());
+        let mut out: Vec<u8> = Vec::new();
+        let err = run(
+            &cfg_path, None, false, &mut input, &mut out, &no_listing, &|_| None, &mut NoTty,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains(&key.display().to_string()), "names the path: {msg}");
+        assert!(!cfg_path.exists(), "no config from a doomed run: {msg}");
+    }
+
+    /// A bad path is the wizard's to report, not to abort on, when someone
+    /// is there to answer: the same shape as the key-shaped catch beside
+    /// it, and the reason is printed exactly once.
+    #[test]
+    fn interactive_bad_key_path_is_reported_once_and_reasked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.json");
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, "not a directory\n").unwrap();
+        let good = tmp.path().join("k");
+        // openai, default model, the doomed path, a good one, skip the key.
+        let mut input = std::io::Cursor::new(
+            format!("3\n\n{}/k\n{}\n\n", blocker.display(), good.display()).into_bytes(),
+        );
+        let mut out: Vec<u8> = Vec::new();
+        let mut term = FakeTty::new();
+        run(&cfg_path, None, false, &mut input, &mut out, &no_listing, &|_| None, &mut term)
+            .unwrap();
+        let printed = String::from_utf8(out).unwrap();
+        assert_eq!(
+            printed.matches("is not a directory").count(),
+            1,
+            "reported once, not once per sink: {printed}"
+        );
+        assert_eq!(printed.matches("API key file path [").count(), 2, "{printed}");
+        assert!(good.is_file(), "{printed}");
+        let cfg = std::fs::read_to_string(&cfg_path).unwrap();
+        assert!(cfg.contains(&good.display().to_string()), "{cfg}");
+    }
+
+    /// D18 half two: init writes the config BEFORE the key step, so a key
+    /// step that fails anyway must take the config back with it.
+    #[test]
+    fn a_failed_key_step_leaves_no_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.json");
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, "not a directory\n").unwrap();
+        // Parent "blocker/sub" does not exist and cannot be created.
+        let key = blocker.join("sub").join("k");
+        let mut input =
+            std::io::Cursor::new(format!("3\n\n{}\n", key.display()).into_bytes());
+        let mut out: Vec<u8> = Vec::new();
+        let err = run(
+            &cfg_path, None, false, &mut input, &mut out, &no_listing, &|_| None, &mut NoTty,
+        )
+        .unwrap_err();
+        assert!(!cfg_path.exists(), "init is all-or-nothing: {err}");
+        let printed = String::from_utf8(out).unwrap();
+        assert!(printed.contains("Rolled back"), "the undo is stated: {printed}");
+    }
+
+    /// --force overwrites a config; a key step that then fails must put the
+    /// PREVIOUS config back, not delete the user's file.
+    #[test]
+    fn a_failed_key_step_restores_the_config_force_overwrote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.json");
+        std::fs::write(&cfg_path, "{ \"model\": \"previous\" }\n").unwrap();
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, "not a directory\n").unwrap();
+        let key = blocker.join("sub").join("k");
+        let mut input =
+            std::io::Cursor::new(format!("3\n\n{}\n", key.display()).into_bytes());
+        let mut out: Vec<u8> = Vec::new();
+        run(&cfg_path, None, true, &mut input, &mut out, &no_listing, &|_| None, &mut NoTty)
+            .unwrap_err();
+        assert_eq!(
+            std::fs::read_to_string(&cfg_path).unwrap(),
+            "{ \"model\": \"previous\" }\n",
+            "the config --force replaced is restored byte for byte"
+        );
+    }
+
+    /// The closing lines describe the state the wizard just observed: a
+    /// server that answered is not one you are told to go start.
+    #[test]
+    fn local_next_steps_drop_the_start_clause_when_the_server_answered() {
+        let list = |_: &str| Ok(ids(&["served-model"]));
+        let (_cfg, out) = run_wizard_probed("\n\n\n", &list, &|_| Some(12288)).unwrap();
+        assert!(!out.contains("start your local server"), "{out}");
+        assert!(out.contains("Next:"), "{out}");
+        assert!(out.contains("doctor"), "doctor still named: {out}");
+    }
+
+    /// ...and a server that did not answer still gets the start clause.
+    #[test]
+    fn local_next_steps_keep_the_start_clause_when_the_probe_failed() {
+        let list = |_: &str| -> Result<Vec<String>, crate::error::Error> {
+            Err(crate::error::Error::Models("connection refused".into()))
+        };
+        let (_cfg, out) = run_wizard_probed("\n\n\n", &list, &|_| None).unwrap();
+        assert!(out.contains("start your local server"), "{out}");
+    }
+
+    /// A listing that answered is enough on its own: /props is silent on a
+    /// server that is not llama.cpp, and that server is still up.
+    #[test]
+    fn a_listing_alone_counts_as_a_live_server() {
+        let list = |_: &str| Ok(ids(&["served-model"]));
+        let (_cfg, out) = run_wizard_probed("\n\n\n", &list, &|_| None).unwrap();
+        assert!(!out.contains("start your local server"), "{out}");
+    }
+
+    /// The hosted-compat templates print a bare "Model [default]:" today.
+    /// One line has to say that Enter is fine, that other ids work, and
+    /// where to see them; no baked list.
+    #[test]
+    fn hosted_compat_model_question_says_where_the_ids_are() {
+        for answer in ["3", "4", "5"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let cfg_path = tmp.path().join("config.json");
+            let key = tmp.path().join("k");
+            let mut input = std::io::Cursor::new(
+                format!("{answer}\n\n{}\n", key.display()).into_bytes(),
+            );
+            let mut out: Vec<u8> = Vec::new();
+            run(
+                &cfg_path, None, false, &mut input, &mut out, &no_listing, &|_| None,
+                &mut NoTty,
+            )
+            .unwrap();
+            let printed = String::from_utf8(out).unwrap();
+            let head = printed.split("Model id [").next().unwrap();
+            assert!(head.contains("/models"), "guidance precedes the question: {printed}");
+        }
+    }
+
+    /// The anthropic template asks for a startup profile, not a model id,
+    /// and its own table is the guidance; the new line must not appear.
+    #[test]
+    fn the_anthropic_template_gets_no_hosted_compat_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.json");
+        let key = tmp.path().join("k");
+        let mut input =
+            std::io::Cursor::new(format!("2\n\n{}\n", key.display()).into_bytes());
+        let mut out: Vec<u8> = Vec::new();
+        run(&cfg_path, None, false, &mut input, &mut out, &no_listing, &|_| None, &mut NoTty)
+            .unwrap();
+        let printed = String::from_utf8(out).unwrap();
+        assert!(!printed.contains("/models"), "{printed}");
     }
 }
