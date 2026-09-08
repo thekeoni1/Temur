@@ -457,17 +457,19 @@ fn floor_estimate(system: &str, defs: &[crate::provider::ToolDef]) -> u64 {
 /// number being reported.
 ///
 /// The note deliberately does NOT quote an error percentage or a
-/// direction. The only calibration this project has is F6 (RUNBOOK,
-/// 2026-08-29, llama.cpp `server-b10438`, Qwen3-4B-Instruct-2507,
-/// `context_window` 12288): 6,991 counted tokens for the full profile and
-/// 2,763 for the compact one. Against those, this estimator reads 7,240
-/// for the full profile in this repository's checkout, i.e. 4% HIGH, not
-/// low: the two runs weigh different cwd paths and different installed
-/// skills, so the sign of the gap is not a property of chars/4. Anyone
-/// who wants the real number can have it, from the measured line, for one
-/// request.
+/// direction. The calibration was re-measured for T53, because D22's
+/// sentence changed both templates and the old figures went stale
+/// (2026-09-08, llama.cpp `server-b10438`, Qwen3-4B-Instruct-2507
+/// Q4_K_M, `context_window` 12288, cwd /home/dev/temur-desktop): 6,972
+/// counted tokens for the full profile and 2,744 for the compact one,
+/// against F6's pre-T53 6,991 and 2,763 (RUNBOOK, 2026-08-29). Against
+/// the new figures this estimator reads 7,277 for the full profile in
+/// the same run, i.e. 4% HIGH, not low: the estimate and the count weigh
+/// the same bytes but chars/4 is not tokenization, and a different cwd
+/// path or skill set moves both. Anyone who wants the real number can
+/// have it, from the measured line, for one request.
 const PROMPT_FLOOR_ESTIMATE_NOTE: &str =
-    "NOTE: that estimate is prompt bytes divided by 4, which is not tokenization: expect it to be off by some percent in either direction. A networked run against a keyless openai-compat server reports a measured figure instead. Reference measurement (2026-08-29, llama.cpp, Qwen3-4B-Instruct-2507): 6,991 tokens for the full profile, 2,763 for the compact one.";
+    "NOTE: that estimate is prompt bytes divided by 4, which is not tokenization: expect it to be off by some percent in either direction. A networked run against a keyless openai-compat server reports a measured figure instead. Reference measurement (2026-09-08, llama.cpp, Qwen3-4B-Instruct-2507): 6,972 tokens for the full profile, 2,744 for the compact one.";
 
 /// What moves the number, printed with every floor line, measured or not.
 /// Both ingredients are things the reader can change and neither is

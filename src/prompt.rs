@@ -22,6 +22,8 @@ prefer tools over guessing. Keep responses concise and direct — this is a term
 When you edit files, verify your changes. \
 You can see the local filesystem through these tools, so list or read a path before saying you \
 cannot access it. \
+The user's files are usually already in the working directory; find them with glob or ls \
+before asking for them, since there is no upload. \
 The current working directory is: {cwd}";
 
 /// Shorter default system prompt used when `prompt_profile` resolves to
@@ -32,6 +34,8 @@ the provided tools; always call them with valid JSON arguments — never write a
 plain text. Prefer tools over guessing, keep answers short, verify edits. \
 You can see the local filesystem through these tools, so list or read a path before saying you \
 cannot access it. \
+The user's files are usually already in the working directory; find them with glob or ls \
+before asking for them, since there is no upload. \
 Working directory: {cwd}";
 
 /// The default system-prompt template for a profile, `{cwd}` unsubstituted.
@@ -48,30 +52,36 @@ mod tests {
     use super::*;
     use crate::tools::PromptProfile;
 
-    /// The move is a MOVE: both templates render byte-identically to what
-    /// main.rs served at v0.29.1. The expected values are the pre-move
-    /// strings, captured here so a later edit to the prompts has to change
-    /// this test on purpose rather than drift past it.
+    /// The byte lock on both templates. It began as T41's proof that
+    /// moving them out of main.rs changed nothing, and it now pins the
+    /// T53 strings; the version marker moved with them ON PURPOSE. The
+    /// guard exists so a prompt edit has to change this test deliberately
+    /// rather than drift past it, and D22's sentence is exactly such an
+    /// edit.
     #[test]
-    fn both_templates_are_byte_identical_to_the_pre_move_strings() {
-        let full_v0_29_1 = "You are temur, a terminal coding agent. You help with software \
+    fn both_templates_are_byte_identical_to_the_pinned_strings() {
+        let full_t53 = "You are temur, a terminal coding agent. You help with software \
 engineering tasks: reading and editing code, running commands, and searching the codebase.\n\
 Use the provided tools (read, write, edit, bash, glob, grep, todowrite, todoread, skill) to act; \
 prefer tools over guessing. Keep responses concise and direct \u{2014} this is a terminal. \
 When you edit files, verify your changes. \
 You can see the local filesystem through these tools, so list or read a path before saying you \
 cannot access it. \
+The user's files are usually already in the working directory; find them with glob or ls \
+before asking for them, since there is no upload. \
 The current working directory is: {cwd}";
-        let compact_v0_29_1 = "You are temur, a coding agent in a terminal. Act through \
+        let compact_t53 = "You are temur, a coding agent in a terminal. Act through \
 the provided tools; always call them with valid JSON arguments \u{2014} never write a tool call as \
 plain text. Prefer tools over guessing, keep answers short, verify edits. \
 You can see the local filesystem through these tools, so list or read a path before saying you \
 cannot access it. \
+The user's files are usually already in the working directory; find them with glob or ls \
+before asking for them, since there is no upload. \
 Working directory: {cwd}";
-        assert_eq!(system_prompt_template(PromptProfile::Full), full_v0_29_1);
+        assert_eq!(system_prompt_template(PromptProfile::Full), full_t53);
         assert_eq!(
             system_prompt_template(PromptProfile::Compact),
-            compact_v0_29_1
+            compact_t53
         );
         // The substitution the callers do, on the template they get back.
         assert!(system_prompt_template(PromptProfile::Full).contains("{cwd}"));
