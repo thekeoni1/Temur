@@ -110,6 +110,18 @@ ends. This is deliberate. The alternative, which is what temur used to
 do, is that the queued text starts the next turn the moment the
 current one stops, so the interrupt reads as if it did nothing.
 
+**A file search can be interrupted, and bounds itself.** `glob` and
+`grep` check for an interrupt on every entry they visit, so Esc stops a
+search over a large tree instead of waiting for it to finish. Each walk
+is also bounded on its own: after 200,000 entries visited or ten
+seconds, whichever comes first, the search returns what it found so far
+followed by one line saying it stopped and to narrow the path or
+pattern. The limits are on the WALK, not on the results: a search that
+completes is unaffected, and the existing caps on how many results are
+shown are unchanged. Both bounds exist because a working directory on a
+mounted Windows drive can be hundreds of thousands of entries deep and
+minutes slow.
+
 **Double Ctrl+C force-quits.** Two Ctrl+C presses within two seconds
 during a turn quit the program, whatever else arrived between them.
 That is the escape hatch when a turn will not stop; it exits 130.
@@ -880,14 +892,14 @@ from the full descriptions to the compact ones.
 ### The prompt floor
 
 The floor is what a turn costs before the conversation starts. Measured
-live on 2026-08-29 (llama.cpp `server-b10438`, Qwen3-4B-Instruct-2507
+live on 2026-09-08 (llama.cpp `server-b10438`, Qwen3-4B-Instruct-2507
 Q4_K_M, `context_window` 12288, one request per profile, the reported
 input-token count):
 
 | Prompt profile | Floor | Left of a 12288 window |
 | --- | --- | --- |
-| `full` | 6,991 tokens | ~5,297 |
-| `compact` | 2,763 tokens | ~9,525 |
+| `full` | 6,972 tokens | ~5,316 |
+| `compact` | 2,744 tokens | ~9,544 |
 
 That is the reason auto-selection exists: on the full profile a 12288
 window is 57% spent before the model reads the task, and at a
@@ -900,7 +912,7 @@ rather than quoting the table above:
 
 ```
 PASS: prompt floor (estimate): ~2459 tokens; window 12288; 20% of the window
-NOTE: that estimate is prompt bytes divided by 4, which is not tokenization: expect it to be off by some percent in either direction. A networked run against a keyless openai-compat server reports a measured figure instead. Reference measurement (2026-08-29, llama.cpp, Qwen3-4B-Instruct-2507): 6,991 tokens for the full profile, 2,763 for the compact one.
+NOTE: that estimate is prompt bytes divided by 4, which is not tokenization: expect it to be off by some percent in either direction. A networked run against a keyless openai-compat server reports a measured figure instead. Reference measurement (2026-09-08, llama.cpp, Qwen3-4B-Instruct-2507): 6,972 tokens for the full profile, 2,744 for the compact one.
 NOTE: the prompt floor moves with the length of the cwd path and the number of installed skills, both of which ride in the system prompt
 ```
 

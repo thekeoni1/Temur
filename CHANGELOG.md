@@ -4,6 +4,28 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **Esc now stops a file search, and a search over a huge tree stops
+  itself.** `glob` and `grep` walked the whole tree under their root and
+  read the interrupt only BETWEEN tools, so a search that started was a
+  search you waited out: on a Windows drive mounted into WSL that meant
+  about five minutes with "interrupting..." on screen and no way to stop
+  it short of force-quitting. Both now check for an interrupt on every
+  entry they visit and return immediately when one lands, in the same
+  shape an interrupted `bash` command already returned. They are also
+  bounded independently of you: a walk gives up after 200,000 entries or
+  ten seconds, whichever comes first, and returns what it found plus one
+  line saying it stopped and to narrow the path or pattern. Nothing that
+  a search could not already see becomes visible: protected files are
+  still filtered out entry by entry, cut short or not.
+
+- **The model looks in your folder before asking you for a file.** Given
+  a resume sitting in the working directory, "look at my resume" used to
+  answer "Please upload your resume file", then "I haven't received the
+  file yet"; only asking "what can you see?" made it search, and it
+  found the file at once. Both prompt profiles now say that your files
+  are usually already in the working directory, to look for them before
+  asking, and that there is no upload. That costs 29 tokens.
+
 - **`temur init` can be answered wrong and recovered from, and says a
   quarter less while doing it.** Paste the wrong key and the wizard used
   to answer "Key file ... already exists; left untouched." with no way
