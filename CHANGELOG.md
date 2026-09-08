@@ -4,6 +4,25 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **`temur init` can be answered wrong and recovered from, and says a
+  quarter less while doing it.** Paste the wrong key and the wizard used
+  to answer "Key file ... already exists; left untouched." with no way
+  forward, because `--force` only ever governed the config: it now asks
+  once whether to replace the key, defaulting to No, and an explicit yes
+  reaches the same hidden prompt first entry uses. `--force` still never
+  touches a key file. Answer the key path with a bare name like `mykey`
+  and init used to fail with "No such file or directory" naming nothing,
+  having already written a config pointing at the unusable path: that
+  name now means the working directory, an unusable path is named with
+  the reason before anything is written, and a key step that fails
+  afterwards takes the config back with it. The closing advice matches
+  what the wizard just saw, so a run that listed a live server's models
+  no longer tells you to go start that server. The hosted templates say
+  that model ids other than the default work and that `/models` lists
+  them. Everything the wizard says is shorter: the same five runs print
+  a quarter fewer words, with the explanation of the hidden key prompt
+  moved to the hidden key prompt.
+
 - **A dead endpoint can no longer hang a turn, and Esc lands within the
   timeout.** Both chat transports were built with no timeouts at all, so
   a proxy, local server, or middlebox that accepted the connection and

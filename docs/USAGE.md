@@ -762,8 +762,22 @@ startup default.
 For keyed templates the wizard (fresh or `--add`) creates the key
 file empty (mode 600), then offers a hidden paste prompt: input is
 never echoed, Enter skips, and a pasted key is written only to the
-key file. A non-empty existing key file is never prompted for or
-touched. As a rotation reminder, `temur doctor` WARNs when a key
+key file. If the file already holds a key, an interactive wizard asks
+once whether to replace it, defaulting to No; only an explicit `y`
+reaches the hidden prompt, and the replacement is written at mode 600
+over the old contents. Answering No, or running with input piped
+(where there is nobody to ask), leaves the file alone and says how to
+replace it by hand. `--force` governs the config only and never
+touches a key file.
+
+`temur init` writes a config only when the key step succeeds. A key
+path it cannot use is named, with the reason, before anything is
+written; a key step that fails after the config was written takes the
+config back with it, restoring the previous one if `--force` had
+overwritten it. A path with no directory part, like `mykey`, means the
+working directory.
+
+As a rotation reminder, `temur doctor` WARNs when a key
 file has not changed in `key_rotate_warn_days` days (optional config
 field; default 90, `0` disables); re-running `temur init --add`
 re-prompts after you rotate the key at the provider.
@@ -1835,10 +1849,11 @@ only guards against the MODEL, not against the host.
   approval mode" above); for non-interactive use on such a host,
   either accept `allow_bash_without_key_sandbox` (with a throwaway
   key only) or leave bash refusing and rely on the other tools.
-- **Paste carefully.** `temur init` never accepts a key at the file
-  PATH question; a key-shaped answer there is dropped with a warning
-  to rotate, because the value reached the terminal. Keys go in only
-  at the hidden prompt, or into the key file with your editor.
+- **Paste carefully.** `temur init` never accepts a key at the
+  question asking where to SAVE it; a key-shaped answer there is
+  dropped with a warning to rotate, because the value reached the
+  terminal. Keys go in only at the hidden prompt, or into the key
+  file with your editor.
 
 ## Where the other guides are
 

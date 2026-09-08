@@ -17,7 +17,11 @@ shape.
 llama.cpp's `llama-server` speaks the OpenAI-compatible API temur's
 `openai-compat` provider targets.
 
-**Native:**
+Three ways to start it below. Pick ONE; they all serve the same API on
+the same port, and running two at once just fights over it.
+
+**Native**, using `llama-server` from a llama.cpp release binary or your
+own build:
 
 ```sh
 llama-server -m /path/to/model.gguf -c 8192 --jinja --port 8080

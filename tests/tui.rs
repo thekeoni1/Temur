@@ -2013,7 +2013,10 @@ fn headless_resume_backscroll_renders_in_final_frame_body() {
     ui.event(&AgentEvent::Notice(
         "resumed session ended with a prompt the model never answered; it was dropped".into(),
     ));
-    while let Some(line) = mark("ui.read_input", || ui.read_input()) {
+    // One read: the script's only entry is the exit, so anything returned
+    // here is a scripting error. (A `while` here never loops, since the
+    // body diverges; clippy::never_loop said so.)
+    if let Some(line) = mark("ui.read_input", || ui.read_input()) {
         panic!("script only exits: {line}");
     }
     drop(ui);
