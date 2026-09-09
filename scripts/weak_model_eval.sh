@@ -1,7 +1,7 @@
 #!/bin/sh
 # T4 weak-model eval harness, operator-run (NOT part of check.sh): measures
 # — instead of claiming — how well a small local model drives temur's
-# tools. Nine fixed tasks run against a llama.cpp server inside a podman
+# tools. Nine scored tasks run against a llama.cpp server inside a podman
 # pod created with --network none (same zero-internet-by-construction setup
 # as scripts/offline_demo.sh); every task is scored by a HOST-VERIFIED
 # filesystem assertion only — model prose is never evidence.
@@ -12,6 +12,15 @@
 # raw-write the bytes with the write tool. Task 9 (large-tail, T19): the
 # needle sits on the LAST line of output far larger than the tool-output
 # cap, so only the T19 head+tail truncation can carry it.
+#
+# Task 10 (resume-feedback, T58) is the one task scored from the TRANSCRIPT
+# rather than the filesystem, and the one reported OUTSIDE the /9. It is a
+# conversational request that only implies a file, which is the shape the
+# nine imperative tool instructions cannot see: D25 (2026-09-09) is the
+# dogfood it reproduces, where the model answered "I can't directly read or
+# process files like a resume" and called nothing. Its result gets its own
+# line so the nine-task denominator, and every row already published
+# against it, stay comparable.
 #
 # Nothing is ever pulled or downloaded here: preflight prints the exact
 # pull command and exits if an image is missing.
@@ -51,6 +60,10 @@ MUSL_BIN="${MUSL_BIN:-/home/dev/rustcode-target/i686-unknown-linux-musl/release/
 LLAMA_IMAGE="${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b10438}"
 APP_IMG=docker.io/i386/debian:stable
 BARE_IMG=docker.io/library/busybox:stable
+# Task 10's seed document, found relative to this script's own directory
+# via the cd above, exactly like every other input here and never by
+# absolute path, so the script still runs from a clone anywhere.
+RESUME_FIXTURE=tests/fixtures/office/sample-resume.pdf
 CTX="${CTX:-8192}"
 PROMPT_PROFILE="${PROMPT_PROFILE:-compact}"
 EVAL_TASK_TIMEOUT="${EVAL_TASK_TIMEOUT:-1200}"
@@ -126,6 +139,9 @@ echo "OK: musl binary static (no INTERP, no NEEDED)"
 [ -n "${MODEL_GGUF:-}" ] || { echo "FAIL: set MODEL_GGUF=/path/to/model.gguf"; exit 1; }
 [ -f "$MODEL_GGUF" ] || { echo "FAIL: MODEL_GGUF not found: $MODEL_GGUF"; exit 1; }
 echo "OK: model file present ($MODEL_GGUF)"
+
+[ -f "$RESUME_FIXTURE" ] || { echo "FAIL: task 10 fixture not found: $RESUME_FIXTURE"; exit 1; }
+echo "OK: task 10 fixture present ($RESUME_FIXTURE)"
 
 # NEVER auto-pull. Missing image => print the exact command and stop.
 for img in "$LLAMA_IMAGE" "$APP_IMG" "$BARE_IMG"; do
@@ -208,6 +224,10 @@ template_line
 
 SCORES="$EVAL_ROOT/scores.txt"
 : > "$SCORES"
+# Task 10's per-run result, kept beside the scores and printed the same
+# way, but never summed into them: the /9 stays the /9.
+T10LOG="$EVAL_ROOT/task10.txt"
+: > "$T10LOG"
 
 trimmed() { cat "$1" 2>/dev/null | tr -d '[:space:]' || true; }
 
@@ -435,6 +455,58 @@ run_task "$n" "$name" \
 if [ "$(trimmed "$WORKROOT/task$n/tail.txt")" = "OMEGA-3141" ]; then
     record "$n" "$name" PASS "$SECS"; else record "$n" "$name" FAIL "$SECS"; fi
 
+# 10: file denial (T58, dogfood D25). Not an instruction at all: a
+# conversational request that only IMPLIES a file, in a work dir holding
+# exactly the one document, which is the D25 setup verbatim. Scored and
+# reported outside the /9, so the nine published tasks keep their
+# denominator.
+# PASS needs BOTH halves, and either alone is a FAIL that says which:
+#   1. a read tool call whose path ends in the fixture's name, proving the
+#      model went and got the file rather than declaring it could not;
+#   2. the fictional candidate's given name in the model's own prose,
+#      which can only have come out of the PDF.
+# Half 1 without half 2 is a read that produced no answer; half 2 without
+# half 1 is a name the model invented.
+n=10; name=resume-feedback
+mkdir -p "$WORKROOT/task$n"
+cp "$RESUME_FIXTURE" "$WORKROOT/task$n/sample-resume.pdf"
+run_task "$n" "$name" \
+    'can you read my resume and give me feedback?'
+t="$EVAL_TRANSCRIPT_DIR/task$n.run$RUN.txt"
+T10_SECS=$SECS
+t10_read=0
+# The ToolEnd line the plain UI prints, whose title is the path the model
+# passed: "  <mark> read: /work/sample-resume.pdf". The mark is matched as
+# a non-space token rather than by its own character, so the pattern stays
+# ASCII and locale-independent. An errored read counts as a call here; it
+# is half 2 that decides whether anything was actually learned.
+if grep -Eq '^  [^ ]+ read: .*sample-resume\.pdf$' "$t" 2>/dev/null; then
+    t10_read=1
+fi
+t10_name=0
+# Searched in the model's own prose only. Tool OUTPUT never reaches
+# --plain, so the sole model-controlled text the harness itself prints is
+# that ToolEnd title: without dropping those lines, a hallucinated read of
+# "/work/Jordan-resume.pdf" would score as if the PDF had been read.
+if grep -v -E '^  [^ ]+ [a-z]+: ' "$t" 2>/dev/null | grep -q 'Jordan'; then
+    t10_name=1
+fi
+T10_RES=FAIL
+if [ "$TIMED_OUT" = "1" ]; then
+    T10_NOTE="TIMEOUT@${EVAL_TASK_TIMEOUT}s"
+elif [ "$t10_read" = "1" ] && [ "$t10_name" = "1" ]; then
+    T10_RES=PASS
+    T10_NOTE="read the pdf and named Jordan"
+elif [ "$t10_read" = "1" ]; then
+    T10_NOTE="read the pdf but never named Jordan"
+elif [ "$t10_name" = "1" ]; then
+    T10_NOTE="named Jordan but never read the pdf"
+else
+    T10_NOTE="never read the pdf and never named Jordan"
+fi
+T10_NOTE="$T10_NOTE (${T10_SECS}s)"
+archive_task "$n" "$T10_RES"
+
 }
 
 # report_round: prints the run's table and appends its score to $SCORES.
@@ -450,9 +522,15 @@ report_round() {
     # The archived copy carries a header naming the template, so a results
     # file found on its own still says what it was measured under. The
     # working $RESULTS file stays pure pipe-separated rows.
-    { template_line; cat "$RESULTS"; } > "$EVAL_TRANSCRIPT_DIR/results.run$RUN.txt"
+    { template_line; cat "$RESULTS"; \
+      echo "# D22 (run $RUN): resume-feedback $T10_RES $T10_NOTE"; \
+    } > "$EVAL_TRANSCRIPT_DIR/results.run$RUN.txt"
     printf '%s|%s\n' "$RUN" "$SCORE" >> "$SCORES"
     echo "SCORE (run $RUN): $SCORE/9"
+    # After the score, never inside it. The SCORE line above is
+    # byte-identical to every run published before task 10 existed.
+    printf '%s|%s|%s\n' "$RUN" "$T10_RES" "$T10_NOTE" >> "$T10LOG"
+    echo "D22 (run $RUN): resume-feedback $T10_RES $T10_NOTE"
 }
 
 RUN=1
@@ -461,7 +539,7 @@ while [ "$RUN" -le "$EVAL_RUNS" ]; do
     mkdir -p "$WORKROOT"
     RESULTS="$WORKROOT/results.txt"
     : > "$RESULTS"
-    echo "==== running 9 tasks (run $RUN of $EVAL_RUNS) ===="
+    echo "==== running 9 scored tasks + D22 (run $RUN of $EVAL_RUNS) ===="
     run_round
     report_round
     RUN=$((RUN + 1))
@@ -478,6 +556,12 @@ template_banner
 BELOW=0
 while IFS='|' read -r r score; do
     echo "SCORE (run $r): $score/9"
+    # Repeated here for the same reason the score is: a summary read on its
+    # own should say what task 10 did. EVAL_MIN still judges the /9 alone.
+    t10row=$(grep "^$r|" "$T10LOG" 2>/dev/null || true)
+    if [ -n "$t10row" ]; then
+        echo "D22 (run $r): resume-feedback $(printf '%s' "$t10row" | cut -d'|' -f2-3 | tr '|' ' ')"
+    fi
     if [ "$EVAL_MIN" -gt 0 ] && [ "$score" -lt "$EVAL_MIN" ]; then
         BELOW=1
     fi

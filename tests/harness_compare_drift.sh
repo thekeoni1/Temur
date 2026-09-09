@@ -2,6 +2,14 @@
 # T37 drift pin: the nine task prompts in scripts/harness_compare/tasks.sh
 # must stay BYTE-IDENTICAL to the literals in scripts/weak_model_eval.sh.
 #
+# T58: the eval now has TEN run_task calls. The tenth (D22
+# resume-feedback) is deliberately not carried into tasks.sh, because
+# harness_compare scores the nine imperative tasks ACROSS harnesses and
+# task 10 measures temur's own file-denial recovery, which no other
+# harness has. So the extraction below expects ten, compares the first
+# nine, and pins the tenth by name and by text: that way task 10 can
+# neither drift into the compared set nor be quietly renumbered into it.
+#
 # Why a pin rather than a shared sourced file: weak_model_eval.sh is
 # gate-covered and its wording underpins the published OFFLINE.md matrix,
 # so it is left untouched and this test carries the no-drift guarantee.
@@ -37,20 +45,33 @@ N_TASK=$(wc -l < "$TMP/from_tasks")
 
 # A zero-length extraction must never pass as "identical": that is how a
 # refactor of run_task's call shape would silently disable this pin.
-[ "$N_EVAL" -eq 9 ] \
-    || fail "extracted $N_EVAL prompts from $EVAL, expected 9 (did run_task's call shape change?)"
+[ "$N_EVAL" -eq 10 ] \
+    || fail "extracted $N_EVAL prompts from $EVAL, expected 10 (did run_task's call shape change?)"
 [ "$N_TASK" -eq 9 ] \
     || fail "found $N_TASK PROMPT_n lines in $TASKS, expected 9"
 
-if ! cmp -s "$TMP/from_eval" "$TMP/from_tasks"; then
+# The tenth prompt, pinned verbatim and then held out of the comparison.
+D22_PROMPT="'can you read my resume and give me feedback?'"
+[ "$(tail -n 1 "$TMP/from_eval")" = "$D22_PROMPT" ] \
+    || fail "the tenth eval prompt is not the D22 literal: $(tail -n 1 "$TMP/from_eval")"
+head -n 9 "$TMP/from_eval" > "$TMP/from_eval_nine"
+
+if ! cmp -s "$TMP/from_eval_nine" "$TMP/from_tasks"; then
     echo "FAIL: task prompts have DRIFTED between $EVAL and $TASKS" >&2
     echo "  Any score table built from the drifted text is not comparable." >&2
-    diff -u "$TMP/from_eval" "$TMP/from_tasks" >&2 || true
+    diff -u "$TMP/from_eval_nine" "$TMP/from_tasks" >&2 || true
     exit 1
 fi
 
 # The task-name list must match the eval's `name=` values, same order.
-grep -o '^n=[1-9]; name=[a-z-]*' "$EVAL" | sed 's/.*name=//' > "$TMP/names_eval"
+# The digit class takes 10 as well as 1-9, so a renumbering cannot slip a
+# task past this by widening past the old single-digit pattern.
+grep -o '^n=[0-9][0-9]*; name=[a-z-]*' "$EVAL" | sed 's/.*name=//' > "$TMP/names_all"
+[ "$(wc -l < "$TMP/names_all")" -eq 10 ] \
+    || fail "extracted $(wc -l < "$TMP/names_all") task names from $EVAL, expected 10"
+[ "$(tail -n 1 "$TMP/names_all")" = "resume-feedback" ] \
+    || fail "the tenth task is not resume-feedback: $(tail -n 1 "$TMP/names_all")"
+head -n 9 "$TMP/names_all" > "$TMP/names_eval"
 # shellcheck disable=SC1090
 . "$TASKS"
 printf '%s\n' $TASK_NAMES > "$TMP/names_tasks"
@@ -58,3 +79,4 @@ cmp -s "$TMP/names_eval" "$TMP/names_tasks" \
     || { echo "FAIL: task NAMES drifted" >&2; diff -u "$TMP/names_eval" "$TMP/names_tasks" >&2 || true; exit 1; }
 
 echo "OK: 9 task prompts and 9 task names byte-identical between $EVAL and $TASKS"
+echo "OK: task 10 (resume-feedback) present in $EVAL and held out of $TASKS"

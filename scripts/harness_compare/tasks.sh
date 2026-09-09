@@ -9,6 +9,11 @@
 # that changes a prompt fails the gate rather than silently invalidating a
 # published table.
 #
+# NINE, not ten: weak_model_eval.sh's task 10 (D22 resume-feedback, T58)
+# is deliberately absent. It measures temur's own file-denial recovery,
+# which no other harness has, so scoring it cross-harness would compare
+# nothing. tests/harness_compare_drift.sh pins that exclusion explicitly.
+#
 # Deliberately NOT extracted-and-sourced back into weak_model_eval.sh:
 # that script is gate-covered and underpins the published OFFLINE.md
 # matrix, so it is left byte-identical and the pin test carries the
