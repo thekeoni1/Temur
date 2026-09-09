@@ -4,6 +4,27 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **A model id your key cannot use is now caught by `temur doctor`,
+  instead of by your first message.** Setting the active model to an id
+  the provider will not serve you used to pass every check temur had:
+  `init` accepted it (that is deliberate, you may know about a model the
+  listing does not show), `doctor` reported all-clear with a line saying
+  the model check "would need an authenticated request", and the first
+  thing you sent came back as the provider's own 404 with nothing
+  connecting it to the two commands that fix it. Doctor now checks keyed
+  selections too, with one authenticated listing request per endpoint,
+  sent only to the endpoint your config already gives the key to on every
+  turn and skipped entirely under `--no-network`. If the key file is
+  missing or empty, doctor sends nothing at all and says so on the line.
+  Being absent from a listing is a warning, never a failure, and an id
+  that a listed dated id extends (`claude-haiku-4-5` against
+  `claude-haiku-4-5-20251001`) counts as present, because hosted
+  providers leave live aliases out of their own listings and proxies
+  alias freely. If a turn does 404 anyway, the error now ends by naming
+  the active model, `/models`, and `/model`; and `/models` says when the
+  id you are running is not in the listing it just printed. No key byte
+  appears in any of it.
+
 - **An OpenAI `gpt-5` or o-series model no longer fails every turn over
   the token-cap parameter name.** Switching to `gpt-5-mini` in a running
   session used to kill every turn with the provider's own 400:

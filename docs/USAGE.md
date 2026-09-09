@@ -701,12 +701,41 @@ startup, key files by metadata only (present, non-empty by size, mode
 600, WARN on group/other bits, a rotation reminder once a key file is
 older than `key_rotate_warn_days`), whether the `temur` on your PATH is
 the binary that is running, sessions dir writability, one
-TCP-connect/TLS-handshake reachability probe per endpoint, and, for
-keyless local endpoints only, whether each configured model and
-`context_window` matches what the server itself reports (unauthenticated
-GETs; mismatches are WARNs, since servers alias ids). `--no-network`
-skips the probes and those checks. Running `temur` with no config at
-all prints quickstart pointers instead of a raw credential error.
+TCP-connect/TLS-handshake reachability probe per endpoint, whether each
+configured model is one its endpoint lists, and, for keyless local
+endpoints only, whether `context_window` matches what the server itself
+reports. `--no-network` skips the probes and those checks. Running
+`temur` with no config at all prints quickstart pointers instead of a
+raw credential error.
+
+The model check asks each configured endpoint what it serves. A keyless
+local endpoint is asked without credentials, as it always has been. A
+KEYED endpoint is asked too, and that is the one place doctor reads a
+key at all: ONE authenticated listing GET per distinct endpoint, sent
+only to the endpoint your config already gives the key to on every
+turn, cached so a shared endpoint is asked once, and skipped entirely
+under `--no-network`. No doctor line ever contains a key.
+
+If the key file is missing, empty, or not a regular file, doctor opens
+no connection at all, and the line says so:
+
+```
+NOTE: model check at https://api.anthropic.com skipped: the key file is empty (no request sent)
+```
+
+Absence from a listing is advisory, never a failure. Hosted providers
+omit live aliases from their own listings (`claude-haiku-4-5` is
+unlisted while `claude-haiku-4-5-20251001` is listed) and proxies alias
+freely, so an id that some listed dated id extends counts as listed:
+
+```
+PASS: model "claude-haiku-4-5" matches claude-haiku-4-5-20251001 in the listing at https://api.anthropic.com (one authenticated GET)
+```
+
+Anything else absent is a WARN naming your id and up to ten ids the
+endpoint does list. A refused, timed-out, or unparseable listing is a
+NOTE rather than a FAIL, since the reachability probe above already
+reported whether the endpoint is there.
 
 For the active selection, again on a keyless local endpoint only,
 doctor also checks whether the server renders your tool definitions.
@@ -1093,6 +1122,28 @@ WARN, because servers alias ids (Ollama tags, llama.cpp path names):
 WARN: model "qwen3-bogus" is not in the server listing at http://127.0.0.1:8080/v1 (server lists: /model.gguf; advisory only, servers may alias ids)
 doctor: 5 pass, 1 warn, 0 fail
 ```
+
+The same check now covers KEYED endpoints (see "doctor" above), which is
+where this misconfiguration actually costs you: an id your key cannot
+use passes `temur init`, because init is bring-your-own and makes no
+authenticated call, and it used to reach you for the first time as the
+provider's raw 404 on your first message. Three things now point at the
+fix. Doctor asks the endpoint. `/models` says when the id you are
+running is not in the listing it just printed:
+
+```
+note: the active model "luna" is not in this listing; the provider may still serve it under an alias
+```
+
+And a 404 on a turn names the active model and the two commands:
+
+```
+provider error: api error (HTTP 404) not_found_error: model luna does not exist (the active model is "luna"; /models lists what this key can use, /model <id> switches)
+```
+
+(wrapped for the page; temur prints each as one line.) All three stay
+advisory, because a listing is not a capability list. Only a 404 gains
+that sentence; every other status reaches you exactly as before.
 
 And a raw-id `/model` switch can persist itself: `--save` writes the
 model into config.json after the switch succeeded (a surgical edit;
