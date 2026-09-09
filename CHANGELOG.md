@@ -4,6 +4,37 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **temur reads PDFs and office files, and writes spreadsheets.** A PDF
+  resume sitting in the working directory used to be refused as binary,
+  `pdftotext` was not installed, and the model asked you to paste the
+  text; asked for a spreadsheet with a chart, the model wrote a good CSV,
+  shelled out to LibreOffice, got "not installed", and dead-ended. Both
+  now work with nothing installed on the machine, because the parsers are
+  pure Rust compiled into the binary. Reading needs no new tool and no
+  new argument: `read` takes `.pdf`, `.xlsx`, `.xlsm`, `.xls`, `.ods` and
+  `.docx` the way it takes any other file, and the extracted text pages
+  through the same `offset`/`limit` pipeline, so a 300-page PDF behaves
+  like a long log. Spreadsheets come back as one block per sheet with
+  rows as CSV lines, showing CACHED VALUES rather than formulas, which is
+  what a person looking at the sheet sees. Writing a plain spreadsheet
+  needs no new tool either: write CSV content to a path ending in `.xlsx`
+  and you get a one-sheet workbook. Nothing is ever written as a formula,
+  so a field beginning `=`, `+`, `-` or `@` that is not simply a number
+  lands as text and CSV content cannot inject one.
+  Charts and multiple sheets are the one thing CSV cannot express, so
+  they are the one thing that got a new tool, `spreadsheet`. Documents
+  are treated as hostile: extraction runs inside a panic boundary, a
+  malformed or encrypted file or a scan with no text layer each get one
+  sentence saying what happened and what to do about it, and an input is
+  capped at 32 MiB (64 MiB decompressed for zip-based formats) because
+  this is a 32-bit binary. temur still cannot see images, and does not
+  write `.docx`, `.pptx` or PDF. The binary grows by 3.06 MiB on the shipped i686-musl static build (6,245,100 to
+  9,453,740 bytes stripped; 3.54 MiB on i686-gnu) and
+  the dependency tree goes from 112 crates to 177, all permissive and
+  now enumerated in `docs/THIRD-PARTY-LICENSES.md`. The chart tool is the only
+  part of this that costs anything on every turn: 461 prompt tokens, in
+  both prompt profiles.
+
 - **A project can tell temur how to behave.** Put a `TEMUR.md` in your
   repository (or an `AGENTS.md`, the cross-tool convention other agents
   already read) and its text joins the system prompt at startup: build

@@ -898,11 +898,11 @@ input-token count):
 
 | Prompt profile | Floor | Left of a 12288 window |
 | --- | --- | --- |
-| `full` | 6,972 tokens | ~5,316 |
-| `compact` | 2,744 tokens | ~9,544 |
+| `full` | 7,433 tokens | ~4,855 |
+| `compact` | 3,205 tokens | ~9,083 |
 
 That is the reason auto-selection exists: on the full profile a 12288
-window is 57% spent before the model reads the task, and at a
+window is 60% spent before the model reads the task, and at a
 `context_window` of 4096 the floor exceeds the whole window.
 
 Your own number will differ. The floor moves with the length of your
@@ -912,7 +912,7 @@ rather than quoting the table above:
 
 ```
 PASS: prompt floor (estimate): ~2459 tokens; window 12288; 20% of the window
-NOTE: that estimate is prompt bytes divided by 4, which is not tokenization: expect it to be off by some percent in either direction. A networked run against a keyless openai-compat server reports a measured figure instead. Reference measurement (2026-09-08, llama.cpp, Qwen3-4B-Instruct-2507): 6,972 tokens for the full profile, 2,744 for the compact one.
+NOTE: that estimate is prompt bytes divided by 4, which is not tokenization: expect it to be off by some percent in either direction. A networked run against a keyless openai-compat server reports a measured figure instead. Reference measurement (2026-09-08, llama.cpp, Qwen3-4B-Instruct-2507): 7,433 tokens for the full profile, 3,205 for the compact one.
 NOTE: the prompt floor moves with the length of the cwd path and the number of installed skills, both of which ride in the system prompt
 ```
 
@@ -1267,6 +1267,60 @@ exit=130
 
 Nothing landed on stdout: an interrupted one-shot never emits a
 partial answer as if it were complete.
+
+## Documents and spreadsheets
+
+temur reads PDFs and office files and writes spreadsheets, with no
+system tools involved. There is no `pdftotext` here and no LibreOffice:
+the parsers are pure Rust, compiled into the binary, so this works the
+same on a machine with nothing installed on it.
+
+**Reading rides the `read` tool.** No new tool and no new argument: the
+model reads `resume.pdf` the way it reads `main.rs`.
+
+| extension | what comes back |
+|---|---|
+| `.pdf` | the text layer, page by page |
+| `.xlsx` `.xlsm` `.xls` `.ods` | one block per sheet, `== Sheet: <name> ==` then rows as CSV lines |
+| `.docx` | paragraphs as lines, tables as tab-separated rows |
+
+Spreadsheet cells come back as their CACHED VALUES, never as formulas:
+a cell holding `=SUM(B2:B8)` reads as `47`, which is what a person
+looking at the sheet would see. Extracted text then flows through the
+ordinary `read` pipeline, so `offset` and `limit` page a 300-page PDF
+exactly the way they page a long log, with the same "has more" tail.
+PDF extraction stops early when the requested window is full rather
+than rendering the whole document to show you page one.
+
+**Writing a spreadsheet rides the `write` tool.** Write CSV content to
+a path ending in `.xlsx` and you get a one-sheet workbook: a field that
+parses as an integer or a float is written as a number, everything else
+as text. Nothing is ever written as a FORMULA, so a field beginning
+`=`, `+`, `-` or `@` that is not simply a number lands as text and CSV
+content cannot inject one. A leading `-` on an actual number is still a
+number: `-5` is the number it obviously is.
+
+**Charts need the one new tool, `spreadsheet`.** It is the only surface
+T54 adds, and it exists because charts and multiple sheets cannot be
+expressed as CSV. It takes sheets of values and charts over A1 ranges
+(`line`, `column`, `bar`, `scatter`, `pie`), and a range that falls
+outside the rows you passed is an error naming the range rather than a
+silently empty chart. Its own instructions tell the model to use
+`write` instead for a single sheet of plain data.
+
+**Caps.** An input document is at most 32 MiB, and a zip-based format
+(`.xlsx`, `.docx`, `.ods`) at most 64 MiB decompressed in total, with
+only the entries actually needed opened. Both refusals name the cap.
+These are hard limits rather than tunables because temur is a 32-bit
+binary: the address space, not the policy, is what sets them.
+
+**Not supported, deliberately:** images of any kind, so a scanned PDF
+with no text layer is refused with a sentence saying so rather than
+returning nothing; encrypted PDFs, refused by name so you know to
+supply an unencrypted copy; writing `.docx`, `.pptx` or PDF; and
+formulas evaluated by temur. A malformed or hostile file is a one-line
+error the model can act on, never a crash and never a raw parser
+message.
 
 ## Project instructions
 
@@ -1931,3 +1985,6 @@ only guards against the MODEL, not against the host.
   topology), recommended small models, the compact prompt profile:
   [OFFLINE.md](OFFLINE.md).
 - Install, quickstart, and the starter config: the README.
+- Every crate that ships inside the binary, with its licence and the
+  command that regenerates the census:
+  [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).

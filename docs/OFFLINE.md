@@ -228,9 +228,9 @@ immediately. 1024–4096 is a sensible local range.
 The stock tool descriptions are the OpenCode-ported prompts, sized for
 Claude-class context windows (~24 KB of tool text). On a small local
 window that is a real tax before the conversation even starts: measured
-against a live llama.cpp server, the full profile spends **6,972 prompt
-tokens** before the task is read, which is 57% of a 12288-token window.
-The compact profile spends **2,744**.
+against a live llama.cpp server, the full profile spends **7,433 prompt
+tokens** before the task is read, which is 60% of a 12288-token window.
+The compact profile spends **3,205**.
 
 ```json
 { "prompt_profile": "compact" }
@@ -288,10 +288,10 @@ below temur's own full-profile floor, so a 16384 window (exactly what
 `temur init` writes from a 16k llama.cpp server) got `full` from the
 rule and a `doctor` WARN against it in the same run. 20480 is the
 smallest round window where the full floor stays under that WARN line:
-34% of it measured, 35% estimated. Windows from 16384 to 20479 with no
+36% of it measured, 37% estimated. Windows from 16384 to 20479 with no
 `prompt_profile` move to compact in v0.30.1, which is the better trade
-there anyway (compact leaves 13.6k tokens of a 16384 window for the
-task where full leaves 9.4k).
+there anyway (compact leaves 13.2k tokens of a 16384 window for the
+task where full leaves 9.0k).
 
 Named profiles can each carry their own `prompt_profile` (same three
 values; absent = the global setting above), and `"auto"` resolves

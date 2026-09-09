@@ -53,8 +53,9 @@ pub const DEFAULT_COST_ADVISORY_STEP_USD: f64 = 5.0;
 /// `temur init` writes from a 16k llama.cpp server. The tie is pinned by a
 /// test in `doctor`, so changing either constant, or the prompts, fails
 /// loudly instead of shipping the contradiction again. Compact is the
-/// better choice at 16384 anyway: it leaves 13.6k tokens for the task
-/// where full leaves 9.4k.
+/// better choice at 16384 anyway: it leaves 13.2k tokens for the task
+/// where full leaves 9.0k (re-measured for T54, whose one new tool
+/// definition cost both profiles 461 tokens).
 ///
 /// It stays a threshold rather than a ratio because a threshold is
 /// something a user can read off their own config and predict.
