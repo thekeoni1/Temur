@@ -63,6 +63,16 @@ impl MaxTokensParam {
             MaxTokensParam::MaxCompletionTokens => "max_completion_tokens",
         }
     }
+
+    /// The other of the two. D19: a server that rejects one of these names
+    /// is telling us to send the other, and there are only ever two, so the
+    /// retry target is a total function rather than a search.
+    pub fn other(self) -> Self {
+        match self {
+            MaxTokensParam::MaxTokens => MaxTokensParam::MaxCompletionTokens,
+            MaxTokensParam::MaxCompletionTokens => MaxTokensParam::MaxTokens,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +104,12 @@ pub enum StreamEvent {
     TextDelta(String),
     ThinkingDelta(String),
     ToolUseStarted { name: String },
+    /// Something the user should read about the request itself, not about
+    /// its content: raised by a provider that had to adapt and wants to say
+    /// so once (D19's token-cap-name retry). Deliberately a stream event
+    /// rather than a return value, because it is emitted BEFORE the
+    /// response it explains starts arriving.
+    Notice(String),
 }
 
 #[derive(thiserror::Error, Debug)]

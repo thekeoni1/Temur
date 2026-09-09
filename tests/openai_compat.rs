@@ -1487,3 +1487,248 @@ fn llama_cpp_context_overflow_parses_to_the_exact_kind_t42_matches_on() {
     }
     assert_eq!(transport.bodies.borrow().len(), 1); // never retried at the wire
 }
+
+// ---------------------------------------------------------------------------
+// D19 (T52 P1): a gpt-5 id must not hard-fail on the token-cap name.
+//
+// Observed live in the public sandbox on 2026-09-07: `/model gpt-5-mini` on
+// the openai template, every turn dying with HTTP 400 "Unsupported
+// parameter: 'max_tokens' is not supported with this model. Use
+// 'max_completion_tokens' instead." The mechanism to fix it already existed
+// (T25 F7's max_tokens_parameter); nothing connected the server's own advice
+// to it. These tests pin the connection, and every one of them asserts the
+// REQUEST COUNT, because "never a third attempt" is the load-bearing half.
+// ---------------------------------------------------------------------------
+
+/// The verbatim body from the sandbox: a message and nothing else. The
+/// trigger must fire on this, since `param` was never observed.
+const D19_MESSAGE_ONLY: &str = r#"{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.","type":"invalid_request_error","code":"unsupported_parameter"}}"#;
+
+fn d19_status(body: &str) -> TransportError {
+    TransportError::Status {
+        code: 400,
+        retry_after: None,
+        body: body.into(),
+    }
+}
+
+fn notices(events: &[StreamEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Notice(n) => Some(n.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn d19_message_only_400_retries_once_with_the_other_name() {
+    let (provider, transport) = provider_and_transport(
+        vec![Err(d19_status(D19_MESSAGE_ONLY)), Ok("text_simple")],
+        None,
+    );
+    let mut events = vec![];
+    let msg = provider
+        .stream(&sample_request(), &mut |e| events.push(e), &CancelToken::new())
+        .expect("retry should stream normally");
+    assert!(!msg.content.is_empty(), "response should have streamed");
+
+    let bodies = transport.bodies.borrow();
+    assert_eq!(bodies.len(), 2, "exactly one retry");
+    // First body carries the classic name and NOT the other one.
+    assert!(bodies[0].contains("\"max_tokens\""));
+    assert!(!bodies[0].contains("max_completion_tokens"));
+    // Second body is the reverse, with the same value.
+    assert!(bodies[1].contains("\"max_completion_tokens\""));
+    assert!(!bodies[1].contains("\"max_tokens\""));
+    assert!(bodies[1].contains("8000"), "same value, other key");
+
+    assert_eq!(
+        notices(&events),
+        vec![
+            "note: this model wants max_completion_tokens; using it for this session \
+             (set \"max_tokens_parameter\" on the profile to skip the retry)"
+        ]
+    );
+}
+
+#[test]
+fn d19_param_field_triggers_without_matching_prose() {
+    // OpenAI's documented shape: the field is named, the message is not
+    // something we could match on.
+    let body = r#"{"error":{"message":"Bad request, see docs.","type":"invalid_request_error","param":"max_tokens"}}"#;
+    let (provider, transport) =
+        provider_and_transport(vec![Err(d19_status(body)), Ok("text_simple")], None);
+    provider
+        .stream(&sample_request(), &mut |_| {}, &CancelToken::new())
+        .expect("retry should stream normally");
+    let bodies = transport.bodies.borrow();
+    assert_eq!(bodies.len(), 2);
+    assert!(bodies[1].contains("\"max_completion_tokens\""));
+}
+
+#[test]
+fn d19_learned_name_is_sticky_and_the_notice_is_raised_once() {
+    let (provider, transport) = provider_and_transport(
+        vec![
+            Err(d19_status(D19_MESSAGE_ONLY)),
+            Ok("text_simple"),
+            Ok("text_simple"),
+        ],
+        None,
+    );
+    let mut events = vec![];
+    provider
+        .stream(&sample_request(), &mut |e| events.push(e), &CancelToken::new())
+        .unwrap();
+    provider
+        .stream(&sample_request(), &mut |e| events.push(e), &CancelToken::new())
+        .unwrap();
+
+    let bodies = transport.bodies.borrow();
+    assert_eq!(bodies.len(), 3, "turn one costs two, turn two costs one");
+    // The second turn goes straight to the learned name: no wasted 400.
+    assert!(bodies[2].contains("\"max_completion_tokens\""));
+    assert!(!bodies[2].contains("\"max_tokens\""));
+    assert_eq!(notices(&events).len(), 1, "announced once per instance");
+}
+
+#[test]
+fn d19_unrelated_400_is_untouched() {
+    // The exact assertion that matters for everyone not hitting D19: same
+    // error, same text, one request.
+    let body = r#"{"error":{"message":"we could not parse your request","type":"invalid_request_error","code":"invalid_json"}}"#;
+    let (provider, transport) = provider_and_transport(vec![Err(d19_status(body))], None);
+    let err = provider
+        .stream(&sample_request(), &mut |_| {}, &CancelToken::new())
+        .unwrap_err();
+    match err {
+        ProviderError::Api {
+            status,
+            kind,
+            message,
+        } => {
+            assert_eq!(status, 400);
+            assert_eq!(kind, "invalid_request_error");
+            assert_eq!(message, "we could not parse your request");
+        }
+        other => panic!("expected Api error, got {other:?}"),
+    }
+    assert_eq!(transport.bodies.borrow().len(), 1, "no retry");
+}
+
+#[test]
+fn d19_a_message_naming_only_one_name_does_not_trigger() {
+    // Half the evidence is not evidence: neither key name is a substring of
+    // the other, so this must stay a plain 400.
+    let body = r#"{"error":{"message":"max_tokens must be a positive integer","type":"invalid_request_error"}}"#;
+    let (provider, transport) = provider_and_transport(vec![Err(d19_status(body))], None);
+    provider
+        .stream(&sample_request(), &mut |_| {}, &CancelToken::new())
+        .unwrap_err();
+    assert_eq!(transport.bodies.borrow().len(), 1, "no retry");
+}
+
+#[test]
+fn d19_retry_also_rejected_stops_at_two_and_names_the_knob() {
+    let reverse = r#"{"error":{"message":"Unsupported parameter: 'max_completion_tokens' is not supported with this model. Use 'max_tokens' instead.","type":"invalid_request_error"}}"#;
+    let (provider, transport) = provider_and_transport(
+        vec![Err(d19_status(D19_MESSAGE_ONLY)), Err(d19_status(reverse))],
+        None,
+    );
+    let err = provider
+        .stream(&sample_request(), &mut |_| {}, &CancelToken::new())
+        .unwrap_err();
+    assert_eq!(
+        transport.bodies.borrow().len(),
+        2,
+        "never a third attempt"
+    );
+    match err {
+        ProviderError::Api { message, .. } => assert!(
+            message.ends_with(
+                " (set \"max_tokens_parameter\" on the profile; temur tried both names)"
+            ),
+            "got {message}"
+        ),
+        other => panic!("expected Api error, got {other:?}"),
+    }
+}
+
+#[test]
+fn d19_is_symmetric_a_configured_completion_name_retries_with_the_classic() {
+    let reverse = r#"{"error":{"message":"Unsupported parameter: 'max_completion_tokens' is not supported with this model. Use 'max_tokens' instead.","type":"invalid_request_error"}}"#;
+    let (provider, transport) = provider_and_transport_with_param(
+        vec![Err(d19_status(reverse)), Ok("text_simple")],
+        None,
+        MaxTokensParam::MaxCompletionTokens,
+    );
+    let mut events = vec![];
+    provider
+        .stream(&sample_request(), &mut |e| events.push(e), &CancelToken::new())
+        .unwrap();
+    let bodies = transport.bodies.borrow();
+    assert_eq!(bodies.len(), 2);
+    assert!(bodies[0].contains("\"max_completion_tokens\""));
+    assert!(bodies[1].contains("\"max_tokens\""));
+    assert!(!bodies[1].contains("max_completion_tokens"));
+    assert_eq!(
+        notices(&events),
+        vec![
+            "note: this model wants max_tokens; using it for this session \
+             (set \"max_tokens_parameter\" on the profile to skip the retry)"
+        ]
+    );
+}
+
+#[test]
+fn d19_cancel_between_the_400_and_the_retry_makes_no_second_post() {
+    // The user hits Esc while the 400 is in flight. post_stream_with_retries
+    // polls the token BEFORE it posts, so the retry must never reach the
+    // transport: this transport panics if it is called a second time.
+    struct CancelOn400 {
+        cancel: CancelToken,
+        calls: RefCell<u32>,
+    }
+    impl Transport for CancelOn400 {
+        fn post_stream(
+            &self,
+            _url: &str,
+            _api_key: &str,
+            _body: &str,
+        ) -> Result<Box<dyn Read>, TransportError> {
+            let mut n = self.calls.borrow_mut();
+            *n += 1;
+            assert_eq!(*n, 1, "the retry must not be posted after a cancel");
+            // The cancel lands while the server is answering the first POST.
+            self.cancel.set();
+            Err(TransportError::Status {
+                code: 400,
+                retry_after: None,
+                body: D19_MESSAGE_ONLY.into(),
+            })
+        }
+    }
+
+    let cancel = CancelToken::new();
+    let transport = Box::new(CancelOn400 {
+        cancel: cancel.clone(),
+        calls: RefCell::new(0),
+    });
+    let provider = OpenAiCompatProvider::new(
+        "http://127.0.0.1:8080/v1",
+        None,
+        MaxTokensParam::default(),
+        transport,
+    );
+    let err = provider
+        .stream(&sample_request(), &mut |_| {}, &cancel)
+        .unwrap_err();
+    // The trigger fired and the retry was attempted, but the token stopped it
+    // before the wire: an interruption, not a provider failure.
+    match err {
+        ProviderError::Network(msg) => assert_eq!(msg, "interrupted by user"),
+        other => panic!("expected Network(interrupted by user), got {other:?}"),
+    }
+}

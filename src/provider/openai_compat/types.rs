@@ -359,6 +359,12 @@ pub struct ApiErrorBody {
     /// absent, with a NUMERIC `code` (T13 F9, captured live 2026-08-05).
     #[serde(default)]
     pub status: Option<String>,
+    /// The request field the server is complaining about, when it says so.
+    /// OpenAI's documented shape for an unsupported parameter; additive and
+    /// defaulted, so every existing fixture parses unchanged. D19 reads it
+    /// to recognise a token-cap-name rejection without matching prose.
+    #[serde(default)]
+    pub param: Option<String>,
 }
 
 impl ApiErrorBody {
@@ -394,6 +400,7 @@ impl WireError {
                 kind: None,
                 code: None,
                 status: None,
+                param: None,
             },
         }
     }

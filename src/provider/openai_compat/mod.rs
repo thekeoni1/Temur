@@ -17,6 +17,7 @@ use crate::provider::transport::{Transport, TransportError};
 use crate::provider::{
     ChatRequest, MaxTokensParam, Provider, ProviderError, ResponseMessage, StreamEvent,
 };
+use std::cell::Cell;
 use std::io::BufReader;
 use types::ChunkAccumulator;
 
@@ -25,7 +26,16 @@ pub struct OpenAiCompatProvider {
     /// Empty string = keyless (no auth header). Never logged.
     api_key: String,
     /// Which wire key carries the token cap (T25 F7); validated upstream.
-    max_tokens_parameter: MaxTokensParam,
+    /// D19: this is where the NEXT request starts, not a constant. A server
+    /// that rejects the configured name teaches this instance the other one
+    /// for the rest of its life, so the wasted round trip is paid once per
+    /// selection rather than once per turn. A `/model` or profile switch
+    /// builds a fresh instance (T8's one construction path), so the memory
+    /// resets with the selection, which is correct: the new model may
+    /// differ. Nothing is written to the config.
+    max_tokens_parameter: Cell<MaxTokensParam>,
+    /// The flip is announced ONCE per instance, not once per turn.
+    flip_announced: Cell<bool>,
     transport: Box<dyn Transport>,
 }
 
@@ -39,7 +49,8 @@ impl OpenAiCompatProvider {
         OpenAiCompatProvider {
             base_url: base_url.into(),
             api_key: api_key.unwrap_or_default(),
-            max_tokens_parameter,
+            max_tokens_parameter: Cell::new(max_tokens_parameter),
+            flip_announced: Cell::new(false),
             transport,
         }
     }
@@ -57,7 +68,11 @@ impl OpenAiCompatProvider {
         )
     }
 
-    fn build_body(&self, req: &ChatRequest) -> Result<String, ProviderError> {
+    fn build_body(
+        &self,
+        req: &ChatRequest,
+        max_tokens_parameter: MaxTokensParam,
+    ) -> Result<String, ProviderError> {
         // Neutral history → wire messages, explicitly, at this boundary
         // only. The system prompt is a plain leading system message here
         // (no cache_control: prompt caching is Anthropic-specific wire
@@ -94,7 +109,7 @@ impl OpenAiCompatProvider {
         // OpenRouter and DeepSeek only ever learned it. The value is the
         // same u32 either way, and exactly one of the two keys is ever
         // present, so nothing downstream has to reconcile a pair.
-        body[self.max_tokens_parameter.wire_key()] = serde_json::json!(req.max_tokens);
+        body[max_tokens_parameter.wire_key()] = serde_json::json!(req.max_tokens);
         if !req.tools.is_empty() {
             let tools: Vec<types::ToolDef> = req.tools.iter().map(Into::into).collect();
             body["tools"] = serde_json::to_value(&tools)
@@ -187,17 +202,108 @@ impl Provider for OpenAiCompatProvider {
         // base_url includes the version prefix by SDK convention
         // (https://api.openai.com/v1, http://127.0.0.1:8080/v1, …).
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let body = self.build_body(req)?;
-        match crate::provider::transport::post_stream_with_retries(
+        let sent = self.max_tokens_parameter.get();
+        let body = self.build_body(req, sent)?;
+        let first = crate::provider::transport::post_stream_with_retries(
             self.transport.as_ref(),
             &url,
             &self.api_key,
             &body,
             cancel,
-        ) {
-            Ok(reader) => self.drive(req, reader, on_event, cancel),
-            Err(e) => Err(transport_error_to_provider(e)),
+        );
+        let err = match first {
+            Ok(reader) => return self.drive(req, reader, on_event, cancel),
+            Err(e) => e,
+        };
+        // D19: the provider named the fix in the error body. Anything that is
+        // not that exact rejection falls through with byte-identical text.
+        if !is_token_cap_rejection(&err, sent) {
+            return Err(transport_error_to_provider(err));
         }
+        // ONE retry with the other name and the SAME value, same URL, same
+        // credential, same cancel token. post_stream_with_retries polls the
+        // token before it posts, so a cancel landing between the 400 and here
+        // means no second POST is ever made.
+        let other = sent.other();
+        let retry_body = self.build_body(req, other)?;
+        match crate::provider::transport::post_stream_with_retries(
+            self.transport.as_ref(),
+            &url,
+            &self.api_key,
+            &retry_body,
+            cancel,
+        ) {
+            Ok(reader) => {
+                self.max_tokens_parameter.set(other);
+                if !self.flip_announced.replace(true) {
+                    // Before driving the response, which is where it
+                    // naturally sits: the retry POST happens before any
+                    // token arrives, so the notice cannot interleave with
+                    // text that has already started.
+                    on_event(StreamEvent::Notice(flip_notice(other)));
+                }
+                self.drive(req, reader, on_event, cancel)
+            }
+            // NEVER a third attempt. If the other name is rejected the same
+            // way, both names are wrong for this endpoint and only the
+            // operator can settle it, so say which knob settles it.
+            Err(e2) if is_token_cap_rejection(&e2, other) => {
+                Err(append_knob_hint(transport_error_to_provider(e2)))
+            }
+            Err(e2) => Err(transport_error_to_provider(e2)),
+        }
+    }
+}
+
+/// The one-sentence flip notice, raised once per provider instance.
+fn flip_notice(now: MaxTokensParam) -> String {
+    format!(
+        "note: this model wants {}; using it for this session \
+         (set \"max_tokens_parameter\" on the profile to skip the retry)",
+        now.wire_key()
+    )
+}
+
+/// D19's trigger, narrow by construction: a 400 whose body either NAMES the
+/// field we just sent, or mentions both names in its message. The second
+/// arm is required because the live observation carried only a message; the
+/// `param` field is OpenAI's documented shape, not something we captured.
+/// Neither key name is a substring of the other, so the message test cannot
+/// fire on one name alone.
+fn is_token_cap_rejection(e: &TransportError, sent: MaxTokensParam) -> bool {
+    let TransportError::Status { code: 400, body, .. } = e else {
+        return false;
+    };
+    let Some(err) = serde_json::from_str::<types::ErrorPayload>(body)
+        .ok()
+        .and_then(types::ErrorPayload::into_error)
+        .map(types::WireError::into_body)
+    else {
+        return false;
+    };
+    let sent_key = sent.wire_key();
+    if err.param.as_deref() == Some(sent_key) {
+        return true;
+    }
+    err.message.contains(sent_key) && err.message.contains(sent.other().wire_key())
+}
+
+/// Both names refused: name the knob, keep the server's own words in front
+/// of it so the operator still sees what the endpoint said.
+fn append_knob_hint(e: ProviderError) -> ProviderError {
+    match e {
+        ProviderError::Api {
+            status,
+            kind,
+            message,
+        } => ProviderError::Api {
+            status,
+            kind,
+            message: format!(
+                "{message} (set \"max_tokens_parameter\" on the profile; temur tried both names)"
+            ),
+        },
+        other => other,
     }
 }
 

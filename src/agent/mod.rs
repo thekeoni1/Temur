@@ -2430,6 +2430,8 @@ fn stream_event_to_agent(ev: crate::provider::StreamEvent) -> AgentEvent {
         crate::provider::StreamEvent::TextDelta(t) => AgentEvent::TextDelta(t),
         crate::provider::StreamEvent::ThinkingDelta(t) => AgentEvent::ThinkingDelta(t),
         crate::provider::StreamEvent::ToolUseStarted { name } => AgentEvent::ToolStart { name },
+        // D19: a provider that adapted the request and wants to say so once.
+        crate::provider::StreamEvent::Notice(n) => AgentEvent::Notice(n),
     }
 }
 
