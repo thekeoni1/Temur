@@ -4,6 +4,22 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- A local model whose chat template prints the element type of an array
+  parameter can now use temur's tools. Every turn that sent tools to
+  gpt-oss-20b died before a token was generated, with the server
+  returning HTTP 500 and a Jinja render error naming
+  `param_spec['items']`. No configuration helped, because the cause was
+  in temur: of all the array parameters in its tool definitions, one did
+  not say what its elements were, the rows of the `spreadsheet` tool.
+  Templates that ask an array what it contains resolved that absent key
+  to the dictionary's own `.items` method and refused it. The element
+  type is now declared, and gpt-oss-20b goes from 0/9 to 9/9 on the
+  nine-task local eval, twice, with nothing else changed. It costs 25
+  prompt tokens per turn in either profile. `temur doctor` already
+  reported this failure in the server's own words, and a test now walks
+  every tool schema in both prompt profiles so no array can ship without
+  an element type.
+
 - **A model id your key cannot use is now caught by `temur doctor`,
   instead of by your first message.** Setting the active model to an id
   the provider will not serve you used to pass every check temur had:

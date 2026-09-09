@@ -353,7 +353,7 @@ one unauthenticated GET, against keyless endpoints only.
 | Phi-4-mini-instruct | Q4_K_M | ~2.3 GB | ~3.3 GB | not delivered by its template | n/a | verified 2026-08-15 (eval 0/9) |
 | SmolLM2-1.7B-Instruct | Q4_K_M | ~1.0 GB | ~2.0 GB | not delivered by its template | n/a | verified 2026-08-15 (eval 0/9) |
 | Llama-3.1-8B-Instruct | Q4_K_M | ~4.9 GB | ~5.9 GB | emitted, but the server rejected 4 of 9 | yes | measured 2026-09-09 on head `7c7419e`, a different binary from every row above (eval 5/9, 5/9; identical failing set both runs) |
-| gpt-oss-20b | MXFP4 | ~12.1 GB | ~13.1 GB | not delivered: its template cannot render temur's current definitions | n/a | measured 2026-09-09 on head `7c7419e` (eval 0/9, 0/9); the SAME model and template render the tool set on a pre-T54 binary, see below |
+| gpt-oss-20b | MXFP4 | ~12.1 GB | ~13.1 GB | yes | yes | measured 2026-09-09 on head `f7ab9df` (T57 P1), musl i686 sha256 `76c8e33e...` (eval 9/9, 9/9); scored 0/9, 0/9 on the parent binary, whose tool definitions its template could not render, see below |
 
 The rows that say "not delivered by its template" mean the tools never
 reached those models. Some of them score when the tools do reach them.
@@ -387,8 +387,12 @@ task ever observed (994s), and no task in any published row has
 approached it. No score in this table was truncated by the bound.
 
 The last two rows are a later pass (2026-09-09) and carry the same
-caveat as the Llama-3.2-3B row: a different temur binary, the local
-head `7c7419e`, musl-static i686, sha256 `09c8fdc7...`. Server build,
+caveat as the Llama-3.2-3B row: a different temur binary. They sit on
+two different ones. Llama-3.1-8B was measured on the local head
+`7c7419e`, musl-static i686, sha256 `09c8fdc7...`; gpt-oss-20b was
+re-measured on `f7ab9df` (T57 P1), sha256 `76c8e33e...`, which is that
+binary plus the one `items` key described below and nothing else.
+Server build,
 image digest, ctx 8192, `--jinja`, compact profile, `EVAL_MAX_TOKENS`
 3072, `EVAL_RUNS` 2 and the `--network none` pod are unchanged from the
 rows above, so those two rows are comparable to each other and only
@@ -448,6 +452,31 @@ element type carries an `items`.
 tools-drop probe returns `WARN: the server ... rejected temur's tool
 definitions for "local-gguf" (HTTP 500: ...): every turn that sends
 tools will fail the same way`, quoting the server's own words.
+
+T57 added the key, and the row above is the result. The element type of
+`spreadsheet`'s `rows` now carries an `items`, picked by measuring three
+candidate shapes against three bundled templates; the one taken
+describes a cell value and declares no `type`, so the schema does not
+push a model toward quoting numbers. On the same model file, template,
+server build and settings, gpt-oss-20b went from 0/9, 0/9 to 9/9, 9/9,
+with no tool-call parser rejection in either run and no change to the
+eval script. A test now walks every tool schema in both prompt profiles
+and fails any array that declares no element type, naming the tool and
+the JSON path.
+
+The same change was checked against the primary row's model. Task 5
+(find-needle) is the only cell that moved on Qwen3-4B, and its T57 tally
+is 3 of 6 against a parent lineage of 9 of 10 (T53 parent 2/2, T53 P2
+2/2, T54 P4 parent 1/2, T54 P4 P3 2/2, T57 parent control 2/2). Every
+other task passed in all six runs. The reading was fixed before the
+deciding samples were taken, three or more passes in four fresh runs
+meaning variance, and four fresh runs returned three passes. The
+transcripts say why the number is noisy: on both binaries the model
+sometimes calls `glob` with the three file names joined by commas and
+then reads its own successful result as "no files found", and on both it
+usually recovers through `grep` and `read`. Whether it recovers is the
+coin flip. Both figures are here so the tally and the lineage are read
+together.
 
 The Llama re-measure's slowest task, 434s, is not a second data point
 (corrected 2026-08-17, having first been written as one): it spent its
