@@ -1555,9 +1555,9 @@ fn d19_message_only_400_retries_once_with_the_other_name() {
 
 #[test]
 fn d19_param_field_triggers_without_matching_prose() {
-    // OpenAI's documented shape: the field is named, the message is not
-    // something we could match on.
-    let body = r#"{"error":{"message":"Bad request, see docs.","type":"invalid_request_error","param":"max_tokens"}}"#;
+    // OpenAI's documented shape: the field is named AND the error class says
+    // unsupported, while the message is not something we could match on.
+    let body = r#"{"error":{"message":"Bad request, see docs.","type":"invalid_request_error","code":"unsupported_parameter","param":"max_tokens"}}"#;
     let (provider, transport) =
         provider_and_transport(vec![Err(d19_status(body)), Ok("text_simple")], None);
     provider
@@ -1730,5 +1730,39 @@ fn d19_cancel_between_the_400_and_the_retry_makes_no_second_post() {
     match err {
         ProviderError::Network(msg) => assert_eq!(msg, "interrupted by user"),
         other => panic!("expected Network(interrupted by user), got {other:?}"),
+    }
+}
+
+#[test]
+fn d19_a_value_error_naming_the_same_field_does_not_retry() {
+    // Planning's correction, 2026-09-08: `param` alone was too wide. OpenAI
+    // sets param to "max_tokens" for VALUE errors as well, and sending the
+    // same value under the other key cannot fix a limit that is too large:
+    // it would waste a round trip and then blame the knob for something the
+    // operator has to lower. Arm (a) requires the unsupported_parameter
+    // class; this body has the field and NOT the class, so it must stay an
+    // ordinary 400, with the error text byte-equal to today's and no knob
+    // suffix anywhere in it.
+    let body = r#"{"error":{"message":"max_tokens is too large: this model supports at most 16384 completion tokens.","type":"invalid_request_error","code":"invalid_value","param":"max_tokens"}}"#;
+    let (provider, transport) = provider_and_transport(vec![Err(d19_status(body))], None);
+    let err = provider
+        .stream(&sample_request(), &mut |_| {}, &CancelToken::new())
+        .unwrap_err();
+    assert_eq!(transport.bodies.borrow().len(), 1, "no retry");
+    match err {
+        ProviderError::Api {
+            status,
+            kind,
+            message,
+        } => {
+            assert_eq!(status, 400);
+            assert_eq!(kind, "invalid_request_error");
+            assert_eq!(
+                message,
+                "max_tokens is too large: this model supports at most 16384 completion tokens."
+            );
+            assert!(!message.contains("tried both names"), "no knob suffix");
+        }
+        other => panic!("expected Api error, got {other:?}"),
     }
 }

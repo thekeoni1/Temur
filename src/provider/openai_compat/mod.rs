@@ -264,12 +264,21 @@ fn flip_notice(now: MaxTokensParam) -> String {
     )
 }
 
-/// D19's trigger, narrow by construction: a 400 whose body either NAMES the
-/// field we just sent, or mentions both names in its message. The second
-/// arm is required because the live observation carried only a message; the
-/// `param` field is OpenAI's documented shape, not something we captured.
-/// Neither key name is a substring of the other, so the message test cannot
-/// fire on one name alone.
+/// D19's trigger, narrow by construction: a 400 whose body either names the
+/// field we just sent AS UNSUPPORTED, or mentions both names in its message.
+/// The second arm is required because the live observation carried only a
+/// message; the `param` field is OpenAI's documented shape, not something we
+/// captured. Neither key name is a substring of the other, so the message
+/// test cannot fire on one name alone.
+///
+/// NAMING THE FIELD IS NOT ENOUGH ON ITS OWN. OpenAI sets `param` to
+/// `max_tokens` for VALUE errors too ("max_tokens is too large"), and those
+/// are not fixed by sending the same value under a different key: retrying
+/// would waste a round trip and then blame the knob for a limit the operator
+/// actually has to lower. Arm (a) therefore requires the error class as well,
+/// which is exactly the class OpenAI documents for this case. Arm (b) needs
+/// no such guard: a message carrying BOTH names is the server spelling out
+/// the swap, and a value error has no reason to name the other key at all.
 fn is_token_cap_rejection(e: &TransportError, sent: MaxTokensParam) -> bool {
     let TransportError::Status { code: 400, body, .. } = e else {
         return false;
@@ -282,7 +291,12 @@ fn is_token_cap_rejection(e: &TransportError, sent: MaxTokensParam) -> bool {
         return false;
     };
     let sent_key = sent.wire_key();
-    if err.param.as_deref() == Some(sent_key) {
+    let unsupported = err
+        .code
+        .as_ref()
+        .and_then(|c| c.as_str())
+        .is_some_and(|c| c == "unsupported_parameter");
+    if unsupported && err.param.as_deref() == Some(sent_key) {
         return true;
     }
     err.message.contains(sent_key) && err.message.contains(sent.other().wire_key())

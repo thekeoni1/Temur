@@ -663,9 +663,11 @@ hit them:
   field is still worth doing on a profile you use often: it skips the
   one rejected request per session.
 
-  Only that exact rejection triggers a retry: the server has to name
-  the field, or name both field names in its message. Every other 400
-  reaches you unchanged. If BOTH names are refused, temur stops after
+  Only that exact rejection triggers a retry: the server has to name the
+  field as an UNSUPPORTED parameter, or name both field names in its
+  message. A complaint about the VALUE, such as a cap larger than the
+  model allows, names the same field but is not a name problem, so it
+  reaches you unchanged and so does every other 400. If BOTH names are refused, temur stops after
   two attempts and says so:
 
   ```
