@@ -6831,3 +6831,107 @@ fn a_denial_followed_by_finishing_ends_the_turn_cleanly() {
         "the turn ends normally: {events:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// T52 P2: a raw /model switch recomputes the implied token-cap name.
+//
+// The commands-level half of the rule. raw_override clones the active
+// selection, replaces the model, and hands it to build_provider; the
+// effective key is computed where the provider is built, so this is the
+// site that proves a switch made INSIDE a session behaves like one made at
+// startup. D19 was reported from exactly this path: /model gpt-5-mini on an
+// already-running openai session.
+// ---------------------------------------------------------------------------
+
+fn openai_proper_resolved(model: &str) -> ResolvedProfile {
+    ResolvedProfile {
+        provider: "openai-compat".into(),
+        model: model.into(),
+        base_url: "https://api.openai.com/v1".into(),
+        ..base_resolved()
+    }
+}
+
+#[test]
+fn raw_model_switch_to_gpt5_builds_the_provider_with_max_completion_tokens() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    // A live openai session on an id that wants the CLASSIC name.
+    h.active_resolved = openai_proper_resolved("gpt-4o");
+    h.provider_name = "openai-compat".into();
+    h.model = "gpt-4o".into();
+    assert_eq!(
+        h.active_resolved.effective_max_tokens_parameter(),
+        temur::provider::MaxTokensParam::MaxTokens,
+        "precondition: the session starts on the classic name"
+    );
+
+    let seen = Rc::new(RefCell::new(vec![]));
+    let s = seen.clone();
+    let build = move |p: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        s.borrow_mut()
+            .push((p.model.clone(), p.effective_max_tokens_parameter()));
+        Ok(Box::new(MockProvider {
+            responses: RefCell::new(vec![]),
+            requests: Rc::new(RefCell::new(vec![])),
+        }))
+    };
+
+    commands::run(
+        commands::parse("/model gpt-5-mini"),
+        &mut h.ctx(&mut session, &build),
+    );
+    commands::run(
+        commands::parse("/model gpt-4o"),
+        &mut h.ctx(&mut session, &build),
+    );
+
+    assert_eq!(
+        *seen.borrow(),
+        vec![
+            (
+                "gpt-5-mini".to_string(),
+                temur::provider::MaxTokensParam::MaxCompletionTokens
+            ),
+            // And back again: the rule is a function of the id, not a latch.
+            (
+                "gpt-4o".to_string(),
+                temur::provider::MaxTokensParam::MaxTokens
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_raw_switch_on_a_local_server_is_not_gated_by_the_model_name() {
+    // The same id on a local endpoint keeps the classic name: only
+    // api.openai.com is gated, and T52 P1 covers everyone else.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    h.active_resolved = ResolvedProfile {
+        base_url: "http://127.0.0.1:8080/v1".into(),
+        ..openai_proper_resolved("local-gguf")
+    };
+    h.provider_name = "openai-compat".into();
+    h.model = "local-gguf".into();
+
+    let seen = Rc::new(RefCell::new(vec![]));
+    let s = seen.clone();
+    let build = move |p: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        s.borrow_mut().push(p.effective_max_tokens_parameter());
+        Ok(Box::new(MockProvider {
+            responses: RefCell::new(vec![]),
+            requests: Rc::new(RefCell::new(vec![])),
+        }))
+    };
+    commands::run(
+        commands::parse("/model gpt-5-mini"),
+        &mut h.ctx(&mut session, &build),
+    );
+    assert_eq!(
+        *seen.borrow(),
+        vec![temur::provider::MaxTokensParam::MaxTokens]
+    );
+}

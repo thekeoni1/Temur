@@ -478,7 +478,7 @@ fn repl(
                 Box::new(OpenAiCompatProvider::new(
                     resolved.base_url.clone(),
                     None,
-                    resolved.max_tokens_parameter,
+                    resolved.effective_max_tokens_parameter(),
                     replay,
                 ))
             } else {
@@ -514,7 +514,7 @@ fn repl(
                         Box::new(OpenAiCompatProvider::new(
                             resolved.base_url.clone(),
                             key,
-                            resolved.max_tokens_parameter,
+                            resolved.effective_max_tokens_parameter(),
                             Box::new(temur::provider::transport::CaptureTransport::new(
                                 temur::provider::openai_compat::transport::HttpTransport::new(),
                                 std::path::PathBuf::from(base),

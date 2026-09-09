@@ -411,14 +411,86 @@ pub struct ResolvedProfile {
     /// `/status` cost estimate reads them.
     pub price_input_per_mtok: Option<f64>,
     pub price_output_per_mtok: Option<f64>,
-    /// Validated token-cap wire key (T25 F7), already defaulted. Only the
-    /// OpenAI-compatible provider reads it; an anthropic selection carries
-    /// the default and ignores it, because that wire uses `max_tokens`
-    /// natively.
-    pub max_tokens_parameter: crate::provider::MaxTokensParam,
+    /// Validated token-cap wire key (T25 F7) when the operator wrote one,
+    /// `None` when they did not. Only the OpenAI-compatible provider reads
+    /// it; an anthropic selection carries `None` and ignores it, because
+    /// that wire uses `max_tokens` natively.
+    ///
+    /// T52 P2: this stays the EXPLICIT value rather than an already-defaulted
+    /// one, because "the operator asked for this" and "nobody said" are
+    /// different facts and only the first may override the host/model rule.
+    /// The value actually sent is [`ResolvedProfile::effective_max_tokens_parameter`],
+    /// computed where the provider is built, so a raw `/model` switch (which
+    /// clones this selection and replaces the model) recomputes it without
+    /// the override site having to remember to.
+    pub max_tokens_parameter: Option<crate::provider::MaxTokensParam>,
+}
+
+/// The host that gets the name rule, spelled once. D19 is an
+/// OpenAI-proper behaviour and nothing else is gated by model name:
+/// OpenRouter, Azure, proxies and local servers serve ids that LOOK like
+/// these and need not behave like them, and T52 P1 already covers them at
+/// the cost of one fast 400.
+const OPENAI_PROPER_HOST: &str = "api.openai.com";
+
+/// Does this model id belong to the OpenAI generation that rejects
+/// `max_tokens`? `gpt-5` and up by prefix, plus the o-series, which is the
+/// letter `o` followed by a DIGIT (o1, o3, o4-mini). The digit is what
+/// makes the test safe: without it the rule would swallow every id that
+/// merely starts with an o.
+fn is_max_completion_tokens_model(model: &str) -> bool {
+    if model.starts_with("gpt-5") {
+        return true;
+    }
+    let mut c = model.chars();
+    c.next() == Some('o') && c.next().is_some_and(|d| d.is_ascii_digit())
+}
+
+/// The host of a base URL, without pulling in a URL parser for one field:
+/// strip the scheme, then everything from the first `/`, `:` (port) or `@`
+/// (userinfo, which precedes the host and so disqualifies a bare match).
+fn base_url_host(base_url: &str) -> &str {
+    let after_scheme = base_url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(base_url);
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    // Userinfo would make this not a bare api.openai.com; keep it in the
+    // string so the equality below fails rather than silently passing.
+    authority.split(':').next().unwrap_or(authority)
 }
 
 impl ResolvedProfile {
+    /// The token-cap wire key this selection actually sends (T52 P2).
+    ///
+    /// Explicit profile field, else implied by (host, model), else the
+    /// classic default. EXPLICIT ALWAYS WINS, in both directions: an
+    /// operator who writes `"max_tokens"` against gpt-5 gets `max_tokens`
+    /// and P1's retry, which is the right outcome for someone testing a
+    /// proxy that lies about its host.
+    ///
+    /// Implied means the host is EXACTLY `api.openai.com` and the model is
+    /// a gpt-5-or-later or o-series id. Deliberately nowhere else: we have
+    /// not observed anyone else's behaviour, and P1 covers them.
+    ///
+    /// Computed on read rather than stored, so a raw `/model` switch, which
+    /// clones the selection and replaces the model, gets the recomputation
+    /// for free instead of depending on the override site remembering.
+    pub fn effective_max_tokens_parameter(&self) -> crate::provider::MaxTokensParam {
+        if let Some(explicit) = self.max_tokens_parameter {
+            return explicit;
+        }
+        if base_url_host(&self.base_url) == OPENAI_PROPER_HOST
+            && is_max_completion_tokens_model(&self.model)
+        {
+            return crate::provider::MaxTokensParam::MaxCompletionTokens;
+        }
+        crate::provider::MaxTokensParam::default()
+    }
+
     /// Whether this selection sends a credential. Anthropic always does
     /// (profile key file, else `APP_SECRET_FILE`); openai-compat does only
     /// when a key file is configured, since keyless local servers are the
@@ -639,17 +711,17 @@ impl Config {
         // profile is a mistake worth naming rather than a silently ignored
         // key: that wire uses max_tokens natively and has no alternative.
         let max_tokens_parameter = match p.max_tokens_parameter.as_deref() {
-            None => crate::provider::MaxTokensParam::default(),
+            None => None,
             Some(_) if p.provider == "anthropic" => {
                 return Err(crate::error::Error::Config(format!(
                     "profile {name:?}: max_tokens_parameter is openai-compat only (the anthropic wire uses \"max_tokens\" natively)"
                 )))
             }
-            Some(other) => crate::provider::MaxTokensParam::parse(other).ok_or_else(|| {
+            Some(other) => Some(crate::provider::MaxTokensParam::parse(other).ok_or_else(|| {
                 crate::error::Error::Config(format!(
                     "profile {name:?}: unknown max_tokens_parameter {other:?} (expected \"max_tokens\" or \"max_completion_tokens\")"
                 ))
-            })?,
+            })?),
         };
         let base_url = p.base_url.clone().unwrap_or_else(|| {
             if p.provider == "openai-compat" {
@@ -698,9 +770,9 @@ impl Config {
                 price_input_per_mtok: None,
                 price_output_per_mtok: None,
                 // T25 F7: the anthropic wire uses max_tokens natively and
-                // the schema has no anthropic-side field to set, so the
-                // default is the only reachable value here.
-                max_tokens_parameter: crate::provider::MaxTokensParam::default(),
+                // the schema has no anthropic-side field to set, so nothing
+                // is ever explicit here.
+                max_tokens_parameter: None,
             }),
             "openai-compat" => {
                 let oc = self.openai_compat.clone().unwrap_or_default();
@@ -710,12 +782,14 @@ impl Config {
                     ));
                 }
                 let max_tokens_parameter = match oc.max_tokens_parameter.as_deref() {
-                    None => crate::provider::MaxTokensParam::default(),
-                    Some(other) => crate::provider::MaxTokensParam::parse(other).ok_or_else(|| {
-                        crate::error::Error::Config(format!(
-                            "unknown openai_compat.max_tokens_parameter {other:?} (expected \"max_tokens\" or \"max_completion_tokens\")"
-                        ))
-                    })?,
+                    None => None,
+                    Some(other) => Some(crate::provider::MaxTokensParam::parse(other).ok_or_else(
+                        || {
+                            crate::error::Error::Config(format!(
+                                "unknown openai_compat.max_tokens_parameter {other:?} (expected \"max_tokens\" or \"max_completion_tokens\")"
+                            ))
+                        },
+                    )?),
                 };
                 let (oc_prompt_profile, oc_prompt_profile_source) =
                     spec.resolve(oc.context_window);
@@ -894,7 +968,7 @@ mod tests {
             prompt_profile_source: PromptProfileSource::Auto,
             price_input_per_mtok: None,
             price_output_per_mtok: None,
-            max_tokens_parameter: crate::provider::MaxTokensParam::default(),
+            max_tokens_parameter: None,
         }
     }
 
@@ -1696,5 +1770,93 @@ mod tests {
         .unwrap();
         assert_eq!(c.model, DEFAULT_MODEL);
         assert!(!existed, "a missing file must report existed=false");
+    }
+
+    // -----------------------------------------------------------------
+    // T52 P2: OpenAI-proper picks the right token-cap name up front.
+    // -----------------------------------------------------------------
+
+    /// A selection with a settable host and model, nothing else varying.
+    fn selection(base_url: &str, model: &str) -> ResolvedProfile {
+        ResolvedProfile {
+            base_url: base_url.into(),
+            model: model.into(),
+            ..keyless_local()
+        }
+    }
+
+    #[test]
+    fn implied_name_fires_only_on_openai_proper() {
+        use crate::provider::MaxTokensParam::*;
+        let cases = [
+            // The D19 case itself, and its neighbours.
+            ("https://api.openai.com/v1", "gpt-5-mini", MaxCompletionTokens),
+            ("https://api.openai.com/v1", "gpt-5", MaxCompletionTokens),
+            ("https://api.openai.com/v1", "o1", MaxCompletionTokens),
+            ("https://api.openai.com/v1", "o3-mini", MaxCompletionTokens),
+            ("https://api.openai.com/v1", "o4-mini", MaxCompletionTokens),
+            // Same host, an id the rule must not claim.
+            ("https://api.openai.com/v1", "gpt-4o", MaxTokens),
+            ("https://api.openai.com/v1", "gpt-4o-mini", MaxTokens),
+            // "o" with no digit after it: the digit is what makes the
+            // o-series test safe.
+            ("https://api.openai.com/v1", "omni-preview", MaxTokens),
+            // The same ids ANYWHERE else are not gated by name. P1 covers
+            // them at the cost of one fast 400.
+            ("http://127.0.0.1:8080/v1", "gpt-5-mini", MaxTokens),
+            ("https://openrouter.ai/api/v1", "gpt-5-mini", MaxTokens),
+            ("https://api.openai.com.evil.test/v1", "gpt-5", MaxTokens),
+            ("https://eu.api.openai.com/v1", "gpt-5", MaxTokens),
+            ("https://user@api.openai.com/v1", "gpt-5", MaxTokens),
+        ];
+        for (base_url, model, want) in cases {
+            assert_eq!(
+                selection(base_url, model).effective_max_tokens_parameter(),
+                want,
+                "{base_url} + {model}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_always_wins_in_both_directions() {
+        use crate::provider::MaxTokensParam::*;
+        // Someone testing a proxy that lies about its host asked for the
+        // classic name against a gpt-5 id. They get it, plus P1's retry.
+        let mut p = selection("https://api.openai.com/v1", "gpt-5-mini");
+        p.max_tokens_parameter = Some(MaxTokens);
+        assert_eq!(p.effective_max_tokens_parameter(), MaxTokens);
+        // And the other way: a local server that wants the new name.
+        let mut p = selection("http://127.0.0.1:8080/v1", "local-gguf");
+        p.max_tokens_parameter = Some(MaxCompletionTokens);
+        assert_eq!(p.effective_max_tokens_parameter(), MaxCompletionTokens);
+    }
+
+    #[test]
+    fn an_unset_field_still_defaults_to_the_classic_name() {
+        // The whole existing world: nobody's body changes.
+        assert_eq!(
+            keyless_local().effective_max_tokens_parameter(),
+            crate::provider::MaxTokensParam::MaxTokens
+        );
+    }
+
+    #[test]
+    fn a_raw_model_swap_recomputes_the_implied_name() {
+        use crate::provider::MaxTokensParam::*;
+        // What /model does: clone the selection, replace the model. The
+        // effective key must follow the new id, in both directions.
+        let base = selection("https://api.openai.com/v1", "gpt-4o");
+        assert_eq!(base.effective_max_tokens_parameter(), MaxTokens);
+        let swapped = ResolvedProfile {
+            model: "gpt-5-mini".into(),
+            ..base.clone()
+        };
+        assert_eq!(swapped.effective_max_tokens_parameter(), MaxCompletionTokens);
+        let back = ResolvedProfile {
+            model: "gpt-4o".into(),
+            ..swapped
+        };
+        assert_eq!(back.effective_max_tokens_parameter(), MaxTokens);
     }
 }

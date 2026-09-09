@@ -163,7 +163,7 @@ pub fn build_live_with_key(
             Box::new(openai_compat::OpenAiCompatProvider::with_http(
                 p.base_url.clone(),
                 key.clone(),
-                p.max_tokens_parameter,
+                p.effective_max_tokens_parameter(),
             )),
             key,
         ))
