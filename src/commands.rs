@@ -891,13 +891,11 @@ fn dated_alias_window(
     model: &str,
     entries: &[crate::provider::ModelEntry],
 ) -> Option<(u64, String)> {
+    // T56: the alias rule itself lives in `provider`, shared with doctor's
+    // keyed model check, so the two cannot drift.
     let dated: Vec<&crate::provider::ModelEntry> = entries
         .iter()
-        .filter(|e| {
-            e.id.strip_prefix(model)
-                .and_then(|rest| rest.strip_prefix('-'))
-                .is_some_and(|d| d.len() == 8 && d.bytes().all(|b| b.is_ascii_digit()))
-        })
+        .filter(|e| crate::provider::is_dated_alias(model, &e.id))
         .collect();
     // Named entry: the newest date. The candidates share the alias prefix
     // and end in eight digits, so lexicographic order IS date order.

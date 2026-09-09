@@ -197,10 +197,26 @@ pub fn build_live_with_key(
 pub fn list_models_live(
     p: &crate::config::ResolvedProfile,
 ) -> Result<Vec<ModelEntry>, crate::error::Error> {
+    list_models_live_with_timeout(p, None)
+}
+
+/// [`list_models_live`] with an optional GLOBAL timeout, for callers that
+/// must not hang on a slow endpoint.
+///
+/// `/models` passes `None` and keeps the untimed behaviour it has had
+/// since T9: the user typed the command and is waiting for its answer. T56
+/// gave doctor the keyed model check, and a report that stalls on one
+/// hosted endpoint is a worse report, so doctor passes the same short
+/// bound the keyless listing uses.
+pub fn list_models_live_with_timeout(
+    p: &crate::config::ResolvedProfile,
+    timeout: Option<std::time::Duration>,
+) -> Result<Vec<ModelEntry>, crate::error::Error> {
     use std::io::Read;
     rustls::crypto::ring::default_provider().install_default().ok();
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
+        .timeout_global(timeout)
         .build()
         .new_agent();
     let (url, result) = if p.provider == "openai-compat" {
@@ -594,6 +610,33 @@ pub fn parse_models_entries(body: &str) -> Result<Vec<ModelEntry>, crate::error:
 /// concern only.
 pub fn parse_models_json(body: &str) -> Result<Vec<String>, crate::error::Error> {
     Ok(parse_models_entries(body)?.into_iter().map(|e| e.id).collect())
+}
+
+/// Is `id` the DATED form of the alias `model`, i.e. `<model>-YYYYMMDD`?
+///
+/// The one rule that decides "absent from a listing is not the same as
+/// invalid". Anthropic's `/v1/models` lists only dated ids, so a live
+/// alias like `claude-haiku-4-5` is missing from the listing that serves
+/// it, while `claude-haiku-4-5-20251001` is there. Eight ASCII digits
+/// after a `-`, nothing looser: a date is what distinguishes a real alias
+/// from a different model whose name happens to start the same way.
+///
+/// T13 discovered this for the `/models` context-window notice
+/// ([`crate::commands`]); T56 gave doctor's keyed model check the same
+/// question to answer. It lives here, called by both, so the two can
+/// never drift into judging the same id differently.
+pub fn is_dated_alias(model: &str, id: &str) -> bool {
+    id.strip_prefix(model)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .is_some_and(|d| d.len() == 8 && d.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The dated id an alias would be served by: the NEWEST `<model>-YYYYMMDD`
+/// in the listing, or `None` when nothing matches. The candidates share
+/// the alias prefix and end in eight digits, so lexicographic order IS
+/// date order.
+pub fn newest_dated_alias<'a>(model: &str, ids: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    ids.filter(|id| is_dated_alias(model, id)).max()
 }
 
 pub trait Provider {

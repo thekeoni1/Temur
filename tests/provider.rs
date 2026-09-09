@@ -1163,6 +1163,36 @@ fn parse_models_entries_reads_max_input_tokens_zero_or_absent_is_unknown() {
     );
 }
 
+/// T56: the one dated-alias rule, shared by `/models`' context-window
+/// notice and doctor's keyed model check so the two cannot drift into
+/// judging the same id differently.
+#[test]
+fn dated_alias_needs_a_dash_and_exactly_eight_digits() {
+    assert!(is_dated_alias("claude-haiku-4-5", "claude-haiku-4-5-20251001"));
+    // The id itself is not its own dated form.
+    assert!(!is_dated_alias("claude-haiku-4-5", "claude-haiku-4-5"));
+    // A longer name that merely starts the same way is a different model.
+    assert!(!is_dated_alias("claude-haiku-4-5", "claude-haiku-4-5-turbo"));
+    assert!(!is_dated_alias("claude-haiku-4-5", "claude-haiku-4-5-2025100"));
+    assert!(!is_dated_alias("claude-haiku-4-5", "claude-haiku-4-5-202510012"));
+    assert!(!is_dated_alias("claude-haiku-4-5", "claude-haiku-4-520251001"));
+    // Non-ASCII digits are not digits.
+    assert!(!is_dated_alias("m", "m-2025100\u{661}"));
+}
+
+/// Several dated siblings: the NEWEST is the one named, because the shared
+/// prefix plus eight trailing digits makes lexicographic order date order.
+#[test]
+fn newest_dated_alias_picks_the_latest_date_or_nothing() {
+    let ids = ["a-20240101", "a-20260214", "a-20250601", "b-20260301", "a"];
+    assert_eq!(
+        newest_dated_alias("a", ids.iter().copied()),
+        Some("a-20260214")
+    );
+    assert_eq!(newest_dated_alias("c", ids.iter().copied()), None);
+    assert_eq!(newest_dated_alias("a", std::iter::empty()), None);
+}
+
 // ------------------------------- T50: chat transport timeouts (hermetic)
 
 /// Accepts one connection and NEVER writes a byte, holding it open until

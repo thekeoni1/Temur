@@ -1,11 +1,18 @@
 //! `temur doctor` (T14): read-only config and environment diagnosis.
 //!
 //! One PASS/WARN/FAIL line per check; exit SUCCESS iff no FAIL. Strictly
-//! read-only: nothing is created, written, or fixed, key files are judged
-//! by metadata only (existence, mode, size, mtime) and their contents are
-//! never read, and the reachability probes send no HTTP request at all, just a
-//! TCP connect plus, for https, a TLS handshake through the same
-//! rustls(ring)+webpki-roots stack as tls-probe.
+//! read-only: nothing is created, written, or fixed, and the reachability
+//! probes send no HTTP request at all, just a TCP connect plus, for https,
+//! a TLS handshake through the same rustls(ring)+webpki-roots stack as
+//! tls-probe.
+//!
+//! Key files are JUDGED by metadata only (existence, mode, size, mtime),
+//! and the checks that judge them never read their contents. T56 added the
+//! one place a key is read at all: the model check for a KEYED selection
+//! sends one authenticated listing GET to that selection's own configured
+//! endpoint, through the same loader `/models` uses, and only when
+//! metadata already says the file holds something. No doctor line can
+//! carry a key byte; a test asserts it. See [`model_check`].
 
 use crate::config::Config;
 use std::io::Write;
@@ -217,12 +224,15 @@ fn run_with_sandbox_probe(
                 Err(e) => r.fail(&format!("unreachable: {url}: {e}"))?,
             }
         }
-        // Model checks (T15): is each configured model actually served?
-        // KEYLESS openai-compat selections only, through the ONE listing
-        // request doctor may make (list_models_keyless: unauthenticated by
-        // construction, short timeout). Keyed selections get a SKIP line;
-        // a failed listing is a plain note, never a FAIL, because the
-        // probe above already reported connectivity.
+        // Model checks (T15, amended by T56): is each configured model
+        // actually served? Keyless openai-compat selections go through the
+        // unauthenticated listing (list_models_keyless: cannot touch a key
+        // file by construction); keyed selections now get ONE
+        // authenticated listing each, to their own configured endpoint,
+        // and none at all when the key file is missing or empty. Both are
+        // short-timeout and cached per base_url, and a failed listing is a
+        // plain note, never a FAIL, because the probe above already
+        // reported connectivity.
         let mut listings: std::collections::BTreeMap<String, Result<Vec<String>, String>> =
             std::collections::BTreeMap::new();
         model_check(&mut r, "", &active, &mut listings)?;
@@ -747,63 +757,174 @@ fn tools_drop_check(
 /// rest into a count.
 const MODEL_WARN_LIST_CAP: usize = 10;
 
-/// One model check (T15). PASS when the configured model is in the
-/// server's listing; WARN (never FAIL) when it is not, naming the model
-/// and up to [`MODEL_WARN_LIST_CAP`] served ids, because servers alias
-/// ids (Ollama tags, llama.cpp path names) and an exact match is only
-/// advisory. Listings are cached per base_url so shared servers are asked
-/// once.
+/// One model check (T15, amended by T56). PASS when the configured model
+/// is in the endpoint's listing; WARN (never FAIL) when it is not, naming
+/// the model and up to [`MODEL_WARN_LIST_CAP`] listed ids, because ids get
+/// aliased (Ollama tags, llama.cpp path names, hosted aliases) and an
+/// exact match is only advisory. Listings are cached per base_url so a
+/// shared endpoint is asked once.
+///
+/// T15 built this on ONE UNAUTHENTICATED listing request, so that doctor
+/// "cannot touch key files by construction". T56 amends that for KEYED
+/// selections, deliberately. D24 watched doctor report 8 PASS / 0 FAIL
+/// over a model id the key could not use, on the strength of a `SKIP:
+/// model check would need an authenticated request` line, and the first
+/// message then failed with a raw provider 404. So doctor may now make at
+/// most ONE authenticated listing per distinct keyed base_url, to the
+/// CONFIGURED endpoint only (the same place the key goes on every turn, so
+/// no new trust relationship is created), through the same
+/// [`crate::provider::list_models_live_with_timeout`] the `/models`
+/// command uses, and never under `--no-network`. The keyless path is
+/// untouched, byte for byte, and no doctor line ever carries a key byte.
+///
+/// Two rules keep the amendment honest.
+///
+/// NO KEY, NO REQUEST: when the key file is missing, empty, or not a
+/// regular file, the listing is not ATTEMPTED. The decision is made here,
+/// from metadata, BEFORE a connection is opened, rather than being a
+/// loader failure caught afterwards; see [`no_key_no_request`].
+///
+/// ABSENT IS NOT INVALID: a configured id that some listed dated id
+/// extends (`<id>-YYYYMMDD`, [`crate::provider::is_dated_alias`]) counts
+/// as listed, and everything else absent is an advisory WARN, never a FAIL
+/// and never the word "invalid". Hosted providers omit live aliases from
+/// their own listings (`claude-haiku-4-5` is unlisted while
+/// `claude-haiku-4-5-20251001` is listed) and proxies alias freely.
 fn model_check(
     r: &mut Report<'_>,
     prefix: &str,
     p: &crate::config::ResolvedProfile,
     listings: &mut std::collections::BTreeMap<String, Result<Vec<String>, String>>,
 ) -> std::io::Result<()> {
-    if p.provider != "openai-compat" || p.api_key_file.is_some() {
-        return writeln!(
-            r.out,
-            "SKIP: {prefix}model check would need an authenticated request; skipped"
-        );
+    let timeout =
+        std::time::Duration::from_secs(crate::provider::KEYLESS_LISTING_TIMEOUT_SECS);
+    // "Keyed" is anything that would put a credential on the wire. A
+    // base_url has ONE auth shape within a config, so keyed and keyless
+    // answers can share the cache map without a keyless answer ever
+    // standing in for an authenticated one.
+    let keyed = p.provider != "openai-compat" || p.api_key_file.is_some();
+    if keyed {
+        if let Some(why) = no_key_no_request(p) {
+            return writeln!(
+                r.out,
+                "NOTE: {prefix}model check at {} skipped: {why} (no request sent)",
+                p.base_url
+            );
+        }
     }
     let outcome = listings.entry(p.base_url.clone()).or_insert_with(|| {
-        crate::provider::list_models_keyless(
-            &p.base_url,
-            std::time::Duration::from_secs(crate::provider::KEYLESS_LISTING_TIMEOUT_SECS),
-        )
-        .map_err(|e| e.to_string())
-    });
-    match outcome {
-        Ok(ids) if ids.iter().any(|i| i == &p.model) => r.pass(&format!(
-            "{prefix}model \"{}\" is in the server listing at {}",
-            p.model, p.base_url
-        )),
-        Ok(ids) if ids.is_empty() => r.warn(&format!(
-            "{prefix}model \"{}\": the server at {} lists no models",
-            p.model, p.base_url
-        )),
-        Ok(ids) => {
-            let shown: Vec<&str> = ids
-                .iter()
-                .take(MODEL_WARN_LIST_CAP)
-                .map(String::as_str)
-                .collect();
-            let more = if ids.len() > MODEL_WARN_LIST_CAP {
-                format!(" and {} more", ids.len() - MODEL_WARN_LIST_CAP)
-            } else {
-                String::new()
-            };
-            r.warn(&format!(
-                "{prefix}model \"{}\" is not in the server listing at {} (server lists: {}{more}; advisory only, servers may alias ids)",
-                p.model,
-                p.base_url,
-                shown.join(", ")
-            ))
+        if keyed {
+            crate::provider::list_models_live_with_timeout(p, Some(timeout))
+                .map(|entries| entries.into_iter().map(|e| e.id).collect())
+                .map_err(|e| e.to_string())
+        } else {
+            crate::provider::list_models_keyless(&p.base_url, timeout).map_err(|e| e.to_string())
         }
-        Err(e) => writeln!(
-            r.out,
-            "NOTE: {prefix}model check at {} skipped: {e}",
+    });
+    // Non-2xx, timeout, bad JSON, a key file that turned unreadable
+    // between the check above and the read: a plain note, never a FAIL,
+    // because the probe line already reported connectivity. The listing
+    // helpers build their errors from the URL and the status alone, so no
+    // header and no key byte can ride along; a test asserts it.
+    let ids = match outcome {
+        Ok(ids) => ids,
+        Err(e) => {
+            return writeln!(
+                r.out,
+                "NOTE: {prefix}model check at {} skipped: {e}",
+                p.base_url
+            )
+        }
+    };
+    if ids.iter().any(|i| i == &p.model) {
+        return if keyed {
+            r.pass(&format!(
+                "{prefix}model \"{}\" is in the listing at {} (one authenticated GET)",
+                p.model, p.base_url
+            ))
+        } else {
+            r.pass(&format!(
+                "{prefix}model \"{}\" is in the server listing at {}",
+                p.model, p.base_url
+            ))
+        };
+    }
+    // The alias rule applies to the keyed path only: the keyless listing
+    // is a local server's own file names, and T15's strings are pinned.
+    if keyed {
+        if let Some(dated) =
+            crate::provider::newest_dated_alias(&p.model, ids.iter().map(String::as_str))
+        {
+            return r.pass(&format!(
+                "{prefix}model \"{}\" matches {dated} in the listing at {} (one authenticated GET)",
+                p.model, p.base_url
+            ));
+        }
+    }
+    if ids.is_empty() {
+        return r.warn(&format!(
+            "{prefix}model \"{}\": the {} at {} lists no models",
+            p.model,
+            if keyed { "provider" } else { "server" },
             p.base_url
-        ),
+        ));
+    }
+    let shown: Vec<&str> = ids
+        .iter()
+        .take(MODEL_WARN_LIST_CAP)
+        .map(String::as_str)
+        .collect();
+    let more = if ids.len() > MODEL_WARN_LIST_CAP {
+        format!(" and {} more", ids.len() - MODEL_WARN_LIST_CAP)
+    } else {
+        String::new()
+    };
+    if keyed {
+        r.warn(&format!(
+            "{prefix}model \"{}\" is not in the listing at {} (listed: {}{more}; advisory only, servers may alias ids)",
+            p.model,
+            p.base_url,
+            shown.join(", ")
+        ))
+    } else {
+        r.warn(&format!(
+            "{prefix}model \"{}\" is not in the server listing at {} (server lists: {}{more}; advisory only, servers may alias ids)",
+            p.model,
+            p.base_url,
+            shown.join(", ")
+        ))
+    }
+}
+
+/// The T56 no-key-no-request rule: `Some(reason)` when a KEYED model check
+/// must not open a connection at all, `None` when the credential is there
+/// to be read.
+///
+/// Metadata only, through the same [`inspect_key_file`] the key-file
+/// checks use, so doctor cannot classify the same file two ways. This runs
+/// BEFORE the listing rather than letting the loader fail inside it, and
+/// the difference is not cosmetic: the sandbox's baked snapshots configure
+/// a key path holding an EMPTY file, and a build of one of those snapshots
+/// must make ZERO egress to a real provider. `--no-network` would also
+/// achieve that and is the wrong tool, since it drops the reachability
+/// line those proofs assert on.
+fn no_key_no_request(p: &crate::config::ResolvedProfile) -> Option<String> {
+    let path = match &p.api_key_file {
+        Some(path) => std::path::PathBuf::from(path),
+        None => match std::env::var_os("APP_SECRET_FILE") {
+            Some(v) => std::path::PathBuf::from(v),
+            None => {
+                return Some(
+                    "no api_key_file is configured and APP_SECRET_FILE is not set".to_string(),
+                )
+            }
+        },
+    };
+    match inspect_key_file(&path) {
+        KeyState::Missing => Some("the key file is missing".to_string()),
+        KeyState::NotAFile => Some("the key file is not a regular file".to_string()),
+        KeyState::Empty => Some("the key file is empty".to_string()),
+        KeyState::LooseMode(_) | KeyState::Good(_) => None,
     }
 }
 
@@ -1391,29 +1512,343 @@ mod tests {
         assert!(!out.contains("WARN: model"), "no model WARN without a listing: {out}");
     }
 
-    #[test]
-    fn keyed_selection_gets_a_skip_line_and_no_listing_request() {
-        // Keyed compat profile: the canned server would answer a GET, so a
-        // SKIP line + no PASS/WARN model line proves no request was made.
-        let base = canned_server(r#"{"data":[{"id":"x"}]}"#);
-        let tmp = tempfile::tempdir().unwrap();
-        let key = tmp.path().join("k");
-        std::fs::write(&key, "value\n").unwrap();
+    // ---- T56: the keyed model check -------------------------------------
+    //
+    // T15's `keyed_selection_gets_a_skip_line_and_no_listing_request` lived
+    // here and asserted the SKIP line D24 was misled by. The amendment
+    // removes that line, so the test it pinned is replaced by the suite
+    // below rather than kept.
+
+    /// [`canned_server`] that RECORDS each request head and can answer a
+    /// non-2xx status. The T56 question is not only what doctor PRINTED
+    /// but what it put on the wire, or did not: a listing carrying the key
+    /// exactly once, or no request at all.
+    fn recording_server(
+        status: &'static str,
+        body: &'static str,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let heads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = std::sync::Arc::clone(&heads);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                use std::io::{Read, Write};
+                let mut req = Vec::new();
+                let mut buf = [0u8; 1024];
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            req.extend_from_slice(&buf[..n]);
+                            if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
+                if req.is_empty() {
+                    continue; // the reachability probe: a bare TCP connect
+                }
+                seen.lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&req).into_owned());
+                let response = format!(
+                    "{status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        (format!("http://127.0.0.1:{port}/v1"), heads)
+    }
+
+    /// What [`silent_listener`] records: how many connections it accepted,
+    /// and every byte anyone sent it.
+    type SilentLog = std::sync::Arc<std::sync::Mutex<(usize, Vec<u8>)>>;
+
+    /// A listener that judges the NO KEY, NO REQUEST rule from its own
+    /// side: it counts connections and keeps every byte anyone sends it.
+    ///
+    /// The reachability probe is a bare TCP connect that transmits nothing
+    /// (doctor's probes send no HTTP at all, by construction), which is why
+    /// the assertion is "connected, and not one byte arrived" rather than
+    /// "never connected": the connection count is what proves the port was
+    /// live and reached, so an empty byte log means the model check stayed
+    /// silent, not that the test never ran.
+    fn silent_listener() -> (String, SilentLog) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let log = std::sync::Arc::new(std::sync::Mutex::new((0usize, Vec::new())));
+        let seen = std::sync::Arc::clone(&log);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                use std::io::Read;
+                seen.lock().unwrap().0 += 1;
+                let mut buf = [0u8; 1024];
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => seen.lock().unwrap().1.extend_from_slice(&buf[..n]),
+                    }
+                }
+            }
+        });
+        (format!("http://127.0.0.1:{port}/v1"), log)
+    }
+
+    /// Wait briefly for the listener thread to have accepted the
+    /// reachability probe, then return its (connections, bytes) log. The
+    /// accept runs on its own thread, so reading the log the instant
+    /// doctor returns can race it.
+    fn silent_listener_log(log: &SilentLog) -> (usize, Vec<u8>) {
+        for _ in 0..100 {
+            let seen = log.lock().unwrap();
+            if seen.0 > 0 {
+                return (seen.0, seen.1.clone());
+            }
+            drop(seen);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let seen = log.lock().unwrap();
+        (seen.0, seen.1.clone())
+    }
+
+    /// A key file with a tight mode, so the key-file check is not the thing
+    /// under test. An empty `body` is the empty-file case.
+    fn staged_key(tmp: &tempfile::TempDir, body: &str) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let path = tmp.path().join("k");
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        path
+    }
+
+    /// A KEYED openai-compat config aimed at `base`.
+    fn keyed_compat_config(base: &str, model: &str, key: &std::path::Path) -> String {
+        format!(
+            r#"{{"provider":"openai-compat","openai_compat":{{"base_url":"{base}","model":"{model}","api_key_file":"{}"}}}}"#,
+            key.display()
+        )
+    }
+
+    #[test]
+    fn keyed_model_check_passes_and_sends_the_key_exactly_once() {
+        let (base, heads) =
+            recording_server("HTTP/1.1 200 OK", r#"{"data":[{"id":"served-a"},{"id":"served-b"}]}"#);
+        let tmp = tempfile::tempdir().unwrap();
+        let key = staged_key(&tmp, "sentinel-key-3f9\n");
+        let (healthy, out) = doctor_over(&keyed_compat_config(&base, "served-b", &key), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "PASS: model \"served-b\" is in the listing at {base} (one authenticated GET)"
+            )),
+            "{out}"
+        );
+        let heads = heads.lock().unwrap();
+        assert_eq!(heads.len(), 1, "exactly one listing request: {heads:?}");
+        let head = heads[0].to_ascii_lowercase();
+        assert!(head.starts_with("get /v1/models "), "{head}");
+        assert!(
+            head.contains("authorization: bearer sentinel-key-3f9"),
+            "the key travels in the header the endpoint already gets: {head}"
+        );
+    }
+
+    #[test]
+    fn keyed_model_check_counts_a_dated_sibling_as_listed() {
+        // Absent from a listing is NOT invalid: the anthropic wire lists
+        // only dated ids, so the alias a key really can use is missing from
+        // the very listing that serves it.
+        let (base, _heads) = recording_server(
+            "HTTP/1.1 200 OK",
+            r#"{"data":[{"id":"claude-haiku-4-5-20251001"},{"id":"other-1"}]}"#,
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let key = staged_key(&tmp, "k\n");
+        let (healthy, out) = doctor_over(&keyed_compat_config(&base, "claude-haiku-4-5", &key), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "PASS: model \"claude-haiku-4-5\" matches claude-haiku-4-5-20251001 in the listing at {base} (one authenticated GET)"
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("WARN: model"), "{out}");
+    }
+
+    #[test]
+    fn keyed_model_check_warns_when_absent_without_a_sibling_and_stays_healthy() {
+        // D24's own case: an id the key cannot use, with nothing in the
+        // listing that could be it.
+        let (base, _heads) =
+            recording_server("HTTP/1.1 200 OK", r#"{"data":[{"id":"real-1"},{"id":"real-2"}]}"#);
+        let tmp = tempfile::tempdir().unwrap();
+        let key = staged_key(&tmp, "k\n");
+        let (healthy, out) = doctor_over(&keyed_compat_config(&base, "luna", &key), false);
+        assert!(healthy, "an absent id is advisory, never a FAIL: {out}");
+        assert!(
+            out.contains(&format!("WARN: model \"luna\" is not in the listing at {base}")),
+            "{out}"
+        );
+        assert!(out.contains("real-1, real-2"), "{out}");
+        assert!(out.contains("advisory only"), "{out}");
+        assert!(!out.contains("invalid"), "absent is not invalid: {out}");
+    }
+
+    #[test]
+    fn keyed_model_check_401_is_a_note_and_never_echoes_the_key() {
+        const SENTINEL: &str = "sentinel-key-never-printed-9a2c";
+        let (base, _heads) =
+            recording_server("HTTP/1.1 401 Unauthorized", r#"{"error":"unauthorized"}"#);
+        let tmp = tempfile::tempdir().unwrap();
+        let key = staged_key(&tmp, SENTINEL);
+        let (healthy, out) = doctor_over(&keyed_compat_config(&base, "m", &key), false);
+        assert!(healthy, "a refused listing is a NOTE, not a FAIL: {out}");
+        assert!(
+            out.contains(&format!("NOTE: model check at {base} skipped:")) && out.contains("401"),
+            "{out}"
+        );
+        assert!(!out.contains(SENTINEL), "doctor output carried the key: {out}");
+        assert!(!out.contains("authorization"), "{out}");
+    }
+
+    #[test]
+    fn keyed_model_check_with_an_empty_key_file_sends_no_request_at_all() {
+        // The rule the sandbox snapshots depend on: they configure a key
+        // path holding an EMPTY file, and a build of one must make zero
+        // egress. The listener, not the output, is the judge.
+        let (base, log) = silent_listener();
+        let tmp = tempfile::tempdir().unwrap();
+        let key = staged_key(&tmp, "");
+        let (_healthy, out) = doctor_over(&keyed_compat_config(&base, "m", &key), false);
+        assert!(
+            out.contains(&format!(
+                "NOTE: model check at {base} skipped: the key file is empty (no request sent)"
+            )),
+            "{out}"
+        );
+        // The empty key file is still a startup blocker on its own line;
+        // that FAIL is the key-file check's, not the model check's.
+        assert!(out.contains("empty (by size)"), "{out}");
+        assert!(out.contains(&format!("PASS: reachable: {base}")), "{out}");
+        let (connections, bytes) = silent_listener_log(&log);
+        assert!(connections > 0, "the probe never reached the listener");
+        assert!(
+            bytes.is_empty(),
+            "the model check sent {} bytes it must never have sent: {:?}",
+            bytes.len(),
+            String::from_utf8_lossy(&bytes)
+        );
+    }
+
+    #[test]
+    fn keyed_model_check_with_a_missing_key_file_sends_no_request_at_all() {
+        let (base, log) = silent_listener();
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("absent");
+        let (_healthy, out) = doctor_over(&keyed_compat_config(&base, "m", &key), false);
+        assert!(
+            out.contains(&format!(
+                "NOTE: model check at {base} skipped: the key file is missing (no request sent)"
+            )),
+            "{out}"
+        );
+        let (connections, bytes) = silent_listener_log(&log);
+        assert!(connections > 0, "the probe never reached the listener");
+        assert!(bytes.is_empty(), "{:?}", String::from_utf8_lossy(&bytes));
+    }
+
+    #[test]
+    fn keyed_model_check_with_a_directory_for_a_key_file_sends_no_request_at_all() {
+        let (base, log) = silent_listener();
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("dir");
+        std::fs::create_dir(&key).unwrap();
+        let (_healthy, out) = doctor_over(&keyed_compat_config(&base, "m", &key), false);
+        assert!(
+            out.contains(&format!(
+                "NOTE: model check at {base} skipped: the key file is not a regular file (no request sent)"
+            )),
+            "{out}"
+        );
+        let (connections, bytes) = silent_listener_log(&log);
+        assert!(connections > 0, "the probe never reached the listener");
+        assert!(bytes.is_empty(), "{:?}", String::from_utf8_lossy(&bytes));
+    }
+
+    #[test]
+    fn keyed_anthropic_profile_asks_its_own_endpoint_with_the_anthropic_header() {
+        // The other half of the amendment, and D24's actual provider: the
+        // anthropic wire, one authenticated GET, to the CONFIGURED base
+        // rather than anywhere else.
+        let (base, heads) =
+            recording_server("HTTP/1.1 200 OK", r#"{"data":[{"id":"claude-sonnet-5-20260101"}]}"#);
+        // The anthropic wire puts `/v1` on itself, so its configured base
+        // is the bare root (as `https://api.anthropic.com` is).
+        let base = base.trim_end_matches("/v1").to_string();
+        let tmp = tempfile::tempdir().unwrap();
+        let key = staged_key(&tmp, "hosted-sentinel-11b\n");
         let cfg = format!(
-            r#"{{"provider":"openai-compat","openai_compat":{{"base_url":"{base}","model":"m","api_key_file":"{}"}}}}"#,
+            r#"{{"profiles":{{"hosted":{{"provider":"anthropic","base_url":"{base}","model":"claude-sonnet-5","api_key_file":"{}"}}}},"profile":"hosted"}}"#,
             key.display()
         );
         let (healthy, out) = doctor_over(&cfg, false);
         assert!(healthy, "{out}");
         assert!(
-            out.contains("SKIP: model check would need an authenticated request; skipped"),
+            out.contains("PASS: model \"claude-sonnet-5\" matches claude-sonnet-5-20260101 in the listing at"),
             "{out}"
         );
+        let heads = heads.lock().unwrap();
+        assert_eq!(heads.len(), 1, "one authenticated GET: {heads:?}");
+        let head = heads[0].to_ascii_lowercase();
+        assert!(head.starts_with("get /v1/models "), "{head}");
+        assert!(head.contains("x-api-key: hosted-sentinel-11b"), "{head}");
+        assert!(head.contains("anthropic-version:"), "{head}");
+    }
+
+    #[test]
+    fn no_network_keeps_both_skip_lines_for_a_keyed_selection() {
+        // The amendment is network-gated: --no-network still says these two
+        // things, in these bytes, and asks nothing.
+        let (base, log) = silent_listener();
+        let tmp = tempfile::tempdir().unwrap();
+        let key = staged_key(&tmp, "k\n");
+        let (_healthy, out) = doctor_over(&keyed_compat_config(&base, "m", &key), true);
+        assert!(out.contains("SKIP: reachability probes (--no-network)"), "{out}");
+        assert!(out.contains("SKIP: model checks (--no-network)"), "{out}");
+        assert!(!out.contains("NOTE: model check at"), "{out}");
+        assert!(!out.contains("one authenticated GET"), "{out}");
+        let (connections, bytes) = silent_listener_log(&log);
+        assert_eq!(connections, 0, "--no-network opened a connection");
+        assert!(bytes.is_empty(), "{:?}", String::from_utf8_lossy(&bytes));
+    }
+
+    #[test]
+    fn keyless_model_check_lines_are_unchanged_by_the_keyed_amendment() {
+        // T15's strings, pinned: the keyless path gained no "authenticated"
+        // wording and no alias rule.
+        let base = canned_server(r#"{"data":[{"id":"served-a"},{"id":"served-a-20260101"}]}"#);
+        let (healthy, out) = doctor_over(&keyless_config(&base, "served-a"), false);
+        assert!(healthy, "{out}");
         assert!(
-            !out.contains("server listing") && !out.contains("WARN: model"),
-            "no model check line for keyed: {out}"
+            out.contains(&format!(
+                "PASS: model \"served-a\" is in the server listing at {base}"
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("one authenticated GET"), "{out}");
+        // The alias the keyed path would accept is not judged here.
+        let (healthy, out) = doctor_over(&keyless_config(&base, "served-a-2026"), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "WARN: model \"served-a-2026\" is not in the server listing at {base} (server lists: served-a, served-a-20260101; advisory only, servers may alias ids)"
+            )),
+            "{out}"
         );
     }
 
