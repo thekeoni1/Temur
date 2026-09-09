@@ -130,6 +130,67 @@ fn no_tool_schema_declares_a_union_type() {
     }
 }
 
+/// The sibling pin, from the other end of the same failure: an array
+/// schema that does not say what its elements are. JSON Schema permits a
+/// bare `{"type": "array"}`, but shipped chat templates walk the schema to
+/// print it, and several of them dereference the element type
+/// unconditionally: gpt-oss-20b's bundled template renders
+/// `{%- if param_spec['items'] -%}` for every array-typed parameter, so a
+/// missing "items" is not a vaguer prompt but HTTP 500 on every turn that
+/// sends tools, which is 0/9 on the nine-task eval (archive:
+/// e1-2026-09-09/isolate2-gptoss20b.log, and T57 for the fix).
+///
+/// Walks BOTH prompt profiles and every nested schema level, so an array
+/// without "items", in any tool, at any depth, fails here rather than in
+/// the field. The element type is a product decision; having one is not.
+#[test]
+fn every_array_schema_declares_its_items() {
+    fn is_array_type(t: &serde_json::Value) -> bool {
+        match t {
+            serde_json::Value::String(s) => s == "array",
+            // A union type is already banned by the pin above; accept the
+            // spelling here anyway so the two pins cannot disagree.
+            serde_json::Value::Array(list) => {
+                list.iter().any(|e| e.as_str() == Some("array"))
+            }
+            _ => false,
+        }
+    }
+    fn walk(v: &serde_json::Value, tool: &str, path: &str) {
+        match v {
+            serde_json::Value::Object(map) => {
+                if map.get("type").map(is_array_type).unwrap_or(false) {
+                    assert!(
+                        map.contains_key("items"),
+                        "{tool}: array schema at {path} declares no \"items\"; \
+                         templates that print the element type render it as a \
+                         hard error, not as a looser parameter"
+                    );
+                }
+                for (k, child) in map {
+                    walk(child, tool, &format!("{path}.{k}"));
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (i, child) in items.iter().enumerate() {
+                    walk(child, tool, &format!("{path}[{i}]"));
+                }
+            }
+            _ => {}
+        }
+    }
+    for profile in [PromptProfile::Full, PromptProfile::Compact] {
+        let reg = Registry::standard_with_skills(vec![std::path::PathBuf::from("/nonexistent")])
+            .with_profile(profile);
+        let defs = reg.definitions();
+        // The tool this pin exists for must actually be in the set walked.
+        assert!(defs.iter().any(|d| d.name == "spreadsheet"), "spreadsheet tool missing");
+        for d in &defs {
+            walk(&d.input_schema, &d.name, "");
+        }
+    }
+}
+
 /// The other half of the same contract: the schema says "string", and a
 /// JSON number still selects a section. Pinned here beside the schema pin
 /// so the two can never drift apart. (The behavior itself is exercised

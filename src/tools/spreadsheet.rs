@@ -80,7 +80,13 @@ impl Tool for SpreadsheetTool {
                         "type": "object",
                         "properties": {
                             "name": {"type": "string"},
-                            "rows": {"type": "array", "items": {"type": "array"}}
+                            "rows": {
+                                "type": "array",
+                                "items": {
+                                    "type": "array",
+                                    "items": {"description": "a cell value: number, text, true/false, or null for an empty cell"}
+                                }
+                            }
                         },
                         "required": ["name", "rows"]
                     }
