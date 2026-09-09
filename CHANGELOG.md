@@ -4,6 +4,24 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **An OpenAI `gpt-5` or o-series model no longer fails every turn over
+  the token-cap parameter name.** Switching to `gpt-5-mini` in a running
+  session used to kill every turn with the provider's own 400:
+  "Unsupported parameter: 'max_tokens' is not supported with this model.
+  Use 'max_completion_tokens' instead." The field that fixes it already
+  existed, but nothing connected the server's advice to it, so there was
+  no way to know the knob was there. temur now reads the rejection and
+  retries the same request once with the name the server asked for,
+  keeps that name for the rest of the session, and prints one line
+  saying it did. The learned name is never written to your config, and
+  it resets when the selection changes. On `api.openai.com` the right
+  name is picked up front instead, for `gpt-5`-or-later and o-series
+  ids, including one you switch to mid-session; everywhere else the
+  classic name is still what goes out first, because a proxy serving a
+  `gpt-5` id need not behave like OpenAI. Only that exact rejection
+  triggers a retry, every other 400 reaches you unchanged, and if both
+  names are refused temur stops after two attempts and names the knob.
+
 - **temur reads PDFs and office files, and writes spreadsheets.** A PDF
   resume sitting in the working directory used to be refused as binary,
   `pdftotext` was not installed, and the model asked you to paste the

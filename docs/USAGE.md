@@ -620,10 +620,10 @@ endpoints on 2026-08-05, with two follow-up legs on 2026-08-10; xAI
 was not, for want of a key. Three things are worth knowing before you
 hit them:
 
-- **gpt-5 era model ids need one extra field.** They reject
-  `max_tokens` and require `max_completion_tokens`. Set
-  `max_tokens_parameter` on the profile and temur sends that name
-  instead, carrying the same value:
+- **gpt-5 era model ids use a different token-cap field, and temur
+  now works it out for you.** They reject `max_tokens` and require
+  `max_completion_tokens`. You can still say so explicitly, and an
+  explicit setting always wins:
 
   ```json
   {
@@ -641,13 +641,40 @@ hit them:
 
   The field is openai-compat only, takes exactly `"max_tokens"` (the
   default) or `"max_completion_tokens"`, and anything else is a
-  startup error. No template bakes it, because the OpenAI template
-  defaults to `gpt-4o`, which wants the classic name. Leaving it out
-  sends exactly the request temur has always sent.
+  startup error. No template bakes it.
 
-  Live-verified on `gpt-5` on 2026-08-10, including a tool call.
-  Without the field, the first turn fails and the symptom you will
-  see is the provider's own 400:
+  **Leave it unset and two things cover you.** On
+  `https://api.openai.com/v1`, a `gpt-5`-or-later or o-series model id
+  gets `max_completion_tokens` chosen up front, with no wasted round
+  trip, and that includes an id you switch to mid-session with
+  `/model`. Anywhere else, and for any id the rule does not recognise,
+  temur sends the classic name, and if the server rejects it by name
+  temur retries the same request once with the other name and keeps
+  using it for the rest of the session, printing one line to say so:
+
+  ```
+  note: this model wants max_completion_tokens; using it for this
+  session (set "max_tokens_parameter" on the profile to skip the retry)
+  ```
+
+  **The learned name lives in the session, not in your config.**
+  Nothing is written to disk, and it resets whenever the selection
+  changes, because the next model may want the other name. Setting the
+  field is still worth doing on a profile you use often: it skips the
+  one rejected request per session.
+
+  Only that exact rejection triggers a retry: the server has to name
+  the field, or name both field names in its message. Every other 400
+  reaches you unchanged. If BOTH names are refused, temur stops after
+  two attempts and says so:
+
+  ```
+  ... (set "max_tokens_parameter" on the profile; temur tried both names)
+  ```
+
+  Live-verified on `gpt-5` on 2026-08-10, including a tool call. The
+  symptom this all exists to remove, seen live on `gpt-5-mini` on
+  2026-09-07:
 
   ```
   provider error: api error (HTTP 400) invalid_request_error:
@@ -655,9 +682,7 @@ hit them:
   model. Use 'max_completion_tokens' instead.
   ```
 
-  (wrapped for the page; temur prints it as one line.) With the field
-  set as above, the same prompt completes normally, and the server
-  raises no other objection.
+  (wrapped for the page; temur prints it as one line.)
 - **A hosted profile has no `context_window`,** so the context
   advisory and the context-scaled tool-output caps are off for it and
   `/status` says "window size unknown". `init` never makes an

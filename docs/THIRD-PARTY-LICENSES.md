@@ -44,7 +44,7 @@ dependency is added.
 
 ## Census
 
-As of 2026-09-08, temur 0.34.0 (T54): **177 crates**, all permissive.
+As of 2026-09-08, at T54 (rides v0.34.0): **177 crates**, all permissive.
 
 ### By licence expression
 
