@@ -224,7 +224,7 @@ closing line says what to do next: start temur, or start your server
 first. `temur doctor` then checks the setup
 read-only: config, key-file metadata, endpoint reachability, and
 whether each configured model and context window matches what the
-server reports.
+server reports, one authenticated listing per keyed endpoint.
 
 One-shot mode runs exactly one full agentic turn (tool calls included)
 and exits: assistant prose on stdout, tool and status chrome on

@@ -564,11 +564,12 @@ input where the other three serve 1M. They are knowledge as of
 2026-08-04, read once off the authenticated models API; `init` never
 makes an authenticated call, so it does not detect them. `/models`
 checks them against the live wire, so if a tier's real limit moves you
-will see it there; `doctor` does not, since it never makes an
-authenticated request. Nothing rewrites
-an existing profile, so a config written by an older version keeps its
-values; edit them by hand, or re-run `temur init` into a scratch
-config, for the current ones.
+will see it there; doctor sends one authenticated listing per keyed
+endpoint, and none when the key file is empty, but that listing carries
+model ids only, so a moved limit does not show up there. Nothing
+rewrites an existing profile, so a config written by an older version
+keeps its values; edit them by hand, or re-run `temur init` into a
+scratch config, for the current ones.
 
 The baked prices are per model too, USD per million tokens at
 Anthropic's standard list rate, knowledge as of 2026-08-19. They feed
@@ -1096,7 +1097,8 @@ silent until it spends its way past $45.
 Two conveniences (T15) remove the "type a model id blind, keep it by
 editing JSON" round trip. Both are real transcripts against a local
 llama.cpp server (keyless; the listing GET init and doctor make there
-is unauthenticated and never touches key files).
+is unauthenticated and never touches key files, while a keyed endpoint
+gets one authenticated listing per endpoint).
 
 `temur init`'s local template asks where the server lives, then offers
 what it serves, numbered:
