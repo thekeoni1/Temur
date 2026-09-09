@@ -6,8 +6,8 @@
 > [Quickstart](../README.md#quickstart) sections, and [docs/USAGE.md](USAGE.md).
 
 Executable recipe: run the stages top to bottom on a fresh **Windows 11 (x64)**
-machine to reproduce this project's build environment **including the security
-boundary**. Each stage ends with a verification. Run it before moving on.
+machine to reproduce this project's build environment, including the security
+boundary. Each stage ends with a verification. Run it before moving on.
 Command sequences and file contents below were read from the reference
 machine's live state on 2026-07-03.
 
@@ -20,12 +20,12 @@ machine's live state on 2026-07-03.
 > | `<PROJECT>` (Windows) | `C:\Users\alice\Projects\temur` | wherever you clone the repo |
 > | `<PROJECT>` (WSL view) | `/mnt/c/Users/alice/Projects/temur` | `/mnt/c/...` equivalent |
 >
-> Avoid cloud-synced folders for the project tree if you can: build/tool
-> churn thrashes sync clients. If the tree must live in one, keeping
-> `target/` **off** the Windows mount entirely (stage 7) makes it tolerable;
-> do that regardless of where the tree lives.
+> Avoid cloud-synced folders for the project tree: build/tool churn
+> thrashes sync clients. If the tree must live in one, keeping `target/`
+> off the Windows mount (stage 7) makes it tolerable. Do that regardless
+> of where the tree lives.
 
-Fixed names you should **not** change (scripts and docs assume them): the WSL
+Fixed names you should not change (scripts and docs assume them): the WSL
 users `dev` and `appsvc`, `/srv/rustcode-runtime`, `/srv/rustcode-secrets`,
 `/home/dev/rustcode-target`.
 
@@ -35,7 +35,7 @@ users `dev` and `appsvc`, `/srv/rustcode-runtime`, `/srv/rustcode-secrets`,
 wsl --install -d Ubuntu-24.04
 ```
 
-At Ubuntu's first-boot prompt, create the initial user as **`dev`** (any
+At Ubuntu's first-boot prompt, create the initial user as `dev` (any
 temporary password; it gets locked in stage 2).
 
 *(Not verifiable from machine state: this stage predates the recorded setup;
@@ -51,7 +51,7 @@ wsl -d Ubuntu -- sh -c '. /etc/os-release && echo "$PRETTY_NAME"; uname -r'
 
 ## Stage 2 - lock down `dev` (root: `wsl -d Ubuntu -u root` from Windows)
 
-`dev` must be a genuinely unprivileged builder: no sudo, no password.
+`dev` must be an unprivileged builder: no sudo, no password.
 
 ```sh
 deluser dev sudo        # first-boot user is in sudo by default; remove it
@@ -77,7 +77,7 @@ apt-get install -y build-essential gcc-multilib libc6-i386 libc6-dev-i386 podman
 Verified with: gcc 13.3.0 (gcc-multilib 4:13.2.0-7ubuntu1), libc6-i386 /
 libc6-dev-i386 2.39-0ubuntu8.7, podman 4.9.3.
 
-T7 multi-arch releases additionally need the cross compilers (they build
+T7 multi-arch releases also need the cross compilers (they build
 ring's C/asm for the ARM targets) and the user-mode emulators (release.sh
 asserts `--version` on every runnable artifact):
 
@@ -88,18 +88,17 @@ apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf qemu-user-stati
 Verified with: gcc-aarch64-linux-gnu / gcc-arm-linux-gnueabihf 4:13.2.0-7ubuntu1,
 qemu-user-static 1:8.2.2+ds-0ubuntu1.17.
 
-Note: the cross gccs declare `Conflicts: gcc-multilib` (the meta package
+The cross gccs declare `Conflicts: gcc-multilib` (the meta package
 owning the `/usr/include/asm` symlink), so this second transaction removes
 the `gcc-multilib` meta from stage 3 and keeps `gcc-13-multilib`, which is
-the part the i686 builds actually use. That is the verified machine state;
-a single combined transaction of both sets would fail instead (T12 CI hit
-exactly this).
+the part the i686 builds use. That is the verified machine state; a single
+combined transaction of both sets fails (T12 CI hit exactly this).
 
-**Deliberately NOT installed:** any 32-bit OpenSSL/libssl packages
-(`libssl-dev:i386` etc.). The project uses a pure-Rust TLS stack (rustls);
-the only libssl on the system should be Ubuntu's stock 64-bit `libssl3t64`
-runtime, with no dev headers. `scripts/check.sh` enforces the absence of
-`openssl-sys` in the dependency graph.
+Do not install any 32-bit OpenSSL/libssl packages (`libssl-dev:i386`
+etc.). The project uses a pure-Rust TLS stack (rustls); the only libssl on
+the system should be Ubuntu's stock 64-bit `libssl3t64` runtime, with no
+dev headers. `scripts/check.sh` enforces the absence of `openssl-sys` in
+the dependency graph.
 
 **Verify:**
 
@@ -141,7 +140,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --profile m
 rustup target add i686-unknown-linux-gnu i686-unknown-linux-musl
 ```
 
-T7 multi-arch releases additionally need the other three release targets:
+T7 multi-arch releases also need the other three release targets:
 
 ```sh
 rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf
@@ -149,8 +148,8 @@ rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl armv7-unk
 
 Verified with: rustup 1.29.0, rustc/cargo 1.96.1 stable, in `/home/dev/.cargo`
 and `/home/dev/.rustup` (profile `minimal`, default toolchain stable, read
-from the machine's `~/.rustup/settings.toml`). Login shells get cargo on PATH
-automatically via the installer's profile hook.
+from the machine's `~/.rustup/settings.toml`). The installer's profile hook
+puts cargo on PATH for login shells.
 
 **Verify:**
 
@@ -161,8 +160,8 @@ rustup target list --installed   # must include i686-unknown-linux-gnu AND i686-
 
 ## Stage 6 - rootless podman (the fiddliest part on WSL2)
 
-Rootless podman needs: a subuid/subgid range for `dev`, and linger so the
-user session infrastructure exists without an interactive login. As **root**:
+Rootless podman needs a subuid/subgid range for `dev`, and linger so the
+user session infrastructure exists without an interactive login. As root:
 
 ```sh
 usermod --add-subuids 100000-165535 --add-subgids 100000-165535 dev
@@ -175,14 +174,13 @@ End state to match (`/etc/subuid` and `/etc/subgid`, one line each):
 dev:100000:65536
 ```
 
-This exact range is the reference machine's. A fresh Ubuntu may already
-have assigned the default user a different range, and the requirement is
-that `dev` has *any* valid range not overlapping another user's, not that
-specific one.
+This is the reference machine's range; a fresh Ubuntu may already have
+assigned the default user a different one. Any valid range not overlapping
+another user's will do.
 
-Then as **`dev`**, pull the validation images (they go into dev's rootless
-storage under `/home/dev/.local/share/containers/storage`) - the debian image
-is the main test environment, busybox is the bare near-scratch container the
+Then as `dev`, pull the validation images (they go into dev's rootless
+storage under `/home/dev/.local/share/containers/storage`). The debian image
+is the main test environment; busybox is the bare near-scratch container the
 musl-static gate loads the shipped binary in:
 
 ```sh
@@ -198,10 +196,11 @@ podman run --rm docker.io/i386/debian:stable dpkg --print-architecture   # i386
 podman run --rm docker.io/i386/debian:stable linux32 uname -m            # i686
 ```
 
-Notes: podman prints `image platform (linux/386) does not match` on every
-run, expected and harmless (containers share the 64-bit WSL2 kernel, which
-is also why plain `uname -m` reports `x86_64` in-container). Podman was
-chosen over Docker deliberately: daemonless, no Docker Desktop dependency.
+Podman prints `image platform (linux/386) does not match` on every run.
+That is expected and harmless: containers share the 64-bit WSL2 kernel,
+which is also why plain `uname -m` reports `x86_64` in-container. Podman
+was chosen over Docker because it is daemonless and needs no Docker
+Desktop.
 
 ## Stage 7 - project tree + build config (as `dev`)
 
@@ -215,7 +214,7 @@ target-dir = "/home/dev/rustcode-target"
 target = "i686-unknown-linux-gnu"
 ```
 
-Build output goes to **native ext4**, never the drvfs `/mnt/c` mount (slow,
+Build output goes to native ext4, never the drvfs `/mnt/c` mount (slow,
 and thrashes any sync client). The default target is the fast inner-loop
 build; the shipped artifact is the `i686-unknown-linux-musl` static release,
 which `scripts/check.sh` builds explicitly. No action needed beyond having
@@ -233,7 +232,7 @@ file /home/dev/rustcode-target/i686-unknown-linux-gnu/debug/temur
 ## Stage 8 - the appsvc security boundary (root; order matters)
 
 The runtime identity `appsvc` owns the built artifact and the secret; `dev`
-(the builder) must be able to read **neither** the credential **nor** the
+(the builder) must be able to read neither the credential nor the
 installed binary's directory contents beyond listing. Everything here is on
 ext4: `/mnt/c` (drvfs) does not enforce POSIX permissions and must never
 hold anything sensitive.
@@ -257,8 +256,8 @@ chown appsvc:appsvc /srv/rustcode-secrets/credential
 chmod 600 /srv/rustcode-secrets/credential
 ```
 
-4. Write `/srv/rustcode-runtime/run-app.sh` with exactly these contents
-(reproduced verbatim from the reference machine):
+4. Write `/srv/rustcode-runtime/run-app.sh` with exactly these contents,
+reproduced from the reference machine:
 
 ```sh
 #!/bin/sh
@@ -300,11 +299,11 @@ drwx------ appsvc appsvc /srv/rustcode-secrets
 -rw------- appsvc appsvc /srv/rustcode-secrets/credential
 ```
 
-The app binary is **not** installed here by the builder. Deployment is
+The builder does not install the app binary here. Deployment is
 operator-mediated (`docs/RUNBOOK.md`): if `dev` could replace the binary
 `appsvc` executes, it could exfiltrate the secret, nullifying the boundary.
 
-**Verify the boundary actively restrains `dev`** (run as `dev`, all three
+**Verify** that the boundary restrains `dev` (run as `dev`, all three
 must fail):
 
 ```sh
@@ -313,7 +312,7 @@ ls /srv/rustcode-secrets               # Permission denied
 sudo -n true                           # sudo: a password is required
 ```
 
-And as root, confirm `appsvc` itself can read it:
+As root, confirm `appsvc` can read it:
 
 ```sh
 runuser -u appsvc -- cat /srv/rustcode-secrets/credential >/dev/null && echo appsvc-read-OK
@@ -321,7 +320,7 @@ runuser -u appsvc -- cat /srv/rustcode-secrets/credential >/dev/null && echo app
 
 ## Stage 9 - inject the real credential (human, root; later)
 
-Write the real credential as the **entire file content**, replacing the
+Write the real credential as the entire file content, replacing the
 placeholder:
 
 ```sh
@@ -334,7 +333,7 @@ Do not put the credential in shell history (avoid `echo SECRET > file`), in
 the project tree, or in any file under `/mnt/c`. The app reads it by path via
 `APP_SECRET_FILE` (exported by `run-app.sh`); it never appears in argv, env
 listings of other users, or logs, and the app does not read
-`ANTHROPIC_API_KEY` at all.
+`ANTHROPIC_API_KEY`.
 
 ## Stage 10 - full verification
 
@@ -353,19 +352,20 @@ artifact): `--release --target i686-unknown-linux-musl` build, staticness
 assertions (`readelf -l` shows no INTERP, `readelf -d` shows no NEEDED),
 the same suites and smokes in the container against the musl binary, and a
 `--version` + mock-REPL smoke in the bare busybox container, where a dynamic
-binary could not even load. It must end with `== ALL CHECKS PASSED ==`.
+binary could not load. It must end with `== ALL CHECKS PASSED ==`.
 
-## Residual caveats (understand the boundary's real limits)
+## Residual caveats
 
-- **Root bypass:** normal operation is genuinely restrained: `dev` has no
-  sudo, a locked password, and cannot read the secret. But anyone on the
-  Windows side can get root with `wsl -d Ubuntu -u root` (WSL by design lets
-  the Windows user act as any distro user), and Windows admin access to the
-  WSL VHD bypasses everything. Treat Windows-side access as trusted-operator
-  territory; the boundary's job is to keep the *builder identity and its
-  tooling* away from the secret, not to survive a hostile host.
+- **Root bypass.** Normal operation is restrained: `dev` has no sudo, a
+  locked password, and cannot read the secret. But anyone on the Windows
+  side can get root with `wsl -d Ubuntu -u root` (WSL by design lets the
+  Windows user act as any distro user), and Windows admin access to the WSL
+  VHD bypasses everything. Treat Windows-side access as trusted-operator
+  territory. The boundary's job is to keep the builder identity and its
+  tooling away from the secret. It is not designed to survive a hostile
+  host.
 - `/mnt/c` is drvfs: no real POSIX permissions. Nothing sensitive there,
-  ever; nothing that needs actual file modes.
+  and nothing that needs enforced file modes.
 - Two auth identities, never crossed: the build session authenticates to
   Anthropic with account credentials only; the product uses the injected
   credential, read by path. `ANTHROPIC_API_KEY` must never be set in the
@@ -373,7 +373,6 @@ binary could not even load. It must end with `== ALL CHECKS PASSED ==`.
 
 ---
 
-**This environment is not carried in the git repository.** The repo carries
-code and docs only; users, permissions, packages, images, and the secret
-boundary live on the machine and must be rebuilt from this guide on every new
-machine.
+The git repository carries code and docs only; users, permissions, packages,
+images, and the secret boundary live on the machine and must be rebuilt from
+this guide on every new machine.

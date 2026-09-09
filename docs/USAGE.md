@@ -15,7 +15,7 @@ scripting recipes, skills, and the key-isolation model.
 > version banner (`temur <version> (model=..., thinking=...)`) is
 > omitted so this document does not go stale on version bumps.
 >
-> **These transcripts predate the approval default.** They were captured
+> These transcripts predate the approval default. They were captured
 > before mutating tool calls started asking first, so no `write`, `edit`
 > or `bash` call in them shows an approval step. In an interactive
 > session today each of those calls is preceded by one approval
@@ -33,9 +33,8 @@ stdin or stdout is piped you get the plain line REPL shown here. Both
 render the same underlying events, so everything below applies to both.
 `--tui` and `--plain` force the choice, with one limit: the TUI needs a
 real terminal on both stdin and stdout, so `--tui` against a pipe is a
-usage error naming the two alternatives rather than a window that can
-never read your input. Use `-p "..."` for piped one-shot input, or
-`--plain` for the line REPL.
+usage error naming the two alternatives. Use `-p "..."` for piped
+one-shot input, or `--plain` for the line REPL.
 
 A small real task, followed by `/status`:
 
@@ -81,48 +80,46 @@ What each kind of line means:
   is off by default (`/thinking on` flips it for the session).
 
 To leave: `exit`, `quit`, or Ctrl+D (EOF); temur prints `bye`. Ctrl+C
-during a turn interrupts the turn, not the program (details in
-[TUI.md](TUI.md), "Turn interruption").
+during a turn interrupts the turn and leaves the program running
+(details in [TUI.md](TUI.md), "Turn interruption").
 
 ### Pasting, interrupting, and the way out
 
-**A paste is one prompt.** Paste as much as you like, over as many
-lines as you like: it lands in the input line as text, with each
-newline drawn as a dim return glyph, and nothing is sent until you
-press Enter. Enter then submits the whole block as a SINGLE prompt
-with its line breaks intact. Only the trailing whitespace is trimmed,
-so pasted indentation survives; a block that is nothing but whitespace
-is not sent at all. One consequence worth knowing: a multi-line paste
-that happens to begin with `/` is a prompt, not a command. Only a
-single-line input starting with `/` is a command.
+A paste is one prompt. A paste of any length arrives in the input
+line as text, each newline drawn as a dim return glyph, and nothing is
+sent until you press Enter, which submits the whole block as a SINGLE
+prompt with its line breaks intact. Only trailing whitespace is
+trimmed, so pasted indentation survives; a block that is nothing but
+whitespace is not sent. A multi-line paste that begins with `/` is
+sent as a prompt. Only a single-line input starting with `/` is a
+command.
 
 The input line is not a text editor. It shows a multi-line paste on
 one row with return glyphs where the breaks are, and you can move
 through it and delete from it, but there is no cursor movement between
 lines and no editing of a block as a block.
 
-**Interrupting drops whatever was queued behind it.** Esc during a
-turn interrupts it, and Ctrl+C during a turn does too. If input was
-still arriving when you interrupt (a long paste still draining, say),
-that input is DISCARDED rather than delivered: it does not land in the
-input line and it does not start another turn once the interrupted one
-ends. This is deliberate. The alternative, which is what temur used to
-do, is that the queued text starts the next turn the moment the
-current one stops, so the interrupt reads as if it did nothing.
+Interrupting drops whatever was queued behind it. Esc during a turn
+interrupts it, and Ctrl+C during a turn does too. If input was still
+arriving when you interrupt (a long paste still draining, say), that
+input is DISCARDED: it does not reach the input line and it does not
+start another turn once the interrupted one ends. Delivering it would
+start the next turn the moment the current one stopped, and the
+interrupt would read as if it did nothing.
 
-**A file search can be interrupted, and bounds itself.** `glob` and
+A file search can be interrupted, and bounds itself. `glob` and
 `grep` check for an interrupt on every entry they visit, so Esc stops a
 search over a large tree instead of waiting for it to finish. Each walk
 is also bounded on its own: after 200,000 entries visited or ten
 seconds, whichever comes first, the search returns what it found so far
 followed by one line saying it stopped and to narrow the path or
-pattern. The limits are on the WALK, not on the results: a search that
-completes is unaffected, and the existing caps on how many results are
-shown are unchanged. Both bounds exist because a working directory on a
-mounted Windows drive can be hundreds of thousands of entries deep and
-minutes slow.
+pattern. The limits apply to the WALK. A search that completes is
+unaffected, and the existing caps on how many results are shown are
+unchanged. Both bounds exist because a working directory on a mounted
+Windows drive can be hundreds of thousands of entries deep and minutes
+slow.
 
-**Double Ctrl+C force-quits.** Two Ctrl+C presses within two seconds
+Double Ctrl+C force-quits. Two Ctrl+C presses within two seconds
 during a turn quit the program, whatever else arrived between them.
 That is the escape hatch when a turn will not stop; it exits 130.
 
@@ -148,7 +145,7 @@ message starting with `/` cannot be sent):
   to that profile instead (the exact-model match, else the first
   anthropic profile by name), then applies the id on top when it is
   not the profile's own model; the notice names the profile. An id the
-  active provider actually listed in `/models` always switches
+  active provider listed in `/models` always switches
   literally, and with no anthropic profile a hint notice explains the
   hop. · `/model <model-id> --save` - the same switch, persisted to
   config.json on success (a surgical edit: your key order and unknown
@@ -218,8 +215,9 @@ what you want to keep:
 
 Every live run saves the conversation after every round-trip, under
 `$XDG_STATE_HOME/temur/sessions/` (fallback
-`~/.local/state/temur/sessions/`; state, not config, because transcripts
-carry tool output and grow to megabytes). Each working directory has a
+`~/.local/state/temur/sessions/`). Sessions live under the state
+directory because transcripts carry tool output and grow to megabytes.
+Each working directory has a
 **default session**, plus any number of **named sessions** created with
 `/new <name>` (names keep `[A-Za-z0-9._-]` and cap at 32 chars). A plain
 start uses the default session; `temur --continue` resumes it.
@@ -242,22 +240,18 @@ rename) and the FORMAT contains no timestamps, so a power cut at any
 instant leaves the previous complete file, resumable on a clock-less
 device.
 
-The save happens *within* a turn, not only at the end of one. An
-agentic turn can run for many minutes across many tool calls, and until
-v0.29.0 a hard kill during one lost all of it: the file was written
-once, after `turn()` returned. Now the session is written after each
-assistant message (before its tools run, which is where a long turn
-spends its time) and again before each following request, so a
-`SIGKILL` costs at most the single request that was in flight. This
-matters most where nobody is watching: 4 of 32 Terminal-Bench cells in
-T39 had no session file at all, and they were exactly the cells whose
-budget expired, so the runs that most needed inspecting were the ones
-with nothing to inspect. A `SIGTERM` handler would not have helped;
-`SIGKILL` cannot be trapped. Replay runs (`--mock`) still write
-nothing. The `/sessions` listing order (newest first) comes from
-filesystem mtimes, which is display-only metadata read at list time: on
-a clock-less device every file sorts equal and the listing falls back
-to name order, and nothing else depends on it. Past the size cap the
+The save happens *within* a turn as well as at the end of one. An
+agentic turn can run for many minutes across many tool calls, so the
+session is written after each assistant message (before its tools run,
+which is where a long turn spends its time) and again before each
+following request; a `SIGKILL` costs at most the single request that
+was in flight. Until v0.29.0 the file was written once, after the turn
+returned, and 4 of 32 Terminal-Bench cells in T39 whose budget expired
+left no session file at all. Replay runs (`--mock`) still write
+nothing. The `/sessions` listing order comes from filesystem mtimes,
+read at list time and used for nothing else: on a clock-less device
+every file sorts equal and the listing falls back to name order. Past
+the size cap the
 file drops its oldest exchanges, always cutting at a message boundary
 that keeps the remainder replayable; the in-memory conversation is
 never trimmed. Two processes in one directory don't corrupt anything:
@@ -276,16 +270,15 @@ a new session starts clean. The same advisory also fires immediately
 at `--continue`/`--resume`/`/resume` when the restored session is
 already past the threshold.
 
-That estimate is one round-trip behind by nature: it is what the last
-response reported, so a large tool result appended since is invisible
-to it. The check therefore runs a second time immediately before each
-request goes out, adding a rough four-characters-per-token estimate of
-everything appended since. It is an average, and dense content defeats
-it (G-code measured about 1.2 characters per token in one experiment),
-so it catches the ordinary large result rather than every one. The
-backstop for the rest is further down: temur also recovers *after* a
-server rejects an over-sized request. Either way one crossing produces
-exactly one line, never two.
+That estimate is one round-trip behind: it is what the last response
+reported, so a large tool result appended since is invisible to it.
+The check therefore runs a second time immediately before each request
+goes out, adding a rough four-characters-per-token estimate of
+everything appended since. Dense content defeats that average (G-code
+measured about 1.2 characters per token in one experiment), so it
+catches the ordinary large result rather than every one. The backstop
+for the rest is further down: temur also recovers *after* a server
+rejects an over-sized request. One crossing produces exactly one line.
 
 ### Auto-compaction for unattended runs
 
@@ -312,13 +305,12 @@ to act on the advice:
 
 An explicit `true` or `false` wins in every mode: `true` enables the
 same mechanism interactively, `false` restores advisory-only behaviour
-in one-shot. It is a base-config key, deliberately not a per-profile
-one, because whether an unattended run may spend a summary call to
-survive is a property of how temur was invoked and not of which model
-answered, so a `/model` switch must not change it.
+in one-shot. It is a base-config key: whether an unattended run may
+spend a summary call to survive depends on how temur was invoked, so a
+`/model` switch must not change it.
 
-Auto-compaction keeps a different shape from `/compact`, for a reason
-worth stating. `/compact`'s verbatim tail runs back to the last plain
+Auto-compaction keeps a different shape from `/compact`. `/compact`'s
+verbatim tail runs back to the last plain
 user message, which *mid-turn* is the task prompt itself, so the whole
 turn would be tail and the compaction would free nothing. Auto-
 compaction instead cuts inside the turn:
@@ -329,16 +321,16 @@ compaction instead cuts inside the turn:
 
 The prompt survives byte-identical because in a one-shot run it is the
 only statement of the task, and a model handed a paraphrase of its
-assignment does the wrong job. The cut always lands on a
+assignment does the wrong job. The cut always falls on a
 `tool_use`/`tool_result` boundary, so no tool call is ever separated
 from its result. A turn with fewer than three completed round-trips has
 nothing to fold and is left alone. Such a crossing is not reported the
-moment it happens, since the very next round-trip may be able to fold
-it; if the turn ends and nothing ever folded, the ordinary advisory
+moment it happens, since the next round-trip may fold it; if the turn
+ends and nothing ever folded, the ordinary advisory
 prints then, and the once-per-session latch is left open so a later
 turn can still compact.
 
-On resume it works differently, and deliberately. When
+On resume it works differently. When
 `--continue`/`--resume` (or `/resume`) restores a session that is
 already past the threshold, there is no turn to cut inside yet, so the
 whole restored history is what folds and the ordinary `/compact` rule
@@ -353,20 +345,16 @@ A successful compaction reports what it did in round-trips and bytes:
 [!] compacted: 9 round-trip(s) summarized, 2 kept, ~48211 -> ~9820 bytes
 ```
 
-Those byte figures are measured, not promised. Folding a single short
-round-trip can cost more than it saves, and the line will say so.
+Those byte figures are measured. Folding a single short round-trip
+can cost more than it saves, and the line will say so.
 
 Both lines print together, immediately before and after the fold they
-describe. The first one used to print earlier, as soon as the crossing
-was found, which meant a turn that ended before reaching the point
-where compaction is safe left an announcement on screen with nothing
-behind it. Nothing was lost when that happened, but the count was
-wrong; a turn that ends holding a crossing now says nothing instead.
+describe.
 
 It is bounded at three compactions per turn; a fourth crossing prints
 the ordinary advisory and lets the request go out as it would have,
-which may still be rejected: the bound is deliberate. A failed
-summary call names the error and continues uncompacted. Compaction
+which may still be rejected. A failed summary call names the error and
+continues uncompacted. Compaction
 happens between round-trips, never in the middle of one, so a response
 whose tool calls are still unanswered is never cut.
 
@@ -375,9 +363,9 @@ whose tool calls are still unanswered is never cut.
 Prediction is not enough on its own. A single capped tool result of
 dense content can take one request past the window with no crossing
 ever detected, and on the first round-trip of a turn there is nothing
-to fold even if it were. So a rejection is treated as recoverable
-rather than fatal: when a request comes back as a context-size
-rejection, temur recovers once and retries once, and says which it did.
+to fold even if it were. So a rejection is treated as recoverable:
+when a request comes back as a context-size rejection, temur recovers
+once and retries once, and says which it did.
 
 ```
 [!] context overflow: the server rejected the request; compacting and retrying
@@ -401,7 +389,7 @@ alone, because it is not what filled the window.
 
 The fold is tried first, because a fold that works is cheaper than
 cutting a result and loses nothing. But a fold only counts as a
-recovery if it actually freed space. When a compaction has already
+recovery if it freed space. When a compaction has already
 taken the turn, the one round-trip left to fold can be summarized for
 no saving at all, and the thing that filled the window is sitting in
 the round-trips kept verbatim, where a fold cannot reach it. So a fold
@@ -417,13 +405,13 @@ a recovery: it says so and cuts the largest tool result as well.
 ```
 
 That is still ONE recovery and one retry: both things happen before the
-single retry goes out, not as two attempts.
+single retry goes out.
 
 Bounded, like everything else here: at most one recovery per request,
 counted against the same three-per-turn limit as auto-compaction, and a
-retry that is rejected again propagates rather than looping. Anything
-that goes wrong inside the recovery reports the server's original
-error, not one of temur's own.
+retry that is rejected again propagates rather than looping. If anything
+goes wrong inside the recovery, the error reported is the server's
+original one.
 
 Requests are append-only by design (pinned by a prefix-stability test
 suite), which is what makes provider prompt caching effective: the
@@ -431,9 +419,9 @@ anthropic provider marks cache breakpoints (system+tools, plus a
 moving one at the end of history), and against local llama.cpp the
 same append-only shape makes prefix KV reuse work for free (start the
 server with `--cache-reuse 256` to keep prompt processing incremental
-across turns). `/compact` deliberately invalidates that warm prefix
-once, in exchange for a small history from then on; per-turn trimming,
-which would invalidate it on every turn, is deliberately absent.
+across turns). `/compact` invalidates that warm prefix once, in
+exchange for a small history from then on; per-turn trimming would
+invalidate it on every turn, so there is none.
 
 ### /compact: summarize and keep going
 
@@ -452,10 +440,10 @@ answers crossed 80% and the advisory fired, the session was quit, and
 
 Where should the `context_window` number come from? For a local
 llama.cpp server the truth is the server's own context allocation (its
-`-c` flag), not the model card, and temur reads it from the server's
-`/props` endpoint: `temur init` writes the detected value into a fresh
-local config when the server is up, **startup asks the same question**
-when a keyless local selection has no `context_window` configured at
+`-c` flag), and temur reads it from the server's `/props` endpoint:
+`temur init` writes the detected value into a fresh local config when
+the server is up, startup asks the same question when a keyless local
+selection has no `context_window` configured at
 all, and `temur doctor` compares a configured value against the same
 source, warning in both directions
 (configured larger than the allocation means this advisory fires too
@@ -464,12 +452,10 @@ early) and naming the exact line to add when the value is missing.
 Non-llama.cpp servers answer nothing useful at `/props` and stay
 silent, and doctor NOTEs any profile with no `context_window` at all.
 
-The startup probe is what stops an unconfigured local server from
-running the whole session blind, with no advisory, no auto-compaction
-and an unscaled tool-output cap. It runs only for an `openai-compat`
-selection with no key file and no configured window, never under
-`--mock`, and it is the same unauthenticated GET `init` and `doctor`
-make. On an answer it says so once and nothing is written to disk:
+The startup probe runs only for an `openai-compat` selection with no
+key file and no configured window, never under `--mock`, and is the
+same unauthenticated GET `init` and `doctor` make. On an answer it
+says so once and writes nothing to disk:
 
 ```
 [!] context window 12288 detected from the server (/props); the context advisory, auto-compaction, and the tool-output cap now use it
@@ -477,20 +463,19 @@ make. On an answer it says so once and nothing is written to disk:
 
 If the detected window also puts the selection below the `"auto"`
 prompt-profile threshold, the ordinary profile line follows it. A
-configured `context_window` is authoritative and is never probed over,
-and a server that is down, or is not llama.cpp, is silent: behaviour is
-then exactly what it was before. Adding the explicit `"context_window"`
-line to the config is still worth doing, and doctor still says so.
+configured `context_window` is never probed over, and a server that is
+down, or is not llama.cpp, is silent. Doctor still recommends adding
+the explicit `"context_window"` line to the config.
 
-One more thing doctor now checks here: a `max_tokens` larger than the
-`context_window` it runs against draws a WARN naming both numbers. That
+Doctor also checks for a `max_tokens` larger than the `context_window`
+it runs against, which draws a WARN naming both numbers. That
 configuration makes the advisory's second arm (`window - used <
 max_tokens`) true from the first response of every session, so temur
 recommends `/compact` about a window that is barely touched, and
 underneath that every request reserves more completion than the server
-can hold. It is a WARN and never a FAIL: it is live-able, and it is
-exactly what a hand-written local config falls into when it names a
-window but lets the default cap ride along.
+can hold. It is a WARN, never a FAIL: the config runs, and it is what
+a hand-written local config falls into when it names a window but
+keeps the default cap.
 On an anthropic profile the truth is the per-model `max_input_tokens`
 the models API reports, and the `/models` command already receives it:
 after a listing, a configured window larger than the reported value
@@ -501,7 +486,7 @@ only, so a profile on a bare alias like `claude-haiku-4-5` is matched
 against listing entries that are the alias plus a date suffix, and the
 notice names the dated id it matched so the inference is visible. That
 match is made only when it is unambiguous: if several dated entries
-disagree about the window, temur says nothing rather than guess.
+disagree about the window, temur says nothing.
 Doctor never calls the authenticated models API; the hosted check
 rides only the `/models` request you make yourself.
 
@@ -517,11 +502,10 @@ state is saved immediately, like `/clear`. It is fail-closed: a
 provider error, Ctrl+C (works like interrupting a turn), or an empty
 summary leaves the history exactly as it was and says so.
 
-Two costs, both deliberate. First, the provider's cached prompt
-prefix (and a local server's reused KV state) was built on the old
-history, so the request after a `/compact` re-processes its now-short
-prompt from scratch; that one-time cost is why temur never trims
-per-turn, which would pay it on every turn. Resuming is the exception:
+Two costs. First, the request after a `/compact` re-processes its
+now-short prompt from scratch, because the provider's cached prefix
+(and a local server's reused KV state) was built on the old history.
+Resuming is the exception:
 at `--continue`/`/resume` nothing is warm yet, so compacting right
 after the resume-time advisory throws away nothing. Second, the model
 writing the summary is the session's own; a small local model writes a
@@ -542,8 +526,8 @@ recipes below for you. The default provider is `anthropic` (model
 `claude-sonnet-5`); any API key is read from a file path at startup,
 never from env or argv.
 
-Two safety keys are documented with the behaviour they govern rather
-than here: `approve_mutations` under "Approval mode", and
+Two safety keys are documented beside the behaviour they govern:
+`approve_mutations` under "Approval mode", and
 `allow_bash_without_key_sandbox` under "Bash approval mode".
 
 The Anthropic template writes a curated profile set over the current
@@ -575,25 +559,25 @@ effective default model):
 }
 ```
 
-The baked `context_window` values are per model, not one shared number:
-haiku serves 200k of input where the other three serve 1M. They are
-knowledge as of 2026-08-04, read once off the authenticated models API,
-not detected at init time, because `init` never makes an authenticated
-call. Both `/models` and `doctor` check them against the live wire, so
-if a tier's real limit moves you will see it there. A config written by
-an older version keeps whatever it was written with; nothing rewrites an
-existing profile, so re-run `temur init` into a scratch config (or edit
-the numbers by hand) if you want the current values.
+The baked `context_window` values are per model: haiku serves 200k of
+input where the other three serve 1M. They are knowledge as of
+2026-08-04, read once off the authenticated models API; `init` never
+makes an authenticated call, so it does not detect them. `/models`
+checks them against the live wire, so if a tier's real limit moves you
+will see it there; `doctor` does not, since it never makes an
+authenticated request. Nothing rewrites
+an existing profile, so a config written by an older version keeps its
+values; edit them by hand, or re-run `temur init` into a scratch
+config, for the current ones.
 
 The baked prices are per model too, USD per million tokens at
 Anthropic's standard list rate, knowledge as of 2026-08-19. They feed
 the `/status` cost estimate and nothing else; see "Cost estimate" below.
-Sonnet's 2.0/10.0 is the standard rate: it launched as an introductory
-rate through 2026-08-31, and Anthropic has since recorded it as the
-standard price and cancelled the increase to 3.0/15.0 that had been
-scheduled for 2026-09-01. Nothing re-checks list prices against
-the wire, so treat them the same way as the windows: edit them if they
-move, and only the anthropic template bakes any at all.
+Sonnet's 2.0/10.0 was announced as an introductory rate through
+2026-08-31; Anthropic has since made it the standard price and
+cancelled the increase to 3.0/15.0 scheduled for 2026-09-01. Nothing
+re-checks list prices, so edit them if they move. Only the anthropic
+template bakes any.
 
 The hosted OpenAI-compatible templates share one shape and differ only
 in endpoint and default model; the xAI one, for instance (OpenAI:
@@ -617,11 +601,10 @@ default and bake nothing.
 
 The OpenAI, Gemini, and Anthropic paths were verified against the real
 endpoints on 2026-08-05, with two follow-up legs on 2026-08-10; xAI
-was not, for want of a key. Three things are worth knowing before you
-hit them:
+was not, for want of a key. Three caveats:
 
-- **gpt-5 era model ids use a different token-cap field, and temur
-  now works it out for you.** They reject `max_tokens` and require
+- gpt-5 era model ids use a different token-cap field, and temur
+  now works it out for you. They reject `max_tokens` and require
   `max_completion_tokens`. You can still say so explicitly, and an
   explicit setting always wins:
 
@@ -643,40 +626,36 @@ hit them:
   default) or `"max_completion_tokens"`, and anything else is a
   startup error. No template bakes it.
 
-  **Leave it unset and two things cover you.** On
-  `https://api.openai.com/v1`, a `gpt-5`-or-later or o-series model id
-  gets `max_completion_tokens` chosen up front, with no wasted round
-  trip, and that includes an id you switch to mid-session with
-  `/model`. Anywhere else, and for any id the rule does not recognise,
-  temur sends the classic name, and if the server rejects it by name
-  temur retries the same request once with the other name and keeps
-  using it for the rest of the session, printing one line to say so:
+  Left unset, two things cover you. On `https://api.openai.com/v1`, a
+  `gpt-5`-or-later or o-series model id gets `max_completion_tokens`
+  up front, including an id you switch to mid-session with `/model`.
+  Anywhere else, and for any id the rule does not recognise, temur
+  sends the classic name; if the server rejects it by name, temur
+  retries the same request once with the other name, keeps it for the
+  rest of the session, and prints one line to say so:
 
   ```
   note: this model wants max_completion_tokens; using it for this
   session (set "max_tokens_parameter" on the profile to skip the retry)
   ```
 
-  **The learned name lives in the session, not in your config.**
-  Nothing is written to disk, and it resets whenever the selection
-  changes, because the next model may want the other name. Setting the
-  field is still worth doing on a profile you use often: it skips the
-  one rejected request per session.
+  The learned name lives in the session. Nothing is written to disk,
+  and it resets whenever the selection changes, because the next model
+  may want the other name. Setting the field on a profile you use
+  often skips the one rejected request per session.
 
-  Only that exact rejection triggers a retry: the server has to name the
-  field as an UNSUPPORTED parameter, or name both field names in its
+  Only that exact rejection triggers a retry: the server has to name
+  the field as an UNSUPPORTED parameter, or name both fields in its
   message. A complaint about the VALUE, such as a cap larger than the
-  model allows, names the same field but is not a name problem, so it
-  reaches you unchanged and so does every other 400. If BOTH names are refused, temur stops after
-  two attempts and says so:
+  model allows, reaches you unchanged, as does every other 400. If
+  BOTH names are refused, temur stops after two attempts and says so:
 
   ```
   ... (set "max_tokens_parameter" on the profile; temur tried both names)
   ```
 
   Live-verified on `gpt-5` on 2026-08-10, including a tool call. The
-  symptom this all exists to remove, seen live on `gpt-5-mini` on
-  2026-09-07:
+  symptom it removes, seen live on `gpt-5-mini` on 2026-09-07:
 
   ```
   provider error: api error (HTTP 400) invalid_request_error:
@@ -685,34 +664,31 @@ hit them:
   ```
 
   (wrapped for the page; temur prints it as one line.)
-- **A hosted profile has no `context_window`,** so the context
+- A hosted profile has no `context_window`, so the context
   advisory and the context-scaled tool-output caps are off for it and
   `/status` says "window size unknown". `init` never makes an
   authenticated call, so it cannot detect one; set the value by hand
   if you want the advisory.
-- **`/status` still reads as a floor on wires that omit usage
-  entirely.** A server that reports no usage object contributes
-  nothing to the session total, and no amount of arithmetic recovers
-  it. Where a server DOES report a `total_tokens` larger than the
-  counts it names, temur now folds that difference into the output
-  count, which is where an unreported thinking spend belongs and how
-  it is priced. That is what closed the old Gemini undercount: it
+- `/status` still reads as a floor on wires that omit usage
+  entirely: a server that reports no usage object contributes nothing
+  to the session total. Where a server DOES report a `total_tokens`
+  larger than the counts it names, temur folds that difference into
+  the output count, which is where an unreported thinking spend
+  belongs and how it is priced. Gemini is the case this covers: it
   bills thinking tokens and counts them in its total while naming
   them nowhere. Servers whose total already equals the sum of its
   parts, OpenAI and llama.cpp among them, are unaffected.
   Live-verified on the streaming path on 2026-08-10: a Gemini turn
   reporting 6498 prompt and 1 completion token against a total of
   6526 was recorded as 28 output tokens, the 27-token gap folded in.
-  Before the fix the same turn would have counted 1.
 
 Gemini needed two fixes before its tool calling worked at all, both
 shipped: its streaming responses report `finish_reason` "stop" while
 attaching real tool calls, and it requires the opaque thought
 signature on each call to be echoed back on the following request.
 Model ids in its listing all carry a `models/` prefix, and the bare
-form works on the wire; note that appearing in that listing is no
-guarantee an id is usable, since retired ids stay listed and 404 for
-new accounts.
+form works on the wire. Appearing in that listing is no guarantee an
+id is usable, since retired ids stay listed and 404 for new accounts.
 
 Two more optional keys: `sessions_dir` overrides where saved sessions
 live (default: the state dir, see "Sessions" above), and
@@ -733,12 +709,12 @@ skips the probes and those checks. Running `temur` with no config at
 all prints quickstart pointers instead of a raw credential error.
 
 For the active selection, again on a keyless local endpoint only,
-doctor also checks whether the server actually renders your tool
-definitions. llama.cpp's `--jinja` mode drops the tools array outright
-when the model's chat template has no tool support: HTTP 200, nothing
-in the log, nothing in the response, and an agent whose tools simply
-never fire. Doctor sends the same one-token completion twice, once
-bare and once carrying the tool definitions this session would really
+doctor also checks whether the server renders your tool definitions.
+llama.cpp's `--jinja` mode drops the tools array outright when the
+model's chat template has no tool support: HTTP 200, nothing in the
+log, nothing in the response, and an agent whose tools never fire.
+Doctor sends the same one-token completion twice, once
+bare and once carrying the tool definitions this session would
 send, and compares the reported prompt tokens:
 
 ```
@@ -749,9 +725,9 @@ Identical counts mean the array went nowhere. Differing counts PASS,
 naming both. A server that reports no usable token counts is a NOTE,
 never a FAIL.
 
-There is a third answer, and it is the reason the probe carries the
-real definitions rather than a toy one: a server that answers the bare
-completion and then rejects the request the moment tools are attached.
+There is a third answer, and it is why the probe carries the real
+definitions: a server that answers the bare completion and then
+rejects the request the moment tools are attached.
 
 ```
 WARN: the server at http://127.0.0.1:8080/v1 rejected temur's tool definitions for "local-gguf" (HTTP 400: Unable to generate parser for this template. Error: Object key of unhashable type: Array): every turn that sends tools will fail the same way
@@ -779,10 +755,10 @@ naming both paths, when each was last modified, and which is newer, so
 you know whether to reinstall (`scripts/install.sh` installs to
 `~/.local/bin`) or to rebuild. It is never a FAIL, because keeping a
 second copy is a legitimate setup, and it runs offline like the checks
-above. Nothing found on PATH is ever executed: a diagnostic tool that
+above. Nothing found on PATH is ever executed, since a diagnostic that
 runs a binary it found by searching directories would be a worse
-problem than the one it reports, so the comparison is contents-only,
-and doctor never asks the other copy for its version.
+problem than the one it reports: the comparison is contents-only, and
+doctor never asks the other copy for its version.
 
 ### Adding a provider
 
@@ -891,7 +867,7 @@ else:
 ```
 
 Nothing is printed when auto picks full. A `/model` switch onto a
-profile whose window lands it on compact prints the same line.
+profile whose window puts it on compact prints the same line.
 `/status` names both the profile and where it came from:
 
 ```
@@ -945,12 +921,10 @@ NOTE: the prompt floor moves with the length of the cwd path and the number of i
 
 The estimate is offline and always runs. On a keyless openai-compat
 endpoint with network checks enabled, doctor also asks the server that
-will actually serve the session, with one more one-token request
-carrying the real system prompt and the real definitions, and reports
-`prompt floor (measured): N tokens` instead. A measurement always wins
-over the estimate. When the measurement cannot be taken, doctor names
-the outcome and falls back rather than letting the estimate stand under
-a line that promised a measurement:
+will serve the session, with one more one-token request carrying the
+real system prompt and definitions, and reports `prompt floor
+(measured): N tokens` instead. When the measurement cannot be taken,
+doctor says so and falls back to the estimate:
 
 ```
 NOTE: prompt floor measurement inconclusive: the server at http://127.0.0.1:8080/v1 did not answer within 300s (a slow local server may need longer to prefill the system prompt and every definition); the figure below is the estimate
@@ -980,14 +954,12 @@ a knob that is already turned. With no `context_window` configured
 there is nothing to divide by, so the line is a NOTE carrying the
 number alone.
 
-A WARN at exactly 20480 with no `prompt_profile` set is not a
-contradiction: the auto threshold is pinned by a test so temur's own
-full-profile floor stays under the WARN line on a baseline install, but
-your floor also carries your installed skills, any `system_prompt`
-override and your real cwd, none of which the binary controls. A
-skills-heavy install can therefore get `full` from the rule and still
-be told to make it compact. Setting `"prompt_profile": "compact"` is
-the right answer there; the report is measuring what you actually run.
+A WARN at exactly 20480 with no `prompt_profile` set is possible: the
+auto threshold keeps temur's own full-profile floor under the WARN
+line on a baseline install, but your floor also carries your installed
+skills, any `system_prompt` override and your real cwd. A skills-heavy
+install can get `full` from the rule and still be told to make it
+compact; set `"prompt_profile": "compact"` there.
 
 ### Cost estimate
 
@@ -997,10 +969,10 @@ Give a profile a price pair and `/status` adds one line:
   [!] cost: ~$0.42 this session (estimate, configured list rates)
 ```
 
-It is an estimate for awareness, not a bill. temur multiplies the token
-counts the provider already reported for this session by the list
-prices YOU configured, entirely offline; it never asks any provider what
-you owe, and no provider offers an API that would answer. Two decimals
+It is an estimate. temur multiplies the token counts the provider
+reported for this session by the list prices YOU configured, offline;
+it never asks any provider what you owe, and no provider offers an API
+that would answer. Two decimals
 once there is a cent to show, four below that, so a small real spend
 never renders as `$0.00`.
 
@@ -1019,7 +991,7 @@ tokens estimates at 400000/1e6 * 5.0 + 30000/1e6 * 25.0 = $2.00 + $0.75
 estimate, so it is a startup error naming both fields, as is a negative
 rate.
 
-The line is absent, with no nag, whenever computing it would mean guessing:
+The line is absent whenever computing it would mean guessing:
 
 - an unpriced profile (nothing to compute; add the two fields),
 - a keyless profile (a local server bills nobody; anthropic profiles
@@ -1032,19 +1004,19 @@ and a wrong price is worse than none. The base (non-profile)
 configuration has nowhere to carry a price pair, so the estimate is a
 profiles feature: put your hosted selection in a profile to get it.
 
-Both error directions, plainly:
+The two error directions:
 
-- **It can UNDERSTATE.** The estimate can only count tokens the
+- It can UNDERSTATE. The estimate can only count tokens the
   provider reported, and some providers do not report all of them.
   Gemini omits thinking tokens from its usage, so its session total is
   a floor and so is any figure derived from it (the same limit noted
   under the hosted-template caveats above). A provider that reports
   nothing at all shows no line rather than a fabricated zero.
-- **It can OVERSTATE.** On the OpenAI-compatible wire, cached prompt
+- It can OVERSTATE. On the OpenAI-compatible wire, cached prompt
   tokens are reported as a SUBSET of the prompt tokens already counted,
   and the discount for them is not modeled, so a cache-heavy compat
-  session estimates a little high. That is the deliberate direction for
-  a spend-awareness number.
+  session estimates a little high. High is the safe direction for a
+  spend number.
 
 Anthropic is the one wire that reports cache tokens as separate counts,
 so the estimate does model its published cache multipliers there: cache
@@ -1054,16 +1026,14 @@ knowledge as of 2026-08-07 and nothing re-checks them.
 
 ### The mid-session advisory
 
-`/status` only answers when you think to ask, and the spend worth
-knowing about is the spend you did not think to check. So the same
-estimate also speaks up on its own, every `$5` it crosses:
+The same estimate also speaks up on its own, every `$5` it crosses:
 
 ```
   [!] cost: this session has crossed $5.00 (estimate: ~$6.12 at configured list rates); set cost_advisory_step_usd to change the step or 0 to disable
 ```
 
 One turn can be hundreds of provider round-trips, so the check runs
-after EVERY response inside a turn, not once per prompt. A jump that
+after EVERY response inside a turn. A jump that
 clears several steps at once says so once, at the highest step crossed,
 rather than printing a line per step it flew past.
 
@@ -1074,10 +1044,9 @@ The step is one global field, beside `max_tokens` and the rest:
 ```
 
 Absent means $5.00. `0` disables the advisory entirely. Negative or
-non-finite is a startup error naming the field. It is deliberately not
-a per-profile setting: a price is a property of the provider, but a
-budget is a property of you, and it should not reset because a `/model`
-switch landed on a profile that forgot to repeat it.
+non-finite is a startup error naming the field. It is global because
+a budget is yours whichever provider is active, and must not reset on
+a `/model` switch.
 
 The advisory rides the estimate's own gate, so it appears exactly where
 the `/status` line appears and nowhere else: a keyless, unpriced, or
@@ -1101,7 +1070,7 @@ llama.cpp server (keyless; the listing GET init and doctor make there
 is unauthenticated and never touches key files).
 
 `temur init`'s local template asks where the server lives, then offers
-what it actually serves, numbered:
+what it serves, numbered:
 
 ```
 Template [1]: Base URL [http://127.0.0.1:8080/v1]: Models on http://127.0.0.1:8080/v1:
@@ -1116,10 +1085,9 @@ after a one-line note, plus a short baked shortlist of known-good small
 models (the full table stays in [OFFLINE.md](OFFLINE.md), section
 "Recommended small models").
 
-`temur doctor` now also compares each configured model against the
+`temur doctor` also compares each configured model against the
 server's listing, the most likely new-user misconfig. A mismatch is a
-WARN, not a FAIL, because servers alias ids (Ollama tags, llama.cpp
-path names):
+WARN, because servers alias ids (Ollama tags, llama.cpp path names):
 
 ```
 WARN: model "qwen3-bogus" is not in the server listing at http://127.0.0.1:8080/v1 (server lists: /model.gguf; advisory only, servers may alias ids)
@@ -1150,12 +1118,12 @@ with a profile name is a clean error: the startup profile is the
 
 ## Switching providers by model id (the T16 hop)
 
-Typing a `claude-*` model id while a local (or any non-anthropic)
-provider is active used to set that id on the local server and fail on
-the next turn - routinely misread as "/model seems broken". Now, when
-an anthropic profile is configured (the Anthropic init template writes
-a set of four), that input hops to it: a full profile switch, so the
-profile's key file, endpoint, and limits apply. Real transcript against
+When an anthropic profile is configured (the Anthropic init template
+writes a set of four), typing a `claude-*` model id while a local (or
+any non-anthropic) provider is active hops to it: a full profile
+switch, so the profile's key file, endpoint, and limits apply. It used
+to set that id on the local server and fail on the next turn, which
+read as "/model seems broken". Real transcript against
 a keyless llama.cpp server, config with a `local` profile plus the
 anthropic set:
 
@@ -1209,22 +1177,22 @@ the hop.
 `temur -p "<prompt>"` runs exactly one full agentic turn (tool calls
 included) and exits. The contract that makes it scriptable:
 
-- **stdout carries only the assistant's prose.** All tool and status
+- stdout carries only the assistant's prose. All tool and status
   chrome, and any `--continue`/`--resume` backscroll, goes to stderr.
-- **The exit code reports the outcome:** 0 for a completed turn, 1 for
+- The exit code reports the outcome: 0 for a completed turn, 1 for
   a provider or startup error, 130 when interrupted with Ctrl+C (the
   shell convention for SIGINT).
-- **Mutating tool calls are refused unless you pass
-  `--allow-mutations`.** A one-shot run cannot ask, so it denies; the
+- Mutating tool calls are refused unless you pass
+  `--allow-mutations`. A one-shot run cannot ask, so it denies; the
   refusal names the flag and the config key. Read-only one-shots are
   unaffected. See "Approval mode" below.
 - Live one-shots save the session exactly like interactive runs, so
   `--continue -p` chains work. The save happens after every round-trip,
   so a killed one-shot still leaves a resumable transcript of the work
   it got through.
-- **Auto-compaction is on by default here**, and only here: a one-shot
+- Auto-compaction is on by default here, and only here: a one-shot
   run has nobody to act on the context advisory, so it compacts itself
-  and continues rather than dying on the next request. Set
+  and continues. Set
   `"auto_compact": false` to restore advisory-only behaviour. See
   [Auto-compaction for unattended runs](#auto-compaction-for-unattended-runs).
 
@@ -1292,18 +1260,17 @@ $ sleep 3; kill -INT $pid; wait $pid; echo "exit=$?"
 exit=130
 ```
 
-Nothing landed on stdout: an interrupted one-shot never emits a
+Nothing reached stdout: an interrupted one-shot never emits a
 partial answer as if it were complete.
 
 ## Documents and spreadsheets
 
-temur reads PDFs and office files and writes spreadsheets, with no
-system tools involved. There is no `pdftotext` here and no LibreOffice:
-the parsers are pure Rust, compiled into the binary, so this works the
-same on a machine with nothing installed on it.
+temur reads PDFs and office files and writes spreadsheets with no
+system tools: the parsers are pure Rust compiled into the binary, so
+this works on a machine with nothing installed.
 
-**Reading rides the `read` tool.** No new tool and no new argument: the
-model reads `resume.pdf` the way it reads `main.rs`.
+Reading rides the `read` tool, with no new argument: the model reads
+`resume.pdf` the way it reads `main.rs`.
 
 | extension | what comes back |
 |---|---|
@@ -1311,42 +1278,38 @@ model reads `resume.pdf` the way it reads `main.rs`.
 | `.xlsx` `.xlsm` `.xls` `.ods` | one block per sheet, `== Sheet: <name> ==` then rows as CSV lines |
 | `.docx` | paragraphs as lines, tables as tab-separated rows |
 
-Spreadsheet cells come back as their CACHED VALUES, never as formulas:
-a cell holding `=SUM(B2:B8)` reads as `47`, which is what a person
-looking at the sheet would see. Extracted text then flows through the
-ordinary `read` pipeline, so `offset` and `limit` page a 300-page PDF
-exactly the way they page a long log, with the same "has more" tail.
-PDF extraction stops early when the requested window is full rather
-than rendering the whole document to show you page one.
+Spreadsheet cells come back as their CACHED VALUES: a cell holding
+`=SUM(B2:B8)` reads as `47`, what a person looking at the sheet sees.
+Extracted text flows through the ordinary `read` pipeline, so `offset`
+and `limit` page a 300-page PDF the way they page a long log, with the
+same "has more" tail, and PDF extraction stops once the requested
+window is full.
 
-**Writing a spreadsheet rides the `write` tool.** Write CSV content to
-a path ending in `.xlsx` and you get a one-sheet workbook: a field that
-parses as an integer or a float is written as a number, everything else
-as text. Nothing is ever written as a FORMULA, so a field beginning
-`=`, `+`, `-` or `@` that is not simply a number lands as text and CSV
-content cannot inject one. A leading `-` on an actual number is still a
-number: `-5` is the number it obviously is.
+Writing a spreadsheet rides the `write` tool. Write CSV content to a
+path ending in `.xlsx` and you get a one-sheet workbook: a field that
+parses as an integer or a float is written as a number, everything
+else as text. Nothing is written as a FORMULA, so a field beginning
+`=`, `+`, `-` or `@` that is not a number becomes text and CSV content
+cannot inject one; `-5` is still a number.
 
-**Charts need the one new tool, `spreadsheet`.** It is the only surface
-T54 adds, and it exists because charts and multiple sheets cannot be
-expressed as CSV. It takes sheets of values and charts over A1 ranges
-(`line`, `column`, `bar`, `scatter`, `pie`), and a range that falls
-outside the rows you passed is an error naming the range rather than a
-silently empty chart. Its own instructions tell the model to use
-`write` instead for a single sheet of plain data.
+Charts and multiple sheets need the one new tool, `spreadsheet`,
+because CSV cannot express them. It takes sheets of values and charts
+over A1 ranges (`line`, `column`, `bar`, `scatter`, `pie`); a range
+outside the rows you passed is an error naming the range. Its own
+instructions tell the model to use `write` for a single sheet of plain
+data.
 
-**Caps.** An input document is at most 32 MiB, and a zip-based format
-(`.xlsx`, `.docx`, `.ods`) at most 64 MiB decompressed in total, with
-only the entries actually needed opened. Both refusals name the cap.
-These are hard limits rather than tunables because temur is a 32-bit
-binary: the address space, not the policy, is what sets them.
+Caps: an input document is at most 32 MiB, and a zip-based format
+(`.xlsx`, `.docx`, `.ods`) at most 64 MiB decompressed, with only the
+entries needed opened. Both refusals name the cap. The limits are
+fixed because temur is a 32-bit binary and the address space sets
+them.
 
-**Not supported, deliberately:** images of any kind, so a scanned PDF
-with no text layer is refused with a sentence saying so rather than
-returning nothing; encrypted PDFs, refused by name so you know to
-supply an unencrypted copy; writing `.docx`, `.pptx` or PDF; and
-formulas evaluated by temur. A malformed or hostile file is a one-line
-error the model can act on, never a crash and never a raw parser
+Not supported: images of any kind, so a scanned PDF with no text layer
+is refused with a sentence saying so; encrypted PDFs, refused by name
+so you know to supply an unencrypted copy; writing `.docx`, `.pptx` or
+PDF; and formulas evaluated by temur. A malformed or hostile file is a
+one-line error the model can act on, never a crash or a raw parser
 message.
 
 ## Project instructions
@@ -1355,31 +1318,28 @@ A project can tell temur how to behave. Put a `TEMUR.md` in the
 repository and its text joins the system prompt at startup: build
 commands, conventions, what not to touch.
 
-**Two names.** `TEMUR.md` is temur's own. `AGENTS.md` is the cross-tool
-convention other agents already read, so a repository that already has
-one works here unmodified. When both names sit in the SAME directory,
-`TEMUR.md` wins and `AGENTS.md` is ignored there; the other location is
-unaffected.
+Two names. `TEMUR.md` is temur's own; `AGENTS.md` is the cross-tool
+convention other agents read, so a repository that has one works
+unmodified. When both sit in the SAME directory, `TEMUR.md` wins
+there.
 
-**Two locations, root first.** The repository root (found by walking up
-for a `.git`, so no `git` binary is needed) and the working directory.
-A monorepo's shared rules and a subdirectory's own rules therefore both
-arrive, in that order. Nothing between the two is read, and a working
-directory that IS the root contributes once, not twice.
+Two locations, root first: the repository root (found by walking up
+for a `.git`, so no `git` binary is needed) and the working directory,
+so a monorepo's shared rules and a subdirectory's own both arrive.
+Nothing between the two is read, and a working directory that IS the
+root contributes once.
 
-**Read once per session.** The file is loaded at startup and never
-re-read, which keeps the prompt prefix stable so a provider's prompt
-cache stays warm. The model can read and edit the file with its
-ordinary tools, but what it was TOLD does not change until you restart
-temur, and the startup line is there to make that legible.
+Read once per session. The file is loaded at startup and never
+re-read, which keeps the prompt prefix stable and a provider's prompt
+cache warm. The model can read and edit the file with its ordinary
+tools, but what it was TOLD does not change until you restart temur.
 
-**Capped.** The combined instructions are limited the way tool output
-is, scaled by context window between 4,000 and 30,000 characters. Over
-the cap the head is kept, the tail is dropped, and the text says so
-with the true byte count; the startup line says `truncated` too.
-Nothing is ever silently shortened.
+Capped. The combined instructions are limited the way tool output is,
+scaled by context window between 4,000 and 30,000 characters. Over the
+cap the head is kept, the tail dropped, and both the text and the
+startup line say `truncated` with the true byte count.
 
-**Visible.** When a file loads, one line at startup names it:
+When a file loads, one line at startup names it:
 
 ```
 project instructions: TEMUR.md (1,204 bytes)
@@ -1387,13 +1347,12 @@ project instructions: AGENTS.md (root) + TEMUR.md (cwd), 3,410 bytes, truncated
 ```
 
 `/status` repeats that line mid-session, and `temur doctor` reports
-what it would load from the directory it runs in, saying `none here`
-out loud when there is nothing. A session with no project file prints
-nothing at all: absence is the common case and stays quiet.
+what it would load from the directory it runs in, `none here`
+included. A session with no project file prints nothing.
 
-**Trust.** A `TEMUR.md` in a repository you cloned is text the model
-will follow. Read it before you run an agent in that directory, the way
-you would read a `Makefile` before running `make`. To refuse it:
+A `TEMUR.md` in a repository you cloned is text the model will follow.
+Read it before you run an agent there, as you would read a `Makefile`
+before running `make`. To refuse it:
 
 ```
 temur --no-project-instructions
@@ -1402,8 +1361,8 @@ temur --no-project-instructions
 or `"project_instructions": false` in the config, top-level next to
 `provider`. The flag wins over the config in either direction.
 
-Project instructions are not a tool and not a skill: there is no way to
-load, reload, or edit them from inside a session.
+There is no way to load, reload, or edit project instructions from
+inside a session.
 
 ## Skills
 
@@ -1475,16 +1434,11 @@ the prompt or the skill.
 
 A tool result is capped (see "The weak-model floor" below: 30,000
 characters, or less when `context_window` is set). A skill bigger than
-that used to be middle-elided like any other oversized output, which
-loses the middle of a document the model asked for by name and then
-advises it to "narrow the command, e.g. grep or head/tail", which is
-advice about a shell pipeline.
-
-Such a skill now comes back as a section index instead. This is the
-tool's verbatim output for a 48,427-character SKILL.md, produced by
-running the tool over a generated fixture rather than captured from a
-live model session (unlike the transcripts elsewhere in this guide,
-which are real runs):
+that comes back as a section index instead of being middle-elided like
+other oversized output, which would lose the middle of a document the
+model asked for by name. This is the tool's verbatim output for a
+48,427-character SKILL.md, produced over a generated fixture rather
+than captured from a live session:
 
 ```
 <skill_index name="widget-cli">
@@ -1515,39 +1469,30 @@ section extents are hierarchical: asking for `## Deploying` brings its
 never ends mid-thought. When two sections share a heading, the first is
 returned along with the numbers that reach the others.
 
-**Nothing is cached, and the index cannot go stale.** The index is a
-pure function of the file's bytes, recomputed on every call. Edit a
-SKILL.md and the next call describes the edited file, because nothing
-from the previous call was kept: there is no stored index, no
-invalidation rule, and therefore no way for the two to disagree. This
-is why the feature adds no config keys and no session state.
+Nothing is cached: the index is a pure function of the file's bytes,
+recomputed on every call, so it cannot go stale and the feature adds
+no config keys and no session state.
 
-**What actually does the work.** The tool also minifies a SKILL.md
-before returning it: a frontmatter block holding only `name:` and
-`description:` is dropped (the model already has both from
-`<available_skills>`), trailing whitespace goes, and blank runs
-collapse, all of it outside fenced code, which is copied byte for byte
-because whitespace is semantic in a heredoc or in Python. Be clear
-about the scale of that: measured on this repo's own markdown it saves
-**0.0%**, because tidy files have nothing to remove; on a SKILL.md with
-frontmatter and loose spacing it saved 2.2%; on the 48k skill above it
-removed 62 characters, 0.1%. Minification is a rounding error, and it
-is kept only because it is free and lossless. The section index is the
-mechanism: 48,427 characters become a 773-character index plus exactly
-the sections the task asks for.
+The tool also minifies a SKILL.md before returning it: a frontmatter
+block holding only `name:` and `description:` is dropped (the model
+already has both from `<available_skills>`), trailing whitespace goes,
+and blank runs collapse, all of it outside fenced code, which is
+copied byte for byte because whitespace is semantic in a heredoc or in
+Python. Measured, it saves 0.0% on this repo's own markdown, 2.2% on a
+SKILL.md with frontmatter and loose spacing, and 62 characters (0.1%)
+on the 48k skill above, so minification is a rounding error kept
+because it is free and lossless. The section index is the mechanism.
 
-**A skill names its directory only when it has one worth naming.**
-Every mode used to open with `Base directory for this skill: <path>`.
-Watching three local models work an over-cap skill showed that line
-doing harm: one went to grep the directory instead of asking for a
-section and gave up, and another answered correctly from section 5 and
-then wrote its answer into the skill directory rather than the working
-directory. It is now emitted only when the skill's directory holds at
-least one entry besides its SKILL.md, which is exactly when the path
-points at something (a `playbooks/` directory, a template, a script).
-The fixture above is a lone SKILL.md, which is why it names no path.
+The `Base directory for this skill: <path>` line is emitted only when
+the skill's directory holds at least one entry besides its SKILL.md (a
+`playbooks/` directory, a template, a script); the fixture above is a
+lone SKILL.md, so it names no path. Naming it always did harm:
+watching three local models work an over-cap skill, one went to grep
+the directory instead of asking for a section and gave up, and another
+wrote its answer into the skill directory instead of the working
+directory.
 
-Two cases deliberately keep the old behavior, because an index would
+Two cases keep the old behavior, because an index would
 not help: a skill with no headings at all, and one whose prose before
 the first heading already exceeds the cap. Both are returned whole and
 truncated centrally, now with advice to fetch a section rather than to
@@ -1558,10 +1503,9 @@ run grep.
 Three behaviors keep small local models productive; all of them are
 also active on hosted models.
 
-**Tool output keeps both ends.** A tool result larger than the
-per-result cap is elided in the MIDDLE, not cut at the end, so build
-errors and log tails survive. The marker between the kept halves
-reads:
+Tool output keeps both ends. A tool result larger than the per-result
+cap is elided in the MIDDLE, so build errors and log tails survive.
+The marker between the kept halves reads:
 
 ```
 (output truncated: showing the first 4096 and last 4096 of 31532 chars; narrow the command, e.g. grep or head/tail, to see the elided middle)
@@ -1581,27 +1525,26 @@ not seen fails with:
 
 Reading the file, editing it, or having successfully written it
 earlier in the session all count as "seen". New files are unaffected.
-`--continue` and `--resume` deliberately start with an empty read
+`--continue` and `--resume` start with an empty read
 set: the file may have changed on disk while temur was away, so a
 resumed session must re-read before overwriting.
 
-**A write that destroys content says so.** The guard above is about
-files the session has not seen; it says nothing about a file the model
-read a moment ago and then overwrote with something shorter, which is
-a real thing weak models do (one read three files, then replaced the
-30-byte file holding the answer with an 8-byte one and reported
-success). Any successful write over a non-empty file now names what is
-gone:
+A write that destroys content says so. The guard above is about files
+the session has not seen; it says nothing about a file the model read
+a moment ago and then overwrote with something shorter, which weak
+models do (one read three files, then replaced the 30-byte file
+holding the answer with an 8-byte one and reported success). Any
+successful write over a non-empty file now names what is gone:
 
 ```
 Overwrote /work/beta.txt (8 bytes, replaced 30 bytes of prior content)
 ```
 
 Always, with no smallness threshold, and never for a new or previously
-empty file. It is a fact in the result the model has to read past, not
-a permission check: `write` still replaces exactly what it is told to.
+empty file. It is a fact in the result the model has to read past.
+`write` still replaces exactly what it is told to.
 
-**Prose tool calls are recovered.** When a model writes its tool call
+Prose tool calls are recovered. When a model writes its tool call
 as plain text instead of using the tool interface, and that text is
 one unambiguous call (a single `<tool_call>` block or the whole
 message as a JSON object, parsing losslessly, naming a real tool),
@@ -1618,23 +1561,19 @@ config.json to turn recovery off and restore nudge-only behavior.
 
 A sentence of preamble before a fenced call is one of those shapes:
 `I'll create the file now.` followed by a fenced JSON object is not
-executed, deliberately, because "the whole message is the call" is
-what makes a prose call unambiguous. It used to get nothing at all,
-neither execution nor nudge, so the turn simply ended in silence; a
-model that narrates before it calls (Qwen2.5-Coder-1.5B does) lost
-those calls without a trace. The nudge now fires there, so the model
-gets a retry prompt and one more chance at the tool interface. A bare
-JSON object mid-prose with no fence around it stays silent on purpose:
+executed, because "the whole message is the call" is what makes a
+prose call unambiguous. The nudge fires there instead, so a model that
+narrates before it calls (Qwen2.5-Coder-1.5B does) gets a retry prompt
+and one more chance at the tool interface. A bare
+JSON object mid-prose with no fence around it stays silent:
 prose that quotes a call shape while discussing a plan is common, and
 the fence is the only cheap evidence the model meant it as a call.
 
-**A prose call is executed once, not once per resend.** Recovery
-executes a call the model wrote as text, and a model can write the
-same call again, and again. One of them wrote a single fenced `write`
-about sixty consecutive times; each resend was a fresh successful
-execution, so nothing stopped it and the turn ran until the context
-window overflowed. A resend that is byte-identical to the call just
-dispatched is now answered instead of run:
+A prose call is executed once, however often it is resent. One model
+wrote a single fenced `write` about sixty consecutive times, each
+resend a fresh execution, until the context window overflowed. A
+resend byte-identical to the call just dispatched is answered instead
+of run:
 
 ```
   [!] prose-call recovery: the write call repeated verbatim; not executed again
@@ -1646,11 +1585,10 @@ progress never notices it, and the answers are capped like every other
 nudge, so a model that will not move on ends its turn. Structured tool
 calls have had their own doom-loop guard since M2 and are unaffected.
 
-**A call to a tool that does not exist gets named.** A fenced call to,
-say, `delete` used to match nothing, because both the executor and the
-nudge require a REGISTERED tool name, and the turn ended in silence
-three seconds in. temur now says which tool does not exist and lists
-the ones that do, from the live registry:
+A call to a tool that does not exist gets named. Both the executor
+and the nudge require a REGISTERED tool name, so a fenced call to,
+say, `delete` used to end the turn in silence; temur now says which
+tool does not exist and lists the ones that do:
 
 ```
   [!] the model called a tool that does not exist ("delete"); listed the available tools
@@ -1660,7 +1598,7 @@ It never executes anything, it is capped like the other nudges, and it
 requires both a fence and an arguments key, so a `{"name": ...}`
 package.json fragment in a code block still says nothing.
 
-**A turn that promises work and then stops gets one nudge.** A model
+A turn that promises work and then stops gets one nudge. A model
 that ends its turn with "Please wait while I analyze it" and makes no
 tool call has stopped without starting: nothing runs between turns, so
 the promise never resolves and you wait on a model that is no longer
@@ -1670,26 +1608,26 @@ doing anything.
   [!] the model promised work without calling a tool; asked it to act or answer
 ```
 
-The check is narrow on purpose. It fires only when the turn made ZERO
+The check is narrow. It fires only when the turn made ZERO
 tool calls anywhere, and only when one of a few fixed phrases ("please
-wait", "one moment", "I will now", and a handful more) lands in the
+wait", "one moment", "I will now", and a handful more) falls in the
 LAST part of the message. That last-part rule is what separates "I will
 now summarize:" followed by an actual summary, which is a finished
 answer, from the same words as the final thing written, which is a
-turn that stalled. A genuine answer that happens to end on one of those
-phrases costs one extra request and nothing more, since the nudge is
-capped like every other one.
+turn that stalled. A genuine answer that ends on one of those phrases
+costs one extra request, since the nudge is capped like every other
+one.
 
-**Tool calls that keep re-fetching what you already have get stopped.**
-The guards above are narrow on purpose, and a model can slip between
-all of them by ROTATING: call A, then B, then C, then A again, forever.
+Tool calls that keep re-fetching what you already have get stopped.
+A model can slip between the guards above by ROTATING: call A, then B,
+then C, then A again, forever.
 No two consecutive calls are identical, no two alternate, and the turn
 runs until the context window ends it. One archived run did that for 77
 calls and 440,983 input tokens.
 
-Counting repeats would be the wrong fix, since a model editing ten
-files really does call the same few tools over and over. What temur
-counts instead is FUTILE calls: a call that repeats an earlier call
+A model editing ten files calls the same few tools over and over, so
+temur counts FUTILE calls instead of repeats: a call that repeats an
+earlier call
 from the same turn and gets back a byte-identical result. Nothing
 changed between the two, so the second one learned nothing. At six of
 those the model is told once, in the tool results themselves, that what
@@ -1712,22 +1650,21 @@ identical error message is just as uninformative the second time. The
 real false positive is the opposite case: if you ask a model to POLL
 for something outside temur, waiting on a file another process writes
 or a server coming up, an unchanged answer is the point. That is why
-six calls buy a notice and not a stop, and why the gap to eighteen is
-as wide as it is.
+six calls buy only a notice, and why the gap to eighteen is wide.
 
-**An empty `workdir` means "not specified".** A model that filled
-bash's optional `workdir` in with `""` used to get `failed to spawn
-shell: No such file or directory (os error 2)`, and then parroted that
-error text back into its next call's arguments. Empty or whitespace
-now falls back to the working directory; a workdir that names a real
-but missing path still fails, loudly.
+An empty or whitespace `workdir` on bash falls back to the working
+directory (a model that filled it with `""` used to get `failed to
+spawn shell: No such file or directory (os error 2)` and parrot that
+text into its next call); a workdir naming a missing path still fails,
+loudly.
 
-**Binary refusals suggest the right tool.** `read` refuses binary
-files, and now points at a remedy per type instead of one generic
-hint: `pdftotext` for a PDF, `unzip -l` for an archive, `zcat` for a
-gzip, and "ask the user to describe it" for an image, since temur
-cannot see images. Unknown binary types keep the general suggestion to
-inspect with `file`, `unzip -l` or `strings`.
+Binary refusals suggest the right tool. `read` refuses binary files
+it cannot parse (PDFs and office documents it reads directly; see
+"Documents and spreadsheets") and points at a remedy per type:
+`unzip -l` for an archive, `zcat` for a gzip, and "ask the user to
+describe it" for an image, since temur cannot see images. Unknown
+binary types keep the general suggestion to inspect with `file`,
+`unzip -l` or `strings`.
 
 ## Key isolation
 
@@ -1762,7 +1699,7 @@ that hole, on by default whenever any key file is configured:
   the other layers still apply, and a working sandbox is always used
   when available, silencing both the ask and the override.
 - **Redaction.** The ACTIVE provider's key, the one credential temur
-  has actually read, is scrubbed from every tool result (successes and
+  has read, is scrubbed from every tool result (successes and
   errors, before output truncation), so even an unexpected leak path
   cannot echo it back verbatim.
 
@@ -1841,9 +1778,9 @@ gets the identical result, and the doom-loop guard ends the turn on the
 third one. Against qwen3-4b, 8 of 8 scripted denials ended with the
 model finishing rather than retrying.
 
-The `!! recursive delete` line above is emphasis, not a separate gate.
-A short fixed list (recursive `rm`, `mkfs`, `dd` to a device, `git reset
---hard` and `git clean -f`, `shred`) adds that line to a prompt that was
+The `!! recursive delete` line above is emphasis only. A short fixed
+list (recursive `rm`, `mkfs`, `dd` to a device, `git reset --hard` and
+`git clean -f`, `shred`) adds that line to a prompt that was
 already going to appear. Missing one costs nothing, because the base
 rule already asks about every mutation; there is no list of commands
 that skips the prompt.
@@ -1854,12 +1791,11 @@ Turning it off, in order of scope:
   from before this default changed, for every session: nothing asks, and
   mutating tools just run.
   `"ask"` is the default and can be set explicitly. Any other value is a
-  startup error rather than a silent fallback.
+  startup error.
 - `--allow-mutations` on the command line does the same for one run. It
   is the flag form of the config value, so it also silences the
   interactive prompt, and where the two disagree the flag wins. Neither
-  can make temur ask MORE than the default, so there is no combination
-  in which one of them tightens the other.
+  can make temur ask MORE than the default.
 
 ### One-shot `-p` refuses instead of asking
 
@@ -1897,13 +1833,13 @@ or set "approve_mutations": "allow" in config.json`. Read-only `-p` runs
 are untouched: a run that only reads, globs or greps never meets this.
 
 Every script in this repository that drives temur non-interactively
-passes `--allow-mutations` for exactly this reason. A script of your own
-that mutates needs the flag or the config value.
+passes `--allow-mutations` for this reason. A script of your own that
+mutates needs the flag or the config value.
 
 ## Bash approval mode (T21)
 
-This is a SECOND, independent question, about key isolation rather than
-about mutation. With key files configured, bash normally runs inside the
+This is a SECOND, independent question, about key isolation. With key
+files configured, bash normally runs inside the
 key sandbox ("Key isolation" above). On a kernel that denies
 unprivileged user namespaces (locked-down containers and playgrounds,
 commonly), the sandbox cannot start, and an interactive session asks you
@@ -1941,13 +1877,12 @@ The command to write "live-denied" to `/smoke/home/deny-marker.txt` was not exec
 ```
 
 (The `y` and `n` answers were typed at the `[y/N]` prompts; in the
-raw pty capture their echo lands with the piped input block rather
-than inline, so they do not appear beside the prompts above.) In the
-TUI the same
-question appears in the input area with the command wrapped below it,
-answered with a single `y`, `n`, or Esc keypress.
+raw pty capture their echo sits with the piped input block, so they
+do not appear beside the prompts above.) In the TUI the same question
+appears in the input area with the command wrapped below it, answered
+with a single `y`, `n`, or Esc keypress.
 
-The rules, precisely:
+The rules:
 
 - A working sandbox always wins: this question is never asked when the
   sandbox runs. Keyless configs never face it either, there being
@@ -1973,13 +1908,13 @@ Ephemeral playgrounds, throwaway VMs, and shared machines deserve more
 suspicion than your own workstation: anything that reaches the host
 root user, a snapshotting hypervisor, or another user with your file
 access can read whatever key you place there, and temur's key isolation
-only guards against the MODEL, not against the host.
+guards against the MODEL only.
 
-- **Never place a primary key on a host you do not control.** Use a
+- Never place a primary key on a host you do not control. Use a
   dedicated key with a spend cap, rotate it on a schedule, and revoke
   it when the machine goes away. `temur doctor` warns when a key file
   has not been rotated in `key_rotate_warn_days` (default 90).
-- **The durable pattern is a relay you control.** Run a small
+- The durable pattern is a relay you control. Run a small
   OpenAI-compatible proxy (LiteLLM is the common choice) on a machine
   you trust, holding the real provider key. Point the playground
   profile's `base_url` at the relay and give the playground only a
@@ -1988,17 +1923,17 @@ only guards against the MODEL, not against the host.
   unchanged; the untrusted host never sees the real credential, and
   killing the virtual key ends its access without touching anything
   else. If the relay stops answering mid-session, the turn ends with a
-  network error inside a minute rather than hanging: temur bounds
-  connecting (10s) and the wait for a response (60s), and tolerates 120
-  seconds of silence mid-stream, a limit that resets on every chunk so a
-  long answer is never cut short.
-- **Locked-down kernels.** Playground containers often deny
+  network error inside a minute: temur bounds connecting (10s) and the
+  wait for a response (60s), and tolerates 120 seconds of silence
+  mid-stream, a limit that resets on every chunk so a long answer is
+  never cut short.
+- Locked-down kernels. Playground containers often deny
   unprivileged user namespaces, so the bash key sandbox cannot start.
   Interactive sessions then ask per-command approval (see "Bash
   approval mode" above); for non-interactive use on such a host,
   either accept `allow_bash_without_key_sandbox` (with a throwaway
   key only) or leave bash refusing and rely on the other tools.
-- **Paste carefully.** `temur init` never accepts a key at the
+- Paste carefully. `temur init` never accepts a key at the
   question asking where to SAVE it; a key-shaped answer there is
   dropped with a warning to rotate, because the value reached the
   terminal. Keys go in only at the hidden prompt, or into the key

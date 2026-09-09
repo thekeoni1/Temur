@@ -4,7 +4,7 @@
 > as the v1 record. The forward plan now lives in `ROADMAP.md` (milestones
 > T0–T7), which supersedes anything here that looks forward, in particular:
 > the old post-v1 milestone set (A–E) is retired; the planned second provider
-> is **OpenAI-compatible, not Gemini** (bespoke vendor providers are retired);
+> is **OpenAI-compatible** (Gemini and other bespoke vendor providers are retired);
 > the provider types re-exported from `anthropic::types` are slated to become
 > provider-owned neutral types in milestone T1; and the shipped target is the
 > **musl-static release** build, which check.sh will gate from T0 (this doc's
@@ -54,7 +54,7 @@ scripts/
 docs/RUNBOOK.md        operator steps: install, secret injection, live smoke (M6)
 ```
 
-Key trait shapes (contracts, not code yet):
+Key trait shapes, as contracts:
 
 ```
 trait Provider {
@@ -109,11 +109,11 @@ in the registry wrapper, like OpenCode's `Tool.define`.
 - `POST {base_url}/v1/messages`, `stream: true`; headers `x-api-key` (from secret),
   `anthropic-version: 2023-06-01`, `content-type: application/json`.
 - Default model **`claude-sonnet-5`** (Sonnet-class by default: the loop is chatty
-  and runs on a metered key; Opus is a one-line config change, not the default).
-  `max_tokens` default 32000 (streaming, so safe). **Thinking OFF by default for v1**
+  and runs on a metered key; Opus is a one-line config change).
+  `max_tokens` default 32000 (streaming, so safe). Thinking **off** by default for v1
   (cheapest, most legible round-trips while the loop is brought up); the wire types
   and SSE parser support thinking blocks from M1, so enabling adaptive thinking later
-  is a config flip (`thinking: adaptive`), not a refactor. Thinking blocks, when
+  is a config flip (`thinking: adaptive`). Thinking blocks, when
   enabled, are echoed back verbatim in history.
 - Static prompt-caching breakpoint: `cache_control: {"type":"ephemeral"}` on the last
   system block (tools+system cached together); deterministic tool order.
@@ -126,7 +126,7 @@ in the registry wrapper, like OpenCode's `Tool.define`.
 - **Secret handling**: the key is read from the file named by `APP_SECRET_FILE` at
   startup, trimmed, held in memory, used only in the header. The product deliberately
   does **not** read `ANTHROPIC_API_KEY` (per CLAUDE.md, to keep builder/product auth
-  from ever cross-contaminating). Key never logged, echoed, or passed via argv.
+  from cross-contaminating). Key never logged, echoed, or passed via argv.
 
 ## 4. Dependencies (with 32-bit / rustls rationale)
 
@@ -136,11 +136,11 @@ in the registry wrapper, like OpenCode's `Tool.define`.
 | `rustls` + **`ring`** provider | TLS | Pure Rust per constraint. Explicitly select the `ring` crypto provider: the newer default `aws-lc-rs` needs cmake + a C build and is riskier on i686; `ring` has mature i686 assembly support. |
 | `webpki-roots` | CA roots | Baked-in Mozilla roots, no dependency on OS cert stores (the bare `i386/debian` runtime image has no `ca-certificates` package). |
 
-**Prove-it gate (M0):** ring-on-i686 and the webpki-roots handshake are validated, not
-assumed. M0 ships a `tls-probe` check: ureq+rustls(ring)+webpki-roots completing a real
+**Prove-it gate (M0):** M0 validates ring-on-i686 and the webpki-roots handshake up
+front. It ships a `tls-probe` check: ureq+rustls(ring)+webpki-roots completing a real
 TLS handshake against a neutral public endpoint (e.g. crates.io; **not** the Anthropic
 API, which stays untouched from this session), run as i686 on the host **and** inside
-the container. Any ring i686 build issue gets surfaced immediately, with fallback
+the container. Any ring i686 build issue surfaces immediately, with fallback
 options evaluated then (pinning versions, or rustls' other pure-Rust providers), before
 any provider code is written.
 | `serde`, `serde_json` | JSON | Settled. |
@@ -180,7 +180,7 @@ capped (read tool 50 KB, bash output truncation) so no large-allocation assumpti
   fields (log + skip, never fatal), per Anthropic's versioning policy; a strict mode
   used only over the live capture flags unknown fields so drift is detected without
   being fatal. `pause_turn`/`refusal` parsing is an M1 exit criterion; their loop
-  semantics (resume / surface-and-stop) are an M4 exit criterion, not deferred.
+  semantics (resume / surface-and-stop) are an M4 exit criterion. Neither is deferred.
 
 ### Status after M6 close-out (2026-07-03) - fixture provenance, as landed
 
@@ -189,13 +189,13 @@ capped (read tool 50 KB, bash output truncation) so no large-allocation assumpti
   (`tests/live_conformance.rs`) that walks exact per-event key allowlists, enforces
   stream-sequence invariants, and asserts the runtime parser produces zero `Unknown`
   fallbacks over the live files. It runs in `check.sh` on host and in the container.
-- The authored fixtures were **enriched to the live wire shape** during close-out
+- The authored fixtures were enriched to the live wire shape during close-out
   (full cumulative `message_delta` usage incl. `output_tokens_details`; nested
   `cache_creation`, `service_tier`, `inference_geo` in `message_start` usage;
   explicit `stop_details: null`; `caller` on tool_use blocks). The live
-  reconciliation required **no runtime code changes**: fixtures/tests only.
-- **KNOWN GAP, offline-correct but NOT live-verified:** `pause_turn` and `refusal`
-  never occurred in the Tier-1 smoke. Their coverage is docs + official-SDK-fixture
+  reconciliation required no runtime code changes; only fixtures and tests moved.
+- **KNOWN GAP:** `pause_turn` and `refusal` are offline-correct but not live-verified.
+  Neither occurred in the Tier-1 smoke. Their coverage is docs + official-SDK-fixture
   provenance only (the refusal shape incl. `stop_details` is SDK-fixture-confirmed).
   A future session should not assume these are live-confirmed. A refusal is cheap for
   an operator to elicit deliberately if live confirmation is wanted; `pause_turn`
@@ -212,15 +212,15 @@ capped (read tool 50 KB, bash output truncation) so no large-allocation assumpti
   --target i686…` on the host, then `podman run --rm -v /home/dev/rustcode-target/...`
   in `i386/debian:stable` running the binary's offline self-check / `--mock` replay.
   Tests run as 32-bit binaries in both places: "what we ship is what we test".
-- **No live Anthropic calls from this session, ever**, enforced by simply having no
-  credential: the builder cannot read `/srv/rustcode-secrets/credential`, and dummy
+- **No live Anthropic calls** from this session. The absence of a credential
+  enforces it: the builder cannot read `/srv/rustcode-secrets/credential`, and dummy
   key files used in container smoke runs only exercise non-network paths (mock mode).
 
 ## 6. Live-verification handoff (appsvc, human-triggered)
 
 A deliberate security consequence discovered in setup: `dev` **cannot and must not**
 write to `/srv/rustcode-runtime/bin`: if the builder could replace the binary that
-`appsvc` executes, it could trivially exfiltrate the secret, nullifying the boundary.
+`appsvc` executes, it could exfiltrate the secret, nullifying the boundary.
 Deployment is therefore operator-mediated, like secret injection:
 
 1. **Builder (dev)**: `cargo build --release --target i686-unknown-linux-gnu`; copy to
@@ -228,7 +228,7 @@ Deployment is therefore operator-mediated, like secret injection:
 2. **Operator (root, `wsl -d Ubuntu -u root`)**:
    `install -o appsvc -g appsvc -m 755 /home/dev/dist/opencode-rust /srv/rustcode-runtime/bin/app`
    and inject the real credential per `docs/SETUP.md` (if not already done).
-3. **Operator runs Tier-1 smoke**: `runuser -u appsvc -- /srv/rustcode-runtime/run-app.sh`
+3. **Operator**, Tier-1 smoke: `runuser -u appsvc -- /srv/rustcode-runtime/run-app.sh`
    (launcher exports `APP_SECRET_FILE`; binary runs natively, it's i686 ELF on the
    multilib host). RUNBOOK provides the scripted smoke prompts: read a file, run a
    shell command, edit/write a file, one coherent streamed answer with ≥1 tool
@@ -244,8 +244,8 @@ the build-validation environment.
 
 Per the revised framing in `ROADMAP.md`: opencode-rust is a general OpenCode clone
 for 32-bit Linux, and the reference workflow (driving an external tabular-data CLI to
-reproduce a report as an XLSX file) is **one useful end-to-end test among many**, run
-whenever its inputs are available, not a blocking milestone. Nothing waits on it.
+reproduce a report as an XLSX file) is one useful end-to-end test among many, run
+whenever its inputs are available. Nothing waits on it.
 Mechanically it still plugs in as: a task prompt + the existing `bash` tool (to invoke
 the external CLI) + `read`/`write`; if a dedicated skill/prompt-injection mechanism is
-wanted, it lands as a config-loaded system-prompt fragment, not task logic in the core.
+wanted, it belongs in a config-loaded system-prompt fragment, outside the core.

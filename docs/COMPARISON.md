@@ -4,18 +4,18 @@
 
 This page compares temur against two released coding agents on two
 axes: what they cost to install and run, and how well they drive a
-small local model. It carries two classes of evidence, and they do not
-deserve equal weight: the nine-task eval is temur's own suite and is
-biased by authorship, while the Terminal-Bench 2 sections are an
-externally authored suite temur neither wrote nor could have tuned
-against. Three things should shape how much weight you give it.
+small local model. It carries two classes of evidence of unequal
+weight: the nine-task eval is temur's own suite and is biased by
+authorship; the Terminal-Bench 2 sections are an externally authored
+suite temur could not have tuned against. Three things should shape
+how much weight you give it.
 
-**The nine-task suite was built by temur's side.** The nine tasks come
+The nine-task suite was built by temur's side. The nine tasks come
 from temur's own eval suite, written months earlier to find temur's
 failures. A suite written by one project and run against three favours
-the one that wrote it, and no amount of care in the running removes
-that. Read those scores as "how do these harnesses handle tasks temur
-already considers representative", not as a general capability
+the one that wrote it, however carefully it is run. Read those scores
+as "how do these harnesses handle tasks temur
+already considers representative". They are not a general capability
 ranking. This warning is scoped to the two own-suite sections,
 [Qwen3-4B](#differential-qwen3-4b-instruct-2507) and
 [Qwen2.5-Coder-3B](#differential-qwen25-coder-3b-instruct). It does not
@@ -23,27 +23,24 @@ apply to [Terminal-Bench 2](#terminal-bench-2-neutral-suite) or the
 [GPU desktop subset](#gpu-desktop-terminal-bench-2-subset), which run a
 suite temur did not write.
 
-**Delivery is pinned, not trusted.** The prompts are not copied between
-scripts. `scripts/harness_compare/tasks.sh` is generated from the eval
-suite, and a drift test in `scripts/check.sh` compares raw source bytes
-on every gate run, so the three harnesses cannot silently diverge.
+Delivery is pinned. The prompts are not copied between scripts.
+`scripts/harness_compare/tasks.sh` is generated from the eval suite,
+and a drift test in `scripts/check.sh` compares raw source bytes on
+every gate run, so the three harnesses cannot silently diverge.
 
-**Every cell that ran is published, losses included.** No cell was
-dropped for being unflattering. Cells that could not be scored honestly
-are marked VOID and quarantined rather than re-run until they looked
-better. In the published matrices there are none.
+Every cell that ran is published, losses included. Cells that could
+not be scored honestly are marked VOID and quarantined; none was re-run
+until it looked better. In the published matrices there are none.
 
-What this is not: a comparison against frontier models. No hosted
-provider and no API key was used anywhere in it. The question is
-narrow on purpose. Given the same small model on the same machine, how
-much does the harness around it matter?
+This is not a comparison against frontier models: no hosted provider
+and no API key was used. The question is narrow: given the same small
+model on the same machine, how much does the harness around it matter?
 
 ## Results at a glance
 
-Every number here is expanded, conditioned, and caveated in its own
-section below; this table is a map, not a substitute. The first two
-rows are temur's own tasks and carry the bias note above in full; the
-Terminal-Bench rows are an externally authored suite.
+Every number here is expanded and caveated in its own section below.
+The first two rows are temur's own tasks and carry the bias note
+above; the Terminal-Bench rows are an externally authored suite.
 
 | Measurement | Result | Record |
 | --- | --- | --- |
@@ -72,42 +69,39 @@ Terminal-Bench rows are an externally authored suite.
 ## Method
 
 Each harness gets a fresh git-initialised working directory per task
-and is pinned explicitly to the local model. Two runs per cell; a third
+and is pinned to the local model. Two runs per cell; a third
 runs when the spread is 2 or more, judged within a cell and never
 across harnesses. No third run was triggered in either matrix.
 
-**A fresh server per task.** The server is restarted before every task,
-which is not free and is disclosed rather than hidden: restarting
-forfeits llama.cpp's cross-task prefix cache, so each task pays its own
-full prefill. That cost lands on the harness whose prompt it is, which
-is the measurement this page exists to make. Published durations
-exclude server-ready time, recorded separately at roughly one second
-per restart (the gguf is in page cache) and under ten seconds per cell.
+The server is restarted before every task, which forfeits llama.cpp's
+cross-task prefix cache, so each task pays its own full prefill. That
+cost falls on the harness whose prompt it is, which is what this page
+measures. Published durations exclude server-ready time, recorded
+separately at roughly one second per restart (the gguf is in page
+cache) and under ten seconds per cell.
 
-The reason is worth stating with its limit. Under a per-cell server the
-kernel OOM-killed llama-server six times on this machine; memory
-climbed across prompt-processing cycles within a cell until the kill.
-What that climb *is* was never established, because nothing here
-instrumented the allocator. Two things were observed: lowering the
-context moved where the climb started without stopping it, and
-restarting per task held memory flat across a whole cell. The
-methodology follows the observed effect, not a diagnosis. The full arc
-is in `RUNBOOK.md`.
+Under a per-cell server the kernel OOM-killed llama-server six times
+on this machine; memory climbed across prompt-processing cycles within
+a cell until the kill. The cause was never established; nothing
+instrumented the allocator. Lowering the context moved where the climb
+started without stopping it, and restarting per task held memory flat
+across a cell. The methodology follows that observed effect; the cause
+is undiagnosed. The full arc is in `RUNBOOK.md`.
 
-**Context 12288** rather than the 16384 originally planned, because
+The context is 12288 rather than the 16384 originally planned, because
 16384 is where the kills happened. 12288 clears the largest harness
 prompt (~7.4k tokens) with room to work, so the tables measure
 capability rather than context exhaustion.
 
-**Two memory quantities, never mixed.** *Server* memory is
-llama-server: model weights and KV cache, a property of the model and
-context, not of the harness. *Harness* memory is the agent process.
-Every figure below says which. Kernel `kB` is KiB everywhere, in
-`/proc/meminfo` and dmesg alike; all conversions here use 1024.
+*Server* memory is llama-server: model weights and KV cache, set by
+the model and the context and the same for every harness. *Harness*
+memory is the agent process. Every figure below says which. Kernel
+`kB` is KiB everywhere, in `/proc/meminfo` and dmesg alike; all
+conversions here use 1024.
 
-**Wall clock is reported, not explained.** Per-task durations differ
-substantially between harnesses. The cause was not instrumented per
-request, and this page does not attribute one.
+Per-task durations differ substantially between harnesses. The cause
+was not instrumented per request, and this page does not attribute
+one.
 
 ## Differential: Qwen3-4B-Instruct-2507
 
@@ -126,12 +120,11 @@ calling its exec tool, then reports success while the file survives.
 ### Control: recovery disabled
 
 The recovery-disabled control described under Qwen2.5-Coder-3B below
-scores 9/9 and 9/9 here, with zero nudges and zero recoveries, which is
-the expected result and the reason for spending a cell on it: where the
-model calls tools natively, prose-call recovery never engages, and
-removing it changes nothing.
+scores 9/9 and 9/9 here, with zero nudges and zero recoveries, as
+expected: where the model calls tools natively, prose-call recovery
+never engages, and removing it changes nothing.
 
-### A methodology observation, not a harness result
+### A methodology observation
 
 An earlier procedure used one long-lived server per cell. Moving to
 per-task servers changed exactly one harness:
@@ -142,11 +135,10 @@ per-task servers changed exactly one harness:
 | codex | 8/9, 8/9 | 8/9, 8/9 |
 | opencode | 4/9 (single run) | 7/9, 6/9 |
 
-temur and Codex score identically under both, which is also the best
-available evidence that the two procedures are otherwise comparable.
-The change was neutral for the home team and favourable to the
-competitor that had been doing worst. Stated as an observed delta under
-a methodology change; the cause is not attributed. Two limits: the
+temur and Codex score identically under both, the best available
+evidence that the two procedures are otherwise comparable. The change
+was neutral for the home team and favourable to the competitor that
+had been doing worst; the cause is not attributed. Two limits: the
 per-cell OpenCode figure is a single run against two, and it comes from
 the block whose cells were ending near the OOM ceiling.
 
@@ -162,47 +154,42 @@ Max server anon 1.80-1.83 GiB for every cell. temur's single miss was
 task 9, the context-pressure task.
 
 This is the clearest result in the milestone, and it is a result about
-harnesses rather than about the model.
+harnesses: the model is held fixed.
 
-**Qwen2.5-Coder-3B emits no native tool calls here.** Not few: none, in
-any transcript, under either harness. It writes the call as prose
-instead, in at least three improvised shapes across tasks (a bare JSON
-object, a fenced `json` block, and an XML-ish
-`<function-name>...<arguments>` form). Verified at the wire, with no
-harness involved: a single `/v1/chat/completions` request at
-temperature 0 carrying one tool returns `finish_reason: stop` and a
-fenced JSON blob, where Qwen3-4B on the identical request returns a
-native `tool_calls` with empty content.
+Qwen2.5-Coder-3B emits no native tool calls here: none, in any
+transcript, under either harness. It writes the call as prose instead,
+in at least three improvised shapes across tasks (a bare JSON object, a
+fenced `json` block, and an XML-ish `<function-name>...<arguments>`
+form). Verified at the wire, with no harness involved: a single
+`/v1/chat/completions` request at temperature 0 carrying one tool
+returns `finish_reason: stop` and a fenced JSON blob, where Qwen3-4B on
+the identical request returns a native `tool_calls` with empty content.
 
-**The template is not the cause, and that is the opposite of what a
-previous milestone found.** T34 traced this same prose symptom in
-Phi-4-mini to a bundled template that never read top-level `tools`, so
-the tools never reached the model. Here the template does read `tools`,
-renders them into `<tools>` tags, and explicitly instructs the model to
-reply inside `<tool_call>` tags. The instruction is delivered correctly
-and the model does not comply. In one task it emitted the template's
-own placeholder syntax literally rather than substituting it. Probe and
-both templates: `t37-harness-compare-v2-pertask/probes/`.
+The template is not the cause, unlike the case T34 found: there,
+Phi-4-mini's bundled template never read top-level `tools`, so the
+tools never reached the model. Here the template reads `tools`,
+renders them into `<tools>` tags, and instructs the model to reply
+inside `<tool_call>` tags. The instruction arrives and the model does
+not comply. In one task it emitted the template's own placeholder
+syntax literally instead of substituting it. Probe and both templates:
+`t37-harness-compare-v2-pertask/probes/`.
 
-**So temur's 17/18 on this model rests wholly on prose-call recovery**,
-a feature that executes a tool call the model wrote as text: 20
+So temur's 17/18 on this model rests wholly on prose-call recovery, a
+feature that executes a tool call the model wrote as text: 20
 recoveries in run 1, 67 in run 2, zero native calls in either. Same
-model, sha, server, context, and prompts; the harness is the entire
+model, sha, server, context, and prompts; the harness is the
 difference between 0/9 and 9/9.
 
 ### Control: the same temur with recovery disabled
 
-The sentence above used to end "without it temur scores what the others
-score", which was an inference. It is now a measurement (run 2026-08-25,
-same conditions as the table above).
+That claim was once an inference. It is now a measurement (run
+2026-08-25, same conditions as the table above).
 
-The control's exact shape matters, so it is stated rather than
-summarised. `temur-noprose` is the **same 0.25.0 binary**, invoked by
-the same adapter with the same flags in the same working directory,
-reading the same config template with **one field added**:
-`"prose_tool_calls": false`. That switch turns off *execution* of a tool
-call the model wrote as prose. **Detection stays on and the corrective
-nudge stays on.** Exactly one thing is removed.
+The control's exact shape: `temur-noprose` is the same 0.25.0 binary,
+invoked by the same adapter with the same flags in the same working
+directory, reading the same config template with one field added,
+`"prose_tool_calls": false`, which turns off *execution* of a tool call
+the model wrote as prose. Detection and the corrective nudge stay on.
 
 | Harness | run 1 | run 2 | spread | task wall clock |
 | --- | --- | --- | --- | --- |
@@ -211,28 +198,23 @@ nudge stays on.** Exactly one thing is removed.
 | codex-cli 0.149.0 | 0/9 | 0/9 | 0 | 19 / 20 min |
 | opencode 1.18.21 | 0/9 | 0/9 | 0 | 19 / 18 min |
 
-The inference was right, and the control turned out to be a clean one:
-all eighteen control tasks failed, and the recovery-notice count was
-zero in every one of them, asserted over the transcripts rather than
-assumed from the config.
+The inference was right, and the control was clean: all eighteen
+control tasks failed, and the recovery-notice count was zero in every
+one, asserted over the transcripts.
 
-Two further things the control settles, both of them about temur rather
-than about the competitors.
+The control settles two further things about temur.
 
-**The nudge converts nothing on this model.** Every one of the eighteen
-tasks emitted exactly two "you wrote a tool call as plain text" notices
-and then ended the turn, `NUDGE_LIMIT` being 2. Across 36 nudges the
-model never once answered with a native tool call: native structured
-dispatches in the control cells number **zero**. A nonzero control score
-would have been nudge-attributable rather than noise, because with
-execution off the nudge is the only remaining path to a pass; there is
-simply nothing to attribute, because the score is zero.
+The nudge converts nothing on this model. Each of the eighteen tasks
+emitted exactly two "you wrote a tool call as plain text" notices and
+then ended the turn, `NUDGE_LIMIT` being 2. Across 36 nudges the model
+never answered with a native tool call. With execution off the nudge
+is the only remaining path to a pass, so a nonzero control score would
+have been the nudge's; the score is zero.
 
-**The 0/9 is not a crash, a timeout or a dead server.** The control
-cells are the fastest cells in the whole table, 7 minutes against
-temur's own 9 and 16, precisely because a turn that nudges twice and
-stops does less work than a turn that executes. Nothing hit the 1200s
-per-task bound and no cell went VOID.
+The 0/9 is not a crash, a timeout or a dead server. The control cells
+are the fastest in the table, 7 minutes against temur's own 9 and 16,
+because a turn that nudges twice and stops does less work. Nothing hit
+the 1200s per-task bound and no cell went VOID.
 
 What the control does not establish: anything about a model that emits
 prose calls *and* responds to correction. Qwen2.5-Coder-3B does neither
@@ -242,7 +224,7 @@ one model.
 ## Prompt size
 
 Tokens in each harness's first tool-carrying request, counted
-server-side by llama.cpp, not estimated and not self-reported.
+server-side by llama.cpp. Nothing here is estimated or self-reported.
 
 | Harness | first tool-carrying request |
 | --- | --- |
@@ -250,19 +232,18 @@ server-side by llama.cpp, not estimated and not self-reported.
 | codex-cli | 7413 |
 | opencode | 7276 |
 
-Method matters here. Measured against a **fresh server per harness**:
-llama.cpp's prompt-eval count excludes tokens served from the prefix
-cache, so a warm server understates the prompt (a first pass read Codex
-at 3305, a cache-reduced figure and not a prompt size). And the
-**first** request is not always the largest: OpenCode's first request
-is a 553-token session-title call carrying no tools, and its agent
-request is the one after. Cross-check: Codex self-reported 7441 input
-tokens on its own first turn against a different model's tokeniser,
-0.4% from the 7413 measured here.
+Measured against a fresh server per harness: llama.cpp's prompt-eval
+count excludes tokens served from the prefix cache, so a warm server
+understates the prompt (a first pass read Codex at 3305, a
+cache-reduced figure). And the first request is not always the
+largest: OpenCode's first request is a 553-token session-title call
+carrying no tools, and its agent request is the one after. Cross-check:
+Codex self-reported 7441 input tokens on its own first turn against a
+different model's tokeniser, 0.4% from the 7413 measured here.
 
 temur spends about 2.7x less before the model has done any work, and
 under per-task restarts every task pays it again. That is a measured
-input, not an explanation of the wall clock.
+input. It does not explain the wall clock.
 
 ## Footprint
 
@@ -280,28 +261,25 @@ real task against a warm server. Cold start is exec to the harness's
 first request arriving at the server, marked server-side; the server
 stays warm, so **model load is not in it**. Three reps each; the
 "first" column is rep 1, which pays to fault the binary into page
-cache. The i686-musl row is the shipped 32-bit artifact, whose size is
-quoted for that reason; no runtime figure was taken on it, so those
-cells say "not run" rather than borrowing the x86_64 numbers.
+cache. The i686-musl row is the shipped 32-bit artifact, so its size
+is quoted; no runtime figure was taken on it.
 
-Two facts that cut against the easy framing, kept because they are
-true. **Codex CLI is also a zero-shared-library static binary**, so a
-single static binary is not a temur differentiator; size, RSS and
-startup are. And **OpenCode's own musl asset is not static**: it links
-against `/lib/ld-musl-x86_64.so.1` and does not start on the bare
-busybox container temur's release gate already passes, which is why the
-glibc build was used throughout and is what the dynamic row describes.
+Two facts cut against the easy framing. Codex CLI is also a
+zero-shared-library static binary, so the static binary itself is not
+a temur differentiator; size, RSS and startup are. And OpenCode's musl
+asset is not static: it links against `/lib/ld-musl-x86_64.so.1` and
+does not start on the bare busybox container temur's release gate
+passes, so the glibc build was used throughout and is what the dynamic
+row describes.
 
 ## Two harness properties worth knowing
 
-**Codex requires `/v1/responses`.** This is not a preference:
-codex-cli 0.149.0 rejects `wire_api = "chat"` outright as no longer
-supported. Its row here depends on the served build implementing the
-Responses API at all, and a server that speaks only Chat Completions
-cannot run it. That is a portability fact about the harness, not a
-score.
+Codex requires `/v1/responses`: codex-cli 0.149.0 rejects
+`wire_api = "chat"` as no longer supported, so a server that speaks
+only Chat Completions cannot run it. That is a portability fact about
+the harness, and it is not scored.
 
-**Off-box connections during a keyless, local-only task.** Polled with
+Off-box connections during a keyless, local-only task were polled with
 `ss -tnp` for the duration of one task, no API key configured, peers
 matched against current A records.
 
@@ -311,20 +289,18 @@ matched against current A records.
 | codex-cli | address matching chatgpt.com's A records |
 | opencode | addresses matching api.opencode.ai's and registry.npmjs.org's A records |
 
-The limit: these are Cloudflare addresses and Cloudflare fronts many
-domains from shared IPs, so an address match is strong evidence and not
-proof of a hostname; SNI was not captured. temur was probed
-identically, and the claim is publishable because of that rather than
-in spite of it.
+The limit: these are Cloudflare addresses, and Cloudflare fronts many
+domains from shared IPs, so an address match is strong evidence of a
+hostname. It is not proof; SNI was not captured. temur was probed
+identically.
 
 ## Terminal-Bench 2 (neutral suite)
 
-Everything above this section uses tasks written for temur's own eval.
-This section does not. It is the first result here on an
-externally authored suite.
+Everything above uses tasks written for temur's own eval. This section
+is the first result on an externally authored suite.
 
-**Headline: pass rate does not separate the three harnesses at this
-model. Timeouts and wall clock do.**
+Headline: pass rate does not separate the three harnesses at this
+model. Timeouts and wall clock do.
 
 ### Conditions
 
@@ -336,23 +312,22 @@ a fresh server per cell, one trial at a time. Harness versions pinned:
 temur 0.27.0 (x86_64 static musl, sha256 `d962af97...`, verified
 against the published SHA256SUMS and re-verified by the adapter on
 every cell), codex 0.149.1, opencode 1.18.23. Harbor installs the
-latter two with `@latest` by default, which is drift rather than a
-measurement, so both were pinned explicitly.
+latter two with `@latest` by default, so both were pinned explicitly.
 
-A 16-task subset was **pre-registered before any score was seen**, by a
+A 16-task subset was pre-registered before any score was seen, by a
 mechanical rule: exclude every task requesting 4096 MB or more, then
 take all remaining easy tasks followed by medium tasks in ascending
-agent timeout, ties by name, until 16. The rule is a resource rule and
-applies uniformly, so one easy task (`overfull-hbox`, 4096 MB) is
-excluded and the subset holds 3 easy and 13 medium. The subset file is
+agent timeout, ties by name, until 16. The rule applies uniformly, so
+one easy task (`overfull-hbox`, 4096 MB) is excluded and the subset
+holds 3 easy and 13 medium. The subset file is
 `subset.txt`, sha256 `57160ac7b535027acc7e7385577405e8e4de8a62b78e3f307c45558cc6fc7362`,
 hashed into the run ledger before the first cell.
 
-Each task carries its own agent budget from the suite, median 900s.
-That budget is the suite's, and it was not changed: Terminal-Bench
-defines a task as its instruction plus its budget, so a harness that
-cannot finish inside the budget has not solved it, and raising the
-clock would make these cells incomparable to anyone else's.
+Each task carries its own agent budget from the suite, median 900s,
+unchanged: Terminal-Bench defines a task as its instruction plus its
+budget, so a harness that cannot finish inside it has not solved it,
+and raising the clock would make these cells incomparable to anyone
+else's.
 
 ### Result
 
@@ -377,11 +352,11 @@ third run.
 | opencode r2 | 1 | 15 | 0 | 0 | 0 |
 
 `ctx-exhausted` is a cell that died when a request exceeded the pinned
-12288 window. It is a scored failure like any other, and it is not
-specific to one harness: temur hits it 3 times and codex 3 times.
+12288 window. It is a scored failure, and not specific to one harness:
+temur hits it 3 times and codex 3 times.
 
-Exactly one task was solved by anyone, `modernize-scientific-stack`,
-and all three solve it:
+One task was solved by anyone, `modernize-scientific-stack`, and all
+three solve it:
 
 | harness | run 1 | run 2 |
 |---|---|---|
@@ -389,19 +364,18 @@ and all three solve it:
 | opencode | 570s | 545s |
 | codex | 640s | timeout at 800s |
 
-**Wall clock**, 32 cells each: temur 2.89h, opencode 3.80h, codex
+Wall clock, 32 cells each: temur 2.89h, opencode 3.80h, codex
 6.14h. Typical non-solving temur cells finish in 128 to 251s where
-codex takes 266 to 566s. No cause is attributed here; the requests
-were not instrumented server-side, and this page has retracted one
-wall-clock explanation already.
+codex takes 266 to 566s. No cause is attributed; the requests were
+not instrumented server-side, and one wall-clock explanation has
+already been withdrawn (next section).
 
-**Install time sits outside the measured budget.** Harbor times agent
-setup as its own phase, so none of it comes out of the task clock.
-Measured: temur 4.2s, which copies one 7.2 MB static binary and
-nothing else; opencode 119.8s and codex 182.1s, each installing curl,
+Install time sits outside the measured budget: Harbor times agent
+setup as its own phase. Measured: temur 4.2s, which copies one 7.2 MB
+static binary; opencode 119.8s and codex 182.1s, each installing curl,
 bash, Node and npm and then fetching the harness over the network.
-That is a real property of what each ships, and it costs wall clock
-and a network dependency rather than score.
+That is a property of what each ships; it costs wall clock and a
+network dependency, and no score.
 
 ### The first temur matrix was invalid, and is disclosed
 
@@ -410,31 +384,30 @@ this suite piped each task instruction into `temur --plain`, which is
 the line REPL and reads one line per turn. 12 of the 16 subset
 instructions are multi-line, so temur received only the first line as
 its task and every later line arrived as a separate user message after
-the previous turn had ended. Measured on one cell, a 21-line
-instruction became 20 user messages, two of them empty because the
-instruction had blank lines and one of them a bare code fence.
-codex and opencode each received the whole instruction in one message,
-so for 12 of 16 tasks this was not an equal-footing comparison.
+the previous turn had ended. On one cell, a 21-line instruction became
+20 user messages, two of them empty because the instruction had blank
+lines and one of them a bare code fence. codex and opencode each
+received the whole instruction in one message, so 12 of 16 tasks were
+not an equal-footing comparison.
 
 Under that defect temur scored 0/16 twice. Repaired, it scores 1/16
 twice. A product finding derived from those cells, that temur's
 timeouts were turns which asserted completion without acting, was
-**withdrawn**: it was an artifact of the adapter, and the signal it
+withdrawn: it was an artifact of the adapter, and the signal it
 rested on falls from 52% of turns to 14% once the instruction arrives
 whole.
 
-Two details of the repair matter for reading the table. The four
-single-line tasks were delivered correctly even by the broken adapter,
-verified per cell, so their original results were sound. And codex and
-opencode were **not** re-run, because their delivery was never broken;
-their rows are from the original matrix, with the same pins, model,
-server and subset.
+Two details of the repair: the four single-line tasks were delivered
+correctly even by the broken adapter, verified per cell, so their
+original results stand. codex and opencode were not re-run, because
+their delivery was never broken; their rows are from the original
+matrix, same pins, model, server and subset.
 
 ### Instrumentation, per harness
 
 Turn and tool-call counts come from each harness's own transcript
-format and count different things. They are published per harness and
-are **not** comparable across harnesses.
+format and count different things, so they are not comparable across
+harnesses.
 
 - **temur**: a turn is one model round trip, read from the session
   file. Repaired cells, median 6 turns and 5 tool calls.
@@ -446,11 +419,10 @@ are **not** comparable across harnesses.
   0 tool calls, which is its signature here: it stops early rather than
   running out of clock, and never once hit a timeout in 32 cells.
 
-One limitation, stated because it bounds what the temur column can
-say: temur writes its session file at exit, and the suite enforces its
-budget with a hard kill, so a timed-out temur cell leaves no session
-behind. 4 of 32 repaired cells have none, and all four are timeouts.
-The temur medians above are therefore over non-timeout cells.
+One limitation: temur writes its session file at exit, and the suite
+enforces its budget with a hard kill, so a timed-out temur cell leaves
+no session behind. 4 of 32 repaired cells have none, all four
+timeouts, so the temur medians above cover non-timeout cells only.
 
 ### What this section does not establish
 
@@ -462,12 +434,11 @@ easy to medium, so the harder two thirds of the suite are unmeasured.
 
 ## GPU desktop (Terminal-Bench 2 subset)
 
-The section above ran on one CPU-only box. This one runs the same
-16-task subset on a second machine with a GPU, so the suite has now
-been driven on two boxes with different hardware postures.
+The section above ran on a CPU-only box. This one runs the same
+16-task subset on a second machine with a GPU.
 
-**Headline: pass rate does not separate the three harnesses at this
-model here either. Wall clock does, and no cause is attributed to it.**
+Headline: pass rate again does not separate the three harnesses at
+this model. Wall clock does; no cause is attributed.
 
 ### Conditions
 
@@ -499,14 +470,14 @@ same rule as the CPU section.
 | codex 0.149.1 | run 1 | 1/16 | 11 | 1 | 2 | 1 | 1.55 h |
 | codex 0.149.1 | run 2 | 0/16 | 11 | 2 | 3 | 0 | 1.62 h |
 
-Wall clock per harness over 32 cells each: **temur 0.77 h, opencode
-2.80 h, codex 3.16 h.** Spread between each harness's two runs was 1
+Wall clock per harness over 32 cells each: temur 0.77 h, opencode
+2.80 h, codex 3.16 h. Spread between each harness's two runs was 1
 pass, below the threshold that would have triggered a third run.
 
 `exc` is a harness-level exception scored as a failure; here all five
 are `codex exec` itself exiting non-zero. `void` is a cell with no
-verdict, excluded from the scored denominator rather than counted as a
-failure. Both VOIDs are agent-setup timeouts, and both landed on the
+verdict, excluded from the scored denominator. Both VOIDs are
+agent-setup timeouts, and both fell on the
 same task, `git-leak-recovery`, which was already the slowest setup on
 this suite.
 
@@ -522,7 +493,7 @@ a 2087-token prompt: prompt processing 935.2 tok/s mean, generation
 50.2 tok/s mean.
 
 For reference, the CPU box's repaired temur row from the section above
-is 1/16, 1/16, 2.89 h. **Two variables differ at once**, the GPU and
+is 1/16, 1/16, 2.89 h. Two variables differ at once, the GPU and
 the machine, so nothing about either box is inferred from the pair;
 the build, model, binary source, subset, ctx and budget are identical
 between them.
@@ -535,9 +506,9 @@ one thing: the model. Build, image digest, ctx, per-task budgets, the
 The model is `Qwen3-8B-Q4_K_M.gguf` from `unsloth/Qwen3-8B-GGUF`,
 sha256 `120307ba...`, which is also its Hugging Face LFS oid.
 
-Qwen3-8B is a hybrid thinking model, so thinking was held **off** with
+Qwen3-8B is a hybrid thinking model, so thinking was held off with
 `--chat-template-kwargs '{"enable_thinking": false}'`, and that is
-established three ways rather than asserted once: a control server on
+established three ways: a control server on
 the same build, model and prompt with the flag removed **did** reason;
 every cell issued an 8-token probe before its agent started that had
 to return no `<think>` tag and no `reasoning_content` field, 96/96;
@@ -545,8 +516,8 @@ and a sweep of every transcript after the matrix returned 0 hits.
 
 All 96 cells again offloaded 37/37 layers to the GPU, 84 of them at a
 peak of 6464 MiB of VRAM and the highest at 7049 MiB. The temur binary
-is 0.28.0, the same one the 4B run used: **auto-compaction, which
-shipped in v0.29.x, is not in these numbers.**
+is 0.28.0, the same one the 4B run used: auto-compaction, which
+shipped in v0.29.x, is not in these numbers.
 
 | harness | run | pass | fail | ctx-exhausted | exc | void | wall clock |
 |---|---|---|---|---|---|---|---|
@@ -557,29 +528,29 @@ shipped in v0.29.x, is not in these numbers.**
 | codex 0.149.1 | run 1 | 1/16 | 11 | 1 | 2 | 1 | 1.32 h |
 | codex 0.149.1 | run 2 | 0/16 | 15 | 0 | 1 | 0 | 1.19 h |
 
-Wall clock per harness over 32 cells each: **temur 1.18 h, opencode
-3.43 h, codex 2.51 h.** The spread between each harness's own two runs
+Wall clock per harness over 32 cells each: temur 1.18 h, opencode
+3.43 h, codex 2.51 h. The spread between each harness's own two runs
 was 1, 0 and 1 pass, all below the threshold that triggers a third
-run, and no third run was made.
+run.
 
 All three `exc` are `codex exec` itself exiting non-zero, scored as
 failures. The one void is an agent-setup timeout on
 `git-leak-recovery`; it took the single retry the ruling allows, hit
 the same 360-second setup budget again, and so stays excluded from the
-scored denominator rather than counted as a failure. That is the same
-task both of the 4B run's voids landed on.
+scored denominator. It is the same task both of the 4B run's voids
+fell on.
 
 Every pass in this table is `modernize-scientific-stack`: temur run 1,
 opencode run 1 and run 2, codex run 1. `prove-plus-comm`, which
 produced 3 of the 4B run's 7 passes, produced none here.
 
 Beside the 4B section: passes 7/96 to 4/96, and ctx-exhausted 7 to 22
-(temur 7, opencode 14, codex 1, spread across 9 of the 16 tasks).
-**Same rig, model changed** is the whole of what may be said about the
-pair. The per-cell counts sit inside the run-to-run noise the 4B pair
-already showed, where a harness's own two runs differed by as much as
-a pass; the exception is ctx-exhausted, which is recorded here as an
-observation with no cause attributed to it. Throughput on the same
+(temur 7, opencode 14, codex 1, across 9 of the 16 tasks). Same rig,
+model changed, is all that may be said about the pair. The per-cell
+counts sit inside the run-to-run noise the 4B pair already showed,
+where a harness's own two runs differed by a pass; the exception is
+ctx-exhausted, recorded as an observation with no cause attributed.
+Throughput on the same
 build, GPU and context, from the server's own timings: prompt
 processing 593.9 tok/s, generation 32.2 tok/s, which is 0.63x and
 0.64x of the 4B.
@@ -597,25 +568,24 @@ A fourth matrix ran on the same box, 2026-08-29 to 2026-08-30,
 changing the model again. Build, image digest, ctx 12288, per-task
 budgets, the 16-task subset and all three harness pins are the ones
 listed above, and the temur binary is still 0.28.0, so
-**auto-compaction, which shipped in v0.29.x, is again not in these
-numbers.** The model is `Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf`
+auto-compaction, which shipped in v0.29.x, is again not in these
+numbers. The model is `Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf`
 from `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF`, sha256
 `fadc3e5f...`, which is also its Hugging Face LFS oid, 18,556,689,568
 bytes. It is a non-thinking model, so no thinking flag was set; the
 per-cell probe experiment 3 introduced was run anyway and passed
 trivially on all 96 cells.
 
-The offload here is **partial, and the server's own log line says
-otherwise.** Every cell prints `offloaded 49/49 layers to GPU`. That
-line counts layers, not tensors, and it is misleading at this
-setting. Under `-ngl 99 --n-cpu-moe 34`, all 48 layers' attention and
+The offload here is partial, although every cell prints `offloaded
+49/49 layers to GPU`. That line counts layers, and it is misleading at
+this setting. Under `-ngl 99 --n-cpu-moe 34`, all 48 layers' attention and
 dense tensors and the full 12288-token KV cache are on the GPU (5766
 MiB of weights, 1152 MiB of KV, 222 MiB of compute), the experts of
 the first 34 layers are on the CPU (12,308 MiB resident there), and
 the experts of the last 14 are on the GPU. That configuration was
-chosen over the best dense split by measurement rather than by
-preference: `-ngl 18` reached 9.27 tok/s of generation against
-18.76, so the MoE split is 2.0x faster. Throughput of the chosen
+chosen over the best dense split by measurement: `-ngl 18` reached
+9.27 tok/s of generation against 18.76, so the MoE split is 2.0x
+faster. Throughput of the chosen
 configuration, warm, from the server's own timings at the same
 2087-token prompt: prompt processing 190.7 tok/s, generation 18.65
 tok/s.
@@ -629,73 +599,72 @@ tok/s.
 | codex 0.149.1 | run 1 | 3/16 | 2 | 0 | 8 | 3 | 0 | 2.00 h |
 | codex 0.149.1 | run 2 | 4/16 | 3 | 0 | 6 | 3 | 0 | 1.97 h |
 
-Wall clock per harness over 32 cells each: **temur 2.31 h, opencode
-6.56 h, codex 3.97 h.** Every harness's two runs differed by exactly
-1 pass, below the threshold that triggers a third run, and no third
-run was made.
+Wall clock per harness over 32 cells each: temur 2.31 h, opencode
+6.56 h, codex 3.97 h. Every harness's two runs differed by exactly
+1 pass, below the threshold that triggers a third run.
 
 Four cells VOIDed on an agent-setup timeout and each took the single
 retry the experiment-2 rule allows. All four retries produced a
 verdict: `prove-plus-comm` passed, and the other three scored as
-failures, one of them ctx-exhausted. **There are no VOIDs in the
-scored table**, and the first attempts are preserved in the archive
-and excluded from every count above.
+failures, one of them ctx-exhausted. There are no VOIDs in the scored
+table, and the first attempts are preserved in the archive and
+excluded from every count above.
 
-Read in this order:
+The table says five things:
 
-- **Every harness scored exactly 7 of 32.** Two runs of sixteen tasks
+- Every harness scored exactly 7 of 32. Two runs of sixteen tasks
   cannot rank three harnesses, and this table does not.
-- **The model ladder moved: 7/96 at 4B, 4/96 at 8B, 21/96 here**,
-  with passes landing on five of the sixteen tasks instead of one.
-  The flatness of the two earlier tables was the models, not the
-  suite.
-- **Cost still separates what the score does not.** opencode spent
-  2.8x temur's wall clock to reach the same total.
-- **At 18.65 tok/s the 900-second agent budget has started to bind.**
-  Six cells ended in `TIMEOUT`, the first in this series, and all six
-  are opencode, the harness that spends the most turns per cell. Part
-  of what that row now measures is the clock rather than the agent,
-  which weakens it in a way the temur and codex rows do not share.
-- **temur's ctx-exhausted failures are 16 of 32**, the largest count
-  yet, and they were measured on v0.28.0, **without auto-compaction**.
-  The controlled run that would say whether the feature converts them
-  is the next section,
+- The model ladder moved: 7/96 at 4B, 4/96 at 8B, 21/96 here, with
+  passes falling on five of the sixteen tasks instead of one. The
+  flatness of the two earlier tables came from the models; the suite
+  discriminates here.
+- Cost still separates what the score does not. opencode spent 2.8x
+  temur's wall clock to reach the same total.
+- At 18.65 tok/s the 900-second agent budget has started to bind. Six
+  cells ended in `TIMEOUT`, the first in this series, and all six are
+  opencode, the harness that spends the most turns per cell. Part of
+  that row now measures the clock rather than the agent, a weakness
+  the temur and codex rows do not share.
+- temur's ctx-exhausted failures are 16 of 32, the largest count yet,
+  and they were measured on v0.28.0, without auto-compaction. The
+  controlled run that would say whether the feature converts them is
+  the next section,
   ["Same rig, auto-compaction on"](#same-rig-auto-compaction-on-temur-v0291-differential).
 
 Required disclosures. The matrix halted once, 42 cells in, on three
 consecutive opencode VOIDs, all of them
 `AgentSetupTimeoutError: Agent setup timed out after 360.0 seconds`.
-The halt condition was obeyed rather than edited, and a ruling then
-resumed the run with one change **for this experiment only**: a
+The halt condition was obeyed as written, and a ruling then resumed
+the run with one change for this experiment only: a
 setup-timeout VOID is exempt from that halt condition, because the
 experiment-2 ruling already treats a setup timeout as a property of
 this box's link rather than of the run. The 360-second budget was not
 raised and no pin was changed. The gap is 9 h 33 m, against 14 h 43 m
 of running elapsed, and only the running figure is used anywhere; the
 driver, image digest, model hash, temur hash, context, budgets and
-pins were all read back unchanged before the restart. Separately, a
-census note for anyone recomputing the table: a raw count of the
-`CTX` tag finds 45 cells, and counting only ctx-exhausted **failures**
-finds 40, because six cells carry the tag and nevertheless passed.
-Passes are classified first, so 40 is the number the table uses. Full
+pins were all read back unchanged before the restart. A census note
+for anyone recomputing the table: a raw count of the `CTX` tag finds
+45 cells, and counting only ctx-exhausted failures finds 40, because
+six cells carry the tag and passed. Passes are classified first, so
+the table uses 40. Full
 report, cell tree and stage records for this run:
 `~/temur-eval-archive/desktop-exp4/`.
 
 ### Same rig, auto-compaction on (temur v0.29.1, differential)
 
-A fifth matrix ran on the same box, 2026-08-30 to 2026-08-31, and it is
-not a harness comparison. It runs **temur only**, and it changes exactly
-one thing against the Qwen3-8B table above: the temur binary, 0.28.0
-there and 0.29.1 here. Auto-compaction shipped in v0.29.x, so that one
-substitution is the whole of the variable. Everything else is pinned to
-the experiment-3 arm and read back rather than assumed: the same box,
-the same `server-cuda-b10438` image digest, the same
-`Qwen3-8B-Q4_K_M.gguf` with thinking held off, ctx 12288, `max_tokens`
-3072, the same 16-task subset, two runs each. `prompt_profile` is
-**`"compact"`, explicitly, in all 32 cell configs and in all 32 of
-experiment 3's**, so T41's auto profile is not in either arm's numbers,
-and at a 12288-token window it would have resolved to compact anyway.
-The baseline is experiment 3's 32 temur cells, not its 96.
+A fifth matrix ran on the same box, 2026-08-30 to 2026-08-31. It is
+not a harness comparison: it runs temur only and changes one thing
+against the Qwen3-8B table above, the temur binary, 0.28.0 there and
+0.29.1 here, the release where auto-compaction shipped. Everything
+else is pinned to the experiment-3 arm and read back: the same box,
+the same
+`server-cuda-b10438` image digest, the same `Qwen3-8B-Q4_K_M.gguf`
+with thinking held off, ctx 12288, `max_tokens` 3072, the same 16-task
+subset, two runs each. `prompt_profile` is `"compact"`, explicitly, in
+all 32 cell configs and in all 32 of experiment 3's, so T41's auto
+profile is not in either arm's numbers, and at a 12288-token window it
+would have resolved to compact anyway. The baseline is experiment 3's
+32 temur cells, out of its 96.
 
 Capture is a grep of each cell's transcript (`temur.txt`, stdout and
 stderr merged) for the three strings v0.29.1 prints, `compacting
@@ -704,8 +673,8 @@ cell as `started=`, `compactions=` and `failed=`. The planning session
 recounted the markers independently and matched the recorded fields in
 all 32 cells.
 
-**Headline: auto-compaction runs, it works, and it does not move the
-score.**
+Headline: auto-compaction runs, it works, and it does not move the
+score.
 
 | | exp 3, temur 0.28.0 | exp 5, temur 0.29.1 |
 |---|---|---|
@@ -717,102 +686,97 @@ score.**
 
 The single experiment-3 pass, `modernize-scientific-stack` run 1, did
 not repeat. A 1-to-0 move on 32 cells is inside the single-task noise
-the tables above already show, and it is recorded as such rather than
-as a regression. The +16% wall clock is the price: compaction
+the tables above already show, and it is not recorded as a
+regression. The +16% wall clock is the price: compaction
 keeps doomed cells alive longer.
 
 The seven cells that exhausted context in experiment 3 went four ways
-on v0.29.1. **One was converted by compaction**: `build-pmars` run 1
+on v0.29.1. One was converted by compaction: `build-pmars` run 1
 folded twice and survived to a completed failure in 254 s, which is the
-only clean CTX-death-to-completed-turn conversion in the set. **Three
-completed with zero compactions**, `build-pmars` run 2,
+only clean CTX-death-to-completed-turn conversion in the set. Three
+completed with zero compactions, `build-pmars` run 2,
 `count-dataset-tokens` run 2 and `extract-elf` run 2, where the model
-simply took a shorter path; a cell that left CTX without the feature
-ever firing is run-to-run variance and is not credited to compaction.
+took a shorter path; a cell that left CTX without the feature firing
+is run-to-run variance and is not credited to compaction.
 (`build-pmars` run 2 is also the one cell re-run after the
 interruption disclosed below; its count is unchanged and its
-provenance is flagged there.) **Three are still CTX**, `gcode-to-text`
+provenance is flagged there.) Three are still CTX, `gcode-to-text`
 runs 1 and 2 and `adaptive-rejection-sampler` run 1, all three with
 zero compactions. Two cells that were fine in experiment 3 became CTX
 here: `adaptive-rejection-sampler` run 2 and `build-cython-ext` run 2.
 
 The five remaining CTX deaths decompose into three mechanisms, each
-verified against the v0.29.1 source rather than inferred from the
-transcripts.
+verified against the v0.29.1 source.
 
-**Three of the five are an estimator blind spot.** `context_crossing()`
+Three of the five are an estimator blind spot. `context_crossing()`
 reads the usage the previous response reported, so a large
 `tool_result` appended on the client side is invisible to the check
 until the next response comes back. Both `gcode-to-text` runs died on
-round-trip **one**: a single capped read of `text.gcode` delivered
+round-trip one: a single capped read of `text.gcode` delivered
 12,433 characters, and dense G-code tokenizes at roughly 1.2 characters
 per token, so that one result was about 10k tokens on its own. The
 request measured 13,402 tokens against a 12288-token window, while the
 value the check had to work from was the first response's usage,
-reconstructed at about 2.9k. No crossing line was ever printed because
-no crossing was ever detected, and a
-context-size 400 is terminal in v0.29.1, which has no reactive path.
-The related calibration fact is that the T19 output cap budgets its
-bytes assuming about 4 characters per token, which is about 3x off on
-this content class, so one capped read can arrive as roughly 85% of the
-window.
+reconstructed at about 2.9k. No crossing line was printed because none
+was detected, and a context-size 400 is terminal in v0.29.1, which has
+no reactive path. Related: the T19 output cap budgets its bytes at
+about 4 characters per token, about 3x off on this content class, so
+one capped read can arrive as roughly 85% of the window.
 
-**One of the five is a late-trigger fail-open.** In
+One of the five is a late-trigger fail-open. In
 `adaptive-rejection-sampler` run 2 the crossing was first seen at
 ~11,571 of 12,288 tokens, 94% of the window, and the summarize call is
 subject to the same window it is trying to relieve: it was rejected at
 13,518 tokens. Failing open is the designed behaviour and the session
 continued, but the next request died anyway.
 
-**One of the five is the per-turn bound behaving as documented.**
+One of the five is the per-turn bound behaving as documented.
 `build-cython-ext` run 2 folded three times successfully, its fourth
 crossing hit `MAX_AUTO_COMPACTIONS_PER_TURN`, the advisory was emitted,
 and the cell died context-exhausted. The cell was a file-re-reading
 loop, reading the same `.pyx` again after a fold, which no amount of
 window rescues.
 
-Read together, the differential says that at this window and this model
-**the score is capability-bound, not context-bound**. The one cell that
-was given more runway still failed the task. What auto-compaction is
-measured to buy here is runway, not passes: correct capture, 11 of 12
-folds succeeding, legible failure modes, and 16% more wall
-clock spent on cells that were going to fail either way. The remaining
-CTX class is dominated by the blind spot, which auto-compaction as
-built in v0.29.1 **could not** catch, because it never sees the jump
-(v0.31.0 added a reactive recovery after the server's rejection). A
-score-neutral differential is the headline, and it is a real
-answer rather than a null instrument.
+At this window and this model the score is capability-bound. Context
+is not the limit: the one cell given more runway still failed the
+task. Auto-compaction buys runway here, correct capture, 11 of 12
+folds succeeding, legible failure modes, and 16% more wall clock spent
+on cells that were going to fail either way. It buys no passes. The
+remaining CTX class is dominated by the blind spot, which v0.29.1
+could not catch because it never sees the jump (v0.31.0 added a
+reactive recovery after the server's rejection). The score-neutral
+result is a real answer: the instrument worked and measured no change.
 
-Required disclosures. **The first launch was VOID and measured
-nothing.** `cell-desktop-exp5.sh` was not executable, all 32 cells
+Required disclosures. The first launch was VOID and measured nothing.
+`cell-desktop-exp5.sh` was not executable, all 32 cells
 failed instantly on `Permission denied`, and the matrix reported
 `run1=0 passes run2=0 passes` and `complete` in one second, which reads
-as a finished 0/0 run to anything looking at the summary line. The
+as a finished 0/0 run. The
 desktop session caught it, the ledger carries a `VOID LAUNCH` block
-marked in place rather than deleted, and the deeper defect, a matrix
+marked in place with nothing deleted, and the deeper defect, a matrix
 that counted a cell which never ran as a non-pass, was fixed before the
 real run with a guard that halts on the first cell recording no
 `RESULT` line, verified by re-breaking the permission bit.
 
-**The matrix was interrupted once, at 22 of 32 cells**, by an external
+The matrix was interrupted once, at 22 of 32 cells, by an external
 and orderly termination of the WSL VM at 00:50:47Z. Windows itself
 stayed up 33 h, and memory, GPU, disk, OOM, Windows Update, sleep and
-`loginctl` linger were each ruled out on evidence. The cause is **not
-determined**; the leading candidate is WSL's idle behaviour with no
-`vmIdleTimeout` set, and no cause is asserted. The resume skipped every
+`loginctl` linger were each ruled out on evidence. The cause is not
+determined; the leading candidate is WSL's idle behaviour with no
+`vmIdleTimeout` set. The resume skipped every
 cell that already had a verdict. `build-pmars/run2` had written no
 `RESULT` line, so its partial directory was deleted and the cell re-ran
 from scratch, with an `INTERRUPTED` line in the append-only ledger,
-which is the handling experiment 3's resume above used. Driver, image
+the same handling as experiment 3's resume. Driver, image
 digest, model sha and temur binary sha were all read back unchanged
 across the gap, and the preflight re-ran and passed. Two further
-interruptions belong to the resume rather than to the measurement: it
-was killed once by the desktop session's own tooling error, and once
+interruptions belong to the resume and touch no measurement: it was
+killed once by the desktop session's own tooling error, and once
 halted correctly by the preflight finding containers orphaned by the VM
-death. The real run recorded **zero VOIDs and zero timeouts** across
-all 32 cells.
+death. The real run recorded zero VOIDs and zero timeouts across all
+32 cells.
 
-**The run ledger is not in the tarball**; it lives on the desktop box
+The run ledger is not in the tarball; it lives on the desktop box
 and has never been packaged in any experiment. The cell tree,
 `FINAL-exp5.md` and the stage reports are all included, and the cell
 tree is what the planning session recomputed from.
@@ -822,22 +786,20 @@ context windows: 12288 is the only window measured, and every mechanism
 above is a statement about behaviour at that size. It says nothing
 about the full or auto prompt profiles, because compact was explicit in
 both arms. It says nothing about hosted providers. And it says nothing
-about compaction **quality**: 11 folds succeeded in the sense that the
+about compaction quality: 11 folds succeeded in the sense that the
 call returned and the history was replaced, and nothing scored the
 summaries themselves. Full report, cell tree and stage records for this
 run: `~/temur-eval-archive/desktop-exp5/`.
 
 ### The earlier GPU run is archive-only
 
-An experiment 1 ran on this box on 2026-08-26/27 against llama.cpp b8580,
-which was forced by the then-installed 560.94 driver. Its codex column
-was not a measurement of codex: all 32 codex cells failed identically
-at the first request because that build rejected codex's Responses-API
-tool type with `HTTP 400 'type' of tool must be 'function'`. On
-b10438 that failure does not occur in any of the 96 cells, and codex
-completes turns, runs shell commands and solves a task. Experiment 1
-is therefore kept as an archive record and none of its numbers are
-published here.
+Experiment 1 ran on this box on 2026-08-26/27 against llama.cpp b8580,
+forced by the then-installed 560.94 driver. Its codex column measured
+nothing: all 32 codex cells failed at the first request because that
+build rejected codex's Responses-API tool type with `HTTP 400 'type'
+of tool must be 'function'`. On b10438 that failure does not occur in
+any of the 96 cells, and codex solves a task. Experiment 1 is kept as
+an archive record and none of its numbers are published here.
 
 ### What this section does not establish
 
@@ -845,8 +807,8 @@ It does not rank the harnesses, for the same reason as the CPU
 section: at 2/16 down to 0/16 with one pass of spread, the suite did
 not discriminate them at this model. It says nothing about frontier
 models or hosted providers, and it covers 16 of 89 tasks. Per-harness
-turn and tool-call instrumentation was collected but is **not
-published here**, because the three harnesses count different things
+turn and tool-call instrumentation was collected but is not published
+here, because the three harnesses count different things
 and one of the parsers has a known hole; the figures and that caveat
 live in the archive.
 
@@ -856,17 +818,16 @@ Full report, cell tree and ledger:
 ## Not comparable to OFFLINE.md
 
 `docs/OFFLINE.md` carries temur's own small-model results. Those
-numbers and these are **not comparable**: they were taken at a
-different context size and under a different server methodology (one
-long-lived server rather than a fresh one per task). Compare within a
-table here, not across the two documents.
+numbers and these are not comparable: they were taken at a different
+context size and under a different server methodology (one long-lived
+server rather than a fresh one per task). Compare within a table here.
 
 ## Reproducing
 
     scripts/harness_compare/matrix.sh <model-label> 2
 
-The recovery-disabled control is a fourth harness name rather than an
-environment knob, so its cells, ledger lines and scores stay separate
+The recovery-disabled control is a fourth harness name (there is no
+environment knob), so its cells, ledger lines and scores stay separate
 from temur's by construction:
 
     HARNESSES=temur-noprose scripts/harness_compare/matrix.sh <model-label> 2

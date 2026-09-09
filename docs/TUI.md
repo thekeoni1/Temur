@@ -1,7 +1,7 @@
 # TUI (milestone B) - design notes, seam assumptions, known limits
 
 The TUI is a second `Ui` implementation (`src/ui/tui/`) over the unchanged
-`AgentEvent` stream; the agent core was not modified for it. Layout is a
+`AgentEvent` stream. Layout is a
 behavioral port of OpenCode's session view (header band / scrollback with
 sticky bottom / prompt / status row / footer), monochrome-adapted.
 
@@ -40,8 +40,8 @@ Within the style contract above:
 - Horizontal rule: dim `─` run to width.
 - Tables (T47): one row per line, cells joined by a dim ` | `, header
   row BOLD. No column widths, no alignment, no box drawing: a table used
-  to arrive as a single run-together line of pipes, and vertical
-  structure alone is what makes it readable again. Cell content goes
+  to arrive as one run-together line of pipes, and one row per line is
+  enough to read it. Cell content goes
   through the ordinary inline machinery, so code spans, emphasis and the
   math pass below all work inside cells.
 - Links: text UNDERLINED + dim ` (url)`; bare autolinks just dim.
@@ -57,9 +57,9 @@ SOURCE before parsing, with code spans, code blocks and HTML excluded by
 byte range, so `Solve $ \int 2x \cos(x^2)\,dx $` renders as
 `Solve ∫ 2x cos(x²) dx`.
 
-- It runs before the parser, not on text events, because CommonMark
-  backslash escaping strips `\,` to a bare comma and splits the text node
-  around it: by the time an event arrives the span is already broken.
+- It runs before the parser because CommonMark backslash escaping
+  strips `\,` to a bare comma and splits the text node around it: by the
+  time a text event arrives the span is already broken.
 - What maps: the delimiters drop; the common commands become Unicode
   (`\int` ∫, `\sum` ∑, `\sqrt` √, `\cdot` ·, `\times` ×, `\pm` ±, `\leq` ≤,
   `\geq` ≥, `\neq` ≠, `\approx` ≈, `\to` →, `\infty` ∞, the Greek set and
@@ -71,7 +71,7 @@ byte range, so `Solve $ \int 2x \cos(x^2)\,dx $` renders as
 - `^` and `_` runs lift to Unicode super/subscript only when EVERY
   character of the run maps. The alphabets are incomplete (no superscript
   `q`), and parentheses are deliberately excluded, so `x^2` lifts to `x²`
-  while `x^(n+1)` falls back whole rather than emitting half a run.
+  while `x^(n+1)` falls back whole. Half a run is never emitted.
 - **The currency guard.** A `$...$` span is math only when its interior
   carries a LaTeX signal (`\`, `^` or `_`), so "costs $5 and $10" passes
   through untouched. A span whose only signal is `^` or `_` must also have
@@ -80,18 +80,18 @@ byte range, so `Solve $ \int 2x \cos(x^2)\,dx $` renders as
   opener with no closer in the same stretch stays literal.
 - No styling and no color: the monochrome contract is untouched.
 
-**Limitations (documented, tested where observable):**
+**Limitations** (documented, tested where observable):
 
 - **Severed fence.** A tool call or notice mid-reply splits one logical
   reply across `AssistantText` cells, and each cell re-parses alone. A
   fence severed by the split renders its opener's cell as code, while
   the closer's cell re-parses from scratch: prose until the orphan
   ```` ``` ````, which opens a NEW fence that swallows the rest of that
-  cell as code. Nothing panics, nothing is lost, the styling is just
+  cell as code. Nothing panics and nothing is lost. The styling is
   inverted for that cell.
-- **Tables / footnotes / task lists** are not enabled and render as the
-  plain paragraphs pulldown-cmark emits without those extensions (table
-  rows come out as one reflowed paragraph of `|`-text).
+- **Footnotes / task lists** are not enabled and render as the plain
+  paragraphs pulldown-cmark emits without those extensions. Tables are
+  enabled since T47 (above).
 - **No syntax highlighting** (syntect and kin are punted: dependency
   surface vs. the static-musl constraint).
 - Thinking text is still discarded (unit `Cell::Thinking` marker), so
@@ -112,8 +112,9 @@ authority on argument shapes).
   session file. The thinking line reads
   `thinking: … · max_tokens: … · prompt: full|compact`, the LIVE
   prompt profile, which follows profile switches. Since v0.30.0 the
-  word carries `(auto)` when the window rule chose the profile rather
-  than config naming it, e.g. `prompt: compact (auto)`.
+  word carries `(auto)` when the window rule chose the profile, e.g.
+  `prompt: compact (auto)`; a profile named in config carries no
+  suffix.
 - `/model [<profile>|<model-id>]` - bare: list profiles. With an
   argument: profile names win; anything else is a raw model id switched
   WITHIN the active provider: endpoint, credentials, limits, profile
@@ -129,7 +130,7 @@ authority on argument shapes).
 **Input styling.** A `/`-line renders in the cyan accent (applied to
 the windowed slice, so it holds while horizontally scrolled); deleting
 the `/` reverts. Placeholder and non-command input are untouched. This
-stays inside the T8-P2 style contract (cyan is the accent color).
+stays inside the T8-P2 style contract.
 
 **Status-row hint** (idle only; busy hints unchanged). While the input
 starts with `/`: a unique-or-EXACT prefix match on the head word shows
@@ -144,7 +145,7 @@ non-command input keep the standard idle hint.
 - Completes exactly three things: command names (while the head word is
   being typed), `/model` arguments (profile names first, then
   `/models`-cached ids, deduplicated, prefix-filtered), and `/thinking`
-  arguments (`on|off`). Nothing else completes.
+  arguments (`on|off`).
 - Tab applies the first candidate or advances the cycle; BackTab
   reverses; both wrap. Candidates are computed once per cycle from the
   input the cycle started on; any other key (edit, cursor, history)
@@ -159,7 +160,7 @@ non-command input keep the standard idle hint.
   wins).
 - T10 extends the same machinery to `/resume`: session keys from the
   most recent `/sessions` fold complete after `/resume ` (same
-  session-lifetime cache policy). `/new` deliberately never completes:
+  session-lifetime cache policy). `/new` never completes:
   its argument is a name that does not exist yet.
 
 ## Sessions (T10)
@@ -180,11 +181,11 @@ Two folds carry the TUI side:
   user blocks, assistant text as markdown-rendered prose, tools as
   `⚙ name` one-liners, then the resume summary as a notice cell.
   Advisory notices (mismatches, the dropped-prompt rule, the
-  cross-project cwd warning) arrive AFTER the event, so they land in
+  cross-project cwd warning) arrive AFTER the event, so they appear in
   the rebuilt transcript. The title is claimed by the first replayed
   user prompt: a resumed session's header no longer reads
-  "new session". `busy` resets; the input line is deliberately
-  untouched (resuming must not eat a half-typed line).
+  "new session". `busy` resets; the input line is untouched
+  (resuming must not eat a half-typed line).
 
 Replay is lossy by design: tool output and arguments are not replayed,
 so replayed tool cells render as one-liners even for tools that render
@@ -224,12 +225,12 @@ never touches them.
 sound today because the core streams `tool_use` blocks in order and
 executes them **sequentially in that same order** (`agent/mod.rs` turn
 loop). **It breaks if tool execution ever becomes out-of-order or
-concurrent.** The remedy at that point is a seam extension, not TUI
-heuristics: add a call id to `ToolStart`/`ToolEnd` (the provider already
-has `tool_use.id`) and pair by id. Tested in `tests/tui.rs`
-(`fifo_pairing_matches_parallel_tools_in_order`); an unmatched `ToolEnd`
-is appended rather than dropped, so a future mismatch degrades visibly
-instead of silently.
+concurrent.** The remedy at that point is a seam extension: add a call
+id to `ToolStart`/`ToolEnd` (the provider already has `tool_use.id`)
+and pair by id. Do not paper over it with TUI heuristics. Tested in
+`tests/tui.rs` (`fifo_pairing_matches_parallel_tools_in_order`); an
+unmatched `ToolEnd` is appended to the transcript, so a future mismatch
+degrades visibly.
 
 ## BEHAVIOR CHANGE (milestone B): provider errors in the plain REPL
 
@@ -282,11 +283,11 @@ and, since Esc only interrupts while busy, could not be stopped at all.
 it was sent, and the render loop honors it only while no submit has
 overtaken it. Nothing about an ordinary turn changes.
 
-**Plain-REPL interruption (F4, v0.1.1, closes the T6 exclusion).** The
+**Plain-REPL interruption** (F4, v0.1.1, closes the T6 exclusion). The
 plain REPL now interrupts too: a minimal SIGINT handler (`src/signal.rs`,
 `libc` sigaction WITHOUT `SA_RESTART`, installed only in plain mode) sets
 a process-global flag that `CancelToken::is_set` ORs in, so the first
-Ctrl+C lands the running turn through exactly the same cooperative
+Ctrl+C lands the running turn through the same cooperative
 checkpoints as a TUI Esc: bash group-kill included, session saved by the
 driver loop as usual. A second Ctrl+C while the flag is still set
 force-quits with exit 130 (async-signal-safe `_exit`); the flag is
@@ -295,13 +296,13 @@ the two-press escape hatch re-arms every turn. TUI raw mode never
 generates SIGINT: TUI Ctrl+C semantics are untouched.
 
 **Remaining exclusion.** A FULLY stalled TCP stream (no frames arriving
-at all) cannot observe the token: ureq timeouts are whole-phase
-deadlines, not idle timeouts, and would kill legitimate long streams.
-The no-`SA_RESTART` choice lets a blocked raw read return EINTR (and F5
-treats a read error under cancel as a graceful stop), but Rust's buffered
-readers retry EINTR internally, so this is opportunistic, not guaranteed:
-the force-quit paths (TUI double-Ctrl+C arm+confirm; plain second
-Ctrl+C) remain the documented escape hatch, both exiting 130.
+at all) cannot observe the token: ureq has whole-phase deadlines only,
+and those would kill legitimate long streams. The no-`SA_RESTART` choice
+lets a blocked raw read return EINTR (and F5 treats a read error under
+cancel as a graceful stop), but Rust's buffered readers retry EINTR
+internally, so this is opportunistic: the force-quit paths (TUI
+double-Ctrl+C arm+confirm; plain second Ctrl+C) remain the documented
+escape hatch, both exiting 130.
 
 Also deferred, noted during the port: input queuing while a turn runs
 (OpenCode queues prompts; we disable Enter and show a hint), tool output
@@ -326,16 +327,16 @@ question, drawn in the warning style the T21 modal already used:
 The question line names the tool and the answers; the summary line under
 it is the bash command, or the path with its byte count or change
 description. `y` allows this call, `a` allows that TOOL for the rest of
-the session, `n` or Esc denies. Every OTHER key is ignored rather than
-taken as an answer, so a stray keystroke can neither approve nor deny;
-the prompt closes only on an explicit answer, or on the runtime tearing
-the channel down, which denies.
+the session, `n` or Esc denies. Every OTHER key is ignored, so a stray
+keystroke can neither approve nor deny; the prompt closes only on an
+explicit answer, or on the runtime tearing the channel down, which
+denies.
 
 A short fixed pattern list (recursive `rm`, `mkfs`, `dd` to a device,
 `git reset --hard` and `git clean -f`, `shred`) adds a `!! recursive
 delete` line between the question and the summary. It is emphasis on a
-prompt that was already appearing, not a gate of its own, and it adds no
-colour the modal did not already have: bold and the `!!` marker carry it.
+prompt that was already appearing, and it adds no colour: bold and the
+`!!` marker carry it.
 
 The T21 key-sandbox question composes into the same modal when both
 apply, and that combined form is `[y/N]`, with `a` neither offered nor
@@ -348,23 +349,22 @@ turn submitted from a pasted block is still answerable. `read`, `glob`,
 
 ## Scrolling, and why scroll-up used to recall history (T47 P2)
 
-temur enables no mouse capture, deliberately. That leaves the mouse to
-the terminal, so selecting and copying text works the way it does in
-every other program on that screen. The cost is that in the alternate
-screen the terminal falls back to ALTERNATE-SCROLL mode, where a wheel
-or touchpad scroll-up is delivered to the application as Up-ARROW KEY
-PRESSES. Up is history recall, so scrolling up over an idle TUI used to
+temur does not capture the mouse, so selecting and copying text works
+as it does in every other program on that screen. The cost is that in
+the alternate screen the terminal falls back to ALTERNATE-SCROLL mode,
+where a wheel or touchpad scroll-up reaches the application as Up-ARROW
+KEY PRESSES. Up is history recall, so scrolling up over an idle TUI used to
 walk the input history to its oldest entry and clamp there, leaving the
 session's first submitted line sitting in the input box. An accidental
 brush of a touchpad was enough, and only a net-upward scroll left a
 trace, which is why it looked intermittent.
 
-The guard uses the shape of the events rather than their content. A
-scroll's presses arrive with no gap between them, so the T43 drain
-collects them into ONE batch; a person holding Up produces presses far
-enough apart that each lands in a batch of its own. A drained batch that
-is ONLY unmodified Up presses, ten or more of them, is therefore
-terminal scroll and is discarded, leaving the input untouched.
+The guard reads the timing of the events. A scroll's presses arrive
+with no gap between them, so the T43 drain collects them into ONE
+batch; a person holding Up produces presses far enough apart that each
+arrives in a batch of its own. A drained batch that is ONLY unmodified
+Up presses, ten or more of them, is therefore terminal scroll and is
+discarded.
 
 Measured through the real render loop under a pty: a gapless burst of n
 Up events forms one batch of exactly n, while the same events at a gap
@@ -372,15 +372,13 @@ of a quarter millisecond or more arrive as n batches of one. Keyboard
 auto-repeat is around 30Hz, a 33ms gap, so holding Up to walk back
 through history is unaffected, and that is pinned by a test.
 
-Known miss, accepted rather than solved: a very short flick that
-produces fewer than ten events is indistinguishable from a few real
-keypresses and still recalls history. It fails to the older behaviour,
-which is no worse than before the guard existed. The alternative is to
+Known miss, accepted: a very short flick that produces fewer than ten
+events is indistinguishable from a few real keypresses and still
+recalls history. It fails to the older behaviour. The alternative is to
 enable mouse capture and translate the wheel into real scrollback, and
-that was considered and rejected: it would take text selection away from
-the terminal, and a user who can no longer select output with the mouse
-has lost more than a user who occasionally sees an old prompt appear in
-the input line.
+that was rejected: it would take text selection away from the terminal,
+which costs more than an old prompt occasionally appearing in the input
+line.
 
 Scrolling the transcript itself is PgUp/PgDn, listed below.
 
