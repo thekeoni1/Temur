@@ -352,10 +352,12 @@ one unauthenticated GET, against keyless endpoints only.
 | Gemma-3-4B-it | Q4_K_M | ~2.3 GB | ~3.3 GB | not delivered by its template | n/a | verified 2026-08-15 (eval 0/9) |
 | Phi-4-mini-instruct | Q4_K_M | ~2.3 GB | ~3.3 GB | not delivered by its template | n/a | verified 2026-08-15 (eval 0/9) |
 | SmolLM2-1.7B-Instruct | Q4_K_M | ~1.0 GB | ~2.0 GB | not delivered by its template | n/a | verified 2026-08-15 (eval 0/9) |
+| Llama-3.1-8B-Instruct | Q4_K_M | ~4.9 GB | ~5.9 GB | emitted, but the server rejected 4 of 9 | yes | measured 2026-09-09 on head `7c7419e`, a different binary from every row above (eval 5/9, 5/9; identical failing set both runs) |
+| gpt-oss-20b | MXFP4 | ~12.1 GB | ~13.1 GB | not delivered: its template cannot render temur's current definitions | n/a | measured 2026-09-09 on head `7c7419e` (eval 0/9, 0/9); the SAME model and template render the tool set on a pre-T54 binary, see below |
 
-The last three rows say "not delivered by its template". The tools never
-reached two of those three models, and when they do, two of the three
-score. See "Substitute chat template" below.
+The rows that say "not delivered by its template" mean the tools never
+reached those models. Some of them score when the tools do reach them.
+See "Substitute chat template" below.
 
 Est. RAM uses the serve.sh warning's own arithmetic: file size plus
 128 KiB per context token of KV and compute allowance at 8192 ctx
@@ -383,6 +385,69 @@ Since 2026-08-16 `EVAL_TASK_TIMEOUT` is enforced (T33); before that it
 bound nothing. The default is 1200s, set above the slowest legitimate
 task ever observed (994s), and no task in any published row has
 approached it. No score in this table was truncated by the bound.
+
+The last two rows are a later pass (2026-09-09) and carry the same
+caveat as the Llama-3.2-3B row: a different temur binary, the local
+head `7c7419e`, musl-static i686, sha256 `09c8fdc7...`. Server build,
+image digest, ctx 8192, `--jinja`, compact profile, `EVAL_MAX_TOKENS`
+3072, `EVAL_RUNS` 2 and the `--network none` pod are unchanged from the
+rows above, so those two rows are comparable to each other and only
+loosely to the 2026-08-15 batch. Model files measured: Llama-3.1-8B
+sha256 `7b064f58...` (4,920,739,232 bytes), gpt-oss-20b sha256
+`27cd6c43...` (12,109,566,624 bytes).
+
+Llama-3.1-8B-Instruct receives the tools, and the server rejects what
+the model writes back. Its template delivers the definitions (doctor's
+tools-drop probe: prompt_tokens 36 without tools, 3563 with), and five
+tasks pass, task 7 among them, so indirect tool selection works. Both
+runs scored 5/9 and failed the SAME four tasks (2 read-extract, 5
+find-needle, 6 bump-and-copy, 9 large-tail), every one of them with the
+identical error, mid-stream, on the first tool call:
+
+```
+provider error: api error (HTTP 200) server_error: The model produced output that does not match the expected peg-native format
+```
+
+That is llama.cpp's own tool-call parser refusing the model's output.
+temur rejected nothing, and the per-task bound played no part: the
+failing tasks ran 21-38s against a 1200s bound. The measured prompt
+floor is 3667 tokens, 44% of the 8192 window with the compact profile
+already active.
+
+One missing JSON Schema key stops every gpt-oss-20b turn. Every task in
+both runs failed in 6-7 seconds with HTTP 500 before a token was
+generated, all with the same template render error:
+
+```
+While executing If at line 12, column 13 in source:
+...am_spec.type == "array" -%}  {%- if param_spec['items'] -%}
+Error: Function is not a bool value
+```
+
+Isolated against the running server with single-tool requests, smallest
+difference between them: no tools 200; one string parameter 200; one
+array parameter WITHOUT `items` 500; the same array parameter WITH
+`items` 200. temur has exactly one array schema with no `items`, the
+element type of `spreadsheet`'s `rows`
+(`"rows": {"type": "array", "items": {"type": "array"}}`), and sending
+that exact shape alone reproduces the 500 while adding `items` to the
+inner array alone returns 200. An array without `items` is valid JSON
+Schema; gpt-oss's template asks `param_spec['items']` and the engine
+resolves the absent key to the mapping's own `.items` method, then
+refuses a function in boolean context.
+
+The model is not the cause. The same model, template, server build and
+settings render temur's full tool set on temur 0.29.1
+(pre-`spreadsheet`): prompt_tokens 68 without tools, 1986 with, PASS.
+So gpt-oss-20b's row measures a temur schema that only stopped working
+when the `spreadsheet` tool arrived, and it says nothing yet about how
+well the model drives tools. It has no score to report until that
+element type carries an `items`.
+
+`temur doctor` names this failure without any of the above: its
+tools-drop probe returns `WARN: the server ... rejected temur's tool
+definitions for "local-gguf" (HTTP 500: ...): every turn that sends
+tools will fail the same way`, quoting the server's own words.
 
 The Llama re-measure's slowest task, 434s, is not a second data point
 (corrected 2026-08-17, having first been written as one): it spent its

@@ -367,6 +367,53 @@ things this experiment did not measure. Both still stand.
   measurements at that window on that model, not constants.
 
 
+### E1 measurement pass (2026-09-09): two off-matrix models
+
+Not a code milestone. Archive, with every log, transcript and diagnostic
+script: `~/temur-eval-archive/e1-2026-09-09/`. Measured on the local head
+`7c7419e` (T56 P3, unpushed), musl i686 sha256 `09c8fdc7...`, against
+llama.cpp `server-b10438`, ctx 8192, compact profile, `EVAL_MAX_TOKENS`
+3072, `EVAL_RUNS` 2, `--network none` pod. The heavy-job lock was taken
+per run and released between runs.
+
+**NO script change was needed and none was made.** The gpt-oss-20b
+reasoning-effort contingency in the E1 brief never triggered: nothing
+reached generation, so there was no completion budget to burn and no
+knob to add. `scripts/weak_model_eval.sh` is untouched.
+
+PART A produced two OFFLINE.md rows (see that file for the full
+finding). Llama-3.1-8B-Instruct scored 5/9 and 5/9 with an identical
+failing set, every failure llama.cpp's own tool-call parser rejecting
+the model's output ("does not match the expected peg-native format"),
+never a timeout. gpt-oss-20b scored 0/9 and 0/9, every task failing in
+6-7 seconds with HTTP 500 before a token was generated.
+
+**The gpt-oss-20b result is a finding about temur, not about the
+model, and it is unreleased.** Its template renders
+`{%- if param_spec['items'] -%}` for every array-typed parameter; temur
+has exactly one array schema without an `items` key, the element type of
+`spreadsheet`'s `rows` (`src/tools/spreadsheet.rs`), introduced by T54 P3
+(`b481943`). The absent key resolves to the mapping's own `.items`
+method and the render fails. Isolated to that one key against the
+running server (array without `items` 500, same array with `items` 200),
+and confirmed at product level: the same model, template, server and
+settings render temur's full tool set on temur 0.29.1, pre-`spreadsheet`
+(prompt_tokens 68 without tools, 1986 with). `temur doctor`'s T34
+tools-drop probe already names the failure in the server's own words.
+**Queued, and it rides before the v0.34.0 cut**: give that inner array
+an `items`. E1 is a measurement pass and deliberately did not fix it.
+
+PART B (three-harness comparison, gpt-oss-20b) **did not run**: preflight
+failed. Neither competitor binary exists on this box - `OPENCODE_BIN`
+(`~/harnesses/opencode-glibc/opencode`) and `CODEX_BIN`
+(`~/harnesses/codex/codex`) are both absent, and a filesystem search
+found no `opencode` or `codex` executable anywhere. Per the brief,
+temur was NOT run alone and called a comparison, and COMPARISON.md is
+unchanged.
+
+PART C (Terminal-Bench subset) **deferred**, per the brief's default. The
+operator did not opt in, so no TB cell was run.
+
 ### D19: a gpt-5 id hard-failed on the token-cap name (public sandbox, 2026-09-07)
 
 The operator ran `/model gpt-5-mini` on the openai template in the public
