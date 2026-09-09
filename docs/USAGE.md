@@ -487,8 +487,10 @@ against listing entries that are the alias plus a date suffix, and the
 notice names the dated id it matched so the inference is visible. That
 match is made only when it is unambiguous: if several dated entries
 disagree about the window, temur says nothing.
-Doctor never calls the authenticated models API; the hosted check
-rides only the `/models` request you make yourself.
+Doctor sends one authenticated listing per keyed endpoint, and none
+when the key file is empty. That listing carries model ids only, so
+the window comparison above still rides only the `/models` request you
+make yourself.
 
 `/compact` makes ONE model call (the session's own model and system
 prompt, tools omitted) asking for a structured summary: goal, state,

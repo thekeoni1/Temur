@@ -352,7 +352,7 @@ one unauthenticated GET, against keyless endpoints only.
 | Gemma-3-4B-it | Q4_K_M | ~2.3 GB | ~3.3 GB | not delivered by its template | n/a | verified 2026-08-15 (eval 0/9) |
 | Phi-4-mini-instruct | Q4_K_M | ~2.3 GB | ~3.3 GB | not delivered by its template | n/a | verified 2026-08-15 (eval 0/9) |
 | SmolLM2-1.7B-Instruct | Q4_K_M | ~1.0 GB | ~2.0 GB | not delivered by its template | n/a | verified 2026-08-15 (eval 0/9) |
-| Llama-3.1-8B-Instruct | Q4_K_M | ~4.9 GB | ~5.9 GB | emitted, but the server rejected 4 of 9 | yes | measured 2026-09-09 on head `7c7419e`, a different binary from every row above (eval 5/9, 5/9; identical failing set both runs) |
+| Llama-3.1-8B-Instruct | Q4_K_M | ~4.9 GB | ~5.9 GB | emitted, but the server rejected 4 of 9 | yes | measured 2026-09-09 on head `8ea2aa3`, a different binary from every row above (eval 5/9, 5/9; identical failing set both runs) |
 | gpt-oss-20b | MXFP4 | ~12.1 GB | ~13.1 GB | yes | yes | measured 2026-09-09 on head `f7ab9df` (T57 P1), musl i686 sha256 `76c8e33e...` (eval 9/9, 9/9); scored 0/9, 0/9 on the parent binary, whose tool definitions its template could not render, see below |
 
 The rows that say "not delivered by its template" mean the tools never
@@ -389,7 +389,7 @@ approached it. No score in this table was truncated by the bound.
 The last two rows are a later pass (2026-09-09) and carry the same
 caveat as the Llama-3.2-3B row: a different temur binary. They sit on
 two different ones. Llama-3.1-8B was measured on the local head
-`7c7419e`, musl-static i686, sha256 `09c8fdc7...`; gpt-oss-20b was
+`8ea2aa3`, musl-static i686, sha256 `09c8fdc7...`; gpt-oss-20b was
 re-measured on `f7ab9df` (T57 P1), sha256 `76c8e33e...`, which is that
 binary plus the one `items` key described below and nothing else.
 Server build,
