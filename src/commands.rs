@@ -823,6 +823,7 @@ fn models_list(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
             let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
             let mut out = vec![AgentEvent::ModelsListed(ids)];
             out.extend(context_window_notice(ctx, &entries).map(notice));
+            out.extend(off_listing_notice(ctx, &entries).map(notice));
             // T22: the cache now carries the windows too, so nothing needs
             // a second request to re-derive them; the driver loop still
             // clears it when a switch changes the provider.
@@ -831,6 +832,33 @@ fn models_list(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
         }
         Err(e) => vec![notice(format!("/models failed: {e}"))],
     }
+}
+
+/// T56, D24's other half: `/models` correctly omitted the id the key
+/// could not use, and then said nothing about the omission, so the
+/// listing that held the answer read like an ordinary listing.
+///
+/// When the ACTIVE id is neither in the listing nor a dated alias of
+/// something in it ([`crate::provider::is_dated_alias`], the same rule
+/// doctor's keyed model check runs), say so ONCE, after the listing.
+/// Advisory in both directions and worded that way: a listing is not a
+/// capability list, since hosted providers omit live aliases and proxies
+/// alias freely. Silent when the id is there, so an ordinary `/models`
+/// gains nothing.
+fn off_listing_notice(
+    ctx: &CommandCtx,
+    entries: &[crate::provider::ModelEntry],
+) -> Option<String> {
+    let listed = entries.iter().any(|e| e.id == *ctx.model)
+        || crate::provider::newest_dated_alias(ctx.model, entries.iter().map(|e| e.id.as_str()))
+            .is_some();
+    if listed {
+        return None;
+    }
+    Some(format!(
+        "note: the active model \"{}\" is not in this listing; the provider may still serve it under an alias",
+        ctx.model
+    ))
 }
 
 /// The T22 context enrichment, riding the one listing request `/models`

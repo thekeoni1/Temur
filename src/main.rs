@@ -747,7 +747,10 @@ fn repl(
         // the exit code must say so (130) even if an error raced the cancel.
         let interrupted = plain_cancel.is_set();
         if let Err(e) = &result {
-            ui.event(&AgentEvent::Notice(format!("provider error: {e}")));
+            ui.event(&AgentEvent::Notice(temur::agent::turn_error_notice(
+                e,
+                &current_model,
+            )));
         }
         save_after_turn(&mut session, ui.as_mut());
         ui.finish();
@@ -846,7 +849,10 @@ fn repl(
             // Provider-level failure: surface through the UI seam and keep
             // the session alive. (Behavior note, docs/TUI.md: in the plain
             // REPL this line moved from stderr to stdout with M-B.)
-            ui.event(&AgentEvent::Notice(format!("provider error: {e}")));
+            ui.event(&AgentEvent::Notice(temur::agent::turn_error_notice(
+                &e,
+                &current_model,
+            )));
         }
         // Save in BOTH arms — power-cut philosophy: a provider-error turn's
         // dangling user message is real history, and the resume seam is what

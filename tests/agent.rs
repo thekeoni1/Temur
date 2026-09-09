@@ -2984,9 +2984,16 @@ fn models_list_renders_ids_empty_and_errors() {
         Ok(entries(&["m-1", "m-2"]))
     });
     let events = commands::run(commands::parse("/models"), &mut h.ctx(&mut session, &build));
+    // T56: the active id (claude-sonnet-5) is not in this listing, so the
+    // listing now says so rather than reading like an ordinary one.
     assert_eq!(
         events,
-        vec![AgentEvent::ModelsListed(vec!["m-1".into(), "m-2".into()])]
+        vec![
+            AgentEvent::ModelsListed(vec!["m-1".into(), "m-2".into()]),
+            AgentEvent::Notice(
+                "note: the active model \"claude-sonnet-5\" is not in this listing; the provider may still serve it under an alias".into()
+            ),
+        ]
     );
     // T22: the listing refreshed the cache, windows included (none here).
     assert_eq!(h.cached_models, entries(&["m-1", "m-2"]));
@@ -3083,10 +3090,15 @@ fn models_stays_silent_when_equal_unknown_or_not_anthropic() {
         let dir2 = tempfile::tempdir().unwrap();
         let (mut session, _) = session_with(dir2.path(), vec![]);
         let events = commands::run(commands::parse("/models"), &mut h.ctx(&mut session, &build));
-        assert!(
-            notices(&events).is_empty(),
-            "no context notice expected: {events:?}"
-        );
+        // T56 adds an off-listing note in the cases below where the active
+        // id really is absent. This test is about the T22 CONTEXT notices,
+        // so that one line is filtered out here and asserted on its own in
+        // the T56 tests further down.
+        let ns: Vec<String> = notices(&events)
+            .into_iter()
+            .filter(|n| !n.starts_with("note: the active model "))
+            .collect();
+        assert!(ns.is_empty(), "no context notice expected: {events:?}");
         drop(dir2);
     };
     let _ = &dir;
@@ -3133,6 +3145,158 @@ fn models_stays_silent_when_equal_unknown_or_not_anthropic() {
     h.active_resolved = h.profiles["b"].clone(); // context_window 4096
     h.list = Box::new(|_| Ok(vec![wentry("model-b", 1_000)]));
     quiet(&mut h);
+}
+
+// --------------------------------------------- T56: D24, the 404 and /models
+
+/// A provider whose every turn fails with one API status. D24's 404 is
+/// the case under test; the 400 arm is what proves nothing else moved.
+struct StatusFailingProvider {
+    status: u16,
+}
+
+impl Provider for StatusFailingProvider {
+    fn stream(
+        &self,
+        _req: &ChatRequest,
+        _on_event: &mut dyn FnMut(StreamEvent),
+        _cancel: &CancelToken,
+    ) -> Result<ResponseMessage, ProviderError> {
+        Err(ProviderError::Api {
+            status: self.status,
+            kind: "not_found_error".into(),
+            message: "model luna does not exist".into(),
+        })
+    }
+}
+
+/// One turn against [`StatusFailingProvider`], rendered exactly as main renders
+/// a turn failure.
+fn failing_turn_notice(dir: &std::path::Path, status: u16, model: &str) -> String {
+    let cfg = SessionConfig {
+        model: model.into(),
+        max_tokens: 32_000,
+        system: Some("test system".into()),
+        thinking: false,
+        cwd: dir.to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+        max_tokens_source: None,
+        prose_tool_calls: true,
+        cost_rates: None,
+        cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
+    };
+    let mut session = Session::new(
+        Box::new(StatusFailingProvider { status }),
+        Registry::standard(),
+        cfg,
+    );
+    let err = session
+        .turn("hello", &mut |_| {})
+        .expect_err("the provider fails every turn");
+    temur::agent::turn_error_notice(&err, model)
+}
+
+#[test]
+fn a_404_turn_points_at_the_two_commands_that_fix_it() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        failing_turn_notice(dir.path(), 404, "luna"),
+        "provider error: api error (HTTP 404) not_found_error: model luna does not exist (the active model is \"luna\"; /models lists what this key can use, /model <id> switches)"
+    );
+}
+
+#[test]
+fn every_other_status_is_byte_identical_to_today() {
+    let dir = tempfile::tempdir().unwrap();
+    // The same body under a 400: the sentence is keyed on the status, not
+    // on anything in the provider's words.
+    assert_eq!(
+        failing_turn_notice(dir.path(), 400, "luna"),
+        "provider error: api error (HTTP 400) not_found_error: model luna does not exist"
+    );
+    assert_eq!(
+        failing_turn_notice(dir.path(), 500, "luna"),
+        "provider error: api error (HTTP 500) not_found_error: model luna does not exist"
+    );
+}
+
+/// The note is about the ACTIVE id, whatever it is: a 404 on a session
+/// that has switched models names the model that is live now.
+#[test]
+fn the_404_sentence_names_the_active_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = failing_turn_notice(dir.path(), 404, "claude-haiku-4-5");
+    assert!(
+        text.ends_with("(the active model is \"claude-haiku-4-5\"; /models lists what this key can use, /model <id> switches)"),
+        "{text}"
+    );
+}
+
+#[test]
+fn models_notes_an_active_id_that_is_off_the_listing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!("/models builds no provider")
+    };
+
+    // Absent, no dated sibling: the note, once, after the listing.
+    let mut h = CmdHarness::new();
+    h.list = Box::new(|_| Ok(entries(&["real-1", "real-2"])));
+    let events = commands::run(commands::parse("/models"), &mut h.ctx(&mut session, &build));
+    assert!(
+        matches!(events.first(), Some(AgentEvent::ModelsListed(_))),
+        "the note comes AFTER the listing: {events:?}"
+    );
+    assert_eq!(
+        notices(&events),
+        vec![
+            "note: the active model \"claude-sonnet-5\" is not in this listing; the provider may still serve it under an alias"
+        ]
+    );
+
+    // Listed: nothing new.
+    let mut h = CmdHarness::new();
+    h.list = Box::new(|_| Ok(entries(&["claude-sonnet-5", "real-1"])));
+    let events = commands::run(commands::parse("/models"), &mut h.ctx(&mut session, &build));
+    assert!(notices(&events).is_empty(), "{events:?}");
+
+    // A dated sibling counts as listed, by the same rule doctor runs: the
+    // anthropic wire lists only dated ids, and this is the alias case that
+    // must NOT be called off-list.
+    let mut h = CmdHarness::new();
+    h.model = "claude-haiku-4-5".into();
+    h.active_resolved.model = "claude-haiku-4-5".into();
+    h.list = Box::new(|_| Ok(entries(&["claude-haiku-4-5-20251001"])));
+    let events = commands::run(commands::parse("/models"), &mut h.ctx(&mut session, &build));
+    assert!(notices(&events).is_empty(), "{events:?}");
+}
+
+/// The T22 notice keeps its order and its bytes: when a dated sibling
+/// carries a window, that hint is what prints, and the off-listing note
+/// does not fire alongside it.
+#[test]
+fn the_t22_context_notice_is_unchanged_beside_the_new_note() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!("/models builds no provider")
+    };
+    let mut h = CmdHarness::new();
+    h.model = "claude-haiku-4-5".into();
+    h.active_resolved.model = "claude-haiku-4-5".into();
+    h.list = Box::new(|_| Ok(vec![wentry("claude-haiku-4-5-20251001", 200_000)]));
+    let events = commands::run(commands::parse("/models"), &mut h.ctx(&mut session, &build));
+    assert_eq!(
+        notices(&events),
+        vec![
+            "hint: the API reports max_input_tokens 200000 for claude-haiku-4-5-20251001 (matched from claude-haiku-4-5); add \"context_window\": 200000 to the profile to enable the context advisory"
+        ]
+    );
 }
 
 /// T13: under-configuring is safe, but silence about it was not helpful.

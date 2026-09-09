@@ -78,6 +78,35 @@ pub enum AgentError {
     Provider(#[from] ProviderError),
 }
 
+/// The ONE place a turn's provider failure becomes user-visible text.
+///
+/// D24: the operator set a model id the key could not use. `init`
+/// accepted it (bring-your-own is correct), doctor said nothing was
+/// wrong, and the first message died on the provider's own 404, "model
+/// luna does not exist", passed through raw with no connection to the two
+/// commands that fix it. temur had the fix in hand and did not point at
+/// it. Same class as D19, where the server named the field and nothing
+/// joined it to temur's own knob.
+///
+/// So a 404, and ONLY a 404, gains one sentence naming the active model
+/// and the two commands. Keyed on the STATUS, never on the message text:
+/// every provider spells the prose differently and matching on it would
+/// be a guess, while a 404 on a turn means the same thing on every wire
+/// temur speaks. Every other status is byte-identical to what it was.
+///
+/// `main` renders both of its turn failures (one-shot and REPL) through
+/// here, so the two cannot drift apart.
+pub fn turn_error_notice(e: &AgentError, model: &str) -> String {
+    let AgentError::Provider(p) = e;
+    let pointer = match p {
+        ProviderError::Api { status: 404, .. } => format!(
+            " (the active model is \"{model}\"; /models lists what this key can use, /model <id> switches)"
+        ),
+        _ => String::new(),
+    };
+    format!("provider error: {e}{pointer}")
+}
+
 pub struct SessionConfig {
     pub model: String,
     pub max_tokens: u32,
