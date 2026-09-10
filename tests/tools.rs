@@ -624,6 +624,76 @@ fn glob_matches_and_sorts() {
     assert_eq!(out.output, "No files found");
 }
 
+/// T59: a comma outside braces is read as a list of alternatives. The
+/// first pattern is the exact shape 7 of 10 parent task 5 runs sent.
+#[test]
+fn glob_comma_joined_pattern_finds_the_files_it_names() {
+    let dir = tempfile::tempdir().unwrap();
+    for f in ["alpha.txt", "beta.txt", "gamma.txt", "notes.md", "a.txt", "a,b.txt"] {
+        std::fs::write(dir.path().join(f), "x").unwrap();
+    }
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let closing = "(comma-separated pattern read as 3 alternatives)";
+
+    let out = run(&reg, &mut ctx, "glob", json!({"pattern": "alpha.txt,beta.txt,gamma.txt"}))
+        .unwrap();
+    for f in ["alpha.txt", "beta.txt", "gamma.txt"] {
+        assert!(out.output.contains(f), "{f} missing from:\n{}", out.output);
+    }
+    assert!(!out.output.contains("notes.md"));
+    assert!(!out.output.contains("No files found"));
+    assert!(out.output.ends_with(closing), "{}", out.output);
+    // The title stays the raw pattern: the transcript shows what was sent.
+    assert_eq!(out.title, "alpha.txt,beta.txt,gamma.txt");
+
+    // Braces are globset's own alternation; the comma inside them is not
+    // ours to read and no closing line is added.
+    let out = run(&reg, &mut ctx, "glob", json!({"pattern": "*.{txt,md}"})).unwrap();
+    assert!(out.output.contains("alpha.txt"));
+    assert!(out.output.contains("notes.md"));
+    assert!(!out.output.contains("comma-separated"), "{}", out.output);
+
+    // The literal pattern is still in the set: a file really named a,b.txt
+    // is found by a,b.txt, and the line counts the two pieces it also tried.
+    let out = run(&reg, &mut ctx, "glob", json!({"pattern": "a,b.txt"})).unwrap();
+    let lines: Vec<&str> = out.output.lines().collect();
+    assert_eq!(lines.len(), 2, "one hit and the closing line:\n{}", out.output);
+    assert!(lines[0].ends_with("/a,b.txt"), "{}", out.output);
+    assert_eq!(lines[1], "(comma-separated pattern read as 2 alternatives)");
+
+    // Spaces after the commas are trimmed away.
+    let out = run(&reg, &mut ctx, "glob", json!({"pattern": "alpha.txt, gamma.txt"})).unwrap();
+    assert!(out.output.contains("alpha.txt"));
+    assert!(out.output.contains("gamma.txt"));
+    assert!(!out.output.contains("beta.txt"));
+
+    // An empty piece is dropped, not an error.
+    let out = run(&reg, &mut ctx, "glob", json!({"pattern": "a.txt,"})).unwrap();
+    assert!(out.output.contains("a.txt"));
+    assert!(out.output.ends_with("(comma-separated pattern read as 1 alternative)"), "{}", out.output);
+
+    // Nothing named: the search still finished, and the line still says
+    // how the pattern was read.
+    let out = run(&reg, &mut ctx, "glob", json!({"pattern": "x.nope,y.nope"})).unwrap();
+    assert_eq!(
+        out.output,
+        "No files found\n(comma-separated pattern read as 2 alternatives)"
+    );
+}
+
+/// T59 Layer B: temur has no Task tool, so glob and grep no longer send
+/// an open-ended search to one. bash.txt's "TodoWrite or Task tools"
+/// lines are half true (todowrite exists) and are left as they are.
+#[test]
+fn glob_and_grep_descriptions_name_no_task_tool() {
+    let defs = Registry::standard().definitions();
+    for name in ["glob", "grep"] {
+        let d = defs.iter().find(|d| d.name == name).unwrap();
+        assert!(!d.description.contains("Task tool"), "{name}: {}", d.description);
+    }
+}
+
 #[test]
 fn grep_regex_include_and_binary_skip() {
     let dir = tempfile::tempdir().unwrap();

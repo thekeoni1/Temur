@@ -27,6 +27,47 @@ struct Params {
     path: Option<String>,
 }
 
+/// T59: a comma outside braces splits the pattern into alternatives.
+/// globset reads `alpha.txt,beta.txt,gamma.txt` as ONE filename with two
+/// commas in it, which never exists, so a pattern that plainly names
+/// three files returned "No files found" and the model believed it: 7 of
+/// 10 task 5 runs on the parent sent that shape and 6 of them gave up on
+/// the answer. Returns the trimmed, non-empty pieces when there is a
+/// comma at brace depth zero, and None otherwise, so `*.{txt,md}` and any
+/// comma-free pattern are untouched. The literal pattern stays in the
+/// match set beside the pieces: a file really named `a,b.txt` is still
+/// found by `a,b.txt`.
+fn comma_alternatives(pattern: &str) -> Option<Vec<String>> {
+    let mut pieces = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0usize;
+    let mut split = false;
+    for c in pattern.chars() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                split = true;
+                pieces.push(std::mem::take(&mut cur));
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    if !split {
+        return None;
+    }
+    pieces.push(cur);
+    Some(
+        pieces
+            .into_iter()
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect(),
+    )
+}
+
 pub struct GlobTool;
 
 impl Tool for GlobTool {
@@ -53,11 +94,23 @@ impl Tool for GlobTool {
             Some(path) => resolve_path(ctx, path),
             None => ctx.cwd.clone(),
         };
-        let glob = globset::GlobBuilder::new(&p.pattern)
-            .literal_separator(false)
-            .build()
-            .map_err(|e| ToolError::InvalidInput(format!("invalid glob pattern: {e}")))?
-            .compile_matcher();
+        let compile = |pat: &str| {
+            globset::GlobBuilder::new(pat)
+                .literal_separator(false)
+                .build()
+                .map_err(|e| ToolError::InvalidInput(format!("invalid glob pattern: {e}")))
+                .map(|g| g.compile_matcher())
+        };
+        // The literal pattern first, exactly as before; then, when a comma
+        // outside braces split it, each piece as a further alternative.
+        // One walk either way: a path matches if any matcher does.
+        let mut globs = vec![compile(&p.pattern)?];
+        let alternatives = comma_alternatives(&p.pattern);
+        if let Some(pieces) = &alternatives {
+            for piece in pieces {
+                globs.push(compile(piece)?);
+            }
+        }
 
         // T18: one guard snapshot per execution. Protected files (and
         // anything under a secrets dir) are omitted from listings: names
@@ -94,7 +147,10 @@ impl Tool for GlobTool {
                 continue; // key isolation: never listed
             }
             let rel = entry.path().strip_prefix(&root).unwrap_or(entry.path());
-            if glob.is_match(rel) || glob.is_match(entry.path()) {
+            if globs
+                .iter()
+                .any(|g| g.is_match(rel) || g.is_match(entry.path()))
+            {
                 let mtime = entry
                     .metadata()
                     .ok()
@@ -149,6 +205,19 @@ impl Tool for GlobTool {
                 output.push('\n');
             }
             output.push_str(&s.closing_line(&root, budget.visited()));
+        }
+        // T59: whenever the split happened, say so, so the transcript and
+        // the model both see how the pattern was read. Last, after every
+        // other closing line, and on "No files found" too.
+        if let Some(pieces) = &alternatives {
+            let n = pieces.len();
+            if !output.is_empty() && !output.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push_str(&format!(
+                "(comma-separated pattern read as {n} alternative{})",
+                if n == 1 { "" } else { "s" }
+            ));
         }
         Ok(ToolOutput {
             title: p.pattern,
