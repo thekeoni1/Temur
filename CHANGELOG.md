@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.34.0 - 2026-09-10
+
 - **A model that says it cannot read your file is now sent to read it.**
   Asked "can you read my resume and give me feedback?" in a directory
   holding one PDF, a small local model answered "I can't directly read
