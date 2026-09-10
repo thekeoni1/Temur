@@ -662,6 +662,158 @@ const SCOPE_DENIAL_TAIL_CHARS: usize = 845;
 /// phrases, having called nothing, costs exactly one extra request. The
 /// nudge counts against `NUDGE_LIMIT` and fires once, so the model that
 /// declines again ends its turn normally.
+/// T58 (P2, dogfood D25 2026-09-09): the FILE half of the denial defect,
+/// and deliberately a family of its OWN rather than more entries in
+/// [`SCOPE_DENIAL_PHRASES`].
+///
+/// The two look alike and are not the same defect. A scope denial
+/// declines a QUESTION the model could have answered from what it knows,
+/// and its nudge says exactly that: "You do not need a tool to answer
+/// that." A file denial declines a FILE the model could have read, and
+/// that same nudge is the OPPOSITE of the remedy. Widening the scope
+/// family to cover D25 would have fired the wrong correction, which is
+/// why these stay disjoint.
+///
+/// The first six phrases come from the dogfood, 2026-09-09. cwd held
+/// exactly one file, sample-resume.pdf, and the model was asked "can you
+/// read my resume and give me feedback?":
+///
+/// ```text
+/// head 7c7419e  I can't directly READ OR PROCESS files like a resume
+/// head 7c7419e  I don't have THE ABILITY TO READ or process PDF files
+/// 0.33.0        I can't READ OR PROCESS files like a resume directly
+/// 0.33.0        I currently cannot READ OR ANALYZE PDF files directly
+/// 0.33.0        I can't EXTRACT ITS CONTENT
+/// D22 laptop    Please UPLOAD your resume file
+/// D22 laptop    I HAVEN'T RECEIVED THE FILE yet
+/// ```
+///
+/// The last three come from T58's own eval, and the reason they exist is
+/// the finding that stopped P2 the first time: those six fired on ONE of
+/// the six denials the harness actually produced. The dogfood says "read
+/// or process"; the harness model says "read files" and "access". A
+/// family aimed at the wrong sample is not a working family, so planning
+/// lifted the brief's six-reply restriction for phrases observed VERBATIM
+/// in archived transcripts, which is the rule the first six were seeded
+/// under anyway.
+///
+/// ```text
+/// parent  r2   I CAN'T READ FILES directly
+/// A+B     r1   I CAN'T READ FILES or resumes directly
+/// parent  r1   I CAN'T DIRECTLY READ files or access your resume
+/// A+B+C   r2   I CAN'T DIRECTLY READ or access files like a resume
+/// A+B     r2   I DON'T HAVE ACCESS TO YOUR resume file right now
+/// A+B+C   r1   I don't have access to any files you might have UPLOADED
+/// ```
+///
+/// Those three plus "upload" cover all six. Transcripts are at
+/// ~/temur-eval-archive/t58-2026-09-09/{parent,p2,p2c}-transcripts/,
+/// file task10.run<N>.txt.
+///
+/// The third phrase carries "your" for a measured reason. Planning ruled
+/// the bare "don't have access to", swept over 186 archived files with no
+/// collision. Swept over all 357, it collides: in
+/// ~/temur-eval-archive/t45-gates/d12-sentence-smoke-attempt6.log the
+/// model refuses to EXPLAIN implicit differentiation with "I don't have
+/// access to a specific explanation of implicit differentiation, and I'm
+/// not equipped to provide educational content". That is a D12 scope
+/// refusal, and it would have taken the file nudge, which tells a model
+/// asked about calculus to go and read a file. Exactly the wrong-remedy
+/// failure this family was split off to avoid.
+///
+/// "your" costs nothing in coverage. The bare phrase was carrying only
+/// A+B r2, because A+B+C r1 already matches on "upload", and the T45
+/// refusal says "access to A SPECIFIC explanation", never "to your". Both
+/// halves of that are pinned in the tests below.
+///
+/// The three are NEGATION-ANCHORED on purpose, and the bare bigram is
+/// what the anchor buys protection from: src/tools/prompts/bash.txt says
+/// "Read files: Use Read (NOT cat/head/tail)", so a bare "read files"
+/// would match any how-to answer that echoes the tool policy back with no
+/// tool dispatched. "can't read files" cannot be said by a reply that is
+/// answering rather than declining.
+///
+/// Every candidate was checked against the archived transcripts: no
+/// phrase here appears anywhere outside T58's own task 10 transcripts.
+/// Nothing was dropped, and that is a measurement rather than an
+/// assumption.
+///
+/// Honest widening note, the loudest one in this file: "upload" is a bare
+/// word, not a phrase. It matches any reply that ends by mentioning
+/// uploading, a legitimate answer about upload code included, and the
+/// system prompt itself says "there is no upload", which is wording a
+/// model can echo. It is kept because it is what the model actually said,
+/// and because the caller's other conditions carry the weight, the same
+/// trade [`SCOPE_DENIAL_PHRASES`] makes for "outside the scope of": the
+/// turn must be ENDING and must have dispatched NO tool anywhere in it,
+/// and the price of being wrong is one request against `NUDGE_LIMIT`.
+/// It is still the entry to narrow first if this family is measured
+/// noisy; the three negation-anchored phrases are much narrower than it.
+const FILE_DENIAL_PHRASES: [&str; 9] = [
+    "read or process",
+    "read or analyze",
+    "the ability to read",
+    "extract its content",
+    "upload",
+    "haven't received the file",
+    "can't read files",
+    "can't directly read",
+    "don't have access to your",
+];
+
+/// T58 (P2, dogfood D25): did this message END by declaring it cannot
+/// read a file, having read nothing?
+///
+/// Three layers already shipped missed this shape. Both prompt sentences
+/// (T31's "list or read a path before saying you cannot access it" and
+/// T53's "find them with glob or ls ... since there is no upload") were
+/// in the prompt the model saw: it never ASKED for the file, it declared
+/// an inability, which neither sentence addresses. [`detect_scope_denial`]
+/// was silent, none of its five phrases appearing in any observed reply.
+/// And the read tool's description said nothing true about PDFs, which
+/// T58's Layer B fixes separately.
+///
+/// The tail RULE and the tail CONSTANT are both taken from
+/// [`SCOPE_DENIAL_TAIL_CHARS`], cited rather than re-derived: that number
+/// comes from 13 measured anchor distances and the midpoint of the gap
+/// between two populations, and six samples cannot improve on it.
+/// Position is what separates a refusal from a mention here exactly as it
+/// does there: "I can't read or process files like that on my own, so I
+/// used the read tool, and here is the feedback" is a FINISHED reply and
+/// must not be nudged.
+///
+/// Honest false-positive note: a genuine reply that ENDS on one of these
+/// phrases, having called nothing, costs exactly one extra request. The
+/// nudge counts against `NUDGE_LIMIT` and fires once, so a model that
+/// declines again ends its turn normally.
+///
+/// One deliberate difference from [`detect_scope_denial`]: the tail here
+/// has U+2019 mapped to U+0027 before matching. Four of the nine phrases
+/// carry an apostrophe, and the need is OBSERVED rather than defensive.
+/// Every denial recorded so far wrote a straight apostrophe, but the same
+/// model wrote a CURLY one in "I'll" in the A+B+C run 2 denial, in the
+/// same message as a straight one. A family that turns on apostrophes
+/// cannot assume the straight form from a sample that mixes both. This is
+/// normalisation of an observed phrase, not a new phrase.
+///
+/// It is applied HERE ONLY. The scope family's behaviour is measured and
+/// published, none of its five phrases contains an apostrophe, and T58
+/// changes nothing about it.
+pub fn detect_file_denial(text: &str) -> bool {
+    let trimmed = text.trim_end();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let start = trimmed
+        .char_indices()
+        .rev()
+        .take(SCOPE_DENIAL_TAIL_CHARS)
+        .last()
+        .map_or(0, |(i, _)| i);
+    let tail = trimmed[start..].replace('\u{2019}', "'").to_lowercase();
+    FILE_DENIAL_PHRASES.iter().any(|p| tail.contains(p))
+}
+
 pub fn detect_scope_denial(text: &str) -> bool {
     let trimmed = text.trim_end();
     if trimmed.is_empty() {
@@ -843,6 +995,180 @@ mod tests {
         assert!(!detect_scope_denial("Here is the explanation you asked for."));
         assert!(!detect_scope_denial(""));
         assert!(!detect_scope_denial("   \n  "));
+    }
+
+    // ---------------------------------------- T58 (D25): file denial
+
+    /// The whole observed population, thirteen replies from three
+    /// sources. Seven from the dogfood: D25 on head 7c7419e and on the
+    /// shipped 0.33.0 (2026-09-09), and the laptop's original D22. The
+    /// shipped binary's fourth reply is deliberately absent, because it
+    /// DID call read on the directory and so is not a denial at all.
+    ///
+    /// Six more from T58's own eval, one per task 10 run across the three
+    /// binaries measured on 2026-09-09. These are why the family grew:
+    /// the dogfood seven produced six phrases, and those six fired on
+    /// exactly ONE of these six.
+    ///
+    /// The last one carries a CURLY apostrophe in "I'll", verbatim as the
+    /// model wrote it, which is the whole reason the detector normalises
+    /// U+2019 before matching.
+    const OBSERVED_FILE_DENIALS: [&str; 13] = [
+        // -- dogfood, 2026-09-09
+        "I can't directly read or process files like a resume. However, if you'd \
+         like to share the content of your resume (or specific parts), I'd be \
+         happy to help you review, edit, or provide feedback on it. Just paste \
+         the text here!",
+        "I don't have the ability to read or process PDF files directly. If you'd \
+         like, you can copy and paste the text content of your resume here, and \
+         I'll be glad to provide feedback on it.",
+        "I can't read or process files like a resume directly",
+        "I currently cannot read or analyze PDF files directly",
+        "I can't extract its content",
+        "Please upload your resume file",
+        "I haven't received the file yet",
+        // -- T58 eval, parent binary cd02a0a
+        "I can't directly read files or access your resume. Could you please \
+         provide the text content of your resume? Alternatively, if you'd like, \
+         I can help you review or improve a draft of your resume. Just share the \
+         details!",
+        "I can't read files directly, but I can help you with your resume if you \
+         provide the text content. Could you please share the text of your \
+         resume? If it's too long, you can paste sections or summarize what \
+         you'd like feedback on (e.g., formatting, content, skills, or \
+         structure).",
+        // -- T58 eval, Layer A + Layer B
+        "I can't read files or resumes directly. Could you please share the \
+         content of your resume or provide specific details about it? Once I \
+         have that information, I can offer feedback.",
+        "I'd be happy to help you with your resume! However, I don't have access \
+         to your resume file right now. Could you please share the file or \
+         provide its content? Once I can see it, I'll be able to give you \
+         detailed feedback. \n\nIf you don't have it handy, I can also help you \
+         review the structure and content of a resume. Just let me know what \
+         kind of feedback you're looking for (e.g., formatting, content, \
+         clarity, impact, etc.).",
+        // -- T58 eval, Layer A + Layer B + the rejected Layer C
+        "I'd be happy to help you with your resume! However, I don't have access \
+         to any files you might have uploaded or shared. Could you please \
+         provide the text of your resume or share it in a message? Once I have \
+         it, I can review it and offer constructive feedback.",
+        "I can't directly read or access files like a resume. However, if you \
+         share the content of your resume here, I can review it and provide \
+         constructive feedback on aspects like clarity, structure, skills \
+         highlighting, or formatting. Just paste the text, and I\u{2019}ll help \
+         improve it!",
+    ];
+
+    #[test]
+    fn every_observed_file_denial_fires_file_and_not_scope() {
+        // Disjointness proven rather than asserted: the scope nudge tells
+        // the model it does not need a tool, which is the opposite of what
+        // any of these replies needs.
+        for reply in OBSERVED_FILE_DENIALS {
+            assert!(detect_file_denial(reply), "file must fire: {reply}");
+            assert!(!detect_scope_denial(reply), "scope must NOT fire: {reply}");
+        }
+    }
+
+    #[test]
+    fn the_d12_scope_refusals_fire_scope_and_not_file() {
+        // The other direction of the same disjointness.
+        for reply in [
+            "I'm unable to explain implicit differentiation as it's outside the \
+             scope of available tools.",
+            "I cannot provide explanations of mathematical concepts.",
+            "I don't have the capability to teach or explain that.",
+            "That is beyond the scope of available tools.",
+            "That is not within the scope of what these tools do.",
+        ] {
+            assert!(detect_scope_denial(reply), "scope must fire: {reply}");
+            assert!(!detect_file_denial(reply), "file must NOT fire: {reply}");
+        }
+    }
+
+    #[test]
+    fn every_seeded_file_phrase_fires_and_is_case_insensitive() {
+        for p in FILE_DENIAL_PHRASES {
+            assert!(detect_file_denial(p), "{p}");
+            assert!(detect_file_denial(&p.to_uppercase()), "{p} upper");
+        }
+    }
+
+    #[test]
+    fn every_seeded_file_phrase_fires_with_a_curly_apostrophe() {
+        // The model mixes both forms inside one message, so every phrase
+        // must survive the substitution, not only the four that carry an
+        // apostrophe today.
+        for p in FILE_DENIAL_PHRASES {
+            let curly = p.replace('\'', "\u{2019}");
+            assert!(detect_file_denial(&curly), "{p} with U+2019");
+            assert!(
+                detect_file_denial(&curly.to_uppercase()),
+                "{p} with U+2019, upper"
+            );
+        }
+    }
+
+    #[test]
+    fn the_t45_scope_refusal_that_says_no_access_does_not_fire_file() {
+        // The collision that put "your" into the third phrase, verbatim
+        // from ~/temur-eval-archive/t45-gates/
+        // d12-sentence-smoke-attempt6.log. It is a D12 SCOPE refusal, so
+        // the file family must not claim it and hand it the file nudge.
+        let t45 = "I don't have access to a specific explanation of implicit \
+                   differentiation, and I'm not equipped to provide educational \
+                   content. If you'd like to learn about implicit \
+                   differentiation, I recommend looking up resources or asking \
+                   a question about it in a dedicated math or education \
+                   context.";
+        assert!(!detect_file_denial(t45), "file family must not claim a scope refusal");
+    }
+
+    #[test]
+    fn the_tool_policy_echoed_back_does_not_fire() {
+        // Why the three new phrases are negation-anchored. bash.txt says
+        // "Read files: Use Read (NOT cat/head/tail)", so a bare
+        // "read files" would have made this reply a denial.
+        assert!(!detect_file_denial(
+            "To read files you use the read tool, not cat or head. Read files: \
+             Use Read. That is the whole policy."
+        ));
+    }
+
+    #[test]
+    fn the_scope_family_is_left_on_straight_apostrophes() {
+        // T58 normalises U+2019 in the FILE detector only. None of the
+        // five scope phrases carries an apostrophe, so this is a pin on
+        // the boundary rather than on a behaviour anyone relies on.
+        for p in SCOPE_DENIAL_PHRASES {
+            assert!(!p.contains('\''), "{p} would need normalisation too");
+        }
+    }
+
+    #[test]
+    fn a_file_denial_phrase_with_the_answer_after_it_does_not_fire() {
+        // The tail rule, sized from the archive the way its sibling is:
+        // the mid-message mentions measured in the T45 replay logs sit
+        // 1251 to 1427 characters from the end, so this body puts the
+        // anchor well past SCOPE_DENIAL_TAIL_CHARS and not just past it.
+        // This is the reply the family must never touch: it says the word
+        // AND then does the work.
+        let body = "the summary section is strong, the experience entries carry \
+                    numbers, and the skills list is the part to cut down. "
+            .repeat(12);
+        let text = format!(
+            "There is no upload here, so I read the file from the working \
+             directory instead. {body}"
+        );
+        assert!(!detect_file_denial(&text));
+    }
+
+    #[test]
+    fn ordinary_answers_never_fire_the_file_family() {
+        assert!(!detect_file_denial("Here is the feedback you asked for."));
+        assert!(!detect_file_denial(""));
+        assert!(!detect_file_denial("   \n  "));
     }
 
     #[test]

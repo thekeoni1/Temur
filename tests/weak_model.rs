@@ -1050,6 +1050,139 @@ fn a_scope_denial_phrase_followed_by_the_answer_does_not_nudge() {
     );
 }
 
+// ------------------------------------ T58 (P2): D25 file-denial nudge
+
+#[test]
+fn the_d25_shape_is_nudged_and_then_reads_the_file() {
+    // The dogfood shape, verbatim (2026-09-09, qwen3-4b, cwd holding
+    // exactly one PDF): asked for feedback on "my resume", the model
+    // declared an inability and called nothing. Both prompt sentences
+    // meant to prevent this were in the prompt it saw, and neither
+    // addresses a declared inability.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(
+                vec![text(
+                    "I can't directly read or process files like a resume. However, \
+                     if you'd like to share the content of your resume (or specific \
+                     parts), I'd be happy to help you review, edit, or provide \
+                     feedback on it. Just paste the text here!",
+                )],
+                StopReason::EndTurn,
+            ),
+            msg(
+                vec![tool_use(
+                    "tu_1",
+                    "read",
+                    serde_json::json!({"filePath": "sample-resume.pdf"}),
+                )],
+                StopReason::ToolUse,
+            ),
+            msg(
+                vec![text("Jordan Q. Sample's experience section is the strongest part.")],
+                StopReason::EndTurn,
+            ),
+        ],
+    );
+    let events = collect_events(&mut session, "can you read my resume and give me feedback?");
+
+    assert_eq!(
+        requests.borrow().len(),
+        3,
+        "one nudge, then the read, then the answer"
+    );
+    assert!(
+        notices(&events)
+            .iter()
+            .any(|n| n.contains("said it cannot read a file without trying")),
+        "{:?}",
+        notices(&events)
+    );
+    // The nudge text pinned VERBATIM, not by fragment: it is the whole
+    // remedy, and a reworded nudge is a different experiment from the one
+    // T58 measured.
+    let expected = "You can read files here. Find it with glob or by reading the \
+                    working directory, then read it with the read tool; PDF, Word \
+                    and spreadsheet files come back as text. Do that now, then \
+                    answer.";
+    assert!(
+        session.history().iter().any(|m| {
+            matches!(m.role, Role::User)
+                && m.content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Text { text } if text == expected))
+        }),
+        "the file-denial nudge text has drifted"
+    );
+}
+
+#[test]
+fn a_file_denial_after_a_dispatched_tool_does_not_nudge() {
+    // The turn DID read something. A closing sentence about not being
+    // able to process files then reads as prose about what was done.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(
+                vec![tool_use(
+                    "tu_1",
+                    "read",
+                    serde_json::json!({"filePath": "sample-resume.pdf"}),
+                )],
+                StopReason::ToolUse,
+            ),
+            msg(
+                vec![text("Some formats I can't read or process, but this one read fine.")],
+                StopReason::EndTurn,
+            ),
+        ],
+    );
+    let events = collect_events(&mut session, "read my resume");
+
+    assert_eq!(requests.borrow().len(), 2, "no third request: no nudge");
+    assert!(
+        !notices(&events)
+            .iter()
+            .any(|n| n.contains("said it cannot read a file without trying")),
+        "{:?}",
+        notices(&events)
+    );
+}
+
+#[test]
+fn a_file_denial_phrase_followed_by_the_answer_does_not_nudge() {
+    // The tail rule at loop level: "upload" appears EARLY, the feedback
+    // follows it, and the reply is finished. Sized past
+    // SCOPE_DENIAL_TAIL_CHARS the way its T48 sibling above is.
+    let dir = tempfile::tempdir().unwrap();
+    let body = "the summary section is strong, the experience entries carry \
+                numbers, and the skills list is the part to cut down. "
+        .repeat(12);
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![msg(
+            vec![text(&format!(
+                "There is no upload here, so I read it from the working directory. \
+                 {body}"
+            ))],
+            StopReason::EndTurn,
+        )],
+    );
+    let events = collect_events(&mut session, "give me feedback on my resume");
+
+    assert_eq!(requests.borrow().len(), 1);
+    assert!(
+        !notices(&events)
+            .iter()
+            .any(|n| n.contains("said it cannot read a file without trying")),
+        "{:?}",
+        notices(&events)
+    );
+}
+
 #[test]
 fn a_plain_final_answer_does_not_nudge() {
     let dir = tempfile::tempdir().unwrap();

@@ -1932,6 +1932,7 @@ impl Session {
                     let mut nudge = false;
                     let mut promise = false;
                     let mut scope_denial = false;
+                    let mut file_denial = false;
                     let mut unknown_tool: Option<String> = None;
                     let mut tool_names: Vec<String> = Vec::new();
                     if matches!(other, Some(StopReason::EndTurn))
@@ -1989,7 +1990,20 @@ impl Session {
                             // PROMISED loses priority to nothing here, the
                             // two phrase families being disjoint.
                             if !promise {
-                                scope_denial = recover::detect_scope_denial(&text);
+                                // T58 (P2, dogfood D25): the FILE sibling of
+                                // the scope check. Tested FIRST on purpose.
+                                // The two families are disjoint by
+                                // construction and recover.rs proves it both
+                                // directions, but if a reply ever did carry
+                                // both, the scope nudge ("you do not need a
+                                // tool to answer that") is the OPPOSITE of
+                                // what a file denial needs, so the file
+                                // family takes priority rather than losing a
+                                // coin toss.
+                                file_denial = recover::detect_file_denial(&text);
+                                if !file_denial {
+                                    scope_denial = recover::detect_scope_denial(&text);
+                                }
                             }
                         }
                     }
@@ -2127,6 +2141,37 @@ impl Session {
                         });
                         ui(AgentEvent::Notice(
                             "the model promised work without calling a tool; asked it to act or answer"
+                                .into(),
+                        ));
+                        continue;
+                    }
+                    if file_denial {
+                        // T58 (P2, dogfood D25): the model declared it could
+                        // not read a file, having read nothing. Three layers
+                        // already shipped missed this: both prompt sentences
+                        // address ASKING for a file, and the model did not
+                        // ask, it declared an inability.
+                        //
+                        // Self-healing wording, the T35 P3 discipline: state
+                        // what is true about the runtime, then the way out,
+                        // then "do it now" because the model that produces
+                        // this shape is a 4B. It names the two ways to find
+                        // the file and says what comes back, because the
+                        // read tool's own description did not (Layer B).
+                        // Counts against NUDGE_LIMIT and fires once.
+                        nudges += 1;
+                        self.history.push(RequestMessage {
+                            role: Role::User,
+                            content: vec![ContentBlock::Text {
+                                text: "You can read files here. Find it with glob or by reading the \
+                                       working directory, then read it with the read tool; PDF, Word \
+                                       and spreadsheet files come back as text. Do that now, then \
+                                       answer."
+                                    .into(),
+                            }],
+                        });
+                        ui(AgentEvent::Notice(
+                            "the model said it cannot read a file without trying; asked it to read the file"
                                 .into(),
                         ));
                         continue;
