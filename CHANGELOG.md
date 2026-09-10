@@ -17,8 +17,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   a model that ASKS for a file, and this one asked for nothing, it
   declared an inability. The phrases it matches are the wordings models
   were observed to use, so a refusal worded some other way still gets
-  through; it is capped at one nudge per turn like the other recovery
-  paths, and a turn that used any tool is never touched.
+  through; it counts against the same per-turn nudge cap as the other
+  recovery paths, and a turn that used any tool is never touched.
 
 - The `read` tool's description no longer claims it returns images and
   PDFs "as file attachments", which was never true of temur, and never

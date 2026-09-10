@@ -1184,6 +1184,48 @@ fn a_file_denial_phrase_followed_by_the_answer_does_not_nudge() {
 }
 
 #[test]
+fn file_denial_nudges_are_capped_at_two() {
+    // The promise sibling's shape, with three D25-style denials and no
+    // tool call anywhere. NUDGE_LIMIT is shared across every nudge kind,
+    // so the file family is bounded the same way: two nudges, then the
+    // third denial ends the turn instead of trading messages forever.
+    // Three DIFFERENT phrases, so this cannot pass by one phrase being
+    // matched three times.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(
+                vec![text(
+                    "I can't directly read or process files like a resume. Just \
+                     paste the text here!",
+                )],
+                StopReason::EndTurn,
+            ),
+            msg(
+                vec![text(
+                    "I can't read files directly, but I can help if you paste the \
+                     text content.",
+                )],
+                StopReason::EndTurn,
+            ),
+            msg(
+                vec![text("I don't have access to your resume file right now.")],
+                StopReason::EndTurn,
+            ),
+        ],
+    );
+    let events = collect_events(&mut session, "can you read my resume and give me feedback?");
+
+    assert_eq!(requests.borrow().len(), 3);
+    let n = notices(&events)
+        .iter()
+        .filter(|n| n.contains("said it cannot read a file without trying"))
+        .count();
+    assert_eq!(n, 2, "{:?}", notices(&events));
+}
+
+#[test]
 fn a_plain_final_answer_does_not_nudge() {
     let dir = tempfile::tempdir().unwrap();
     let (mut session, requests) = session_with(

@@ -1693,8 +1693,8 @@ spreadsheet files come back as text. The check is the promise nudge's:
 ZERO tool calls anywhere in the turn, and one of nine fixed phrases in
 the LAST part of the message. Those phrases are the wordings the models
 were actually observed to use, so a model that declines in some other
-wording is not caught. It is capped like the others, so a model that
-declines a second time ends its turn.
+wording is not caught. It counts against the same per-turn cap as the
+other nudges, so a model that keeps declining ends its turn.
 
 Tool calls that keep re-fetching what you already have get stopped.
 A model can slip between the guards above by ROTATING: call A, then B,

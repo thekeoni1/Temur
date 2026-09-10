@@ -2158,7 +2158,8 @@ impl Session {
                         // this shape is a 4B. It names the two ways to find
                         // the file and says what comes back, because the
                         // read tool's own description did not (Layer B).
-                        // Counts against NUDGE_LIMIT and fires once.
+                        // Counts against NUDGE_LIMIT, which every nudge
+                        // kind shares.
                         nudges += 1;
                         self.history.push(RequestMessage {
                             role: Role::User,

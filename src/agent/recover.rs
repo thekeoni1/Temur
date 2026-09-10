@@ -784,8 +784,11 @@ const FILE_DENIAL_PHRASES: [&str; 9] = [
 ///
 /// Honest false-positive note: a genuine reply that ENDS on one of these
 /// phrases, having called nothing, costs exactly one extra request. The
-/// nudge counts against `NUDGE_LIMIT` and fires once, so a model that
-/// declines again ends its turn normally.
+/// nudge counts against `NUDGE_LIMIT`, which every nudge kind shares, so
+/// a model that keeps declining ends its turn rather than trading
+/// messages forever. The cap is 2, so the SECOND decline is nudged too
+/// and the third ends the turn;
+/// `file_denial_nudges_are_capped_at_two` measures exactly that.
 ///
 /// One deliberate difference from [`detect_scope_denial`]: the tail here
 /// has U+2019 mapped to U+0027 before matching. Four of the nine phrases
