@@ -812,6 +812,20 @@ D22 (run 2): resume-feedback PASS read the pdf and cited it (144s)
 
 The score keeps its denominator of nine and task 10 is never added to
 it, so every row published before this task existed stays comparable.
+
+Task 5 prints one more line after its PASS/FAIL, naming the first
+`glob` pattern the model sent. A comma-joined list of the three file
+names was the shape most of that task's failures had in common, and it
+is chosen before any tool output exists, so the line records it:
+
+```
+task 5 (find-needle): PASS (35s)
+T59 (run 2): find-needle glob=alpha.txt,beta.txt,gamma.txt comma-joined
+```
+
+`comma-joined` means a comma outside braces, `plain` any other pattern,
+`none` no glob call. The line is repeated after the score and written
+into the results file as a comment. Nothing is scored from it.
 The task is deliberately absent from `scripts/harness_compare/tasks.sh`:
 it measures temur's own recovery from a refusal, which no other harness
 has, so a cross-harness score for it would compare nothing.
@@ -824,9 +838,12 @@ Knobs: `MUSL_BIN`, `LLAMA_IMAGE`, `CTX` (default 8192), `PROMPT_PROFILE`
 (default `compact`, written into the generated keyless config),
 `EVAL_TASK_TIMEOUT` (seconds per task, default 1200; `0` disables it),
 `EVAL_MIN` (default 0 = informational; a nonzero value makes the script
-exit 1 below that score), and `EVAL_TRANSCRIPT_DIR` (per-task
-transcripts are kept there for debugging). Also `CHAT_TEMPLATE_FILE`,
-with the warning above: the template in force is written into the run
+exit 1 below that score), `EVAL_ONLY` (a task number 1 to 10; only that
+task runs, and the score line and the archived results file both carry
+`EVAL_ONLY=<n>, not a published row`), and `EVAL_TRANSCRIPT_DIR`
+(per-task transcripts are kept there for debugging). Also
+`CHAT_TEMPLATE_FILE`, with the warning above: the template in force is
+written into the run
 banner, the summary, and a header line on every archived
 `results.run<r>.txt`, by path and sha256, so a results file found on its
 own identifies the exact template bytes it was measured under (a path

@@ -117,7 +117,9 @@ pattern. The limits apply to the WALK. A search that completes is
 unaffected, and the existing caps on how many results are shown are
 unchanged. Both bounds exist because a working directory on a mounted
 Windows drive can be hundreds of thousands of entries deep and minutes
-slow.
+slow. A `glob` pattern that is a comma-separated list of names, such as
+`alpha.txt,beta.txt`, is read as alternatives, and the output ends with
+a line saying how many.
 
 Double Ctrl+C force-quits. Two Ctrl+C presses within two seconds
 during a turn quit the program, whatever else arrived between them.

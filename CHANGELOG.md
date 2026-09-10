@@ -4,6 +4,25 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **A `glob` pattern that lists file names with commas now finds them.**
+  Asked which of alpha.txt, beta.txt and gamma.txt holds a string, a
+  small local model's first call was `glob` with the pattern
+  `alpha.txt,beta.txt,gamma.txt`. The glob library reads that as one
+  filename with two commas in it, so the tool answered "No files found"
+  and the model told the user the files did not exist. On the previous
+  binary that happened in 7 of 10 runs of the eval task and 6 of those
+  7 failed. A comma outside braces now splits the pattern into
+  alternatives: a file matching the whole pattern or any piece is
+  listed, and the output ends with
+  `(comma-separated pattern read as 3 alternatives)` so the transcript
+  shows what was done. Brace patterns such as `*.{txt,md}` and
+  comma-free patterns are unchanged. On the fixed binary the same task
+  passed 10 of 10, with the comma shape sent 4 times.
+
+- The `glob` and `grep` tool descriptions no longer end by sending an
+  open-ended search to "the Task tool", which temur does not have. The
+  two lines cost 54 prompt tokens in either profile.
+
 ## v0.34.0 - 2026-09-10
 
 - **A model that says it cannot read your file is now sent to read it.**
