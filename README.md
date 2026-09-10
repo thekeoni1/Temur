@@ -9,17 +9,16 @@ system, down to 32-bit and embedded. Bring your own model: hosted
 (Anthropic, OpenAI, Gemini, xAI) or fully offline against a local
 llama.cpp, Ollama, or LM Studio server.
 
-- A single static ELF under 10 MB, zero dependencies. Mainstream Bun- and
-  Node-based agents publish no 32-bit x86 or armv7 builds, and their
-  "single executable" bundles embed a runtime on the order of 90 MB.
-  temur's release binary has no interpreter and no shared libraries,
-  so it loads on old x86 machines, armv7 industrial controllers,
-  OpenWrt-class devices, `FROM scratch` containers, and
-  rescue/initramfs environments. The shipped v0.33.0 binaries measure
-  6.2 MB on i686 and 7.6 MB on x86_64. Office-format support added
-  since then grew the i686 build to 9.45 MB: the PDF, spreadsheet and
-  document parsers are compiled in, the price of reading documents
-  with nothing installed.
+- A single static ELF, under 10 MB on 32-bit, zero dependencies.
+  Mainstream Bun- and Node-based agents publish no 32-bit x86 or armv7
+  builds, and their "single executable" bundles embed a runtime on the
+  order of 90 MB. temur's release binary has no interpreter and no
+  shared libraries, so it loads on old x86 machines, armv7 industrial
+  controllers, OpenWrt-class devices, `FROM scratch` containers, and
+  rescue/initramfs environments. The v0.34.0 binaries measure 9.51 MB
+  on i686 and 11.44 MB on x86_64: the PDF, spreadsheet and document
+  parsers are compiled in, the price of reading documents with nothing
+  installed.
 - Offline is a first-class mode. The OpenAI-compatible provider runs
   keyless against local servers, and quirky-local-server behavior
   (absent usage, missing tool-call IDs, malformed argument JSON) is
