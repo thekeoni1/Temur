@@ -463,10 +463,18 @@ if [ "$(trimmed "$WORKROOT/task$n/tail.txt")" = "OMEGA-3141" ]; then
 # PASS needs BOTH halves, and either alone is a FAIL that says which:
 #   1. a read tool call whose path ends in the fixture's name, proving the
 #      model went and got the file rather than declaring it could not;
-#   2. the fictional candidate's given name in the model's own prose,
-#      which can only have come out of the PDF.
+#   2. a FACT out of the PDF in the model's own prose, none of which
+#      appears in any prompt, so it can only have been read.
 # Half 1 without half 2 is a read that produced no answer; half 2 without
-# half 1 is a name the model invented.
+# half 1 is a fact the model invented.
+#
+# Half 2 was the candidate's given name alone until the T58 P1 rider. That
+# was too strict and mis-scored a correct run: a model that believes the
+# resume is the USER's writes "your skills" and "your name is included"
+# throughout and never has any reason to say whose resume it is. It read
+# the PDF, quoted its numbers back accurately, and scored FAIL on a name
+# it had no occasion to use. The name stays in the alternation, because it
+# is still evidence; it just stopped being the only evidence.
 n=10; name=resume-feedback
 mkdir -p "$WORKROOT/task$n"
 cp "$RESUME_FIXTURE" "$WORKROOT/task$n/sample-resume.pdf"
@@ -483,26 +491,29 @@ t10_read=0
 if grep -Eq '^  [^ ]+ read: .*sample-resume\.pdf$' "$t" 2>/dev/null; then
     t10_read=1
 fi
-t10_name=0
+t10_cite=0
 # Searched in the model's own prose only. Tool OUTPUT never reaches
 # --plain, so the sole model-controlled text the harness itself prints is
 # that ToolEnd title: without dropping those lines, a hallucinated read of
 # "/work/Jordan-resume.pdf" would score as if the PDF had been read.
-if grep -v -E '^  [^ ]+ [a-z]+: ' "$t" 2>/dev/null | grep -q 'Jordan'; then
-    t10_name=1
+# Fixed strings and case-sensitive on purpose: these are quotations out of
+# the document, not a fuzzy topic match.
+if grep -v -E '^  [^ ]+ [a-z]+: ' "$t" 2>/dev/null \
+    | grep -qF -e 'Jordan' -e 'tinyq' -e 'Example Logistics' -e 'p99'; then
+    t10_cite=1
 fi
 T10_RES=FAIL
 if [ "$TIMED_OUT" = "1" ]; then
     T10_NOTE="TIMEOUT@${EVAL_TASK_TIMEOUT}s"
-elif [ "$t10_read" = "1" ] && [ "$t10_name" = "1" ]; then
+elif [ "$t10_read" = "1" ] && [ "$t10_cite" = "1" ]; then
     T10_RES=PASS
-    T10_NOTE="read the pdf and named Jordan"
+    T10_NOTE="read the pdf and cited it"
 elif [ "$t10_read" = "1" ]; then
-    T10_NOTE="read the pdf but never named Jordan"
-elif [ "$t10_name" = "1" ]; then
-    T10_NOTE="named Jordan but never read the pdf"
+    T10_NOTE="read the pdf but never cited it"
+elif [ "$t10_cite" = "1" ]; then
+    T10_NOTE="cited the pdf but never read it"
 else
-    T10_NOTE="never read the pdf and never named Jordan"
+    T10_NOTE="never read the pdf and never cited it"
 fi
 T10_NOTE="$T10_NOTE (${T10_SECS}s)"
 archive_task "$n" "$T10_RES"
