@@ -10,7 +10,7 @@ const MAX_RESULTS: usize = 100;
 /// T53/D21: bounds on the WALK, not on the output above. Measured on this
 /// box with the same ignore::WalkBuilder the tools use: the temur repo is
 /// 192 entries in 10 ms, /home/dev is 93,035 entries in 0.7 s warm and
-/// 6.3 s cold, and /mnt/c/Users/Elliot (drvfs, the mount the operator hit)
+/// 6.3 s cold, and /mnt/c/Users/<user> (drvfs, the mount the operator hit)
 /// is 350,473 entries in 240 s, which is the roughly five minutes they sat
 /// through. The deadline is 24x under that and about a thousand times the
 /// repo walk, so no ordinary search can reach it; on drvfs it stops after
