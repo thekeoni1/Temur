@@ -10269,3 +10269,113 @@ stage did, plus T43's TUI residuals carried forward:
   download above establishes that the artifacts are reachable and
   intact without credentials. It says nothing about whether anyone
   runs them, and no external user has.
+
+## v0.34.0 close-out - recorded at stage 1, before its release
+
+2026-09-10. **T45 through T58, the launch release, cut as v0.34.0.** A
+MINOR bump carrying fourteen milestones: the approval default (a tool
+that changes anything asks first), office-format reading (PDF,
+spreadsheet, document) and spreadsheet writing, project instruction
+files, chat-transport timeouts, `--help`, and a run of model-floor and
+provider-robustness work. Per-milestone acceptance lives in the ROADMAP
+rows T45 through T58; the RUNBOOK carries no per-milestone records
+since v0.33.0, so those rows are the acceptance evidence for this
+cycle. This section is the release-cycle bookkeeping only.
+
+Version moves 0.33.0 -> 0.34.0.
+
+### The era
+
+**The launch release, and the second public ship.** v0.33.0 was the
+first release published against the public repository; this is the
+first cut whose feature set was chosen as a launch. The launch gates
+named in earlier cycles (demo GIF, announcement) remain queued and are
+not part of this stage.
+
+### Desktop provenance
+
+56 commits since the v0.33.0 tag (`a76646b`). The last thirteen,
+`c2e1944` (T56 P1) through `1ccba87` (T58 rider), were built and gated
+on the DESKTOP, seven green gates for T58 alone, and pushed 2026-09-10
+with the operator's authorisation. CI run **34474231865, attempt 1**,
+success on both jobs (`release-gate`, `test`) at `1ccba87`; the run id,
+the attempt number and both conclusions were re-verified by this
+session through the API before this stage began. This session did not
+build T45-T58; it ran stage 1 on the pulled tree after `git pull
+--ff-only` to `1ccba87`.
+
+### Metadata drift
+
+`scripts/metadata_drift.sh` run by hand at preflight, report-only as
+the launch plan ordered 2026-09-04: **zero DRIFT lines**, exit 0, all
+four baked Anthropic profiles matching models.dev (fable context
+1000000 / $10 / $50, haiku 200000 / $1 / $5, opus 1000000 / $5 / $25,
+sonnet 1000000 / $2 / $10). No refresh was needed and none was made;
+the refresh remains a separate decision.
+
+### Gate log
+
+Stage-1 gate at 0.34.0 on the CHANGELOG head `a9dce16`:
+`~/temur-eval-archive/v0.34.0-gates/stage1-a9dce16.log` (laptop).
+ALL CHECKS PASSED, exit 0, first try, no kill-and-rerun. Both paths
+ran (gnu-debug inner loop, musl-release acceptance gate). 48 `test
+result:` lines, **2379 passed, 0 failed**, every line reading `ok.` and
+`0 failed`, zero `FAIL(` and zero `panicked` lines anywhere in the log.
+All five TUI pty smokes (host, gnu, gnu bracketed-paste, musl, musl
+bracketed-paste) passed first attempt, and all five mock REPLs. The
+bare busybox container reported `temur 0.34.0`. The log is named after
+the head it gated; this close-out adds RUNBOOK prose and nothing else
+after that gate.
+
+### Deviations, recorded
+
+1. **README:18 was restored to `v0.33.0` after the bump**, per the
+   desktop ruling of 2026-09-10. `scripts/bump_version.sh` counts every
+   line carrying `v$OLD` as a tag pin and rewrites all of them with a
+   global sed, and README:18 is PROSE, not a pin. Left swept it would
+   have read "The shipped v0.34.0 binaries measure 6.2 MB on i686 and
+   7.6 MB on x86_64" two lines above "Office-format support added since
+   then grew the i686 build to 9.45 MB" - false, since office formats
+   ARE v0.34.0. The 6.2 / 7.6 MB figures are correct as v0.33.0
+   history, deliberately contrasted with post-v0.33.0 growth. The size
+   figures were NOT rewritten here: the v0.34.0 sizes do not exist
+   until stage 2 stages the assets. The size-sentence rewrite is a
+   stage-2 README-only commit that must RE-MEASURE from the actual
+   staged files, and it closes the "v0.34.0 size sentence pending"
+   board item. After the restore the bump diff touched exactly five
+   README lines (169, 173, 185, 186, 188; six `v0.34.0` occurrences,
+   line 185 carrying two), line 18 was absent from the diff, and
+   `grep -c v0.33.0 README.md` read 1. Line 67 carries a bare `0.33.0`
+   with no leading `v` and is untouched by design.
+2. **Script defect recorded, not fixed now.** `scripts/bump_version.sh`
+   should count and rewrite only URL pins, the lines carrying `/v$OLD/`
+   or `temur-v$OLD-`, and never prose. Deviation 1 is the manual
+   correction for it. This is a queue row for after launch, not launch
+   week.
+3. **`scripts/bump_version.sh` aborted on its first invocation** at its
+   `cargo update -p temur --offline` step, with `no matching package
+   named calamine found`. The cause was environmental, not a repo
+   fault: this laptop had not built since T54 added the office-format
+   dependencies, so its cargo registry cache had no `calamine`, though
+   `Cargo.lock` carries it. The script is `set -eu`, so it stopped
+   having modified only `Cargo.toml`. That edit was reverted with `git
+   checkout --`, `cargo fetch` populated the cache (a plain dependency
+   download as `dev`; no elevation, no product execution, nothing
+   secret-related), and the script was re-run UNMODIFIED to completion.
+   The same fetch was a precondition for the gate, which could not have
+   built either. No commit contains the partial state.
+4. **Stage 1 was executed by a laptop implementing session** on the
+   pulled tree, with planning and desktop roles separate, per the
+   kickoff. Every step, check and ordering in the kickoff was followed
+   as written.
+
+### Stage 2 explicitly not yet run
+
+No tag exists, local or remote, and nothing has been published. No
+release was created and `scripts/release.sh` was not run. This record
+is written at stage 1, before the release, per standing procedure.
+Stage 2 waits for planning's word after it verifies this push remotely.
+The stage-2 tag message is DECIDED and recorded here but NOT acted on.
+It will be exactly one line, ASCII hyphen:
+
+    temur v0.34.0 - asks before a tool changes anything, and reads office files (T45-T58)
