@@ -1325,7 +1325,10 @@ system tools: the parsers are pure Rust compiled into the binary, so
 this works on a machine with nothing installed.
 
 Reading rides the `read` tool, with no new argument: the model reads
-`resume.pdf` the way it reads `main.rs`.
+`resume.pdf` the way it reads `main.rs`. The tool's own description
+names these formats and says they come back as extracted text, so a
+model has a written reason to open the file rather than report that it
+cannot read one.
 
 | extension | what comes back |
 |---|---|
@@ -1672,6 +1675,26 @@ answer, from the same words as the final thing written, which is a
 turn that stalled. A genuine answer that ends on one of those phrases
 costs one extra request, since the nudge is capped like every other
 one.
+
+A turn that says it cannot read a file, having read nothing, gets one
+nudge. Asked "can you read my resume and give me feedback?" in a
+directory holding a single PDF, a 4B model answered "I can't directly
+read files" and called nothing. It never asked for the file, so the
+prompt sentences about finding files did not apply. It declared an
+inability instead.
+
+```
+  [!] the model said it cannot read a file without trying; asked it to read the file
+```
+
+The nudge says files are readable here, names the two ways to find one
+(`glob`, or reading the working directory), and says that PDF, Word and
+spreadsheet files come back as text. The check is the promise nudge's:
+ZERO tool calls anywhere in the turn, and one of nine fixed phrases in
+the LAST part of the message. Those phrases are the wordings the models
+were actually observed to use, so a model that declines in some other
+wording is not caught. It is capped like the others, so a model that
+declines a second time ends its turn.
 
 Tool calls that keep re-fetching what you already have get stopped.
 A model can slip between the guards above by ROTATING: call A, then B,

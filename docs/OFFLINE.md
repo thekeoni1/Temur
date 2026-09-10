@@ -340,20 +340,21 @@ summary of this table prints only when no server answers), and `temur
 doctor` warns when a configured model is not in the listing. Both use
 one unauthenticated GET, against keyless endpoints only.
 
-| Model | Quant | File size | Est. RAM at 8k ctx | Tool calls | Indirect selection | Status |
-|---|---|---|---|---|---|---|
-| **Qwen3-4B-Instruct-2507** (primary) | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | verified 2026-08-15 (eval 9/9, 9/9) |
-| Qwen3-4B-Thinking-2507 | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | verified 2026-08-15 (eval 7/9, 9/9, 9/9) |
-| Qwen2.5-Coder-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | via prose recovery | yes | verified 2026-08-15 (eval 6/9, 9/9, 7/9) |
-| Qwen3-1.7B (low-RAM floor) | Q4_K_M | ~1.1 GB | ~2.1 GB | yes | yes | verified 2026-08-15 (eval 7/9, 7/9) |
-| Qwen3-0.6B | Q4_K_M | ~0.4 GB | ~1.4 GB | degraded | yes | verified 2026-08-15 (eval 5/9, 5/9) |
-| Qwen2.5-Coder-1.5B-Instruct | Q4_K_M | ~0.9 GB | ~1.9 GB | intermittent | 1 of 2 runs | verified 2026-08-15 (eval 4/9, 4/9) |
-| Llama-3.2-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | unreliable | no | re-measured 2026-08-16 on v0.22.0, different binary from the rows above (eval 4/9, 3/9; was 2/9, 2/9 on 2026-08-15) |
-| Gemma-3-4B-it | Q4_K_M | ~2.3 GB | ~3.3 GB | not delivered by its template | n/a | verified 2026-08-15 (eval 0/9) |
-| Phi-4-mini-instruct | Q4_K_M | ~2.3 GB | ~3.3 GB | not delivered by its template | n/a | verified 2026-08-15 (eval 0/9) |
-| SmolLM2-1.7B-Instruct | Q4_K_M | ~1.0 GB | ~2.0 GB | not delivered by its template | n/a | verified 2026-08-15 (eval 0/9) |
-| Llama-3.1-8B-Instruct | Q4_K_M | ~4.9 GB | ~5.9 GB | emitted, but the server rejected 4 of 9 | yes | measured 2026-09-09 on head `8ea2aa3`, a different binary from every row above (eval 5/9, 5/9; identical failing set both runs) |
-| gpt-oss-20b | MXFP4 | ~12.1 GB | ~13.1 GB | yes | yes | measured 2026-09-09 on head `f7ab9df` (T57 P1), musl i686 sha256 `76c8e33e...` (eval 9/9, 9/9); scored 0/9, 0/9 on the parent binary, whose tool definitions its template could not render, see below |
+| Model | Quant | File size | Est. RAM at 8k ctx | Tool calls | Indirect selection | D22 file denial | Status |
+|---|---|---|---|---|---|---|---|
+| **Qwen3-4B-Instruct-2507** (primary) | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | not measured | verified 2026-08-15 (eval 9/9, 9/9) |
+| Qwen3-4B-Thinking-2507 | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | not measured | verified 2026-08-15 (eval 7/9, 9/9, 9/9) |
+| Qwen2.5-Coder-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | via prose recovery | yes | not measured | verified 2026-08-15 (eval 6/9, 9/9, 7/9) |
+| Qwen3-1.7B (low-RAM floor) | Q4_K_M | ~1.1 GB | ~2.1 GB | yes | yes | not measured | verified 2026-08-15 (eval 7/9, 7/9) |
+| Qwen3-0.6B | Q4_K_M | ~0.4 GB | ~1.4 GB | degraded | yes | not measured | verified 2026-08-15 (eval 5/9, 5/9) |
+| Qwen2.5-Coder-1.5B-Instruct | Q4_K_M | ~0.9 GB | ~1.9 GB | intermittent | 1 of 2 runs | not measured | verified 2026-08-15 (eval 4/9, 4/9) |
+| Llama-3.2-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | unreliable | no | not measured | re-measured 2026-08-16 on v0.22.0, different binary from the rows above (eval 4/9, 3/9; was 2/9, 2/9 on 2026-08-15) |
+| Gemma-3-4B-it | Q4_K_M | ~2.3 GB | ~3.3 GB | not delivered by its template | n/a | not measured | verified 2026-08-15 (eval 0/9) |
+| Phi-4-mini-instruct | Q4_K_M | ~2.3 GB | ~3.3 GB | not delivered by its template | n/a | not measured | verified 2026-08-15 (eval 0/9) |
+| SmolLM2-1.7B-Instruct | Q4_K_M | ~1.0 GB | ~2.0 GB | not delivered by its template | n/a | not measured | verified 2026-08-15 (eval 0/9) |
+| Llama-3.1-8B-Instruct | Q4_K_M | ~4.9 GB | ~5.9 GB | emitted, but the server rejected 4 of 9 | yes | not measured | measured 2026-09-09 on head `8ea2aa3`, a different binary from every row above (eval 5/9, 5/9; identical failing set both runs) |
+| gpt-oss-20b | MXFP4 | ~12.1 GB | ~13.1 GB | yes | yes | not measured | measured 2026-09-09 on head `f7ab9df` (T57 P1), musl i686 sha256 `76c8e33e...` (eval 9/9, 9/9); scored 0/9, 0/9 on the parent binary, whose tool definitions its template could not render, see below |
+| **Qwen3-4B-Instruct-2507** (T58 re-measure) | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | 2/2, both via the nudge | measured 2026-09-09 on head `0cfc653` (T58 P2), musl i686 sha256 `596e3e43...` (eval 8/9, 9/9); the one miss is task 5 in run 1, which is the glob shape described below and not a regression |
 
 The rows that say "not delivered by its template" mean the tools never
 reached those models. Some of them score when the tools do reach them.
@@ -793,6 +794,27 @@ a fixed-width PASS/FAIL table plus a `SCORE: N/9` line. A task killed by
 the per-task timeout is a FAIL carrying a `TIMEOUT@<n>s` note in that
 table's last column, so an overrun is never mistaken for an ordinary
 failure.
+
+A tenth task, `resume-feedback`, runs after the nine and is reported
+separately. The nine are imperative tool instructions, so none of them
+can see a model that refuses a request rather than mishandling it. This
+one is conversational and names no tool: the work directory holds one
+PDF and the prompt is "can you read my resume and give me feedback?".
+It passes only if the transcript shows a `read` call on that PDF AND
+the model's own prose quotes a fact out of the document, since a model
+can call the tool and still answer from nothing. Its line follows the
+score:
+
+```
+SCORE (run 2): 9/9
+D22 (run 2): resume-feedback PASS read the pdf and cited it (144s)
+```
+
+The score keeps its denominator of nine and task 10 is never added to
+it, so every row published before this task existed stays comparable.
+The task is deliberately absent from `scripts/harness_compare/tasks.sh`:
+it measures temur's own recovery from a refusal, which no other harness
+has, so a cross-harness score for it would compare nothing.
 
 ```sh
 MODEL_GGUF=/path/to/model.gguf scripts/weak_model_eval.sh

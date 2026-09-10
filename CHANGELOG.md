@@ -4,6 +4,28 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **A model that says it cannot read your file is now sent to read it.**
+  Asked "can you read my resume and give me feedback?" in a directory
+  holding one PDF, a small local model answered "I can't directly read
+  or process files like a resume. However, if you'd like to share the
+  content of your resume ... just paste the text here!" and made no tool
+  call. It can read that PDF; nothing stopped it. Now the same request
+  gets one nudge saying files are readable here, naming `glob` and the
+  working directory as the ways to find one, and the model finds the
+  file, reads it, and answers with feedback that quotes the document.
+  Two existing prompt sentences did not cover this, because both address
+  a model that ASKS for a file, and this one asked for nothing, it
+  declared an inability. The phrases it matches are the wordings models
+  were observed to use, so a refusal worded some other way still gets
+  through; it is capped at one nudge per turn like the other recovery
+  paths, and a turn that used any tool is never touched.
+
+- The `read` tool's description no longer claims it returns images and
+  PDFs "as file attachments", which was never true of temur, and never
+  said anything about Word or spreadsheet files, which it has read since
+  v0.33.0. It now names the office formats and says they come back as
+  extracted text. The line costs 21 prompt tokens in either profile.
+
 - A local model whose chat template prints the element type of an array
   parameter can now use temur's tools. Every turn that sent tools to
   gpt-oss-20b died before a token was generated, with the server
