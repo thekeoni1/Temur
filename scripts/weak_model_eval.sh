@@ -38,6 +38,12 @@
 #         EVAL_RUNS          how many times the nine tasks repeat (default 1);
 #                            the server and the pod are built ONCE and shared
 #                            across runs, so only model sampling varies
+#         EVAL_ONLY          run only task <n> (1..10) instead of the nine
+#                            plus task 10. The SCORE line and the archived
+#                            results file both carry "(EVAL_ONLY=<n>, not a
+#                            published row)", so a one-task score can never
+#                            be read as a nine-task one. Unset (the default)
+#                            is the same run as before.
 #         EVAL_MIN           minimum passing score; 0 (default) = informational
 #                            only, nonzero = exit 1 when ANY run is below it
 #         EVAL_KEEP_ALL      1 = archive every task's artifacts, not just the
@@ -71,6 +77,7 @@ EVAL_MAX_TOKENS="${EVAL_MAX_TOKENS:-3072}"
 EVAL_RUNS="${EVAL_RUNS:-1}"
 EVAL_MIN="${EVAL_MIN:-0}"
 EVAL_KEEP_ALL="${EVAL_KEEP_ALL:-0}"
+EVAL_ONLY="${EVAL_ONLY:-}"
 EVAL_TRANSCRIPT_DIR="${EVAL_TRANSCRIPT_DIR:-/tmp/temur-weak-eval}"
 # T34: substitute chat template, off unless set. Proven shape from the
 # template experiment of 2026-08-17, which took Phi-4-mini from 0/9 to 4/9
@@ -170,6 +177,16 @@ for knob_pair in "EVAL_RUNS=$EVAL_RUNS" "EVAL_MAX_TOKENS=$EVAL_MAX_TOKENS"; do
     esac
     [ "$knob_val" -ge 1 ] || { echo "FAIL: $knob_name must be at least 1 (got '$knob_val')"; exit 1; }
 done
+# T59: a one-task run, validated here for the same reason the knobs above
+# are. The marker it puts on every score line is applied in report_round.
+if [ -n "$EVAL_ONLY" ]; then
+    case "$EVAL_ONLY" in
+        *[!0-9]*) echo "FAIL: EVAL_ONLY must be a task number 1..10 (got '$EVAL_ONLY')"; exit 1 ;;
+    esac
+    if [ "$EVAL_ONLY" -lt 1 ] || [ "$EVAL_ONLY" -gt 10 ]; then
+        echo "FAIL: EVAL_ONLY must be a task number 1..10 (got '$EVAL_ONLY')"; exit 1
+    fi
+fi
 
 echo "==== pod bring-up (--network none) ===="
 
@@ -220,6 +237,7 @@ else
 fi
 echo "profile: $PROMPT_PROFILE   per-task timeout: $TIMEOUT_BANNER   max_tokens: $EVAL_MAX_TOKENS"
 echo "runs: $EVAL_RUNS   transcripts: $EVAL_TRANSCRIPT_DIR"
+[ -z "$EVAL_ONLY" ] || echo "EVAL_ONLY=$EVAL_ONLY: only task $EVAL_ONLY runs; its score is not a published row"
 template_line
 
 SCORES="$EVAL_ROOT/scores.txt"
@@ -228,8 +246,15 @@ SCORES="$EVAL_ROOT/scores.txt"
 # way, but never summed into them: the /9 stays the /9.
 T10LOG="$EVAL_ROOT/task10.txt"
 : > "$T10LOG"
+# T59: task 5's glob-title line per run, reported the same way as D22.
+T59LOG="$EVAL_ROOT/task5-glob.txt"
+: > "$T59LOG"
 
 trimmed() { cat "$1" 2>/dev/null | tr -d '[:space:]' || true; }
+
+# T59: which tasks this run executes. Unset EVAL_ONLY is every task, which
+# is the run every published row was measured under.
+wanted() { [ -z "$EVAL_ONLY" ] || [ "$EVAL_ONLY" = "$1" ]; }
 
 # T33: how the per-task bound is actually enforced. Until now the line
 # was `timeout $EVAL_TASK_TIMEOUT podman run ...`, which never bound: on
@@ -343,29 +368,37 @@ record() { # record <n> <name> <PASS|FAIL> <secs>
 # Called once per EVAL_RUNS; every task gets a fresh work dir under the
 # run's own root, so no run can see another's leftovers.
 run_round() {
+T10_RES=""
+T10_NOTE=""
+T59_LINE=""
 
 # 1: plain write.
 n=1; name=write-file
+if wanted "$n"; then
 mkdir -p "$WORKROOT/task$n"
 run_task "$n" "$name" \
     'Use the write tool to create a file named hello.txt containing exactly this text: hello-eval'
 if [ "$(trimmed "$WORKROOT/task$n/hello.txt")" = "hello-eval" ]; then
     record "$n" "$name" PASS "$SECS"; else record "$n" "$name" FAIL "$SECS"; fi
+fi
 
 # 2: read + extract. The prompt describes the SHAPE of the line without
 # quoting a stand-in value: a literal placeholder is copyable, and three
 # models copied one instead of the value it stood for (T29 finding 2),
 # which made this task partly a measure of placeholder literalism.
 n=2; name=read-extract
+if wanted "$n"; then
 mkdir -p "$WORKROOT/task$n"
 printf 'token: ZORP-7143\n' > "$WORKROOT/task$n/data.txt"
 run_task "$n" "$name" \
     "Two steps. Step 1: use the read tool on data.txt. It holds a single line that begins with 'token: ' and ends with a code. Step 2: use the write tool to create token.txt whose content is that code, meaning the text that follows 'token: ' on the line you just read, and nothing else."
 if [ "$(trimmed "$WORKROOT/task$n/token.txt")" = "ZORP-7143" ]; then
     record "$n" "$name" PASS "$SECS"; else record "$n" "$name" FAIL "$SECS"; fi
+fi
 
 # 3: targeted edit, rest of the file unchanged.
 n=3; name=edit-config
+if wanted "$n"; then
 mkdir -p "$WORKROOT/task$n"
 printf '[app]\nmode = development\nretries = 3\n' > "$WORKROOT/task$n/config.ini"
 run_task "$n" "$name" \
@@ -376,17 +409,21 @@ if grep -q '^mode = production$' "$f" 2>/dev/null \
     && grep -q '^retries = 3$' "$f" 2>/dev/null \
     && grep -q '^\[app\]$' "$f" 2>/dev/null; then
     record "$n" "$name" PASS "$SECS"; else record "$n" "$name" FAIL "$SECS"; fi
+fi
 
 # 4: bash with a directory.
 n=4; name=bash-mkdir
+if wanted "$n"; then
 mkdir -p "$WORKROOT/task$n"
 run_task "$n" "$name" \
     'Use the bash tool to create a directory named build containing a file marker.txt with the text: done  (so the file is build/marker.txt)'
 if [ "$(trimmed "$WORKROOT/task$n/build/marker.txt")" = "done" ]; then
     record "$n" "$name" PASS "$SECS"; else record "$n" "$name" FAIL "$SECS"; fi
+fi
 
 # 5: search across files.
 n=5; name=find-needle
+if wanted "$n"; then
 mkdir -p "$WORKROOT/task$n"
 printf 'nothing here\n' > "$WORKROOT/task$n/alpha.txt"
 printf 'the code is NEEDLE-4242 today\n' > "$WORKROOT/task$n/beta.txt"
@@ -398,9 +435,28 @@ if [ -f "$found" ] && grep -q 'beta\.txt' "$found" 2>/dev/null \
     && ! grep -q 'alpha\.txt' "$found" 2>/dev/null \
     && ! grep -q 'gamma\.txt' "$found" 2>/dev/null; then
     record "$n" "$name" PASS "$SECS"; else record "$n" "$name" FAIL "$SECS"; fi
+# T59: which glob pattern the model sent, host-read from the transcript's
+# first ToolEnd glob line ("  <mark> glob: <title>", the title being the
+# raw pattern argument). comma-joined means a comma outside braces, which
+# globset reads as one literal filename and which the model sends when it
+# lists the three names the prompt gave it. Reported, never scored.
+t="$EVAL_TRANSCRIPT_DIR/task$n.run$RUN.txt"
+if grep -Eq '^  [^ ]+ glob: ' "$t" 2>/dev/null; then
+    T59_GLOB=$(sed -n 's/^  [^ ][^ ]* glob: \(.*\)$/\1/p' "$t" | head -1)
+    if printf '%s' "$T59_GLOB" | sed 's/{[^}]*}//g' | grep -q ','; then
+        T59_LINE="find-needle glob=$T59_GLOB comma-joined"
+    else
+        T59_LINE="find-needle glob=$T59_GLOB plain"
+    fi
+else
+    T59_LINE="find-needle glob=none none"
+fi
+echo "T59 (run $RUN): $T59_LINE"
+fi
 
 # 6: edit then bash, order matters (a cp before the bump yields a stale bak).
 n=6; name=bump-and-copy
+if wanted "$n"; then
 mkdir -p "$WORKROOT/task$n"
 printf '1.2.3\n' > "$WORKROOT/task$n/version.txt"
 run_task "$n" "$name" \
@@ -408,12 +464,14 @@ run_task "$n" "$name" \
 if [ "$(trimmed "$WORKROOT/task$n/version.txt")" = "1.2.4" ] \
     && [ "$(trimmed "$WORKROOT/task$n/version.bak")" = "1.2.4" ]; then
     record "$n" "$name" PASS "$SECS"; else record "$n" "$name" FAIL "$SECS"; fi
+fi
 
 # 7: indirect tool selection. The prompt names neither bash nor rm; the
 # registry has no delete tool, so the only correct move is choosing bash on
 # its own (the T11 dogfood gap: qwen3-1.7b claimed it had no delete tool).
 # PASS needs BOTH the file gone and a bash rm call in the transcript.
 n=7; name=indirect-delete
+if wanted "$n"; then
 mkdir -p "$WORKROOT/task$n"
 printf 'scratch\n' > "$WORKROOT/task$n/obsolete.tmp"
 run_task "$n" "$name" \
@@ -424,16 +482,19 @@ if [ ! -e "$WORKROOT/task$n/obsolete.tmp" ] \
     && grep -Eq '(^| |")rm .*obsolete' "$t" 2>/dev/null; then
     record "$n" "$name" PASS "$SECS"; else record "$n" "$name" FAIL "$SECS"; fi
 rm -f "$WORKROOT/task$n/obsolete.tmp"
+fi
 
 # 8: binary nudge (T19). The only correct path is a bash gzip run; the
 # write tool writes text, so a raw-written "archive" is invalid gzip.
 # gunzip validity of the result is therefore proof of the path taken.
 n=8; name=binary-nudge
+if wanted "$n"; then
 mkdir -p "$WORKROOT/task$n"
 run_task "$n" "$name" \
     'Create a gzip-compressed file named notes.txt.gz in the current directory. Its DECOMPRESSED content must be exactly: eval-gz-99   (gzip is available via the bash tool).'
 if [ "$( { gunzip -c "$WORKROOT/task$n/notes.txt.gz" 2>/dev/null || true; } | tr -d '[:space:]')" = "eval-gz-99" ]; then
     record "$n" "$name" PASS "$SECS"; else record "$n" "$name" FAIL "$SECS"; fi
+fi
 
 # 9: large-output tail (T19). data.log is ~32,000 chars, far over the
 # context-scaled tool-output cap, and the needle is on the LAST line: a
@@ -441,6 +502,7 @@ if [ "$( { gunzip -c "$WORKROOT/task$n/notes.txt.gz" 2>/dev/null || true; } | tr
 # The prompt describes the last line's shape without quoting a stand-in
 # value, for the same reason task 2 does (T29 finding 2).
 n=9; name=large-tail
+if wanted "$n"; then
 mkdir -p "$WORKROOT/task$n"
 {
     i=1
@@ -454,6 +516,7 @@ run_task "$n" "$name" \
     'Two steps. Step 1: use the bash tool to run exactly: cat data.log   (the output is long and will be truncated in the middle). Step 2: the LAST line of that output begins with "FINAL-LINE: " and ends with a code. Use the write tool to create tail.txt containing that code, meaning the text that follows "FINAL-LINE: " on that last line, and nothing else.'
 if [ "$(trimmed "$WORKROOT/task$n/tail.txt")" = "OMEGA-3141" ]; then
     record "$n" "$name" PASS "$SECS"; else record "$n" "$name" FAIL "$SECS"; fi
+fi
 
 # 10: file denial (T58, dogfood D25). Not an instruction at all: a
 # conversational request that only IMPLIES a file, in a work dir holding
@@ -476,6 +539,7 @@ if [ "$(trimmed "$WORKROOT/task$n/tail.txt")" = "OMEGA-3141" ]; then
 # it had no occasion to use. The name stays in the alternation, because it
 # is still evidence; it just stopped being the only evidence.
 n=10; name=resume-feedback
+if wanted "$n"; then
 mkdir -p "$WORKROOT/task$n"
 cp "$RESUME_FIXTURE" "$WORKROOT/task$n/sample-resume.pdf"
 run_task "$n" "$name" \
@@ -517,6 +581,7 @@ else
 fi
 T10_NOTE="$T10_NOTE (${T10_SECS}s)"
 archive_task "$n" "$T10_RES"
+fi
 
 }
 
@@ -530,18 +595,38 @@ report_round() {
         printf '%-4s %-14s %-6s %-8s %s\n' "$n" "$name" "$res" "$secs" "$note"
         [ "$res" = "PASS" ] && SCORE=$((SCORE + 1))
     done < "$RESULTS"
+    # T59: a one-task run scores out of the tasks it ran and says so on the
+    # line itself, in the archived file as well as here, so nothing that
+    # reads either can take it for a nine-task row.
+    if [ -n "$EVAL_ONLY" ]; then
+        DENOM=$(wc -l < "$RESULTS" | tr -d ' ')
+        SCORE_MARK=" (EVAL_ONLY=$EVAL_ONLY, not a published row)"
+    else
+        DENOM=9
+        SCORE_MARK=""
+    fi
     # The archived copy carries a header naming the template, so a results
     # file found on its own still says what it was measured under. The
     # working $RESULTS file stays pure pipe-separated rows.
-    { template_line; cat "$RESULTS"; \
-      echo "# D22 (run $RUN): resume-feedback $T10_RES $T10_NOTE"; \
+    { template_line; \
+      [ -z "$EVAL_ONLY" ] || echo "# EVAL_ONLY=$EVAL_ONLY: not a published row"; \
+      cat "$RESULTS"; \
+      if wanted 10; then echo "# D22 (run $RUN): resume-feedback $T10_RES $T10_NOTE"; fi; \
+      [ -z "$T59_LINE" ] || echo "# T59 (run $RUN): $T59_LINE"; \
     } > "$EVAL_TRANSCRIPT_DIR/results.run$RUN.txt"
-    printf '%s|%s\n' "$RUN" "$SCORE" >> "$SCORES"
-    echo "SCORE (run $RUN): $SCORE/9"
-    # After the score, never inside it. The SCORE line above is
-    # byte-identical to every run published before task 10 existed.
-    printf '%s|%s|%s\n' "$RUN" "$T10_RES" "$T10_NOTE" >> "$T10LOG"
-    echo "D22 (run $RUN): resume-feedback $T10_RES $T10_NOTE"
+    printf '%s|%s|%s\n' "$RUN" "$SCORE" "$DENOM" >> "$SCORES"
+    echo "SCORE (run $RUN): $SCORE/$DENOM$SCORE_MARK"
+    # After the score, never inside it. With EVAL_ONLY unset the SCORE
+    # line above is byte-identical to every run published before task 10
+    # existed.
+    if wanted 10; then
+        printf '%s|%s|%s\n' "$RUN" "$T10_RES" "$T10_NOTE" >> "$T10LOG"
+        echo "D22 (run $RUN): resume-feedback $T10_RES $T10_NOTE"
+    fi
+    if [ -n "$T59_LINE" ]; then
+        printf '%s|%s\n' "$RUN" "$T59_LINE" >> "$T59LOG"
+        echo "T59 (run $RUN): $T59_LINE"
+    fi
 }
 
 RUN=1
@@ -550,7 +635,11 @@ while [ "$RUN" -le "$EVAL_RUNS" ]; do
     mkdir -p "$WORKROOT"
     RESULTS="$WORKROOT/results.txt"
     : > "$RESULTS"
-    echo "==== running 9 scored tasks + D22 (run $RUN of $EVAL_RUNS) ===="
+    if [ -n "$EVAL_ONLY" ]; then
+        echo "==== running task $EVAL_ONLY only (EVAL_ONLY=$EVAL_ONLY, not a published row) (run $RUN of $EVAL_RUNS) ===="
+    else
+        echo "==== running 9 scored tasks + D22 (run $RUN of $EVAL_RUNS) ===="
+    fi
     run_round
     report_round
     RUN=$((RUN + 1))
@@ -565,13 +654,17 @@ echo "  transcripts: $EVAL_TRANSCRIPT_DIR/task<n>.run<r>.txt"
 echo "  results    : $EVAL_TRANSCRIPT_DIR/results.run<r>.txt"
 template_banner
 BELOW=0
-while IFS='|' read -r r score; do
-    echo "SCORE (run $r): $score/9"
+while IFS='|' read -r r score denom; do
+    echo "SCORE (run $r): $score/$denom$SCORE_MARK"
     # Repeated here for the same reason the score is: a summary read on its
     # own should say what task 10 did. EVAL_MIN still judges the /9 alone.
     t10row=$(grep "^$r|" "$T10LOG" 2>/dev/null || true)
     if [ -n "$t10row" ]; then
         echo "D22 (run $r): resume-feedback $(printf '%s' "$t10row" | cut -d'|' -f2-3 | tr '|' ' ')"
+    fi
+    t59row=$(grep "^$r|" "$T59LOG" 2>/dev/null || true)
+    if [ -n "$t59row" ]; then
+        echo "T59 (run $r): $(printf '%s' "$t59row" | cut -d'|' -f2-)"
     fi
     if [ "$EVAL_MIN" -gt 0 ] && [ "$score" -lt "$EVAL_MIN" ]; then
         BELOW=1
