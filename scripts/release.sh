@@ -66,11 +66,44 @@ if [ -n "$HITS" ]; then
 fi
 
 # Operator patterns over all history (commit messages).
+#
+# A residual that is ALREADY PUBLIC can be accepted by full sha through an
+# optional operator allow file (machine configuration, never committed): one
+# 40-char sha, whitespace, then a free-text reason; # comments and blank lines
+# are ignored. A missing file means no exceptions, which is the old behaviour.
+# This applies ONLY to the operator-pattern history scan below: the tracked-
+# file scan above and both generic key-shape scans are untouched, and a key
+# shape is never allowlistable.
+HIST_ALLOW="${LEAK_HISTORY_ALLOW:-$HOME/.config/temur-release/leak-history-allow.txt}"
+
+# Prints the reason and returns 0 if $1 is allowlisted; returns 1 otherwise.
+allow_reason() {
+    [ -f "$HIST_ALLOW" ] || return 1
+    grep -v -E '^[[:space:]]*(#|$)' "$HIST_ALLOW" \
+        | awk -v sha="$1" '$1 == sha { $1 = ""; sub(/^[ \t]+/, ""); print; hit = 1 }
+                           END { exit(hit ? 0 : 1) }'
+}
+
 while IFS= read -r pat; do
-    HITS=$(git log --all -i --extended-regexp --grep="$pat" --format='%h %s' | head -5)
-    if [ -n "$HITS" ]; then
+    # %H so the allow file keys on the full sha, never an abbreviation.
+    HITS=$(git log --all -i --extended-regexp --grep="$pat" --format='%H %s' | head -5)
+    [ -n "$HITS" ] || continue
+
+    # Both loops run in subshells and only emit text; LEAK_FAIL is still set
+    # in this shell, below.
+    ALLOWED_HITS=$(printf '%s\n' "$HITS" | while IFS= read -r hit; do
+        if REASON=$(allow_reason "${hit%% *}"); then
+            printf 'ALLOWED (already public): %s : %s\n' "$hit" "$REASON"
+        fi
+    done)
+    DENIED_HITS=$(printf '%s\n' "$HITS" | while IFS= read -r hit; do
+        allow_reason "${hit%% *}" >/dev/null || printf '%s\n' "$hit"
+    done)
+
+    [ -z "$ALLOWED_HITS" ] || echo "$ALLOWED_HITS"
+    if [ -n "$DENIED_HITS" ]; then
         echo "FAIL: operator leak pattern matched commit messages: $pat"
-        echo "$HITS"
+        echo "$DENIED_HITS"
         LEAK_FAIL=1
     fi
 done < "$CLEAN_PATTERNS"
