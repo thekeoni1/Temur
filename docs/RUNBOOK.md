@@ -10379,3 +10379,283 @@ The stage-2 tag message is DECIDED and recorded here but NOT acted on.
 It will be exactly one line, ASCII hyphen:
 
     temur v0.34.0 - asks before a tool changes anything, and reads office files (T45-T58)
+
+## v0.34.0 ship record - shipped PUBLIC, the launch release
+
+2026-09-10. **T45 through T58 shipped at tag `v0.34.0`: temur asks
+before a tool changes anything, and it reads office files.** The second
+release published against the public repository, and the one the launch
+announces. A MINOR bump. Stage 2 did NOT run to completion on its first
+attempt: `release.sh`'s leak gate fired on real content and stopped the
+cycle, which is the first time a release gate in this project has
+stopped a ship. That stop, its ruling and its fix are the substance of
+this record, so they are written before the routine evidence.
+
+### The leak gate fired, and it was right to
+
+The first `release.sh` run reached `== ALL CHECKS PASSED ==` and then
+FAILED at gate 2, exit 1 at `scripts/release.sh:94`. The operator's
+pattern file matched the operator's own Windows mount path in three
+places: `src/tools/glob.rs:13` (a rustdoc comment carrying a T53 timing
+measurement), `ROADMAP.md:232` (the T53 row, the same measurement), and
+the MESSAGE BODY of commit `083eb33`. The name itself is not written
+anywhere in this record. The generic key-shape scans were CLEAN in both
+files and history, so this was a name and path disclosure, never a
+credential: no `sk-ant-`, AWS, `ghp_` or private-key shape existed
+anywhere in the repo or its history.
+
+All three were ALREADY PUBLIC. They landed with T53 on 2026-09-08 and
+the repo has been public since v0.33.0. Stage 1 did not run
+`release.sh`, so this was the gate's first run since T53, and it caught
+the string after publication rather than before. The gate worked; the
+procedure around it did not, and Ruling 4 below is the correction.
+
+The constraint that shaped the ruling: **no ordinary fix commit can
+green this gate.** The history half of the scan greps commit messages
+across `--all`, and `083eb33` is an ancestor of everything above it, so
+every descendant fails too. That left a history rewrite or a change to
+what the gate accepts. The operator ruled: NO history rewrite, redact
+at HEAD, and accept the commit message as a named, already-public
+residual. A rewrite was declined knowing it would not un-publish
+anything: the old object stays fetchable by sha on GitHub and lives in
+any clone or fork, so a rewrite would have cost the tag, the pushed
+history and a force push to public main in exchange for no real
+retraction.
+
+### The two fix commits
+
+- `c653770` **scrub: the operator's mount path in a doc comment and a
+  ROADMAP row.** Two lines, one per file, the path replaced by the
+  `<user>` placeholder the same ROADMAP row already used for D21.
+  Verified two ways rather than by reading the diff: normalising every
+  `/mnt/c/Users/*` token makes the removed and added lines
+  `cmp`-identical, so nothing outside the redacted token moved and
+  every measured figure (350,473 / 248,916 / 240,363 / 93,035 / 192 /
+  6.3) is byte-intact; and the token counts go 1 to 0 for the name in
+  each file while the placeholder goes 0 to 1 in `glob.rs` and 1 to 2
+  in `ROADMAP.md`, the second confirming the pre-existing D21
+  placeholder survived. `git grep -i` for the name returns nothing.
+  The changed rustdoc comment is not behaviour; the gate below proves
+  the tree still builds.
+- `0653372` **release.sh: the history scan can accept a named,
+  already-public residual.** Confined to the operator-pattern history
+  loop. The tracked-file scan and BOTH generic key-shape scans are
+  untouched, and a key shape is never allowlistable. The success line
+  `OK: leak grep clean` is unchanged.
+
+### Release-procedure delta: the history-scan allowlist
+
+`scripts/release.sh` now reads an OPTIONAL allow file at
+`${LEAK_HISTORY_ALLOW:-$HOME/.config/temur-release/leak-history-allow.txt}`.
+Machine configuration, never committed, and confirmed unreachable from
+the worktree. Format is one FULL 40-char sha, whitespace, then a
+free-text reason, with `#` comments and blank lines ignored. A missing
+file means no exceptions, which is the old behaviour exactly. The loop
+now resolves each hit with `--format='%H %s'` so the allow file keys on
+full shas only; a listed hit prints
+`ALLOWED (already public): <sha> <subject> : <reason>` and does not set
+`LEAK_FAIL`, and an unlisted hit FAILs as before.
+
+The allow file carries exactly one entry, `083eb33`'s full sha with the
+reason "T53 P1 message, operator mount path, public since 2026-09-08,
+accepted at the v0.34.0 cut".
+
+**Proven four ways before the real run, not asserted.** The proof used a
+harness built from the shipped gate-2 bytes, `cmp`-verified identical to
+`scripts/release.sh`, with gate 1's `check.sh` call omitted and the
+script truncated after the OK line. `SKIP_CHECK` was never set anywhere
+in this cycle.
+
+- A, allow file ABSENT: FAIL, exit 1.
+- B, present with a WRONG sha: FAIL, exit 1.
+- C, correct sha via the `LEAK_HISTORY_ALLOW` override: ALLOWED then
+  `OK: leak grep clean`, exit 0.
+- D, the operator's real file via the DEFAULT path: ALLOWED then OK,
+  exit 0.
+
+Harness and logs are archived at
+`~/temur-eval-archive/v0.34.0-gates/leak-gate2-harness-0653372.sh` and
+`leak-proof-A..D-*.log`, with `leak-proof-README.txt` explaining them.
+They quote the matched pattern verbatim and live only in the private
+archive, outside the repo, untracked, not under `/mnt/c`.
+
+A method note worth keeping: scenario A initially passed for the WRONG
+reason. The operator had created the allow file earlier than the
+procedure sequenced it, so "absent" resolved the default path and found
+a real file. It was re-run against a genuinely nonexistent path before
+being believed. A contract verified by reading the code would not have
+surfaced this.
+
+**FAIL-CLOSED property.** The allowlist tests `$1 == sha` exactly on the
+full sha, so an abbreviated sha does not match; this was tested and the
+gate correctly still FAILED. Consequence: if history is ever rewritten
+the shas change and the allowlist silently stops matching, so the gate
+fails closed, not open.
+
+**KNOWN PROPERTY, not a defect.** The history loop still caps at
+`head -5` per pattern, unchanged by this cut. An allowlisted commit can
+in principle occupy one of those slots and hide a sixth hit. Measured at
+this tag: exactly ONE commit in all history matches any of the four
+operator patterns, so the cap is nowhere near binding. Any change is a
+separate scoped decision and was deliberately not folded in here.
+
+### Ruling 4: the pre-push scan is now a step
+
+Before every push in this cycle, both of these had to print nothing:
+`git log <remote>..HEAD --format=%B` and `git diff <remote>..HEAD |
+grep '^+'`, each piped through `grep -i -E -f` the operator patterns.
+
+Two details that decide whether the step is real. The patterns file MUST
+have comments and blank lines stripped first, the way `release.sh` does
+it: a raw blank line is a pattern that matches everything and turns the
+check into a vacuous result. And a CONTROL was run each time, the same
+cleaned patterns against `ff840f9`'s pre-fix `glob.rs`, which DOES fire.
+Without the control, "it printed nothing" cannot be distinguished from
+"the scan was not looking". Both scans ran clean at both pushes, and at
+the publish the tag message and the release notes were scanned too.
+
+### The tag, and why it moved
+
+The tag was built twice. The first, object
+`fbc58f33e81cf44e0bcc3f5444ea83bf05d9602c` at `ff840f9`, was created and
+F5-verified before the leak gate fired; it was NEVER pushed, so deleting
+it is not a retag. The shipped tag is annotated `v0.34.0` at `0653372`,
+tag object **`abeac8f70ec31f629792eaf413bd67c60f0c5293`**.
+
+F5's SEVENTH live outing, run against the RAW object before any push.
+The message was extracted byte-exactly from `docs/RUNBOOK.md:10381`
+rather than retyped, and `cmp`-verified against both that primary and
+the line the first tag carried. `git cat-file tag v0.34.0` shows the
+header block, then `\n\n`, then exactly
+`temur v0.34.0 - asks before a tool changes anything, and reads office files (T45-T58)\n`:
+**86 bytes, one line, one trailing newline**, nothing after it, no
+non-ASCII byte anywhere in the object, both separators plain ASCII
+hyphens. `git cat-file -t` reads `tag`; `v0.34.0^{}` reads `0653372`.
+After the push the remote ref reads `abeac8f7...`, equal to the local
+object.
+
+### Release build
+
+`release.sh` with **no SKIP_CHECK**, exit 0, teed to
+`~/temur-eval-archive/v0.34.0-gates/release-pass.log`. The FAILED first
+run is preserved beside it as `release.log`, 32,495 bytes, as the record
+of the gate firing. The embedded `check.sh` reached
+`== ALL CHECKS PASSED ==` with all 48 `test result:` lines at `0
+failed`, **2,379 passed, 0 failed**, no `FAIL(` and no `panicked` line
+anywhere. The bare busybox container printed `temur 0.34.0`. The leak
+gate printed exactly one ALLOWED line, for `083eb33`, then
+`OK: leak grep clean`; nothing else matched, no other commit, no tracked
+file, no key shape. 4/4 artifacts gated.
+
+Staged and published assets, sha256:
+
+- `temur-v0.34.0-i686-unknown-linux-musl`
+  `b9b7bfd87c7026d3c01d6a1ba9b8cdb85efa461757b51dc58b32d0dc56cbd625`
+- `temur-v0.34.0-x86_64-unknown-linux-musl`
+  `a33e738109e4f282702d7141d234c219c7008c6181af56b3bb689f0628888b3d`
+- `temur-v0.34.0-aarch64-unknown-linux-musl`
+  `7510e27ec641546143c147cd5931d46f55afcce0d477b329a2b9464c2198ee4b`
+- `temur-v0.34.0-armv7-unknown-linux-musleabihf`
+  `4b641fc89d23148f6ae7cf2d22cac1651cb35aba791eff6b4a806ee3e60755d6`
+- `SHA256SUMS`
+  `cc813147670ebff80c36c8ddefb8dbf61c917faca7629427c0481b232ac1b31e`
+
+Release: https://github.com/thekeoni1/Temur/releases/tag/v0.34.0
+Title byte-identical to the tag message, notes the CHANGELOG v0.34.0
+section verbatim at 25 entries, 5 assets, not draft, not prerelease,
+marked Latest. Repo visibility verified PUBLIC before AND after.
+
+### The README size sentence, measured from the staged assets
+
+Raw byte counts, read from the staged files: i686 **9,512,532 bytes**,
+x86_64 **11,442,544 bytes**. Divided by 1,000,000 to two decimals that
+is **9.51 MB** and **11.44 MB**, and those are the figures written into
+README lines 18-19 by `47e1b71`.
+
+That commit also had to fix a claim the size rewrite would otherwise
+have contradicted. Line 12 opened the same bullet with "A single static
+ELF under 10 MB", which was true of the old figures and false of 11.44.
+Of the four shipped binaries THREE are under 10 MB (i686 9.51, aarch64
+9.43, armv7 8.64) and only x86_64 is not, so on the operator's ruling
+the clause was scoped rather than dropped: it now reads "A single static
+ELF, under 10 MB on 32-bit, zero dependencies." A whole-file
+whitespace-normalised word diff shows exactly two changes, `ELF` to
+`ELF,` and `MB,` to `MB on 32-bit,`; the reflow moved line breaks only,
+and the size sentence is byte-identical to what the pre-amend commit
+carried. Delivered as an AMEND, not a second commit, so main stayed
+exactly one commit above `origin/main` and the procedure's commit-count
+check stayed true.
+
+`grep -c 'v0.33.0' README.md` reads 0. The bare `0.33.0` GIF-capture
+provenance stays by design and now sits at **line 66**, not 67: the
+paragraph lost a line, so any future check of it must match by content,
+not line number.
+
+**Why the tag stayed at `0653372`, one commit BELOW the README commit.**
+README is not a compilation input and there is no `build.rs`. The only
+README that `release.sh` reads is the pin skew-check at lines 106-109,
+and neither the size rewrite nor the line-12 fix touches a pin. The
+staged binaries were therefore unchanged and `release.sh` was NOT re-run
+after the README commit; this was confirmed empirically, not assumed, by
+re-running `sha256sum -c` over the staged assets after the amend, 4/4
+OK.
+
+### Closing gate
+
+- Re-download with `--repo thekeoni1/Temur` NAMED EXPLICITLY to a
+  scratch dir. All five fetched with no auth demanded. `cmp` against the
+  staged copies: **5/5 identical**. `sha256sum -c` against the
+  DOWNLOADED `SHA256SUMS`: 4/4 OK.
+- Installer matrix **6/6 twice**: once against the staged dir, once
+  against the freshly downloaded dir. pass, corrupt and unlisted, on the
+  GNU host and in the busybox container, both runs
+  `== INSTALLER MATRIX PASSED (6/6) ==`, exit 0. Logs at
+  `installer-matrix-staged.log` and `installer-matrix-downloaded.log`.
+- `~/.local/bin/temur` refreshed by running the PUBLISHED installer
+  tokenless against the live release: it reports **temur 0.34.0** and
+  hashes to
+  `a33e738109e4f282702d7141d234c219c7008c6181af56b3bb689f0628888b3d`,
+  equal to the published x86_64 sum in the downloaded `SHA256SUMS`.
+  DEVIATION: the stage-2 instruction expected the i686 sum, but this
+  host is x86_64 and `install.sh` correctly selects by architecture, so
+  the x86_64 sum is the right expectation here. The instruction's
+  "i686" is an error, recorded rather than worked around.
+- Tokenless fetch of the README lines, run with a fully emptied
+  environment (`env -i`, no token, no netrc): the raw `install.sh`
+  one-liner fetched 2,720 bytes at `VERSION=0.34.0`, and the direct
+  asset URLs fetched the i686 binary and `SHA256SUMS`, with the i686
+  download hashing to the published sum. No credentials anywhere in the
+  public path.
+
+### CI
+
+- Fix push, head `0653372`: run **34534457773**, `test` success,
+  `release-gate` success.
+- Publish push, head `47e1b71`: run **34546138293**.
+- Ship-record push: run id recorded at the end of this section.
+
+### Stage-1 deviations carried forward
+
+1. README:18 was restored to `v0.33.0` after the version bump, because
+   `scripts/bump_version.sh` counts every line carrying `v$OLD` as a tag
+   pin and rewrites it with a global sed, and that line was PROSE. The
+   size sentence has now been rewritten from measured assets, which
+   closes the "v0.34.0 size sentence pending" item.
+2. The `bump_version.sh` defect itself is recorded and NOT fixed: it
+   cannot tell a pin from prose. Queued post-launch, alongside the
+   `head -5` cap above.
+
+### What this release does NOT establish
+
+- **T58's phrase family is incomplete.** Task 10 of the weak-model eval
+  scored 1/2 on the T59 full eval because the model's "I don't have
+  direct access to your files" matches none of T58's nine phrases.
+  Recorded, not fixed.
+- **The comma-joined glob fix (T59) is NOT in this release.** It rides
+  the next one.
+- **D14 scroll-up autofill** is known and unfixed.
+- **T43's TUI residuals stand**: one-batch interrupt collapse,
+  scan-time busy-ness, `draw_input` O(n^2) on long pastes, and
+  single-line editing.
+- The dogfood act D22 needs, a real model driving a real session against
+  a file in cwd, remains the operator's and is still pending.
