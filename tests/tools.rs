@@ -2440,14 +2440,123 @@ fn a_guarded_xlsx_path_is_refused_before_anything_is_written() {
 }
 
 #[test]
-fn a_non_xlsx_write_is_byte_for_byte_what_it_always_was() {
+fn a_non_office_write_is_byte_for_byte_what_it_always_was() {
+    // T60: .md stays text too; Markdown only becomes a document under a
+    // document extension.
     let dir = tempfile::tempdir().unwrap();
     let reg = Registry::standard();
     let mut ctx = ctx_in(dir.path());
-    let p = dir.path().join("plain.csv");
-    let body = "x,f(x)\n0,3\n";
+    for name in ["plain.csv", "notes.md", "memo.txt", "data.json", "page.html"] {
+        let p = dir.path().join(name);
+        let body = "# x,f(x)\n0,3\n";
+        run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": body})).unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), body, "{name}");
+    }
+}
+
+// --- T60 P1: the write tool writes a Word document -------------------------
+
+/// The Markdown sample every supported element appears in, shared by the
+/// docx and PDF round trips.
+const DOC_SAMPLE: &str = "# Title\n\nFirst paragraph with **bold**, *italic* and `code`.\n\n## Section\n\n- alpha item\n- beta item\n\n### Steps\n\n1. one\n2. two\n\n```\nfn main() {}\nlet x = 1;\n```\n\nLast paragraph.\n";
+
+/// The lines the read tool prints for a document, in order, without the
+/// `N: ` numbering, the wrapper lines, or the empty last line the docx
+/// reader's trailing newline produces.
+fn doc_lines(out: &str) -> Vec<String> {
+    let mut lines: Vec<String> = out
+        .lines()
+        .filter(|l| l.starts_with(|c: char| c.is_ascii_digit()))
+        .filter_map(|l| l.split_once(": ").map(|(_, t)| t.to_string()))
+        .collect();
+    if lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines
+}
+
+#[test]
+fn writing_a_docx_round_trips_through_the_read_tool() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("out.docx");
+    run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": DOC_SAMPLE})).unwrap();
+
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+    let lines = doc_lines(&out.output);
+    let expected = [
+        "Title",
+        "First paragraph with bold, italic and code.",
+        "Section",
+        "- alpha item",
+        "- beta item",
+        "Steps",
+        "1. one",
+        "2. two",
+        "fn main() {}",
+        "let x = 1;",
+        "Last paragraph.",
+    ];
+    assert_eq!(lines, expected, "{}", out.output);
+}
+
+#[test]
+fn a_docx_has_the_parts_a_word_document_needs() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("parts.docx");
+    run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": "# Hi\n"})).unwrap();
+
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(&p).unwrap()).unwrap();
+    let mut names: Vec<String> = (0..archive.len()).map(|i| archive.by_index(i).unwrap().name().to_string()).collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["[Content_Types].xml", "_rels/.rels", "word/_rels/document.xml.rels", "word/document.xml", "word/styles.xml"]
+    );
+    let mut types = String::new();
+    std::io::Read::read_to_string(&mut archive.by_name("[Content_Types].xml").unwrap(), &mut types).unwrap();
+    assert!(types.contains("/word/document.xml"), "{types}");
+    // Headings carry their style, and the style part defines it.
+    let mut body = String::new();
+    std::io::Read::read_to_string(&mut archive.by_name("word/document.xml").unwrap(), &mut body).unwrap();
+    assert!(body.contains(r#"<w:pStyle w:val="Heading1"/>"#), "{body}");
+    let mut styles = String::new();
+    std::io::Read::read_to_string(&mut archive.by_name("word/styles.xml").unwrap(), &mut styles).unwrap();
+    assert!(styles.contains(r#"w:styleId="Heading1""#), "{styles}");
+    assert!(styles.contains("Courier New"), "{styles}");
+}
+
+#[test]
+fn a_guarded_docx_path_is_refused_before_anything_is_written() {
+    let (dir, key, _normal, mut ctx) = guarded_ctx();
+    let target = dir.path().join("secrets").join("memo.docx");
+    ctx.guard = temur::tools::KeyGuard::from_paths(vec![key, target.clone()]);
+    let reg = Registry::standard();
+    let err = run(
+        &reg,
+        &mut ctx,
+        "write",
+        json!({"filePath": target.to_str().unwrap(), "content": "# memo\n"}),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("key isolation"), "{err}");
+    assert!(!target.exists(), "nothing may be created under a guarded path");
+}
+
+#[test]
+fn markup_characters_survive_the_docx_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("chars.docx");
+    let body = "a < b & c > d, it\u{2019}s \"quoted\"\n";
     run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": body})).unwrap();
-    assert_eq!(std::fs::read_to_string(&p).unwrap(), body);
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+    assert_eq!(doc_lines(&out.output), ["a < b & c > d, it\u{2019}s \"quoted\""], "{}", out.output);
 }
 
 // --- T54 P3: charts, the one new surface (D23) -----------------------------

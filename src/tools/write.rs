@@ -75,21 +75,25 @@ impl Tool for WriteTool {
         // the model already writes correct CSV today, it just had nowhere
         // to put it. Everything above this line (the guard, read-first,
         // the overwrite accounting) is untouched and applies unchanged.
-        let as_xlsx = path
+        // T60 P1: a .docx path means the content is Markdown and the file
+        // is a document, by the same rule. Same guard, same read-first,
+        // same overwrite accounting above.
+        let ext = path
             .extension()
             .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("xlsx"))
-            .unwrap_or(false);
-        if as_xlsx {
-            super::office::write_csv_as_xlsx(&path, &p.content)?;
-        } else {
-            std::fs::write(&path, &p.content).map_err(|e| ToolError::failed(e.to_string()))?;
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        let as_document = matches!(ext.as_str(), "xlsx" | "docx");
+        match ext.as_str() {
+            "xlsx" => super::office::write_csv_as_xlsx(&path, &p.content)?,
+            "docx" => super::office::write_markdown_as_docx(&path, &p.content)?,
+            _ => std::fs::write(&path, &p.content).map_err(|e| ToolError::failed(e.to_string()))?,
         }
-        // For a plain write those are the same number. For a workbook they
-        // are not, and reporting the CSV's length as the file's size would
-        // be a number the model could not reconcile with anything it later
-        // sees on disk.
-        let written_bytes: u64 = if as_xlsx {
+        // For a plain write those are the same number. For a workbook or a
+        // document they are not, and reporting the source's length as the
+        // file's size would be a number the model could not reconcile with
+        // anything it later sees on disk.
+        let written_bytes: u64 = if as_document {
             std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
         } else {
             p.content.len() as u64

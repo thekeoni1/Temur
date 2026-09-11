@@ -674,3 +674,295 @@ fn col_letters(mut c: u16) -> String {
     }
     out
 }
+
+// ------------------------------------------------- documents from Markdown
+
+/// One styled run of text inside a block.
+struct Run {
+    text: String,
+    bold: bool,
+    italic: bool,
+    code: bool,
+}
+
+/// The block model both document writers render. It is the Markdown
+/// subset the docs promise: headings 1 to 3, paragraphs, fenced code and
+/// list items. Nested lists are flattened into it (an item is an item at
+/// any depth) and tables, images and links have no block of their own:
+/// their text flows into the enclosing paragraph.
+enum Block {
+    Heading(u8, Vec<Run>),
+    Paragraph(Vec<Run>),
+    Code(Vec<String>),
+    /// `Some(n)` for the n-th item of a numbered list, `None` for a bullet.
+    Item(Option<u64>, Vec<Run>),
+}
+
+/// Markdown text into blocks, with pulldown-cmark, the parser the TUI
+/// already renders assistant prose with. Default options only: no tables,
+/// no strikethrough, so those constructs arrive as ordinary text.
+fn markdown_blocks(content: &str) -> Vec<Block> {
+    use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
+
+    let mut blocks: Vec<Block> = Vec::new();
+    let mut runs: Vec<Run> = Vec::new();
+    let mut bold = 0u32;
+    let mut italic = 0u32;
+    let mut heading: Option<u8> = None;
+    let mut code: Option<String> = None;
+    // One counter per open list: the next number for a numbered list,
+    // None for a bullet list.
+    let mut lists: Vec<Option<u64>> = Vec::new();
+    let mut in_item = 0u32;
+
+    fn push_text(runs: &mut Vec<Run>, text: &str, bold: bool, italic: bool, code: bool) {
+        if text.is_empty() {
+            return;
+        }
+        if let Some(last) = runs.last_mut() {
+            if last.bold == bold && last.italic == italic && last.code == code {
+                last.text.push_str(text);
+                return;
+            }
+        }
+        runs.push(Run {
+            text: text.to_string(),
+            bold,
+            italic,
+            code,
+        });
+    }
+    fn take_item(lists: &mut [Option<u64>], runs: &mut Vec<Run>, blocks: &mut Vec<Block>) {
+        if runs.is_empty() {
+            return;
+        }
+        let number = match lists.last_mut() {
+            Some(Some(n)) => {
+                let this = *n;
+                *n += 1;
+                Some(this)
+            }
+            _ => None,
+        };
+        blocks.push(Block::Item(number, std::mem::take(runs)));
+    }
+
+    for ev in Parser::new(content) {
+        match ev {
+            Event::Start(tag) => match tag {
+                Tag::Heading { level, .. } => {
+                    heading = Some(match level {
+                        HeadingLevel::H1 => 1,
+                        HeadingLevel::H2 => 2,
+                        _ => 3,
+                    });
+                }
+                Tag::CodeBlock(_) => code = Some(String::new()),
+                Tag::List(start) => {
+                    // A list opening inside an item ends that item's own
+                    // text first, so the flattened items keep their order.
+                    if in_item > 0 {
+                        take_item(&mut lists, &mut runs, &mut blocks);
+                    }
+                    lists.push(start);
+                }
+                Tag::Item => {
+                    in_item += 1;
+                    runs.clear();
+                }
+                Tag::Paragraph => {
+                    // Inside a loose list item a second paragraph joins the
+                    // first with a space rather than starting a new block.
+                    if in_item > 0 && !runs.is_empty() {
+                        push_text(&mut runs, " ", false, false, false);
+                    }
+                }
+                Tag::Emphasis => italic += 1,
+                Tag::Strong => bold += 1,
+                _ => {}
+            },
+            Event::End(tag) => match tag {
+                TagEnd::Heading(_) => {
+                    let level = heading.take().unwrap_or(1);
+                    blocks.push(Block::Heading(level, std::mem::take(&mut runs)));
+                }
+                TagEnd::Paragraph => {
+                    if in_item == 0 && !runs.is_empty() {
+                        blocks.push(Block::Paragraph(std::mem::take(&mut runs)));
+                    }
+                }
+                TagEnd::CodeBlock => {
+                    if let Some(text) = code.take() {
+                        let text = text.strip_suffix('\n').unwrap_or(&text);
+                        blocks.push(Block::Code(text.split('\n').map(str::to_string).collect()));
+                    }
+                }
+                TagEnd::Item => {
+                    take_item(&mut lists, &mut runs, &mut blocks);
+                    in_item = in_item.saturating_sub(1);
+                }
+                TagEnd::List(_) => {
+                    lists.pop();
+                }
+                TagEnd::Emphasis => italic = italic.saturating_sub(1),
+                TagEnd::Strong => bold = bold.saturating_sub(1),
+                _ => {}
+            },
+            Event::Text(t) => match code.as_mut() {
+                Some(buf) => buf.push_str(&t),
+                None => push_text(&mut runs, &t, bold > 0, italic > 0, false),
+            },
+            Event::Code(t) => push_text(&mut runs, &t, bold > 0, italic > 0, true),
+            Event::Html(t) | Event::InlineHtml(t) => {
+                push_text(&mut runs, &t, bold > 0, italic > 0, false)
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                push_text(&mut runs, " ", bold > 0, italic > 0, false)
+            }
+            _ => {}
+        }
+    }
+    // Text left open at end of input (pulldown closes every tag, so this
+    // is only a guard) becomes a final paragraph rather than vanishing.
+    if !runs.is_empty() {
+        blocks.push(Block::Paragraph(runs));
+    }
+    blocks
+}
+
+/// The list prefix the reader will see: a literal marker, since v1 writes
+/// no numbering.xml.
+fn item_prefix(number: Option<u64>) -> String {
+    match number {
+        Some(n) => format!("{n}. "),
+        None => "- ".to_string(),
+    }
+}
+
+// ---------------------------------------------------------- docx writing
+
+const DOCX_CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>"#;
+
+const DOCX_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#;
+
+/// The document part's own relationships: without this part Word never
+/// binds styles.xml to the document, and every heading renders as Normal.
+const DOCX_DOCUMENT_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#;
+
+/// Normal, three heading styles and a Code paragraph style on Courier
+/// New. Sizes are half-points: 32 is 16 pt.
+const DOCX_STYLES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:pPr><w:spacing w:after="120"/></w:pPr><w:rPr><w:sz w:val="22"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="120"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:keepNext/><w:spacing w:before="200" w:after="100"/><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:b/><w:sz w:val="28"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:keepNext/><w:spacing w:before="160" w:after="80"/><w:outlineLvl w:val="2"/></w:pPr><w:rPr><w:b/><w:sz w:val="24"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Code"><w:name w:val="Code"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="0"/></w:pPr><w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New" w:cs="Courier New"/><w:sz w:val="20"/></w:rPr></w:style></w:styles>"#;
+
+/// One run: bold and italic as run properties, inline code as the Courier
+/// New font on the run (a paragraph style cannot apply to a run). Text is
+/// escaped by quick-xml, never by hand, and xml:space keeps the spaces a
+/// run starts or ends with.
+fn docx_run(out: &mut String, run: &Run) {
+    out.push_str("<w:r>");
+    if run.bold || run.italic || run.code {
+        out.push_str("<w:rPr>");
+        if run.code {
+            out.push_str(r#"<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New" w:cs="Courier New"/>"#);
+        }
+        if run.bold {
+            out.push_str("<w:b/>");
+        }
+        if run.italic {
+            out.push_str("<w:i/>");
+        }
+        out.push_str("</w:rPr>");
+    }
+    out.push_str(r#"<w:t xml:space="preserve">"#);
+    out.push_str(&quick_xml::escape::escape(run.text.as_str()));
+    out.push_str("</w:t></w:r>");
+}
+
+fn docx_paragraph(out: &mut String, ppr: &str, runs: &[Run]) {
+    out.push_str("<w:p>");
+    if !ppr.is_empty() {
+        out.push_str("<w:pPr>");
+        out.push_str(ppr);
+        out.push_str("</w:pPr>");
+    }
+    for run in runs {
+        docx_run(out, run);
+    }
+    out.push_str("</w:p>");
+}
+
+fn plain_run(text: &str) -> Run {
+    Run {
+        text: text.to_string(),
+        bold: false,
+        italic: false,
+        code: false,
+    }
+}
+
+fn docx_document_xml(blocks: &[Block]) -> String {
+    let mut out = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>"#,
+    );
+    for block in blocks {
+        match block {
+            Block::Heading(level, runs) => {
+                docx_paragraph(&mut out, &format!(r#"<w:pStyle w:val="Heading{level}"/>"#), runs)
+            }
+            Block::Paragraph(runs) => docx_paragraph(&mut out, "", runs),
+            Block::Code(lines) => {
+                for line in lines {
+                    docx_paragraph(
+                        &mut out,
+                        r#"<w:pStyle w:val="Code"/>"#,
+                        &[plain_run(line)],
+                    );
+                }
+            }
+            Block::Item(number, runs) => {
+                // A literal marker in the text and a left indent, since v1
+                // writes no numbering.xml; the reader gets "- item" back.
+                let mut with_marker = vec![plain_run(&item_prefix(*number))];
+                with_marker.extend(runs.iter().map(|r| Run {
+                    text: r.text.clone(),
+                    bold: r.bold,
+                    italic: r.italic,
+                    code: r.code,
+                }));
+                docx_paragraph(&mut out, r#"<w:ind w:left="720"/>"#, &with_marker);
+            }
+        }
+    }
+    out.push_str("</w:body></w:document>");
+    out
+}
+
+/// Write Markdown as a Word document. Used by the write tool when
+/// filePath ends in .docx, so no new tool and no new parameter exist.
+pub fn write_markdown_as_docx(path: &Path, content: &str) -> Result<(), ToolError> {
+    use std::io::Write;
+    let blocks = markdown_blocks(content);
+    let document = docx_document_xml(&blocks);
+    let file = std::fs::File::create(path).map_err(|e| ToolError::failed(e.to_string()))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let failed = |e: zip::result::ZipError| ToolError::failed(format!("temur could not write this document: {e}"));
+    let io_failed = |e: std::io::Error| ToolError::failed(format!("temur could not write this document: {e}"));
+    for (name, body) in [
+        ("[Content_Types].xml", DOCX_CONTENT_TYPES),
+        ("_rels/.rels", DOCX_RELS),
+        ("word/_rels/document.xml.rels", DOCX_DOCUMENT_RELS),
+        ("word/document.xml", document.as_str()),
+        ("word/styles.xml", DOCX_STYLES),
+    ] {
+        zip.start_file(name, options).map_err(failed)?;
+        zip.write_all(body.as_bytes()).map_err(io_failed)?;
+    }
+    zip.finish().map_err(failed)?;
+    Ok(())
+}
