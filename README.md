@@ -9,6 +9,13 @@ system, down to 32-bit and embedded. Bring your own model: hosted
 (Anthropic, OpenAI, Gemini, xAI) or fully offline against a local
 llama.cpp, Ollama, or LM Studio server.
 
+If you have an old or low-powered Linux machine and want an AI
+assistant on it that runs against a modest local model, with nothing
+to install, this is built for that. No useful LLM runs on a 32-bit
+box: temur runs on the constrained device where the code lives, and
+the model serves from a capable machine on the same LAN or the same
+host.
+
 - A single static ELF, under 10 MB on 32-bit, zero dependencies.
   Mainstream Bun- and Node-based agents publish no 32-bit x86 or armv7
   builds, and their "single executable" bundles embed a runtime on the
@@ -43,10 +50,6 @@ llama.cpp, Ollama, or LM Studio server.
 - Built in the open by directing an AI agent under working rules
   checked into this repo, with every milestone's acceptance record
   kept. See "How this was built" below.
-
-No useful LLM runs *on* a 32-bit box: temur runs
-on the constrained device where the code lives, and the model serves
-from a capable machine on the same LAN or the same host.
 
 ## Demo
 
