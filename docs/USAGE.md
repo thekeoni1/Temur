@@ -1761,9 +1761,9 @@ describe it" for an image, since temur cannot see images. Unknown
 binary types keep the general suggestion to inspect with `file`,
 `unzip -l` or `strings`.
 
-A bash command that names a `.pdf` or `.docx` and fails with exit 127,
-or any failed `pip install` or `apt install`, gets one line saying that
-no converter is installed and that `write` produces those formats from
+A bash command that names a `.pdf` or `.docx` and fails with 127 or
+is a failed `pip` or `apt` install gets one line saying that no
+converter is installed and that `write` produces those formats from
 Markdown; a command that exits 0 after redirecting text into a `.pdf`
 or `.docx` name gets the same line, prefixed with the path and that it
 starts with plain text. The `spreadsheet` tool refuses any path that

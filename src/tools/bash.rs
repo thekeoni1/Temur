@@ -365,8 +365,11 @@ fn misnamed_document(command: &str, workdir: &std::path::Path, started: std::tim
 }
 
 /// The one nudge line a bash result may carry, or None. Case 1 is a
-/// missing converter (a document named and exit 127, or any failed
-/// install); case 2 is a redirect that left text under a document name.
+/// missing converter: a document named, and either exit 127 or a failed
+/// install (an install that names no document is any failed install on
+/// a real box, and the line would talk about PDFs to a user who never
+/// asked for one); case 2 is a redirect that left text under a document
+/// name.
 /// The cases need different exit codes, so at most one can hold.
 fn converter_nudge(
     command: &str,
@@ -375,7 +378,7 @@ fn converter_nudge(
     started: std::time::SystemTime,
 ) -> Option<String> {
     if exit_code != 0 {
-        if (exit_code == 127 && names_document(command)) || names_install(command) {
+        if names_document(command) && (exit_code == 127 || names_install(command)) {
             return Some(CONVERTER_NUDGE.to_string());
         }
         return None;

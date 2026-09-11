@@ -28,8 +28,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   wrote its text to a `.txt` and then reached for pdftk, pandoc, pip or
   a shell redirect, none of which exist offline, and never sent the
   `.pdf` path to `write`. A bash result now ends with one line naming
-  the tool when a command that mentions a `.pdf` or `.docx` fails with
-  127, when any `pip install` or `apt install` fails, or when a command
+  the tool when a command that names a `.pdf` or `.docx` and fails
+  with 127 or is a failed `pip` or `apt` install, or when a command
   succeeds but leaves plain text under a document name. The
   `spreadsheet` tool refuses a path that does not end in `.xlsx`
   instead of writing a workbook to it. On the eval's summary-pdf task:

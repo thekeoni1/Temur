@@ -1604,6 +1604,30 @@ exactly the six pinned sites via `cargo update -p temur --offline`
 the visibility decision is deferred to stage 2, and the PUBLIC
 one-liner gate stays deferred to the visibility flip (RUNBOOK).
 
+### Queued from sandbox dogfood (2026-09-11)
+
+- **The startup profile cannot be changed from inside a session.**
+  `/model <profile> --save` is an error by design (T15); the surgical
+  config writer (`config::persist_model`) already preserves key order
+  and unknown fields, so writing the `profile` key is the same
+  mechanism at a different key. Shape: `/model <profile> --save` writes
+  `profile` and says so; the wizard's closing notice and USAGE stop
+  telling the user to hand-edit.
+- **The raw-id advisory fires on a listed Gemini id.** `/model
+  gemini-flash-latest` prints "not in the last /models listing" although
+  the id is listed: `raw_model_switch` compares `m.id == id` exactly and
+  Gemini's listing carries every id as `models/<id>` (USAGE already
+  records the prefix). Compare the bare form on both sides; the same
+  listing feeds Tab completion and the post-/models "active model is not
+  in this listing" line. One test on a `models/`-prefixed listing.
+- **The T45 LaTeX pass leaves spacing and wrapper commands in prose.**
+  Observed: `y = x² - 2x + 3 \quad \text{or in vertex form:} \quad y =
+  (x - 1)² + 2` renders with the exponents lifted and `\quad`, `\text{}`
+  and `~` left as source. The command table is symbols, arrows and Greek
+  only. Inside math spans: `\quad \qquad \, \; \: \!` become spaces,
+  `\text \mathrm \textbf \textit \mathbf` unwrap to their argument, `~`
+  becomes a space; `\frac` and friends stay honest source by design.
+
 ### Queued from T60 (2026-09-11)
 
 - **Tables and real numbering in documents, if a dogfood ask appears.**

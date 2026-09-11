@@ -2674,9 +2674,15 @@ fn a_missing_converter_names_the_write_tool() {
     let out = run(&reg, &mut ctx, "bash", json!({"command": "pdftk x output y.pdf"})).unwrap();
     assert!(out.output.contains("(exit code 127)"), "{}", out.output);
     assert_eq!(out.output.matches(NUDGE).count(), 1, "{}", out.output);
-    // Case 1, the install shape, with no document named at all.
-    let out = run(&reg, &mut ctx, "bash", json!({"command": "pip3 install fpdf2"})).unwrap();
+    // Case 1, the install shape: the install fails and the command
+    // names the document, so it fires whatever the exit code.
+    let out = run(&reg, &mut ctx, "bash", json!({"command": "pip3 install fpdf2 && python3 -c 'open(\"out.pdf\")'"})).unwrap();
+    assert!(!out.output.contains("exit code 0"), "{}", out.output);
     assert_eq!(out.output.matches(NUDGE).count(), 1, "{}", out.output);
+    // A failed install that names no document is any failed install.
+    let out = run(&reg, &mut ctx, "bash", json!({"command": "pip3 install fpdf2"})).unwrap();
+    assert!(!out.output.contains("exit code 0"), "{}", out.output);
+    assert!(!out.output.contains(NUDGE), "{}", out.output);
     // 127 without a document name is any typo, not a converter hunt.
     let out = run(&reg, &mut ctx, "bash", json!({"command": "nosuchcmd"})).unwrap();
     assert!(!out.output.contains(NUDGE), "{}", out.output);
