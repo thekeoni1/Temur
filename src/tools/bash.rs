@@ -285,6 +285,104 @@ struct Params {
     workdir: Option<String>,
 }
 
+/// T60 P2b: the sentence both nudges end with. Measured on Qwen3-4B
+/// (t60-2026-09-10, eight task 12 runs on two binaries): asked for a
+/// PDF, the model wrote its text to a .txt with the write tool and then
+/// reached for a converter under bash (pdftk, pandoc, pip, apt), a
+/// redirect of the text into the .pdf name, or the spreadsheet tool,
+/// and never once sent the .pdf path to write. The write tool's own
+/// description says it writes the format; the prior wins over one
+/// sentence, so the correction rides in the result of the command that
+/// failed, the T19/T58 shape, at zero prompt tokens.
+pub const CONVERTER_NUDGE: &str = "No converter is installed here. The write tool writes a .pdf or .docx from Markdown: call write with the document path as filePath and the Markdown as content.";
+
+/// The command text names a document output.
+fn names_document(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    lower.contains(".pdf") || lower.contains(".docx")
+}
+
+/// The command tries to install something: the shape a converter hunt
+/// takes when the converter is missing.
+fn names_install(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    ["pip install", "pip3 install", "apt-get install", "apt install"]
+        .iter()
+        .any(|w| lower.contains(w))
+}
+
+/// Case 2: a command that exited 0 and left plain text under a .pdf or
+/// .docx name it mentions. Each whitespace-separated word is stripped of
+/// quotes and a leading `>` or `>>`; a word ending in either extension
+/// is resolved against the working directory and must exist, have been
+/// modified at or after `started`, and not begin with the format's
+/// signature (`%PDF`, `PK`). The first such word is named.
+fn misnamed_document(command: &str, workdir: &std::path::Path, started: std::time::SystemTime) -> Option<String> {
+    // Kernel file timestamps come from a coarse clock, a jiffy behind the
+    // one SystemTime::now reads, so a file written right after `started`
+    // can carry an mtime a few milliseconds before it. The margin covers
+    // that and nothing older.
+    let floor = started
+        .checked_sub(Duration::from_millis(100))
+        .unwrap_or(started);
+    for raw in command.split_whitespace() {
+        let word = raw
+            .trim_start_matches('>')
+            .trim_matches(|c| c == '"' || c == '\'');
+        let lower = word.to_ascii_lowercase();
+        let (is_pdf, is_docx) = (lower.ends_with(".pdf"), lower.ends_with(".docx"));
+        if !(is_pdf || is_docx) {
+            continue;
+        }
+        let path = workdir.join(word);
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let Ok(mtime) = meta.modified() else { continue };
+        if mtime < floor {
+            continue;
+        }
+        let mut head = [0u8; 4];
+        let n = std::fs::File::open(&path)
+            .and_then(|mut f| f.read(&mut head))
+            .unwrap_or(0);
+        let genuine = if is_pdf {
+            head[..n].starts_with(b"%PDF")
+        } else {
+            head[..n].starts_with(b"PK")
+        };
+        if genuine {
+            continue;
+        }
+        let what = if is_pdf { "a PDF" } else { "a Word document" };
+        return Some(format!(
+            "{} is not {what}: it starts with plain text. {CONVERTER_NUDGE}",
+            path.display()
+        ));
+    }
+    None
+}
+
+/// The one nudge line a bash result may carry, or None. Case 1 is a
+/// missing converter (a document named and exit 127, or any failed
+/// install); case 2 is a redirect that left text under a document name.
+/// The cases need different exit codes, so at most one can hold.
+fn converter_nudge(
+    command: &str,
+    exit_code: i32,
+    workdir: &std::path::Path,
+    started: std::time::SystemTime,
+) -> Option<String> {
+    if exit_code != 0 {
+        if (exit_code == 127 && names_document(command)) || names_install(command) {
+            return Some(CONVERTER_NUDGE.to_string());
+        }
+        return None;
+    }
+    misnamed_document(command, workdir, started)
+}
+
 pub struct BashTool;
 
 impl Tool for BashTool {
@@ -399,6 +497,8 @@ impl Tool for BashTool {
                     .map_err(|e| ToolError::failed(format!("key sandbox setup failed: {e}")))?;
             }
         }
+        // T60 P2b: the nudge below compares file mtimes against this.
+        let started = std::time::SystemTime::now();
         let mut child = cmd
             .spawn()
             .map_err(|e| ToolError::failed(format!("failed to spawn shell: {e}")))?;
@@ -479,6 +579,14 @@ impl Tool for BashTool {
                     output.push('\n');
                 }
                 output.push_str(&format!("(exit code {code})"));
+            }
+            // T60 P2b: once per call, after the exit code, never on a
+            // timeout or an interrupt.
+            if let Some(nudge) = converter_nudge(&p.command, code, &workdir, started) {
+                if !output.is_empty() && !output.ends_with('\n') {
+                    output.push('\n');
+                }
+                output.push_str(&nudge);
             }
         }
         if output.is_empty() {

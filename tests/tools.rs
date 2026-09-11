@@ -2661,6 +2661,85 @@ fn the_write_description_says_what_it_can_write() {
     }
 }
 
+// --- T60 P2b: a failed converter and a misnamed workbook point at write -----
+
+const NUDGE: &str = "No converter is installed here. The write tool writes a .pdf or .docx from Markdown";
+
+#[test]
+fn a_missing_converter_names_the_write_tool() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    // Case 1: a document named and the shell's 127.
+    let out = run(&reg, &mut ctx, "bash", json!({"command": "pdftk x output y.pdf"})).unwrap();
+    assert!(out.output.contains("(exit code 127)"), "{}", out.output);
+    assert_eq!(out.output.matches(NUDGE).count(), 1, "{}", out.output);
+    // Case 1, the install shape, with no document named at all.
+    let out = run(&reg, &mut ctx, "bash", json!({"command": "pip3 install fpdf2"})).unwrap();
+    assert_eq!(out.output.matches(NUDGE).count(), 1, "{}", out.output);
+    // 127 without a document name is any typo, not a converter hunt.
+    let out = run(&reg, &mut ctx, "bash", json!({"command": "nosuchcmd"})).unwrap();
+    assert!(!out.output.contains(NUDGE), "{}", out.output);
+    // A document named but a different failure, and no install word.
+    let out = run(&reg, &mut ctx, "bash", json!({"command": "ls missing.pdf"})).unwrap();
+    assert!(!out.output.contains("exit code 0"), "{}", out.output);
+    assert!(!out.output.contains(NUDGE), "{}", out.output);
+}
+
+#[test]
+fn text_redirected_into_a_document_name_names_the_write_tool() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    // Case 2: exit 0, plain text under the .pdf name.
+    let out = run(&reg, &mut ctx, "bash", json!({"command": "echo hi > out.pdf"})).unwrap();
+    let expected = format!("{} is not a PDF: it starts with plain text. {}", dir.path().join("out.pdf").display(), NUDGE);
+    assert!(out.output.contains(&expected), "{}", out.output);
+    assert_eq!(out.output.matches(NUDGE).count(), 1, "{}", out.output);
+    // And under a .docx name, through a quoted heredoc-style redirect.
+    let out = run(&reg, &mut ctx, "bash", json!({"command": "printf 'memo' >\"memo.docx\""})).unwrap();
+    assert!(out.output.contains("memo.docx is not a Word document"), "{}", out.output);
+    // A real PDF from the write tool, copied: the header is genuine.
+    let a = dir.path().join("a.pdf");
+    run(&reg, &mut ctx, "write", json!({"filePath": a.to_str().unwrap(), "content": "# real\n"})).unwrap();
+    let out = run(&reg, &mut ctx, "bash", json!({"command": "cp a.pdf b.pdf"})).unwrap();
+    assert!(!out.output.contains(NUDGE), "{}", out.output);
+    // A file that existed before the command is not blamed on it. The
+    // mtime check allows 100 ms for the kernel's coarse timestamps, so
+    // the file has to be older than that when the command starts.
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    let out = run(&reg, &mut ctx, "bash", json!({"command": "ls out.pdf"})).unwrap();
+    assert!(!out.output.contains(NUDGE), "{}", out.output);
+    // Once, even when a redirect and a 127 could both match.
+    let out = run(&reg, &mut ctx, "bash", json!({"command": "echo hi > again.pdf; nosuchconverter again.pdf"})).unwrap();
+    assert!(out.output.contains("(exit code 127)"), "{}", out.output);
+    assert_eq!(out.output.matches(NUDGE).count(), 1, "{}", out.output);
+}
+
+#[test]
+fn the_spreadsheet_tool_refuses_a_path_that_is_not_a_workbook() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("summary.pdf");
+    let err = run(&reg, &mut ctx, "spreadsheet", json!({
+        "filePath": p.to_str().unwrap(), "sheets": [{"name": "S", "rows": [[1]]}]
+    })).unwrap_err().to_string();
+    assert!(err.contains("writes .xlsx workbooks only"), "{err}");
+    assert!(err.contains("call write with the document path and Markdown content"), "{err}");
+    assert!(!p.exists(), "nothing may be created under a refused path");
+    // Before the guard: a guarded non-workbook path gets this sentence,
+    // not the key-isolation one, and still nothing exists.
+    let (gdir, key, _normal, mut gctx) = guarded_ctx();
+    let target = gdir.path().join("secrets").join("book.docx");
+    gctx.guard = temur::tools::KeyGuard::from_paths(vec![key, target.clone()]);
+    let err = run(&reg, &mut gctx, "spreadsheet", json!({
+        "filePath": target.to_str().unwrap(), "sheets": [{"name": "S", "rows": [[1]]}]
+    })).unwrap_err().to_string();
+    assert!(err.contains("writes .xlsx workbooks only"), "{err}");
+    assert!(!target.exists());
+}
+
 // --- T54 P3: charts, the one new surface (D23) -----------------------------
 
 #[test]
@@ -2824,6 +2903,15 @@ fn the_spreadsheet_tool_keeps_the_same_file_rules() {
         "filePath": p.to_str().unwrap(), "sheets": [{"name": "S", "rows": [[2]]}]
     })).unwrap_err().to_string();
     assert!(err.contains("has not been read in this session"), "{err}");
+
+    // T60 P2b: an .xlsx write is what it always was, whatever the case of
+    // the extension, and the workbook reads back.
+    let upper = plain.path().join("R2.XLSX");
+    run(&reg, &mut c1, "spreadsheet", json!({
+        "filePath": upper.to_str().unwrap(), "sheets": [{"name": "S", "rows": [["k", 7]]}]
+    })).unwrap();
+    let out = run(&reg, &mut c1, "read", json!({"filePath": upper.to_str().unwrap()})).unwrap();
+    assert!(out.output.contains("k,7"), "{}", out.output);
 }
 
 #[test]

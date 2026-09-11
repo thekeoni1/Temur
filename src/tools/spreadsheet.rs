@@ -125,6 +125,20 @@ impl Tool for SpreadsheetTool {
     fn execute(&self, input: Value, ctx: &mut ToolCtx) -> Result<ToolOutput, ToolError> {
         let p: Params = parse_input(input)?;
         let path = resolve_path(ctx, &p.file_path);
+        // T60 P2b: this tool wrote a workbook to summary.pdf in three eval
+        // runs across two binaries, and the model reported a PDF. Only a
+        // .xlsx name is a workbook; anything else is refused before the
+        // guard and before anything exists, with the tool that does write
+        // the document named.
+        let is_xlsx = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("xlsx"));
+        if !is_xlsx {
+            return Err(ToolError::InvalidInput(
+                "The spreadsheet tool writes .xlsx workbooks only. For a .docx or .pdf, call write with the document path and Markdown content.".to_string(),
+            ));
+        }
         // T18, in the same order the write tool uses it: before anything is
         // created, so nothing lands under a secrets directory.
         ctx.guard.check(&path)?;
