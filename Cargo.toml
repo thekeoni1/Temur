@@ -58,6 +58,9 @@ calamine = { version = "0.36", default-features = false }
 # parallel toolchain.
 rust_xlsxwriter = { version = "0.99", default-features = false }
 pdf-extract = { version = "0.12", default-features = false }
+# T60: writing PDFs rides the lopdf already under pdf-extract; this line
+# makes it a direct dependency and adds no crate and no code.
+lopdf = { version = "0.42", default-features = false }
 zip = { version = "8", default-features = false, features = ["deflate"] }
 quick-xml = { version = "0.41", default-features = false }
 

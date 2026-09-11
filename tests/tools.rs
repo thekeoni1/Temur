@@ -2559,6 +2559,108 @@ fn markup_characters_survive_the_docx_round_trip() {
     assert_eq!(doc_lines(&out.output), ["a < b & c > d, it\u{2019}s \"quoted\""], "{}", out.output);
 }
 
+// --- T60 P2: the write tool writes a PDF ------------------------------------
+
+#[test]
+fn writing_a_pdf_round_trips_through_pdf_extract() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("out.pdf");
+    let out = run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": DOC_SAMPLE})).unwrap();
+    // Pure ASCII: nothing was replaced, and the result line says nothing.
+    assert!(!out.output.contains("WinAnsi"), "{}", out.output);
+
+    // The read tool's PDF path IS pdf-extract, the same parser the eval
+    // scores task 12 with.
+    let text = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap().output;
+    let mut at = 0usize;
+    for needle in [
+        "Title",
+        "First paragraph with bold, italic and code.",
+        "Section",
+        "- alpha item",
+        "- beta item",
+        "Steps",
+        "1. one",
+        "2. two",
+        "fn main() {}",
+        "let x = 1;",
+        "Last paragraph.",
+    ] {
+        let pos = text[at..].find(needle).unwrap_or_else(|| panic!("{needle:?} missing or out of order in:\n{text}"));
+        at += pos + needle.len();
+    }
+}
+
+#[test]
+fn a_long_pdf_has_more_than_one_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("long.pdf");
+    let mut md = String::new();
+    for i in 1..=300 {
+        md.push_str(&format!("Line {i} of the long document.\n\n"));
+    }
+    run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": md})).unwrap();
+    let doc = lopdf::Document::load(&p).unwrap();
+    let pages = doc.get_pages().len();
+    assert!(pages > 1, "300 paragraphs on {pages} page(s)");
+    // Every page draws text: the last paragraph is on the last page, not
+    // lost off the bottom of the first.
+    let text = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap(), "limit": 2000})).unwrap().output;
+    assert!(text.contains("Line 300 of the long document."), "{text}");
+}
+
+#[test]
+fn characters_outside_winansi_become_question_marks_and_are_counted() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("chars.pdf");
+    // The em dash and the curly apostrophe ARE WinAnsi (0x97, 0x92) and
+    // must survive; the CJK character and the check mark are not.
+    let body = "Rollout \u{2014} it\u{2019}s done \u{6f22} \u{2713}\n";
+    let out = run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": body})).unwrap();
+    assert!(out.output.ends_with(", 2 characters outside WinAnsi replaced)"), "{}", out.output);
+    let text = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap().output;
+    assert!(text.contains("Rollout \u{2014} it\u{2019}s done ? ?"), "{text}");
+
+    // Pure ASCII reports nothing.
+    let q = dir.path().join("ascii.pdf");
+    let out = run(&reg, &mut ctx, "write", json!({"filePath": q.to_str().unwrap(), "content": "plain\n"})).unwrap();
+    assert!(!out.output.contains("replaced"), "{}", out.output);
+}
+
+#[test]
+fn a_guarded_pdf_path_is_refused_before_anything_is_written() {
+    let (dir, key, _normal, mut ctx) = guarded_ctx();
+    let target = dir.path().join("secrets").join("summary.pdf");
+    ctx.guard = temur::tools::KeyGuard::from_paths(vec![key, target.clone()]);
+    let reg = Registry::standard();
+    let err = run(
+        &reg,
+        &mut ctx,
+        "write",
+        json!({"filePath": target.to_str().unwrap(), "content": "# summary\n"}),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("key isolation"), "{err}");
+    assert!(!target.exists(), "nothing may be created under a guarded path");
+}
+
+#[test]
+fn the_write_description_says_what_it_can_write() {
+    for profile in [PromptProfile::Full, PromptProfile::Compact] {
+        let defs = Registry::standard().with_profile(profile).definitions();
+        let d = defs.iter().find(|d| d.name == "write").unwrap();
+        assert!(d.description.contains(".docx or .pdf path takes Markdown"), "{}", d.description);
+        assert!(!d.description.contains("Never create binary formats"), "{}", d.description);
+    }
+}
+
 // --- T54 P3: charts, the one new surface (D23) -----------------------------
 
 #[test]

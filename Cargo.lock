@@ -1481,6 +1481,7 @@ dependencies = [
  "lexopt",
  "libc",
  "log",
+ "lopdf",
  "pdf-extract",
  "pulldown-cmark",
  "quick-xml",

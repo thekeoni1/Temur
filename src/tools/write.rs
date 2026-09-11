@@ -75,18 +75,23 @@ impl Tool for WriteTool {
         // the model already writes correct CSV today, it just had nowhere
         // to put it. Everything above this line (the guard, read-first,
         // the overwrite accounting) is untouched and applies unchanged.
-        // T60 P1: a .docx path means the content is Markdown and the file
-        // is a document, by the same rule. Same guard, same read-first,
-        // same overwrite accounting above.
+        // T60: a .docx or .pdf path means the content is Markdown and the
+        // file is a document, by the same rule. Same guard, same
+        // read-first, same overwrite accounting above.
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_ascii_lowercase())
             .unwrap_or_default();
-        let as_document = matches!(ext.as_str(), "xlsx" | "docx");
+        let as_document = matches!(ext.as_str(), "xlsx" | "docx" | "pdf");
+        // How many characters the PDF's WinAnsi encoding could not hold
+        // and wrote as `?`. Reported only when nonzero, so the model can
+        // tell the user; every other path leaves it at zero.
+        let mut outside_winansi: u64 = 0;
         match ext.as_str() {
             "xlsx" => super::office::write_csv_as_xlsx(&path, &p.content)?,
             "docx" => super::office::write_markdown_as_docx(&path, &p.content)?,
+            "pdf" => outside_winansi = super::office::write_markdown_as_pdf(&path, &p.content)?,
             _ => std::fs::write(&path, &p.content).map_err(|e| ToolError::failed(e.to_string()))?,
         }
         // For a plain write those are the same number. For a workbook or a
@@ -106,10 +111,15 @@ impl Tool for WriteTool {
         } else {
             String::new()
         };
+        let unencodable = if outside_winansi > 0 {
+            format!(", {outside_winansi} characters outside WinAnsi replaced")
+        } else {
+            String::new()
+        };
         Ok(ToolOutput {
             title: p.file_path,
             output: format!(
-                "{} {} ({written_bytes} bytes{replaced})",
+                "{} {} ({written_bytes} bytes{replaced}{unencodable})",
                 if existed { "Overwrote" } else { "Created" },
                 path.display()
             ),

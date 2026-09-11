@@ -966,3 +966,291 @@ pub fn write_markdown_as_docx(path: &Path, content: &str) -> Result<(), ToolErro
     zip.finish().map_err(failed)?;
     Ok(())
 }
+
+// ----------------------------------------------------------- pdf writing
+
+/// A character as one WinAnsi byte, or None when the encoding has no
+/// slot for it. 0x20 to 0x7E and 0xA0 to 0xFF are Latin-1; 0x80 to 0x9F
+/// are the Windows-1252 extras (curly quotes, dashes, the euro sign),
+/// which is what makes WinAnsi the right choice for text a model writes.
+fn winansi_byte(c: char) -> Option<u8> {
+    match c {
+        '\u{20}'..='\u{7e}' | '\u{a0}'..='\u{ff}' => Some(c as u8),
+        '\u{20ac}' => Some(0x80),
+        '\u{201a}' => Some(0x82),
+        '\u{0192}' => Some(0x83),
+        '\u{201e}' => Some(0x84),
+        '\u{2026}' => Some(0x85),
+        '\u{2020}' => Some(0x86),
+        '\u{2021}' => Some(0x87),
+        '\u{02c6}' => Some(0x88),
+        '\u{2030}' => Some(0x89),
+        '\u{0160}' => Some(0x8a),
+        '\u{2039}' => Some(0x8b),
+        '\u{0152}' => Some(0x8c),
+        '\u{017d}' => Some(0x8e),
+        '\u{2018}' => Some(0x91),
+        '\u{2019}' => Some(0x92),
+        '\u{201c}' => Some(0x93),
+        '\u{201d}' => Some(0x94),
+        '\u{2022}' => Some(0x95),
+        '\u{2013}' => Some(0x96),
+        '\u{2014}' => Some(0x97),
+        '\u{02dc}' => Some(0x98),
+        '\u{2122}' => Some(0x99),
+        '\u{0161}' => Some(0x9a),
+        '\u{203a}' => Some(0x9b),
+        '\u{0153}' => Some(0x9c),
+        '\u{017e}' => Some(0x9e),
+        '\u{0178}' => Some(0x9f),
+        _ => None,
+    }
+}
+
+/// Text into WinAnsi bytes, counting the characters that had to become
+/// `?`. A tab is four spaces so code keeps its shape; any other control
+/// character is dropped rather than counted, since nothing was lost that
+/// a reader could have seen.
+fn winansi_encode(text: &str, replaced: &mut u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\t' => out.extend_from_slice(b"    "),
+            c if c.is_control() => {}
+            c => match winansi_byte(c) {
+                Some(b) => out.push(b),
+                None => {
+                    out.push(b'?');
+                    *replaced += 1;
+                }
+            },
+        }
+    }
+    out
+}
+
+/// Word-wrap at a character count. A word longer than the width is cut
+/// at the width rather than left to run off the page.
+fn wrap_chars(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut line_len = 0usize;
+    for word in text.split_whitespace() {
+        let mut word_chars: Vec<char> = word.chars().collect();
+        while !word_chars.is_empty() {
+            let wlen = word_chars.len();
+            if line_len == 0 {
+                let take = wlen.min(width);
+                line.extend(word_chars.drain(..take));
+                line_len = take;
+            } else if line_len + 1 + wlen <= width {
+                line.push(' ');
+                line.extend(word_chars.drain(..));
+                line_len += 1 + wlen;
+            } else {
+                lines.push(std::mem::take(&mut line));
+                line_len = 0;
+            }
+        }
+    }
+    if line_len > 0 || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// Hard-cut at a character count: code keeps its own spacing.
+fn cut_chars(text: &str, width: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return vec![String::new()];
+    }
+    chars.chunks(width).map(|c| c.iter().collect()).collect()
+}
+
+/// One typeset line: which base-14 font, at what size, with what leading
+/// (the distance to the next baseline) and which bytes.
+struct PdfLine {
+    font: &'static str,
+    size: u32,
+    leading: u32,
+    bytes: Vec<u8>,
+}
+
+const PDF_BODY_WIDTH: usize = 90;
+const PDF_CODE_WIDTH: usize = 78;
+
+fn runs_text(runs: &[Run]) -> String {
+    runs.iter().map(|r| r.text.as_str()).collect()
+}
+
+/// Blocks into lines. Bold and italic are flattened to plain in v1; a
+/// blank line (leading only) separates blocks.
+fn pdf_lines(blocks: &[Block], replaced: &mut u64) -> Vec<PdfLine> {
+    let mut lines: Vec<PdfLine> = Vec::new();
+    let mut last_was_item = false;
+    let gap = |lines: &mut Vec<PdfLine>, leading: u32| {
+        if !lines.is_empty() {
+            lines.push(PdfLine {
+                font: "F1",
+                size: 11,
+                leading,
+                bytes: Vec::new(),
+            });
+        }
+    };
+    for block in blocks {
+        let is_item = matches!(block, Block::Item(..));
+        match block {
+            Block::Heading(level, runs) => {
+                let (size, leading) = match level {
+                    1 => (16, 20),
+                    2 => (14, 18),
+                    _ => (12, 15),
+                };
+                gap(&mut lines, leading);
+                for l in wrap_chars(&runs_text(runs), PDF_BODY_WIDTH) {
+                    lines.push(PdfLine {
+                        font: "F2",
+                        size,
+                        leading,
+                        bytes: winansi_encode(&l, replaced),
+                    });
+                }
+            }
+            Block::Paragraph(runs) => {
+                gap(&mut lines, 14);
+                for l in wrap_chars(&runs_text(runs), PDF_BODY_WIDTH) {
+                    lines.push(PdfLine {
+                        font: "F1",
+                        size: 11,
+                        leading: 14,
+                        bytes: winansi_encode(&l, replaced),
+                    });
+                }
+            }
+            Block::Item(number, runs) => {
+                // Items of one list sit on consecutive lines; the gap
+                // comes only before the first item after another block.
+                if !last_was_item {
+                    gap(&mut lines, 14);
+                }
+                let prefix = item_prefix(*number);
+                let text = format!("{prefix}{}", runs_text(runs));
+                let mut first = true;
+                for l in wrap_chars(&text, PDF_BODY_WIDTH - 2) {
+                    let l = if first { l } else { format!("  {l}") };
+                    first = false;
+                    lines.push(PdfLine {
+                        font: "F1",
+                        size: 11,
+                        leading: 14,
+                        bytes: winansi_encode(&l, replaced),
+                    });
+                }
+            }
+            Block::Code(code_lines) => {
+                gap(&mut lines, 13);
+                for src in code_lines {
+                    for l in cut_chars(src, PDF_CODE_WIDTH) {
+                        lines.push(PdfLine {
+                            font: "F3",
+                            size: 10,
+                            leading: 13,
+                            bytes: winansi_encode(&l, replaced),
+                        });
+                    }
+                }
+            }
+        }
+        last_was_item = is_item;
+    }
+    lines
+}
+
+const PAGE_WIDTH: i64 = 612;
+const PAGE_HEIGHT: i64 = 792;
+const MARGIN: i64 = 72;
+
+/// Write Markdown as a PDF: base-14 fonts only, US Letter, one inch
+/// margins, one content stream per page, WinAnsiEncoding. Returns how
+/// many characters had no WinAnsi slot and were written as `?`.
+pub fn write_markdown_as_pdf(path: &Path, content: &str) -> Result<u64, ToolError> {
+    use lopdf::content::{Content, Operation};
+    use lopdf::{dictionary, Document, Object, Stream, StringFormat};
+
+    let failed = |e: lopdf::Error| ToolError::failed(format!("temur could not write this PDF: {e}"));
+    let mut replaced = 0u64;
+    let blocks = markdown_blocks(content);
+    let lines = pdf_lines(&blocks, &mut replaced);
+
+    let mut doc = Document::with_version("1.4");
+    let pages_id = doc.new_object_id();
+    let mut fonts = lopdf::Dictionary::new();
+    for (name, base) in [("F1", "Helvetica"), ("F2", "Helvetica-Bold"), ("F3", "Courier")] {
+        let id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => base,
+            "Encoding" => "WinAnsiEncoding",
+        });
+        fonts.set(name, id);
+    }
+    let resources_id = doc.add_object(dictionary! { "Font" => fonts });
+
+    // Pages are cut where the next baseline would fall below the bottom
+    // margin. An empty document still gets one (empty) page.
+    let mut page_ops: Vec<Vec<Operation>> = vec![Vec::new()];
+    let mut y = PAGE_HEIGHT - MARGIN;
+    let mut first_on_page = true;
+    for line in &lines {
+        if !first_on_page && y - i64::from(line.leading) < MARGIN {
+            page_ops.push(Vec::new());
+            y = PAGE_HEIGHT - MARGIN;
+        }
+        // The baseline sits one leading below the top of the line box.
+        y -= i64::from(line.leading);
+        first_on_page = false;
+        if line.bytes.is_empty() {
+            continue;
+        }
+        let ops = page_ops.last_mut().expect("one page always open");
+        ops.push(Operation::new("BT", vec![]));
+        ops.push(Operation::new("Tf", vec![line.font.into(), line.size.into()]));
+        ops.push(Operation::new("Td", vec![MARGIN.into(), y.into()]));
+        ops.push(Operation::new(
+            "Tj",
+            vec![Object::String(line.bytes.clone(), StringFormat::Literal)],
+        ));
+        ops.push(Operation::new("ET", vec![]));
+    }
+
+    let mut kids: Vec<Object> = Vec::new();
+    for operations in page_ops {
+        let content = Content { operations };
+        let encoded = content.encode().map_err(failed)?;
+        let content_id = doc.add_object(Stream::new(dictionary! {}, encoded));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "Contents" => content_id,
+        });
+        kids.push(page_id.into());
+    }
+    let count = i64::try_from(kids.len()).unwrap_or(i64::MAX);
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => kids,
+            "Count" => count,
+            "Resources" => resources_id,
+            "MediaBox" => vec![0.into(), 0.into(), PAGE_WIDTH.into(), PAGE_HEIGHT.into()],
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+    doc.save(path)
+        .map_err(|e| ToolError::failed(format!("temur could not write this PDF: {e}")))?;
+    Ok(replaced)
+}
