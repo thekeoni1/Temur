@@ -1352,6 +1352,21 @@ else as text. Nothing is written as a FORMULA, so a field beginning
 `=`, `+`, `-` or `@` that is not a number becomes text and CSV content
 cannot inject one; `-5` is still a number.
 
+Writing a document rides the same tool. Write Markdown to a path
+ending in `.docx` or `.pdf` and you get the document. The subset that
+is rendered: headings 1 to 3, paragraphs, bold, italic, inline code,
+fenced code blocks, bullet lists and numbered lists. Tables, images and
+links are not rendered (a link becomes its text), and a nested list is
+flattened to one level. List items carry a literal `- ` or `1. ` in the
+text rather than Word numbering, so they read the same in every
+viewer. A `.docx` has Normal, Heading 1 to 3 and a Code style on
+Courier New; a `.pdf` is Helvetica with Courier for code, US Letter,
+one inch margins, and its text is WinAnsi (Latin-1 plus the Windows
+extras such as curly quotes and dashes). A character outside WinAnsi
+is written as `?` and the tool's result says how many were replaced,
+so the model can tell you; bold and italic are flattened to plain in
+a PDF.
+
 Charts and multiple sheets need the one new tool, `spreadsheet`,
 because CSV cannot express them. It takes sheets of values and charts
 over A1 ranges (`line`, `column`, `bar`, `scatter`, `pie`); a range
@@ -1367,8 +1382,8 @@ them.
 
 Not supported: images of any kind, so a scanned PDF with no text layer
 is refused with a sentence saying so; encrypted PDFs, refused by name
-so you know to supply an unencrypted copy; writing `.docx`, `.pptx` or
-PDF; and formulas evaluated by temur. A malformed or hostile file is a
+so you know to supply an unencrypted copy; writing `.pptx`; and
+formulas evaluated by temur. A malformed or hostile file is a
 one-line error the model can act on, never a crash or a raw parser
 message.
 
@@ -1745,6 +1760,15 @@ it cannot parse (PDFs and office documents it reads directly; see
 describe it" for an image, since temur cannot see images. Unknown
 binary types keep the general suggestion to inspect with `file`,
 `unzip -l` or `strings`.
+
+A bash command that names a `.pdf` or `.docx` and fails with exit 127,
+or any failed `pip install` or `apt install`, gets one line saying that
+no converter is installed and that `write` produces those formats from
+Markdown; a command that exits 0 after redirecting text into a `.pdf`
+or `.docx` name gets the same line, prefixed with the path and that it
+starts with plain text. The `spreadsheet` tool refuses any path that
+does not end in `.xlsx` with the same pointer, so a workbook is never
+written under a document's name.
 
 ## Key isolation
 

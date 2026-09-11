@@ -826,9 +826,36 @@ T59 (run 2): find-needle glob=alpha.txt,beta.txt,gamma.txt comma-joined
 `comma-joined` means a comma outside braces, `plain` any other pattern,
 `none` no glob call. The line is repeated after the score and written
 into the results file as a comment. Nothing is scored from it.
-The task is deliberately absent from `scripts/harness_compare/tasks.sh`:
-it measures temur's own recovery from a refusal, which no other harness
-has, so a cross-harness score for it would compare nothing.
+
+Two document tasks, `memo-docx` and `summary-pdf`, run after task 10
+and are reported the same way. One asks for a memo saved as
+`memo.docx`, the other for three points summarised into `summary.pdf`.
+Each passes only if the file exists AND reading it back through
+temur's own `read` tool yields a token from the prompt, so a text file
+saved under the extension fails: the docx and PDF parsers reject it.
+The read-back runs the `tools` test binary that
+`cargo test --release --target i686-unknown-linux-musl --no-run` leaves
+beside the musl binary, and the eval refuses at preflight without it.
+
+```
+T60 (run 2): memo-docx PASS read back 9:30 (24s)
+T60 (run 3): summary-pdf FAIL no summary.pdf in the work dir (87s)
+```
+
+Measured on Qwen3-4B-Instruct-2507 Q4_K_M (T60, 2026-09-10 and 11):
+memo-docx 0 of 3 on the binary before the writers (a text file under
+the .docx name every time) and 5 of 5 after; summary-pdf 0 of 3 before,
+0 of 5 with the writer alone (the model wrote its text to summary.txt
+and then hunted for pdftk, pandoc or pip under bash, and never sent the
+.pdf path to `write`), and 3 of 5 once a failed converter's result
+names the write tool. The two remaining misses read "the three points
+below" as files to find, searched the work directory, and asked for
+them.
+
+Tasks 10 to 12 are deliberately absent from
+`scripts/harness_compare/tasks.sh`: they measure temur's own recovery
+from a refusal and its own document writing, which no other harness
+has, so a cross-harness score for them would compare nothing.
 
 ```sh
 MODEL_GGUF=/path/to/model.gguf scripts/weak_model_eval.sh

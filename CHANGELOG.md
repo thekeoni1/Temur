@@ -4,6 +4,37 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **Markdown written to a `.docx` or `.pdf` path becomes the document.**
+  The `write` tool already turned CSV at an `.xlsx` path into a
+  workbook; it now turns Markdown at a `.docx` or `.pdf` path into a
+  Word document or a PDF, with nothing installed on the machine and no
+  new crate in the binary. Headings 1 to 3, paragraphs, bold, italic,
+  inline code, fenced code blocks and bullet and numbered lists are
+  rendered; tables, images and links are not (a link becomes its text)
+  and nested lists flatten. List items carry a literal `- ` or `1. `
+  rather than Word numbering. The PDF is Helvetica and Courier on US
+  Letter with WinAnsi text; a character WinAnsi cannot hold becomes `?`
+  and the result line says how many were replaced. On the eval's
+  memo-docx task a small local model went from 0 of 3 to 5 of 5.
+
+- The `write` tool's description no longer says it can never create
+  binary formats, which stopped being true when `.xlsx` routing
+  shipped. It now says what a `.xlsx`, `.docx` or `.pdf` path writes and
+  sends any other binary format to a script under bash. 5 prompt tokens
+  in either profile.
+
+- **A missing converter, or text redirected into a `.pdf` name, now
+  points at the `write` tool.** Asked for a PDF, a small local model
+  wrote its text to a `.txt` and then reached for pdftk, pandoc, pip or
+  a shell redirect, none of which exist offline, and never sent the
+  `.pdf` path to `write`. A bash result now ends with one line naming
+  the tool when a command that mentions a `.pdf` or `.docx` fails with
+  127, when any `pip install` or `apt install` fails, or when a command
+  succeeds but leaves plain text under a document name. The
+  `spreadsheet` tool refuses a path that does not end in `.xlsx`
+  instead of writing a workbook to it. On the eval's summary-pdf task:
+  0 of 5 before, 3 of 5 after.
+
 - **A `glob` pattern that lists file names with commas now finds them.**
   Asked which of alpha.txt, beta.txt and gamma.txt holds a string, a
   small local model's first call was `glob` with the pattern

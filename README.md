@@ -35,9 +35,11 @@ host.
   parsing, self-healing tool errors, context-scaled output caps, and
   automatic compaction with overflow recovery.
 - Reads PDFs and office documents and writes spreadsheets, charts
-  included, with nothing installed on the machine: `read` takes
-  `.pdf`, `.xlsx`, `.xlsm`, `.xls`, `.ods` and `.docx`, CSV written to
-  an `.xlsx` path becomes a workbook, and the `spreadsheet` tool adds
+  included, and documents, with nothing installed on the machine:
+  `read` takes `.pdf`, `.xlsx`, `.xlsm`, `.xls`, `.ods` and `.docx`,
+  CSV written to an `.xlsx` path becomes a workbook, Markdown written
+  to a `.docx` or `.pdf` path becomes the document, and the
+  `spreadsheet` tool adds
   charts and multiple sheets.
 - A `TEMUR.md` (or `AGENTS.md`) in the repository joins the system
   prompt at startup, so a project states its build commands and
