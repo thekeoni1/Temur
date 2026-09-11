@@ -16,6 +16,16 @@ box: temur runs on the constrained device where the code lives, and
 the model serves from a capable machine on the same LAN or the same
 host.
 
+Try it in your browser at https://play.temur.live before you download
+anything. The demo page runs the real released 32-bit binary inside an
+emulated Linux, offline with no key or with a key you supply, and you
+can hand it a PDF or spreadsheet of your own to read.
+
+Most of what makes a small model unusable is the harness's job to
+absorb, malformed tool arguments and mid-turn context overflow
+included, and that is what temur's agent loop is for: the bullets below
+and [docs/COMPARISON.md](docs/COMPARISON.md).
+
 - A single static ELF, under 10 MB on 32-bit, zero dependencies.
   Mainstream Bun- and Node-based agents publish no 32-bit x86 or armv7
   builds, and their "single executable" bundles embed a runtime on the
