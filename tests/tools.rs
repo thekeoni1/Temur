@@ -2663,3 +2663,31 @@ fn the_obvious_spelling_of_chart_type_is_still_accepted() {
     })).unwrap();
     assert!(p.exists());
 }
+
+// --- T60 P0: the eval's read-back hook ------------------------------------
+
+/// Not an assertion: scripts/weak_model_eval.sh's host-side scorer for
+/// tasks 11 and 12 (memo-docx, summary-pdf). With TEMUR_EVAL_READBACK set
+/// to a path, this runs the read tool on it and prints the tool's output,
+/// or its error, between two marker lines, so the eval can judge a
+/// document the model wrote through temur's own docx and PDF parsers (the
+/// ones compiled into the binary under test) rather than through a host
+/// tool the box may not have. Unset, which is every ordinary test run, it
+/// does nothing and passes.
+#[test]
+fn eval_read_back() {
+    let path = match std::env::var_os("TEMUR_EVAL_READBACK") {
+        Some(p) => std::path::PathBuf::from(p),
+        None => return,
+    };
+    let reg = Registry::standard();
+    let root = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let mut ctx = ctx_in(&root);
+    let res = run(&reg, &mut ctx, "read", json!({"filePath": path.to_string_lossy()}));
+    println!("READBACK-BEGIN");
+    match res {
+        Ok(out) => println!("{}", out.output),
+        Err(e) => println!("ERROR: {e}"),
+    }
+    println!("READBACK-END");
+}

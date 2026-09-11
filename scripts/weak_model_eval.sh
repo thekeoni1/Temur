@@ -22,6 +22,17 @@
 # line so the nine-task denominator, and every row already published
 # against it, stay comparable.
 #
+# Tasks 11 (memo-docx) and 12 (summary-pdf, T60) are the two document
+# tasks, reported OUTSIDE the /9 the same way. Each needs the file the
+# prompt asked for to exist AND a read-back to yield a token from the
+# prompt: the file is read through temur's own read tool, so the docx and
+# PDF parsers compiled into the binary under test are what judge it, run
+# through the tools test binary built beside it (this box has no unzip
+# and no pdftotext, and a host tool would not be temur's read path
+# anyway). A text file saved under the extension fails the read-back,
+# because the zip and PDF parsers reject it; that is the gap the two
+# tasks exist to see.
+#
 # Nothing is ever pulled or downloaded here: preflight prints the exact
 # pull command and exits if an image is missing.
 #
@@ -38,8 +49,8 @@
 #         EVAL_RUNS          how many times the nine tasks repeat (default 1);
 #                            the server and the pod are built ONCE and shared
 #                            across runs, so only model sampling varies
-#         EVAL_ONLY          run only task <n> (1..10) instead of the nine
-#                            plus task 10. The SCORE line and the archived
+#         EVAL_ONLY          run only task <n> (1..12) instead of the nine
+#                            plus tasks 10 to 12. The SCORE line and the archived
 #                            results file both carry "(EVAL_ONLY=<n>, not a
 #                            published row)", so a one-task score can never
 #                            be read as a nine-task one. Unset (the default)
@@ -70,6 +81,14 @@ BARE_IMG=docker.io/library/busybox:stable
 # via the cd above, exactly like every other input here and never by
 # absolute path, so the script still runs from a clone anywhere.
 RESUME_FIXTURE=tests/fixtures/office/sample-resume.pdf
+# T60: the read-back for tasks 11 and 12 runs temur's read tool through
+# the tools test binary that `cargo test --release --target
+# i686-unknown-linux-musl --no-run` leaves beside the musl binary (the
+# newest tools-<hash> in deps/, found the way scripts/check.sh finds it).
+# The read tool prints nothing a --plain transcript carries, and --mock
+# persists nothing, so a test hook is the one way to see what the parsers
+# make of a file without a model in the loop.
+READBACK_BIN=$(ls -t "$(dirname "$MUSL_BIN")/deps/tools-"* 2>/dev/null | grep -v '\.d$' | head -1 || true)
 CTX="${CTX:-8192}"
 PROMPT_PROFILE="${PROMPT_PROFILE:-compact}"
 EVAL_TASK_TIMEOUT="${EVAL_TASK_TIMEOUT:-1200}"
@@ -181,11 +200,22 @@ done
 # are. The marker it puts on every score line is applied in report_round.
 if [ -n "$EVAL_ONLY" ]; then
     case "$EVAL_ONLY" in
-        *[!0-9]*) echo "FAIL: EVAL_ONLY must be a task number 1..10 (got '$EVAL_ONLY')"; exit 1 ;;
+        *[!0-9]*) echo "FAIL: EVAL_ONLY must be a task number 1..12 (got '$EVAL_ONLY')"; exit 1 ;;
     esac
-    if [ "$EVAL_ONLY" -lt 1 ] || [ "$EVAL_ONLY" -gt 10 ]; then
-        echo "FAIL: EVAL_ONLY must be a task number 1..10 (got '$EVAL_ONLY')"; exit 1
+    if [ "$EVAL_ONLY" -lt 1 ] || [ "$EVAL_ONLY" -gt 12 ]; then
+        echo "FAIL: EVAL_ONLY must be a task number 1..12 (got '$EVAL_ONLY')"; exit 1
     fi
+fi
+# T60: tasks 11 and 12 cannot be scored without the read-back binary, so
+# a run that would reach them refuses here rather than after the model
+# has spent its minutes on them.
+if [ -z "$EVAL_ONLY" ] || [ "$EVAL_ONLY" = 11 ] || [ "$EVAL_ONLY" = 12 ]; then
+    [ -n "$READBACK_BIN" ] && [ -x "$READBACK_BIN" ] || {
+        echo "FAIL: no tools test binary beside $MUSL_BIN (tasks 11 and 12 read documents back through it)"
+        echo "  build it first:  cargo test --release --target i686-unknown-linux-musl --no-run"
+        exit 1
+    }
+    echo "OK: read-back binary present ($READBACK_BIN)"
 fi
 
 echo "==== pod bring-up (--network none) ===="
@@ -249,6 +279,9 @@ T10LOG="$EVAL_ROOT/task10.txt"
 # T59: task 5's glob-title line per run, reported the same way as D22.
 T59LOG="$EVAL_ROOT/task5-glob.txt"
 : > "$T59LOG"
+# T60: tasks 11 and 12, one line each per run, reported the same way.
+T60LOG="$EVAL_ROOT/documents.txt"
+: > "$T60LOG"
 
 trimmed() { cat "$1" 2>/dev/null | tr -d '[:space:]' || true; }
 
@@ -348,6 +381,41 @@ archive_task() {
     fi
 }
 
+# read_back <file>: what temur's own read tool yields for <file>, or its
+# error, printed by the tools test binary's eval_read_back hook between
+# two marker lines that are stripped here. The app image and no network,
+# the same as a task; the file's directory is mounted read-only.
+read_back() {
+    podman run --rm --network none \
+        -v "$(dirname "$READBACK_BIN")":/suites:ro -v "$(dirname "$1")":/doc:ro \
+        -e TEMUR_EVAL_READBACK="/doc/$(basename "$1")" "$APP_IMG" \
+        "/suites/$(basename "$READBACK_BIN")" eval_read_back --exact --nocapture 2>&1 \
+        | sed -n '/^READBACK-BEGIN$/,/^READBACK-END$/p' | grep -v '^READBACK-' || true
+}
+
+# score_document <file> <needle>: PASS needs BOTH the file and the needle
+# in its read-back; either half missing is a FAIL that says which, and a
+# failed read-back quotes the parser's own sentence so the results file
+# records what the model actually left on disk. Sets T60_RES and
+# T60_NOTE, the task 10 shape.
+score_document() {
+    T60_RES=FAIL
+    if [ "$TIMED_OUT" = "1" ]; then
+        T60_NOTE="TIMEOUT@${EVAL_TASK_TIMEOUT}s"
+    elif [ ! -f "$1" ]; then
+        T60_NOTE="no $(basename "$1") in the work dir"
+    else
+        back=$(read_back "$1")
+        if printf '%s\n' "$back" | grep -qF -- "$2"; then
+            T60_RES=PASS
+            T60_NOTE="read back $2"
+        else
+            T60_NOTE="$(basename "$1") exists but its read-back has no $2: $(printf '%s' "$back" | tr '\n' ' ' | cut -c1-200)"
+        fi
+    fi
+    T60_NOTE="$T60_NOTE (${SECS}s)"
+}
+
 record() { # record <n> <name> <PASS|FAIL> <secs>
     res=$3
     note=""
@@ -371,6 +439,8 @@ run_round() {
 T10_RES=""
 T10_NOTE=""
 T59_LINE=""
+T60_11_LINE=""
+T60_12_LINE=""
 
 # 1: plain write.
 n=1; name=write-file
@@ -583,6 +653,36 @@ T10_NOTE="$T10_NOTE (${T10_SECS}s)"
 archive_task "$n" "$T10_RES"
 fi
 
+# 11: a Word document (T60). Every task above ends in a text file, so
+# nothing before T60 could see whether a request for a .docx yields a
+# document or a text file wearing the extension. Scored by score_document:
+# memo.docx must exist and temur's read of it must yield the time from
+# the prompt. Reported outside the /9 like task 10.
+n=11; name=memo-docx
+if wanted "$n"; then
+mkdir -p "$WORKROOT/task$n"
+run_task "$n" "$name" \
+    'Write a short memo to the team announcing that the Friday standup moves to 9:30, and save it as memo.docx.'
+score_document "$WORKROOT/task$n/memo.docx" '9:30'
+T60_11_LINE="$name $T60_RES $T60_NOTE"
+archive_task "$n" "$T60_RES"
+echo "T60 (run $RUN): $T60_11_LINE"
+fi
+
+# 12: a PDF (T60), the same shape. The three points ride in the prompt
+# and one of them carries a token no summary can drop without losing the
+# point, so the read-back through pdf-extract has one string to find.
+n=12; name=summary-pdf
+if wanted "$n"; then
+mkdir -p "$WORKROOT/task$n"
+run_task "$n" "$name" \
+    'Summarise the three points below into a one-page document and save it as summary.pdf. Point 1: the Tinyq-Rollout finished on Tuesday, with the new build on every branch office machine. Point 2: support tickets fell by a third in the week after it. Point 3: the old build is switched off at the end of the month.'
+score_document "$WORKROOT/task$n/summary.pdf" 'Tinyq-Rollout'
+T60_12_LINE="$name $T60_RES $T60_NOTE"
+archive_task "$n" "$T60_RES"
+echo "T60 (run $RUN): $T60_12_LINE"
+fi
+
 }
 
 # report_round: prints the run's table and appends its score to $SCORES.
@@ -613,6 +713,8 @@ report_round() {
       cat "$RESULTS"; \
       if wanted 10; then echo "# D22 (run $RUN): resume-feedback $T10_RES $T10_NOTE"; fi; \
       [ -z "$T59_LINE" ] || echo "# T59 (run $RUN): $T59_LINE"; \
+      [ -z "$T60_11_LINE" ] || echo "# T60 (run $RUN): $T60_11_LINE"; \
+      [ -z "$T60_12_LINE" ] || echo "# T60 (run $RUN): $T60_12_LINE"; \
     } > "$EVAL_TRANSCRIPT_DIR/results.run$RUN.txt"
     printf '%s|%s|%s\n' "$RUN" "$SCORE" "$DENOM" >> "$SCORES"
     echo "SCORE (run $RUN): $SCORE/$DENOM$SCORE_MARK"
@@ -627,6 +729,11 @@ report_round() {
         printf '%s|%s\n' "$RUN" "$T59_LINE" >> "$T59LOG"
         echo "T59 (run $RUN): $T59_LINE"
     fi
+    for line in "$T60_11_LINE" "$T60_12_LINE"; do
+        [ -n "$line" ] || continue
+        printf '%s|%s\n' "$RUN" "$line" >> "$T60LOG"
+        echo "T60 (run $RUN): $line"
+    done
 }
 
 RUN=1
@@ -666,6 +773,9 @@ while IFS='|' read -r r score denom; do
     if [ -n "$t59row" ]; then
         echo "T59 (run $r): $(printf '%s' "$t59row" | cut -d'|' -f2-)"
     fi
+    grep "^$r|" "$T60LOG" 2>/dev/null | cut -d'|' -f2- | while IFS= read -r t60row; do
+        echo "T60 (run $r): $t60row"
+    done
     if [ "$EVAL_MIN" -gt 0 ] && [ "$score" -lt "$EVAL_MIN" ]; then
         BELOW=1
     fi
