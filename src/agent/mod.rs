@@ -143,6 +143,13 @@ pub struct SessionConfig {
     /// resolved against the invocation mode (see
     /// `Config::auto_compact_enabled`), so the core sees a plain `bool`.
     pub auto_compact: bool,
+    /// T61: nobody is reading this session, so a turn that ends by asking a
+    /// question or by claiming completion has nobody to answer or check it.
+    /// Already resolved against the invocation mode, like `auto_compact`
+    /// above: one-shot `-p`, or the plain REPL fed from something that is
+    /// not a terminal. A TUI session and a plain REPL on a real terminal
+    /// are never unattended, and main.rs is the only place that knows.
+    pub unattended: bool,
 }
 
 impl SessionConfig {
@@ -174,6 +181,11 @@ impl SessionConfig {
             // (tests, embedders) gets the conservative arm: advise, never
             // spend a summary call nobody asked for.
             auto_compact: false,
+            // The interactive default, for the same reason as
+            // `auto_compact` above: a session built straight from a Config
+            // has not been told about the invocation mode, and assuming
+            // somebody IS reading is the arm that adds nothing.
+            unattended: false,
         }
     }
 }
@@ -215,6 +227,17 @@ pub struct Session {
     /// repeat at that rate: the condition is a property of the session, not
     /// of the write.
     trim_notified: bool,
+    /// T61: the unattended continue-nudge fires at most once per session,
+    /// not once per turn, so the latch lives here rather than beside the
+    /// per-turn `nudges` counter. Deliberately NOT re-armed by `/clear`, a
+    /// compaction or a provider switch, which all re-arm `context_warned`
+    /// above: that warning re-arms because clearing history makes an
+    /// overflow warning new news again, whereas nothing about clearing
+    /// history makes the session attended. Deliberately NOT persisted
+    /// either, and so not in `SessionSnapshot`: whether anybody is reading
+    /// is a property of the invocation, and the next process resolves it
+    /// again from its own stdin.
+    unattended_nudge_sent: bool,
 }
 
 /// The cost-advisory latch value for a session holding `usage` under `cfg`:
@@ -517,6 +540,7 @@ impl Session {
             persist: None,
             save_failure_notified: false,
             trim_notified: false,
+            unattended_nudge_sent: false,
         }
     }
 
@@ -1338,6 +1362,13 @@ impl Session {
         // recovered from prose? A turn that promised work is only suspect
         // when it never actually did any.
         let mut any_tool_dispatched = false;
+        // T61 (Ruling 1): did any tool that CHANGES something run this turn,
+        // structured or recovered from prose? The narrowed trigger: a turn
+        // that mutated and then asserted is the completion-claim shape and
+        // is told to prove it, while a read-only answer is left alone, so a
+        // plain question keeps costing one request and one answer. Mutating
+        // is the T46 approval classification, never a name list.
+        let mut any_mutating_dispatched = false;
         // T36: per-turn futile-call state. The map is fingerprint ->
         // hash of the result the model last saw for it; the counter is
         // how many dispatches this turn returned a byte-identical result
@@ -1725,6 +1756,12 @@ impl Session {
                         break;
                     }
                     any_tool_dispatched = true;
+                    if calls
+                        .iter()
+                        .any(|(_, name, _, _)| self.registry.mutates(name))
+                    {
+                        any_mutating_dispatched = true;
+                    }
 
                     // Doom-loop guard on identical consecutive calls.
                     // Fingerprint format unchanged by T4.
@@ -1935,6 +1972,14 @@ impl Session {
                     let mut file_denial = false;
                     let mut unknown_tool: Option<String> = None;
                     let mut tool_names: Vec<String> = Vec::new();
+                    // T61: not a predicate over the TEXT, unlike every name
+                    // above it. The condition is the session's, not the
+                    // message's: nobody is reading, this turn stopped, and
+                    // no nudge has been spent on it yet. It is read here so
+                    // it shares the guard the others already sit under
+                    // (EndTurn, under the nudge cap, no tool call in the
+                    // final message).
+                    let mut unattended_stop = false;
                     if matches!(other, Some(StopReason::EndTurn))
                         && nudges < NUDGE_LIMIT
                         && !content
@@ -2006,6 +2051,27 @@ impl Session {
                                 }
                             }
                         }
+                        // T61: deliberately OUTSIDE the `!any_tool_dispatched`
+                        // arm the three denials sit in. The Aug 27 cells give
+                        // two ending shapes this covers, and one of them is a
+                        // turn that DID run tools and then asserted the result
+                        // without checking it ("the proof is now complete and
+                        // should compile"). Gating on a turn that dispatched
+                        // nothing would miss exactly that half.
+                        //
+                        // Ruling 1 narrows it to those two shapes and nothing
+                        // else. Without the third condition every one-shot
+                        // `-p` answer earned a second round trip, which put
+                        // two answers into `temur -p "..." > answer.txt` and
+                        // doubled the cost of a plain question: a product
+                        // regression the benchmark does not justify. So the
+                        // turn must also have CHANGED something (and can
+                        // therefore prove it) or have ended on a question
+                        // (which nobody will answer). A read-only turn that
+                        // states its answer is finished, and is left alone.
+                        unattended_stop = self.cfg.unattended
+                            && !self.unattended_nudge_sent
+                            && (any_mutating_dispatched || text.trim_end().ends_with('?'));
                     }
                     self.history.push(RequestMessage {
                         role: Role::Assistant,
@@ -2044,6 +2110,10 @@ impl Session {
                         // a dispatch like any other, so a later promise in
                         // the same turn is not "stopped without starting".
                         any_tool_dispatched = true;
+                        // T61: and it mutates like any other, if it does.
+                        if self.registry.mutates(&call.name) {
+                            any_mutating_dispatched = true;
+                        }
                         // No tool_use id exists, so the result goes back as
                         // PLAIN USER TEXT, wire-legal on both providers,
                         // request-body goldens untouched. No ToolEnd event:
@@ -2199,6 +2269,40 @@ impl Session {
                         });
                         ui(AgentEvent::Notice(
                             "the model declined a question as out of tool scope without calling a tool; asked it to answer directly"
+                                .into(),
+                        ));
+                        continue;
+                    }
+                    if unattended_stop {
+                        // T61: last of all, so every predicate above keeps
+                        // its own wording; a promise gets the promise nudge,
+                        // not this one. The two shapes left over in the Aug
+                        // 27 cells are a question nobody will answer (9 of
+                        // 64) and a completion claim nothing checked (10 of
+                        // 64), and both end a turn with most of the budget
+                        // unspent, so one more turn costs nothing anywhere.
+                        //
+                        // Self-healing wording, the T35 P3 discipline: say
+                        // what is true about the runtime (no reader, so no
+                        // answer is coming), then both ways out, in the
+                        // order the two shapes need them. Counts against
+                        // NUDGE_LIMIT like every nudge, and the session
+                        // latch stops a second one in any later turn.
+                        nudges += 1;
+                        self.unattended_nudge_sent = true;
+                        self.history.push(RequestMessage {
+                            role: Role::User,
+                            content: vec![ContentBlock::Text {
+                                text: "Nobody is reading this session, so no answer or approval \
+                                       will come. If the task is not finished, decide for \
+                                       yourself and finish it. If it is finished, run whatever \
+                                       proves the result (the tests, the compiler, the file's \
+                                       contents), fix what fails, then stop."
+                                    .into(),
+                            }],
+                        });
+                        ui(AgentEvent::Notice(
+                            "unattended: the turn ended without a tool call; one continue nudge sent"
                                 .into(),
                         ));
                         continue;

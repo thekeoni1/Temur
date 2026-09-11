@@ -75,12 +75,33 @@ fn session_with(
     session_with_prose(dir, responses, true)
 }
 
+/// T61: the same session, told that nobody is reading it. What main.rs
+/// resolves from `-p` or from a piped plain REPL arrives in the core as
+/// this one bool, so the tests set the bool.
+fn session_unattended(
+    dir: &std::path::Path,
+    responses: Vec<ResponseMessage>,
+) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
+    session_with_flags(dir, responses, true, true)
+}
+
 /// `prose_tool_calls` explicit: `true` is the product default (T19 P3
 /// prose-call execution), `false` restores T4 detect+nudge.
 fn session_with_prose(
     dir: &std::path::Path,
     responses: Vec<ResponseMessage>,
     prose_tool_calls: bool,
+) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
+    session_with_flags(dir, responses, prose_tool_calls, false)
+}
+
+/// Both mode bools explicit. `unattended` is T61's: `false` is the
+/// interactive arm every test above this one runs in.
+fn session_with_flags(
+    dir: &std::path::Path,
+    responses: Vec<ResponseMessage>,
+    prose_tool_calls: bool,
+    unattended: bool,
 ) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
     let requests = Rc::new(RefCell::new(vec![]));
     let provider = MockProvider {
@@ -102,6 +123,7 @@ fn session_with_prose(
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact: false,
+        unattended,
     };
     (
         Session::new(Box::new(provider), Registry::standard(), cfg),
@@ -1486,4 +1508,280 @@ fn repeated_identical_failures_count_as_futile() {
         ContentBlock::Text { text } => assert!(text.contains("byte-identical results")),
         other => panic!("expected trailing text block, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// T61: an unattended session is told to finish and prove it.
+//
+// The Aug 27 Terminal-Bench cells on the GPU box leave two endings on the
+// table that cost the prompt nothing: 9 of 64 cells end by asking the user a
+// question nobody is there to answer, and 10 of 64 end with a completion
+// claim that ran nothing to check it. Non-solving cells finish in 50 to 250 s
+// of a 900 s budget, so one more turn is affordable everywhere.
+// ---------------------------------------------------------------------------
+
+/// The sentence the nudge sends, as one string, so a test cannot pass
+/// against a paraphrase of it.
+const UNATTENDED_NUDGE: &str = "Nobody is reading this session, so no answer or approval will \
+                                come. If the task is not finished, decide for yourself and \
+                                finish it. If it is finished, run whatever proves the result \
+                                (the tests, the compiler, the file's contents), fix what \
+                                fails, then stop.";
+
+fn user_texts(session: &Session) -> Vec<String> {
+    session
+        .history()
+        .iter()
+        .filter(|m| matches!(m.role, Role::User))
+        .flat_map(|m| {
+            m.content.iter().filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+        })
+        .collect()
+}
+
+fn unattended_notices(events: &[AgentEvent]) -> Vec<String> {
+    notices(events)
+        .into_iter()
+        .filter(|n| n.starts_with("unattended:"))
+        .collect()
+}
+
+#[test]
+fn an_unattended_turn_that_asks_a_question_is_told_to_finish_it() {
+    // The first Aug 27 shape, verbatim: the cell ends by asking the operator
+    // which way to go, in a session with no operator, and most of the budget
+    // goes unused. One nudge, then the model decides for itself.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_unattended(
+        dir.path(),
+        vec![
+            msg(
+                vec![text(
+                    "I could not get the build to configure. Would you like me to try a \
+                     different approach?",
+                )],
+                StopReason::EndTurn,
+            ),
+            msg(vec![text("I built it with the fallback and it links.")], StopReason::EndTurn),
+        ],
+    );
+    let events = collect_events(&mut session, "build it");
+
+    // The loop continued: a second request went out carrying the nudge.
+    assert_eq!(requests.borrow().len(), 2);
+    assert_eq!(
+        user_texts(&session)
+            .iter()
+            .filter(|t| t.as_str() == UNATTENDED_NUDGE)
+            .count(),
+        1,
+        "exactly one nudge, verbatim: {:?}",
+        user_texts(&session)
+    );
+    // The second text-only EndTurn ends the turn rather than earning a
+    // second nudge.
+    assert_eq!(unattended_notices(&events).len(), 1, "{:?}", notices(&events));
+}
+
+#[test]
+fn an_interactive_session_never_sees_the_unattended_nudge() {
+    // The same script with somebody reading. The question is addressed to a
+    // person who can answer it, so the turn ends where the model ended it.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(
+                vec![text(
+                    "I could not get the build to configure. Would you like me to try a \
+                     different approach?",
+                )],
+                StopReason::EndTurn,
+            ),
+            msg(vec![text("unused")], StopReason::EndTurn),
+        ],
+    );
+    let events = collect_events(&mut session, "build it");
+
+    assert_eq!(requests.borrow().len(), 1, "no second request: no nudge");
+    assert!(unattended_notices(&events).is_empty(), "{:?}", notices(&events));
+    assert!(!user_texts(&session).iter().any(|t| t == UNATTENDED_NUDGE));
+}
+
+#[test]
+fn the_narrowed_trigger_reads_mutation_and_the_question_mark() {
+    // Ruling 1, pinned three ways in one place. Unattended alone is not
+    // enough: the turn must have CHANGED something (so there is a result to
+    // prove) or have ended on a question (which nobody will answer). A
+    // read-only turn that states its answer is finished, and is left alone,
+    // which is what keeps `temur -p "what does this repo do"` at one
+    // request and one answer.
+
+    // (a) read-only tool, plain statement: NOT nudged.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("seen.txt"), "contents").unwrap();
+    let (mut session, requests) = session_unattended(
+        dir.path(),
+        vec![
+            msg(
+                vec![tool_use(
+                    "tu_1",
+                    "read",
+                    serde_json::json!({"filePath": "seen.txt"}),
+                )],
+                StopReason::ToolUse,
+            ),
+            msg(vec![text("The file contains the word contents.")], StopReason::EndTurn),
+        ],
+    );
+    let events = collect_events(&mut session, "what does the file say");
+    assert_eq!(requests.borrow().len(), 2, "the call and its result, no nudge");
+    assert!(
+        unattended_notices(&events).is_empty(),
+        "read-only and finished: {:?}",
+        notices(&events)
+    );
+
+    // (b) mutating tool, the same plain statement: nudged. This is the
+    // completion-claim shape, and the message that CARRIED the call is
+    // still never nudged itself (that would interrupt a turn mid-flight):
+    // the nudge lands on the text-only message that follows it.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_unattended(
+        dir.path(),
+        vec![
+            msg(
+                vec![
+                    text("Writing the file now."),
+                    tool_use(
+                        "tu_1",
+                        "write",
+                        serde_json::json!({"filePath": "out.txt", "content": "ok"}),
+                    ),
+                ],
+                StopReason::ToolUse,
+            ),
+            msg(vec![text("Done, and it says ok.")], StopReason::EndTurn),
+            msg(vec![text("Verified with a read: it says ok.")], StopReason::EndTurn),
+        ],
+    );
+    let events = collect_events(&mut session, "write the file");
+    assert_eq!(requests.borrow().len(), 3, "the call, its result, then the nudge");
+    assert_eq!(unattended_notices(&events).len(), 1, "{:?}", notices(&events));
+
+    // (c) no tool at all, but the text ends on a question: nudged.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_unattended(
+        dir.path(),
+        vec![
+            msg(vec![text("Shall I try a different approach?")], StopReason::EndTurn),
+            msg(vec![text("I took the second approach and it worked.")], StopReason::EndTurn),
+        ],
+    );
+    let events = collect_events(&mut session, "get it building");
+    assert_eq!(requests.borrow().len(), 2, "the question, then the nudge");
+    assert_eq!(unattended_notices(&events).len(), 1, "{:?}", notices(&events));
+}
+
+#[test]
+fn a_promise_in_an_unattended_session_gets_the_promise_nudge() {
+    // Priority, pinned where it can actually be observed. Under Ruling 1 a
+    // mutating turn can never also be a promise turn (the promise predicate
+    // needs a turn that dispatched NOTHING), so the overlap is exactly this
+    // shape: no tool ran, the text carries a promise phrase, and it ends on
+    // a question. Both predicates want it; the promise wording is the one
+    // that fits, so the promise nudge fires and T61 never sees the turn.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _requests) = session_unattended(
+        dir.path(),
+        vec![
+            msg(
+                vec![text("Please wait while I verify the file. Shall I continue?")],
+                StopReason::EndTurn,
+            ),
+            msg(vec![text("The file is correct.")], StopReason::EndTurn),
+        ],
+    );
+    let events = collect_events(&mut session, "verify the file");
+
+    let ns = notices(&events);
+    assert!(
+        ns.iter().any(|n| n.contains("promised work without calling a tool")),
+        "{ns:?}"
+    );
+    assert!(unattended_notices(&events).is_empty(), "{ns:?}");
+    let nudges: Vec<String> = user_texts(&session)
+        .into_iter()
+        .filter(|t| t.contains("Nothing runs between turns") || t == UNATTENDED_NUDGE)
+        .collect();
+    assert_eq!(nudges.len(), 1, "{nudges:?}");
+    assert!(nudges[0].contains("Nothing runs between turns"), "{}", nudges[0]);
+}
+
+#[test]
+fn the_unattended_nudge_fires_once_per_session_not_once_per_turn() {
+    // The plain piped shape: prompts arrive down a pipe, so one session runs
+    // several turns with nobody reading any of them. The nudge is a thing
+    // the session says once, and the second turn is left alone.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _requests) = session_unattended(
+        dir.path(),
+        vec![
+            msg(vec![text("Shall I continue with the second file?")], StopReason::EndTurn),
+            msg(vec![text("I finished the first file and checked it.")], StopReason::EndTurn),
+            msg(vec![text("Shall I continue with the third file?")], StopReason::EndTurn),
+        ],
+    );
+    let first = collect_events(&mut session, "do the first file");
+    let second = collect_events(&mut session, "do the second file");
+
+    assert_eq!(unattended_notices(&first).len(), 1, "{:?}", notices(&first));
+    assert!(
+        unattended_notices(&second).is_empty(),
+        "the latch is the session's, not the turn's: {:?}",
+        notices(&second)
+    );
+    assert_eq!(
+        user_texts(&session)
+            .iter()
+            .filter(|t| t.as_str() == UNATTENDED_NUDGE)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn the_unattended_notice_is_emitted_once_and_verbatim() {
+    // The transcript line the Terminal-Bench cells are counted from. Its
+    // wording is part of the instrument, so it is asserted whole.
+    //
+    // The script is the Aug 27 prove-plus-comm shape, which is why the claim
+    // earns a nudge at all under Ruling 1: the cell EDITED the proof file
+    // and then asserted the result without running the compiler over it.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("plus_comm.v"), "Theorem plus_comm.\nAdmitted.\n").unwrap();
+    let (mut session, _requests) = session_unattended(
+        dir.path(),
+        vec![
+            msg(
+                vec![tool_use(
+                    "tu_1",
+                    "write",
+                    serde_json::json!({"filePath": "plus_comm.v", "content": "Theorem plus_comm.\nProof. reflexivity. Qed.\n"}),
+                )],
+                StopReason::ToolUse,
+            ),
+            msg(vec![text("The proof is now complete and should compile.")], StopReason::EndTurn),
+            msg(vec![text("I ran coqc and it compiles.")], StopReason::EndTurn),
+        ],
+    );
+    let events = collect_events(&mut session, "prove it");
+
+    assert_eq!(
+        unattended_notices(&events),
+        vec!["unattended: the turn ended without a tool call; one continue nudge sent"]
+    );
 }

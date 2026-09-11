@@ -619,6 +619,15 @@ fn repl(
     // which only main.rs knows. One-shot -p has nobody to act on a context
     // advisory, so it compacts itself; the REPL and TUI keep the advisory.
     session_cfg.auto_compact = cfg.auto_compact_enabled(oneshot.is_some());
+    // T61: resolved HERE for the same reason as the line above, and it is
+    // the same question asked once further: does anybody see this session?
+    // One-shot -p has no reader by construction. The plain REPL usually has
+    // one, but not when its prompts arrive down a pipe, which is how the
+    // eval drives it and how a script drives it. The TUI always has a
+    // reader, and `use_tui` is already false in both unattended shapes, so
+    // the stdin test is what separates a piped REPL from a typed one.
+    session_cfg.unattended =
+        oneshot.is_some() || (!use_tui && !std::io::stdin().is_terminal());
     session_cfg.system = Some(system);
     let registry =
         Registry::standard_with_skills(skill_dirs).with_profile(current_prompt_profile);

@@ -32,7 +32,12 @@ MUSL_BIN=$TDIR/i686-unknown-linux-musl/release/temur
 IMG=docker.io/i386/debian:stable
 BARE_IMG=docker.io/library/busybox:stable
 PROJ="$(pwd)"
-FIXTURES="$PROJ/tests/fixtures/tool_use_parallel.sse,$PROJ/tests/fixtures/text_simple.sse"
+# T61 (Ruling 1): the mock REPL smoke pipes its prompt in, which is an
+# unattended session, and its fixture dispatches bash, which mutates. So
+# its last text-only turn earns the continue nudge and one more round
+# trip, and the third fixture is that turn. The pty TUI smokes are
+# attended and keep the lists they had.
+FIXTURES="$PROJ/tests/fixtures/tool_use_parallel.sse,$PROJ/tests/fixtures/text_simple.sse,$PROJ/tests/fixtures/text_verified.sse"
 
 # Host-side product invocations must never read the operator's real config
 # or state (the host pty smoke used to fail whenever ~/.config/temur selected
@@ -75,7 +80,7 @@ mock_repl() { # $1 = bin dir, $2 = image, $3 = label
 # config picks provider "openai-compat" (keyless, so no secret plumbing) and
 # the fixtures are OpenAI chunk streams. Proves selection + the second wire
 # end-to-end in the real binary.
-OPENAI_FIXTURES="$PROJ/tests/fixtures/openai/tool_parallel.sse,$PROJ/tests/fixtures/openai/text_simple.sse"
+OPENAI_FIXTURES="$PROJ/tests/fixtures/openai/tool_parallel.sse,$PROJ/tests/fixtures/openai/text_simple.sse,$PROJ/tests/fixtures/openai/text_verified.sse"
 mock_repl_openai() { # $1 = bin dir, $2 = image, $3 = label
     CFG_DIR=$(mktemp -d)
     mkdir -p "$CFG_DIR/temur"

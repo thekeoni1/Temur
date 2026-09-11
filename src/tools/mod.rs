@@ -580,6 +580,19 @@ impl Registry {
             .collect()
     }
 
+    /// T61: does the named tool mutate? The T46 approval classification is
+    /// the one source of that fact: a tool whose approval site is not `None`
+    /// is one that changes something outside the session, which is why the
+    /// site exists. Read by the agent loop to tell a turn that CHANGED
+    /// something from a turn that only looked. An unregistered name mutates
+    /// nothing, having run nothing.
+    pub fn mutates(&self, name: &str) -> bool {
+        self.tools
+            .iter()
+            .find(|t| t.name() == name)
+            .is_some_and(|t| t.approval_site() != ApprovalSite::None)
+    }
+
     /// Execute by name with central key redaction and output truncation.
     /// Redaction runs FIRST, on success and failure alike, so a key can
     /// never leak split across the truncation cut or ride an error message.

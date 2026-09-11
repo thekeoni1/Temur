@@ -79,6 +79,7 @@ fn session_with(
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact: false,
+        unattended: false,
     };
     (
         Session::new(Box::new(provider), Registry::standard(), cfg),
@@ -454,6 +455,7 @@ fn iteration_limit_stops_runaway_turns() {
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact: false,
+        unattended: false,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
     let mut events = vec![];
@@ -526,6 +528,7 @@ fn session_with_window(
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact: false,
+        unattended: false,
     };
     Session::new(Box::new(provider), Registry::standard(), cfg)
 }
@@ -650,6 +653,7 @@ fn resumed_with_window(
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact: false,
+        unattended: false,
     };
     let mut file = saved(
         vec![user_msg("old prompt"), assistant_msg(vec![text("old answer")])],
@@ -933,6 +937,7 @@ fn resumed_with(
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact: false,
+        unattended: false,
     };
     let (seed, notices) = store::prepare_seed(file);
     (
@@ -1184,6 +1189,7 @@ fn interrupt_session(
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact: false,
+        unattended: false,
     };
     Session::new(
         Box::new(InterruptingProvider {
@@ -3188,6 +3194,7 @@ fn failing_turn_notice(dir: &std::path::Path, status: u16, model: &str) -> Strin
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact: false,
+        unattended: false,
     };
     let mut session = Session::new(
         Box::new(StatusFailingProvider { status }),
@@ -4418,6 +4425,7 @@ fn priced_session(
         }),
         cost_advisory_step_usd: step,
         auto_compact: false,
+        unattended: false,
     };
     match seed {
         Some(s) => Session::resume(Box::new(provider), Registry::standard(), cfg, s),
@@ -4656,6 +4664,7 @@ fn skill_session(
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact: false,
+        unattended: false,
     };
     let registry =
         Registry::standard_with_skills(vec![skill_root.join(".temur/skills")]);
@@ -4815,6 +4824,7 @@ fn session_auto_compact(
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact,
+        unattended: false,
     };
     (
         Session::new(Box::new(provider), Registry::standard(), cfg),
@@ -5210,6 +5220,7 @@ fn watching_session(
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact: false,
+        unattended: false,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
     session.set_persist_target(Some(persist_target(path)));
@@ -5486,6 +5497,7 @@ fn resumed_auto_compact(
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact,
+        unattended: false,
     };
     let mut file = saved(history, vec![]);
     file.last_context_used = last_context_used;
@@ -5957,6 +5969,7 @@ fn overflow_session(
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact,
+        unattended: false,
     };
     let session = match seed {
         Some(history) => {

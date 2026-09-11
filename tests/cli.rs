@@ -18,6 +18,16 @@ fn fixture(name: &str) -> String {
     format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
 }
 
+/// T61 (Ruling 1): a one-shot `-p` script that MUTATES something, or whose
+/// last message ends on a question, earns the continue-nudge and one more
+/// round trip, so its replay list needs one more response. `last` is the
+/// answer the model gives after the nudge, on the same wire as the rest of
+/// the list. Read-only one-shots are NOT wrapped: they get no nudge, and
+/// their one-answer stdout pins are what prove it.
+fn nudged_mock(list: &str, last: &str) -> String {
+    format!("{list},{}", fixture(last))
+}
+
 struct Sandbox {
     /// Owns the tempdir for the sandbox's lifetime.
     _tmp: tempfile::TempDir,
@@ -184,10 +194,13 @@ fn oneshot_prose_turn_stdout_is_exactly_the_answer() {
 fn oneshot_tool_turn_splits_streams_anthropic_wire() {
     let sb = sandbox();
     let mut c = sb.cmd();
-    let fixtures = format!(
-        "{},{}",
-        fixture("tool_use_parallel.sse"),
-        fixture("text_simple.sse")
+    let fixtures = nudged_mock(
+        &format!(
+            "{},{}",
+            fixture("tool_use_parallel.sse"),
+            fixture("text_simple.sse")
+        ),
+        "text_verified.sse",
     );
     c.args(["--mock", &fixtures, "--prompt", "do the smoke task"]);
     let (code, stdout, stderr) = run(c, "");
@@ -214,10 +227,13 @@ fn oneshot_tool_turn_splits_streams_openai_wire() {
         r#"{"provider":"openai-compat","openai_compat":{"model":"mock-local"}}"#,
     );
     let mut c = sb.cmd();
-    let fixtures = format!(
-        "{},{}",
-        fixture("openai/tool_parallel.sse"),
-        fixture("openai/text_simple.sse")
+    let fixtures = nudged_mock(
+        &format!(
+            "{},{}",
+            fixture("openai/tool_parallel.sse"),
+            fixture("openai/text_simple.sse")
+        ),
+        "openai/text_verified.sse",
     );
     // T46: this test is about the openai wire, not approval, so it says
     // out loud that mutations are allowed rather than measuring a refusal.
@@ -240,10 +256,13 @@ fn write_unread_existing_file_denied_through_the_binary() {
     // against the binary's cwd (the sandbox home).
     std::fs::write(sb.home.join("existing.txt"), "original").unwrap();
     let mut c = sb.cmd();
-    let fixtures = format!(
-        "{},{}",
-        fixture("write_unread.sse"),
-        fixture("text_simple.sse")
+    let fixtures = nudged_mock(
+        &format!(
+            "{},{}",
+            fixture("write_unread.sse"),
+            fixture("text_simple.sse")
+        ),
+        "text_verified.sse",
     );
     // T46: allowed, so the refusal under test is still T19's read-first
     // rule and not the new mutation refusal (which would otherwise pass
@@ -263,10 +282,13 @@ fn write_after_read_succeeds_through_the_binary() {
     let sb = sandbox();
     std::fs::write(sb.home.join("existing.txt"), "original").unwrap();
     let mut c = sb.cmd();
-    let fixtures = format!(
-        "{},{}",
-        fixture("read_then_write.sse"),
-        fixture("text_simple.sse")
+    let fixtures = nudged_mock(
+        &format!(
+            "{},{}",
+            fixture("read_then_write.sse"),
+            fixture("text_simple.sse")
+        ),
+        "text_verified.sse",
     );
     c.args(["--mock", &fixtures, "--allow-mutations", "-p", "update the file"]);
     let (code, stdout, stderr) = run(c, "");
@@ -1560,7 +1582,7 @@ fn oneshot_bash_without_the_flag_refuses_loud_and_names_the_flag() {
     // display can only be T46's own.
     sb.write_config("{}");
     let mut c = sb.cmd();
-    let fixtures = approval_fixtures();
+    let fixtures = nudged_mock(&approval_fixtures(), "text_verified.sse");
     c.args(["--mock", &fixtures, "-p", "run the command"]);
     let (code, stdout, stderr) = run(c, "");
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
@@ -1585,7 +1607,7 @@ fn oneshot_bash_with_the_flag_runs_the_command() {
     let sb = sandbox();
     sb.write_config("{}");
     let mut c = sb.cmd();
-    let fixtures = approval_fixtures();
+    let fixtures = nudged_mock(&approval_fixtures(), "text_verified.sse");
     c.args([
         "--mock",
         &fixtures,
@@ -1610,7 +1632,7 @@ fn oneshot_bash_with_the_allow_config_runs_the_command_too() {
     let sb = sandbox();
     sb.write_config(r#"{"approve_mutations": "allow"}"#);
     let mut c = sb.cmd();
-    let fixtures = approval_fixtures();
+    let fixtures = nudged_mock(&approval_fixtures(), "text_verified.sse");
     c.args(["--mock", &fixtures, "-p", "run the command"]);
     let (code, stdout, stderr) = run(c, "");
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
@@ -1628,10 +1650,13 @@ fn oneshot_write_without_the_flag_is_refused_at_the_other_site() {
     let sb = sandbox();
     sb.write_config("{}");
     let mut c = sb.cmd();
-    let fixtures = format!(
-        "{},{}",
-        fixture("read_then_write.sse"),
-        fixture("text_simple.sse")
+    let fixtures = nudged_mock(
+        &format!(
+            "{},{}",
+            fixture("read_then_write.sse"),
+            fixture("text_simple.sse")
+        ),
+        "text_verified.sse",
     );
     std::fs::write(sb.home.join("existing.txt"), "original").unwrap();
     c.args(["--mock", &fixtures, "-p", "update the file without the flag"]);
