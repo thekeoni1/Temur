@@ -1252,6 +1252,8 @@ included) and exits. The contract that makes it scriptable:
   and continues. Set
   `"auto_compact": false` to restore advisory-only behaviour. See
   [Auto-compaction for unattended runs](#auto-compaction-for-unattended-runs).
+- A turn that ends without a tool call gets one nudge telling the model
+  nobody is reading. See "The unattended nudge" below.
 
 Redirect stdout and the chrome stays on your terminal. Real run:
 
@@ -1319,6 +1321,50 @@ exit=130
 
 Nothing reached stdout: an interrupted one-shot never emits a
 partial answer as if it were complete.
+
+### The unattended nudge
+
+An unattended run has nobody to answer a question or approve a plan, so
+a turn that ends on either one ends the work. When temur is unattended
+and a turn ends with no tool call in the model's final message, it sends
+one more user message and takes one more turn:
+
+```
+Nobody is reading this session, so no answer or approval will come. If
+the task is not finished, decide for yourself and finish it. If it is
+finished, run whatever proves the result (the tests, the compiler, the
+file's contents), fix what fails, then stop.
+```
+
+The notice on stderr says it fired:
+
+```
+  [!] unattended: the turn ended without a tool call; one continue nudge sent
+```
+
+Two conditions narrow it. The turn must have dispatched a mutating tool
+(`write`, `edit`, `bash`, `spreadsheet`), or the model's reply must end
+on a question mark. A read-only turn that ends in prose gets nothing,
+because a session that only looked at files has no result to prove.
+
+It fires at most once per session. The latch survives `/clear`,
+compaction and a provider switch, because the model has already been
+told once and a second telling is a second bill for the same sentence.
+The existing recovery paths keep their own wording: a prose-formatted
+tool call, an unknown tool name, or a stated promise to act each get the
+nudge written for that case, and this one runs only when none of them
+matched.
+
+Unattended means `-p`, and it also means the plain REPL with piped
+stdin, which is the same shape with no reader. A typed REPL and the TUI
+never see it.
+
+The cost is one extra request per nudged session, which resends the
+history and therefore costs at least a prompt floor: on a 16-task
+Terminal-Bench subset it fired in 9 of 16 cells per run and added 17.5%
+wall clock, and on the 4B it was followed by a tool call in about one
+nudged cell in five, the rest being a further paragraph. See
+[COMPARISON.md](COMPARISON.md#same-rig-one-commit-apart-the-unattended-nudge-4b-row-refreshed-2026-09-11).
 
 ## Documents and spreadsheets
 

@@ -4,6 +4,23 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **An unattended run that stops to ask or to declare victory is told to
+  finish and prove it.** When nobody is reading a session, a turn that
+  ends with no tool call ends the work: the question waits for an answer
+  that never comes, and the completion claim goes unchecked. Such a turn
+  now gets one more user message saying nobody is reading, to decide for
+  itself if the task is unfinished and to run whatever proves the result
+  if it is finished. It applies to `-p` and to the plain REPL with piped
+  stdin, fires at most once per session, and requires that the turn ran
+  a mutating tool or ended on a question mark, so a read-only turn is
+  left alone. On a 16-task Terminal-Bench subset against the previous
+  commit it did not cost passes (2/16 and 1/16 against 1/16 and 0/16,
+  inside a one-task noise floor) and cost 17.5% wall clock. On a 4B the
+  extra turn produced a tool call in about one nudged cell in five; the
+  rest wrote another paragraph, and unverified completion claims did not
+  fall. Prompt size is unchanged, 0 tokens in both profiles, because the
+  message is sent only when the shape occurs.
+
 - **Markdown written to a `.docx` or `.pdf` path becomes the document.**
   The `write` tool already turned CSV at an `.xlsx` path into a
   workbook; it now turns Markdown at a `.docx` or `.pdf` path into a

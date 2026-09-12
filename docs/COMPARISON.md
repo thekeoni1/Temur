@@ -51,6 +51,7 @@ above; the Terminal-Bench rows are an externally authored suite.
 | Terminal-Bench 2 subset (16 tasks, CPU box, Qwen3-4B) | pass rate does not separate the three (temur 1/16 and 1/16; codex 1/16 and 0/16; opencode 1/16 and 1/16); wall clock does: temur 2.89 h, opencode 3.80 h, codex 6.14 h over 32 cells | [section](#terminal-bench-2-neutral-suite) |
 | Same subset, GPU box, three models (4B, 8B, 30B-A3B MoE) | scores stay within run-to-run noise on every model; temur's wall clock is 0.77 h / 1.18 h / 2.31 h against 2.51 to 6.56 h for the others | [section](#gpu-desktop-terminal-bench-2-subset) |
 | Auto-compaction differential (temur only, v0.28.0 vs v0.29.1) | compaction runs and completes but did not convert the context-exhausted cells at ctx 12288; one failure class, a single oversized tool result, is structurally beyond what compaction can address | [section](#same-rig-auto-compaction-on-temur-v0291-differential) |
+| Unattended-nudge differential (temur only, one commit apart, 4B row refreshed 2026-09-11) | the nudge did not cost passes (candidate 2/16 and 1/16 against parent 1/16 and 0/16, inside a one-task noise floor) and cost 17.5% wall clock; it fired in 9 of 16 cells per run and a tool call followed in 3 of 16 | [section](#same-rig-one-commit-apart-the-unattended-nudge-4b-row-refreshed-2026-09-11) |
 
 ## What was pinned
 
@@ -790,6 +791,83 @@ about compaction quality: 11 folds succeeded in the sense that the
 call returned and the history was replaced, and nothing scored the
 summaries themselves. Full report, cell tree and stage records for this
 run: `~/temur-eval-archive/desktop-exp5/`.
+
+### Same rig, one commit apart (the unattended nudge, 4B row refreshed 2026-09-11)
+
+A sixth matrix ran on the same box on 2026-09-11. It refreshes the 4B
+row above rather than continuing the 8B series. It runs temur only and
+changes one thing across a single commit, the temur binary: the parent
+is `18275a6` and the candidate is `916c4b9`, which adds the unattended
+nudge described in USAGE.md. Both arms are x86_64 static musl builds
+made on this box, and the adapter verifies each arm's sha256 on every
+cell. Everything else is the experiment-2 pin: the same
+`server-cuda-b10438` image digest, the same
+`Qwen3-4B-Instruct-2507-Q4_K_M.gguf`, ctx 12288, `-ngl 99 --parallel 1
+--jinja`, a fresh server per cell, the same 16-task subset, two runs per
+arm, arm-major order. The competitor rows above stand as published and
+were not re-run.
+
+Headline: the nudge did not cost passes, and it cost 17.5% wall clock.
+
+| | parent `18275a6` | candidate `916c4b9` |
+|---|---|---|
+| passes, run 1 | 1/16 | 2/16 |
+| passes, run 2 | 0/16 | 1/16 |
+| wall clock, run 1 | 1,376 s | 1,781 s |
+| wall clock, run 2 | 1,540 s | 1,644 s |
+| wall clock, 32 cells | 2,916 s | 3,425 s |
+
+The reading fixed before the run was that the candidate's pass count is
+not below the parent's in either run. It was met, 2 against 1 and 1
+against 0. That supports one claim, that the nudge did not cost passes.
+It does not support the claim that the nudge wins passes. The parent
+solved `modernize-scientific-stack` in run 1 and failed the same task in
+run 2 on an unchanged binary, which is the noise floor on this subset.
+
+The candidate arm reproduces the Aug 27 4B row above task for task,
+`modernize-scientific-stack` and `prove-plus-comm` in run 1 and
+`modernize-scientific-stack` in run 2. The parent arm is one pass below
+that row in both runs. Both observations sit inside the same one-task
+noise and neither is recorded as a change.
+
+`prove-plus-comm` passed in one of the two candidate runs. It passed in
+one of the two Aug 27 4B runs, so the rate is unchanged.
+
+Ending shapes, counted by an instrument frozen before it read a cell
+(sha256 `45ba54c8...`), over 32 cells per arm:
+
+| shape | Aug 27 4B | parent | candidate |
+|---|---|---|---|
+| window death | 4 | 3 | 2 |
+| repeat-guard stop | 1 | 2 | 1 |
+| question to nobody | 6 | 3 | 0 |
+| refusal | 2 | 0 | 0 |
+| unverified claim | 12 | 13 | 16 |
+| other | 7 | 11 | 13 |
+
+The question-shape drop is partly the instrument: the counter reads a
+cell's last prose line, and the nudge appends a turn after that line, so
+a question that was nudged cannot be seen. The accurate statement is
+that the candidate asked a question in 2 of 32 cells and then took a
+further turn, where the parent asked in 3 of 32 and stopped. Unverified
+claims went up, 13 to 16, so the nudge does not convert a claim into a
+check on this model.
+
+Per candidate cell, the nudge fired in 9 of 16 per run, a tool call
+followed it in 3 of 16, and a bash call in 1 of 16. The parent cells
+read zero on all three, which is the control, since the parent binary
+contains no nudge.
+
+Pins for this row: temur parent `18275a6` sha256 `4e84348a...`,
+candidate `916c4b9` sha256 `25a1413d...`, model sha256 `3605803b...`,
+image digest `sha256:b5e13ddf...`, subset sha256 `57160ac7...`. These
+cells ran without `-lv 4`, which every desktop matrix from experiment 2
+on has carried, so the server printed no layer-offload line and all 64
+cells record `gpu=unknown`. For this row, GPU offload is evidenced by
+VRAM peak, 5093 to 5094 MiB against 4362 MiB on the Aug 27 cells with
+771 MiB in use before launch, and by cell timing, mean 99 s against
+86 s. The `n_slots`/`n_ctx` readback, which is the guard that voids a
+cell, read ctx 12288 on all 64.
 
 ### The earlier GPU run is archive-only
 

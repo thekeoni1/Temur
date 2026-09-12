@@ -654,6 +654,13 @@ larger-footprint alternative.
 Larger is better whenever the serving machine allows it; anything in the
 7B+ class changes the experience qualitatively.
 
+One thing to expect from a 4B in an unattended run: the nudge that fires
+when a turn ends without a tool call (see
+[USAGE.md](USAGE.md#the-unattended-nudge)) is spent on a tool call about
+one time in five, and the rest of the time the model writes another
+paragraph asserting it is done. Neither the nine-task eval nor the
+Terminal-Bench subset dropped when it shipped.
+
 ## `context_window`: what it does and does not do
 
 `openai_compat.context_window` tells temur how big the *served* context
