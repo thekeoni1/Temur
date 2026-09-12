@@ -654,12 +654,18 @@ larger-footprint alternative.
 Larger is better whenever the serving machine allows it; anything in the
 7B+ class changes the experience qualitatively.
 
-One thing to expect from a 4B in an unattended run: the nudge that fires
-when a turn ends without a tool call (see
-[USAGE.md](USAGE.md#the-unattended-nudge)) is spent on a tool call about
-one time in five, and the rest of the time the model writes another
-paragraph asserting it is done. Neither the nine-task eval nor the
-Terminal-Bench subset dropped when it shipped.
+The extra turn from the unattended nudge (see
+[USAGE.md](USAGE.md#the-unattended-nudge)) is used more by larger models.
+Counted per nudged cell, a tool call followed the nudge in 4 of 24 cells
+on the nine-task eval and 6 of 18 on the Terminal-Bench subset with
+Qwen3-4B, against 15 of 16 on the same subset with Qwen3-8B. On the 4B
+the turn usually produces another paragraph asserting the work is done;
+on the 8B it usually produces the check. Neither the eval nor the subset
+dropped when the nudge shipped.
+
+The cost follows the benefit: the nudged arm ran 17.5% longer than its
+parent on the 4B and 44.6% longer on the 8B, because a model that acts on
+the nudge pays for acting on it.
 
 ## `context_window`: what it does and does not do
 

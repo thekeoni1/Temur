@@ -15,10 +15,12 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   a mutating tool or ended on a question mark, so a read-only turn is
   left alone. On a 16-task Terminal-Bench subset against the previous
   commit it did not cost passes (2/16 and 1/16 against 1/16 and 0/16,
-  inside a one-task noise floor) and cost 17.5% wall clock. On a 4B the
-  extra turn produced a tool call in about one nudged cell in five; the
-  rest wrote another paragraph, and unverified completion claims did not
-  fall. Prompt size is unchanged, 0 tokens in both profiles, because the
+  inside a one-task noise floor) and cost 17.5% wall clock. What the extra
+  turn buys depends on the model: counted per nudged cell, a tool call
+  followed it in 4 of 24 on the nine-task eval and 6 of 18 on the subset
+  with a 4B, where the rest wrote another paragraph, against 15 of 16 on
+  the same subset with a Qwen3-8B, which cost 44.6% wall clock on that
+  model. Prompt size is unchanged, 0 tokens in both profiles, because the
   message is sent only when the shape occurs.
 
 - **Markdown written to a `.docx` or `.pdf` path becomes the document.**

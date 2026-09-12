@@ -1362,9 +1362,12 @@ never see it.
 The cost is one extra request per nudged session, which resends the
 history and therefore costs at least a prompt floor: on a 16-task
 Terminal-Bench subset it fired in 9 of 16 cells per run and added 17.5%
-wall clock, and on the 4B it was followed by a tool call in about one
-nudged cell in five, the rest being a further paragraph. See
-[COMPARISON.md](COMPARISON.md#same-rig-one-commit-apart-the-unattended-nudge-4b-row-refreshed-2026-09-11).
+wall clock on Qwen3-4B, 44.6% on Qwen3-8B. What the turn buys depends on
+the model. Counted per nudged cell, a tool call followed it in 4 of 24
+(nine-task eval, 4B) and 6 of 18 (subset, 4B), against 15 of 16 (subset,
+8B). See
+[COMPARISON.md](COMPARISON.md#same-rig-one-commit-apart-the-unattended-nudge-4b-row-refreshed-2026-09-11)
+and the 8B sub-row below it.
 
 ## Documents and spreadsheets
 

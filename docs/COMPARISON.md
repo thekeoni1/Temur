@@ -52,6 +52,7 @@ above; the Terminal-Bench rows are an externally authored suite.
 | Same subset, GPU box, three models (4B, 8B, 30B-A3B MoE) | scores stay within run-to-run noise on every model; temur's wall clock is 0.77 h / 1.18 h / 2.31 h against 2.51 to 6.56 h for the others | [section](#gpu-desktop-terminal-bench-2-subset) |
 | Auto-compaction differential (temur only, v0.28.0 vs v0.29.1) | compaction runs and completes but did not convert the context-exhausted cells at ctx 12288; one failure class, a single oversized tool result, is structurally beyond what compaction can address | [section](#same-rig-auto-compaction-on-temur-v0291-differential) |
 | Unattended-nudge differential (temur only, one commit apart, 4B row refreshed 2026-09-11) | the nudge did not cost passes (candidate 2/16 and 1/16 against parent 1/16 and 0/16, inside a one-task noise floor) and cost 17.5% wall clock; it fired in 9 of 16 cells per run and a tool call followed in 3 of 16 | [section](#same-rig-one-commit-apart-the-unattended-nudge-4b-row-refreshed-2026-09-11) |
+| Same differential on Qwen3-8B (matrix only, 2026-09-12) | the extra turn is used far more at this model size: a tool call followed the nudge in 15 of 16 nudged cells against 6 of 18 on the 4B, at 44.6% wall clock; passes do not separate the arms (0/16 and 1/16 against 0/16 and 0/16) | [section](#the-unattended-nudge-on-this-model-2026-09-12-matrix-only) |
 
 ## What was pinned
 
@@ -562,6 +563,80 @@ after, the interrupted cell deleted and re-run, no cell spanning the
 gap, an `INTERRUPTED` line at that point in the append-only ledger,
 and 8 h 07 m of running elapsed. Full report, cell tree and ledger for
 this run: `~/temur-eval-archive/desktop-exp3/`.
+
+#### The unattended nudge on this model, 2026-09-12 (matrix only)
+
+The two arms of the unattended-nudge differential below, one commit
+apart, re-run on Qwen3-8B with this section's pins. **The nine-task eval
+was not run on the 8B, because `scripts/weak_model_eval.sh` cannot hold
+thinking off on a hybrid model, so this sub-row is the 16-task matrix
+alone.** 64 cells, two runs per arm, no cell void.
+
+Passes over 16 subset tasks, with this section's own temur row for
+reference:
+
+| arm | run 1 | run 2 |
+|---|---|---|
+| parent `18275a6` | 0/16 | 0/16 |
+| candidate `916c4b9` | 0/16 | 1/16 |
+| temur 0.28.0, the row above | 1/16 | 0/16 |
+
+The only task any 8B arm has solved on this subset is
+`modernize-scientific-stack`, which is the pass in each non-zero cell
+above. A one-pass difference is inside the run-to-run noise this page
+records elsewhere, and the parent arm is the control rather than the
+0.28.0 row, which is six releases older.
+
+What the nudge did, per candidate cell, with the parent arm as the
+control:
+
+| reading | parent | candidate |
+|---|---|---|
+| nudge fired | 0 of 32 | 16 of 32 |
+| a tool call followed the nudge | 0 | 15 of 16 |
+| a bash call followed the nudge | 0 | 12 of 16 |
+
+The parent binary contains no nudge, so its zeros are the check that
+these readings belong to the one commit separating the arms.
+
+Ending shapes, counted by the same instrument as the 4B row (sha256
+`45ba54c8...`, unchanged), 32 cells per arm:
+
+| shape | temur 0.28.0 | parent | candidate |
+|---|---|---|---|
+| window death | 7 | 4 | 6 |
+| repeat-guard stop | 3 | 7 | 9 |
+| question to nobody | 0 | 0 | 0 |
+| refusal | 2 | 2 | 2 |
+| unverified claim | 19 | 17 | 13 |
+| of which bash-last | 15 | 12 | 11 |
+| other | 1 | 2 | 2 |
+
+No cell on this model ended on a question to nobody, in any of the three
+columns, where the 4B row counted 6 of 32. The shape the nudge's question
+branch addresses does not occur at this model size. The candidate's lower
+unverified-claim count comes with a caveat that prevents reading it as a
+result: window death and repeat-guard stop both take precedence over
+`unverified claim` in the counter, and the candidate arm has two more of
+each, so cells move between shapes as well as out of them.
+
+Wall clock:
+
+| arm | run 1 | run 2 | 32 cells |
+|---|---|---|---|
+| parent | 2,585 s | 2,151 s | 4,736 s |
+| candidate | 3,701 s | 3,147 s | 6,848 s |
+
+The candidate arm ran 44.6% longer. The parent arm's 4,736 s is within
+11% of the 0.28.0 row's 4,257 s for the same 32 cells.
+
+Pins for this sub-row: model `Qwen3-8B-Q4_K_M.gguf` sha256 `120307ba...`;
+thinking held off by `--chat-template-kwargs {"enable_thinking": false}`
+and probed per cell, `thinking_off=yes` on 64 of 64 with no void; `-lv 4`
+present, so `offloaded 37/37 layers to GPU` on 64 of 64; VRAM peak 7,195
+MiB with 770 MiB in use before launch; `ctx=12288` on 64 of 64; temur
+arms `4e84348a` and `25a1413d`, the same two binaries as the 4B row.
+Cells and ledger: `~/desktop-t61-m3.tgz`, sha256 `55c862ff...`.
 
 ### Same rig, MoE model (Qwen3-Coder-30B-A3B)
 
