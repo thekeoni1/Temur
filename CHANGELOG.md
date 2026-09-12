@@ -4,6 +4,21 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **A workbook with one cell in a far corner could abort temur, and now
+  reads within a bound.** A spreadsheet is laid out in memory between the
+  cells it really holds, so a sheet with a value in A1 and another in the
+  last row and column asked for 512 GiB, and an allocation that large
+  does not fail politely: it ends the process, losing the session. The
+  file that does it can be under two kilobytes. `.xlsx` and `.xlsm` are
+  now read one cell at a time and never laid out, and a read stops at the
+  window it was asked for rather than rendering the whole sheet first. An
+  `.ods` is measured before it is opened, since that format is laid out
+  during the open, and one whose content spans more than two million
+  cells is refused with a sentence saying what to ask for instead. The
+  64 MiB decompression cap, which applied only to `.docx` before, now
+  applies to workbooks. Reading a spreadsheet is otherwise unchanged,
+  byte for byte.
+
 - **An unattended run that stops to ask or to declare victory is told to
   finish and prove it.** When nobody is reading a session, a turn that
   ends with no tool call ends the work: the question waits for an answer

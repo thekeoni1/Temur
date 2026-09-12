@@ -44,6 +44,13 @@ pub const MAX_UNZIPPED_BYTES: u64 = 64 * 1024 * 1024;
 /// never retained, so no page is made unreachable by it.
 pub const MAX_SHEET_CELLS: u64 = 1_000_000;
 
+/// Ceiling on the cells CALAMINE will lay out for one ODS sheet, which is a
+/// different thing from the one above: it bounds an allocation inside a
+/// dependency rather than a buffer of ours, so it is measured before the
+/// dependency is handed the file. 2,000,000 cells at 32 bytes is 64 MB, the
+/// same figure as the unzipped cap.
+pub const MAX_ODS_SPAN_CELLS: u64 = 2_000_000;
+
 /// Extensions this module can turn into text. The read tool consults this
 /// before its binary refusal.
 pub fn is_document(ext: &str) -> bool {
@@ -210,6 +217,7 @@ fn spreadsheet(
         .to_ascii_lowercase();
     match ext.as_str() {
         "xlsx" | "xlsm" => workbook_parts_within_cap(path)?,
+        "ods" => ods_span_within_cap(path)?,
         // xls is not a zip and has no streaming reader (see below).
         _ => {}
     }
@@ -427,6 +435,192 @@ fn workbook_parts_within_cap(path: &Path) -> Result<(), ToolError> {
             MAX_UNZIPPED_BYTES / (1024 * 1024)
         )));
     }
+    Ok(())
+}
+
+/// `content.xml`, with the decompression cap applied, in the workbook voice.
+///
+/// The docx path's `zip_entry_to_string` does the same job and says "Word
+/// document" in its refusals, which is the wrong noun here.
+fn ods_content_xml(path: &Path) -> Result<String, ToolError> {
+    let file = std::fs::File::open(path).map_err(|e| ToolError::failed(e.to_string()))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|_| spreadsheet_error("malformed"))?;
+    let zf = archive
+        .by_name("content.xml")
+        .map_err(|_| spreadsheet_error("malformed"))?;
+    if zf.size() > MAX_UNZIPPED_BYTES {
+        return Err(ToolError::failed(format!(
+            "This workbook expands to more than {} MiB; temur will not unpack it.",
+            MAX_UNZIPPED_BYTES / (1024 * 1024)
+        )));
+    }
+    let mut buf = Vec::new();
+    zf.take(MAX_UNZIPPED_BYTES)
+        .read_to_end(&mut buf)
+        .map_err(|_| spreadsheet_error("malformed"))?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// The cells calamine will lay out for one ODS sheet, measured BEFORE
+/// calamine is handed the path.
+///
+/// This is the one arm where the check has to come first. An ODS is
+/// materialised inside `open_workbook_auto`, so a check placed after the open
+/// never runs: an 822-byte file was watched reaching a 2.39 GB allocation
+/// during the open and aborting there.
+///
+/// What is measured is the CONTENT span, mirroring calamine's own `get_range`
+/// (ods.rs 461-572): it trims to the smallest area holding non-empty cells,
+/// dropping leading and trailing empty rows and outer empty columns, and
+/// expands only the empty rows and columns BETWEEN non-empty cells. That
+/// expansion is the allocation.
+///
+/// The DECLARED span would be the wrong measure and would refuse almost every
+/// real file: LibreOffice ends every sheet with a trailing
+/// `table:number-rows-repeated="1048575"` block, so summing declared repeats
+/// reads a three-row spreadsheet as 1,048,576 by 16,384.
+///
+/// The residual this leaves: a sheet with two genuinely far-apart cells is
+/// refused here, where the xlsx arm now reads it. Closing that needs an ODS
+/// parser of our own, which is queued rather than built.
+fn ods_span_within_cap(path: &Path) -> Result<(), ToolError> {
+    use quick_xml::events::Event;
+    use quick_xml::Reader;
+
+    // calamine's own ODS ceilings (ods.rs 32, 35), mirrored so the two agree
+    // on where an index stops growing.
+    const MAX_ROWS: u64 = 1_048_576;
+    const MAX_COLS: u64 = 16_384;
+    // Names are matched with their prefixes, exactly as calamine matches
+    // them: a file using different prefixes is one calamine cannot read
+    // either, and agreeing with calamine is the whole point of this scan.
+    const VALUE_ATTRS: [&[u8]; 7] = [
+        b"office:value",
+        b"office:string-value",
+        b"office:date-value",
+        b"office:time-value",
+        b"office:boolean-value",
+        b"office:value-type",
+        b"table:formula",
+    ];
+
+    let xml = ods_content_xml(path)?;
+    let mut reader = Reader::from_str(&xml);
+
+    // Per sheet.
+    let mut total_rows: u64 = 0;
+    let mut first_row: Option<u64> = None;
+    let mut last_row: u64 = 0;
+    let mut min_col = u64::MAX;
+    let mut max_col: u64 = 0;
+    // Per row.
+    let mut row_start: u64 = 0;
+    let mut row_reps: u64 = 1;
+    let mut width: u64 = 0;
+    let mut pending_empty: u64 = 0;
+    let mut row_first: Option<u64> = None;
+    let mut row_last: u64 = 0;
+
+    let check = |first_row: Option<u64>, last_row: u64, min_col: u64, max_col: u64| {
+        let Some(first) = first_row else {
+            return Ok(());
+        };
+        if min_col == u64::MAX {
+            return Ok(());
+        }
+        let rows = last_row - first + 1;
+        let cols = max_col - min_col + 1;
+        if rows.saturating_mul(cols) > MAX_ODS_SPAN_CELLS {
+            return Err(ToolError::failed(format!(
+                "One sheet in this workbook spans {rows} rows by {cols} columns, more \
+                 than temur will lay out; ask the user for the sheet or the range you need."
+            )));
+        }
+        Ok(())
+    };
+
+    loop {
+        let event = reader.read_event();
+        let (start, e) = match &event {
+            Err(_) => return Err(spreadsheet_error("malformed")),
+            Ok(Event::Eof) => break,
+            Ok(Event::Start(e)) => (true, e),
+            Ok(Event::Empty(e)) => (false, e),
+            Ok(Event::End(e)) => {
+                let name: &[u8] = e.name().into_inner();
+                if name == b"table:table-row" {
+                    if row_first.is_some() {
+                        if first_row.is_none() {
+                            first_row = Some(row_start);
+                        }
+                        last_row = row_start + row_reps.saturating_sub(1);
+                        min_col = min_col.min(row_first.unwrap_or(0));
+                        max_col = max_col.max(row_last);
+                    }
+                    row_first = None;
+                } else if name == b"table:table" {
+                    check(first_row, last_row, min_col, max_col)?;
+                    total_rows = 0;
+                    first_row = None;
+                    last_row = 0;
+                    min_col = u64::MAX;
+                    max_col = 0;
+                }
+                continue;
+            }
+            Ok(_) => continue,
+        };
+        let name: &[u8] = e.name().into_inner();
+        let attr = |key: &[u8]| -> Option<u64> {
+            e.attributes()
+                .flatten()
+                .find(|a| a.key.into_inner() == key)
+                .and_then(|a| String::from_utf8_lossy(&a.value).parse::<u64>().ok())
+        };
+        if name == b"table:table-row" {
+            row_reps = attr(b"table:number-rows-repeated").unwrap_or(1).max(1);
+            // Capped the way calamine caps it, so neither side counts rows
+            // the other does not.
+            row_reps = row_reps.min(MAX_ROWS.saturating_sub(total_rows));
+            row_start = total_rows;
+            total_rows += row_reps;
+            width = 0;
+            pending_empty = 0;
+            row_first = None;
+            row_last = 0;
+            // A self-closing row holds nothing, so there is no End event to
+            // wait for and nothing to record.
+            let _ = start;
+        } else if name == b"table:table-cell" || name == b"table:covered-table-cell" {
+            let reps = attr(b"table:number-columns-repeated").unwrap_or(1).max(1);
+            // Empty cells are deferred and only laid out when a later
+            // non-empty cell in the same row forces them, which is why a
+            // trailing run of them costs nothing (ods.rs, read_row).
+            let flushed = pending_empty.min(MAX_COLS.saturating_sub(width));
+            width += flushed;
+            pending_empty = 0;
+            let capped = reps.min(MAX_COLS.saturating_sub(width));
+            let has_value = e
+                .attributes()
+                .flatten()
+                .any(|a| VALUE_ATTRS.contains(&a.key.into_inner()));
+            if capped == 0 {
+                continue;
+            }
+            if has_value {
+                if row_first.is_none() {
+                    row_first = Some(width);
+                }
+                row_last = width + capped - 1;
+                width += capped;
+            } else {
+                pending_empty = capped;
+            }
+        }
+    }
+    // A file whose last table is not closed still gets measured.
+    check(first_row, last_row, min_col, max_col)?;
     Ok(())
 }
 

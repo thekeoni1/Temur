@@ -1436,6 +1436,13 @@ quoting a total line count. A later `offset` extracts from the start
 again; the rows before the window are counted and dropped, so paging to
 row 400,000 costs no more memory than paging to row 1.
 
+An `.ods` is measured before it is opened, because an ODS sheet is laid
+out during the open and no check after that can intervene. A sheet whose
+content spans more than two million cells is refused with a sentence
+naming the rows and columns; the trailing empty block LibreOffice writes
+at the end of every sheet does not count toward the span. The same sheet
+saved as `.xlsx` reads, because that path streams instead.
+
 Not supported: images of any kind, so a scanned PDF with no text layer
 is refused with a sentence saying so; encrypted PDFs, refused by name
 so you know to supply an unencrypted copy; writing `.pptx`; and

@@ -1631,10 +1631,21 @@ one-liner gate stays deferred to the visibility flip (RUNBOOK).
 
 ### Queued from T61 (2026-09-12)
 
-- **The spreadsheet read path has no bound.** Laptop finding, memo sha256
-  `3b9ee8e2`: a declared-size pre-scan plus a render-window stop, so a
-  workbook that declares a huge used range cannot cost the whole turn
-  before anything is rendered.
+- **An ODS with two far-apart cells is refused where an xlsx is read.**
+  T62 P0b measures an ODS content span before calamine opens it, because
+  an ODS is laid out during the open, and refuses a sheet spanning more
+  than `MAX_ODS_SPAN_CELLS`. The xlsx arm streams and reads the same
+  shape. Closing the gap needs an ODS parser of our own, the way `docx()`
+  is one. (The bound itself shipped in T62 P0a and P0b. The laptop memo
+  `3b9ee8e2` proposed a declared-size pre-scan; measurement showed the
+  declared range is not the hazard, so that is not what was built.)
+- **The xls arm is still laid out whole.** calamine has no streaming
+  reader for it, so a sheet is bounded only by the format's own maxima,
+  65,536 x 256 x 32 bytes = 536,870,912. Survivable on a 64-bit box; on a
+  low-memory 32-bit one that allocation can fail, and a failed allocation
+  aborts rather than unwinding. Measuring it needs a crafted BIFF
+  fixture, and the answer cannot change the design, since there is no
+  streaming reader to move to.
 - **The 4B reads `write.txt`'s `.pdf` sentence and concludes the
   opposite.** Measurement 1's task 12 run 2 said in its own words that
   the write tool "only supports specific formats like `.md`, `.docx`, or

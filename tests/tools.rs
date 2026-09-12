@@ -2383,6 +2383,59 @@ fn paging_a_large_workbook_reaches_its_last_rows() {
     assert!(out.output.contains("End of file"), "{}", out.output);
 }
 
+// --- T62 P0b: an ODS is measured before it is opened -----------------------
+
+/// The <content> body of a read, without the <path> line, so two files can be
+/// compared byte for byte.
+fn content_of(out: &str) -> String {
+    let start = out.find("<content>").expect("content") + "<content>".len();
+    let end = out.find("</content>").expect("/content");
+    out[start..end].to_string()
+}
+
+#[test]
+fn an_ods_that_spans_too_much_is_refused_in_one_sentence() {
+    // 1,048,576 rows by 95 columns of content span, which calamine lays out
+    // as 99,614,720 cells and 3.19 GB. Measured on this box before P0b: the
+    // allocation failed and the process aborted, from an 820-byte file.
+    let err = read_doc("ods-far-corner.ods", json!({})).unwrap_err();
+    let msg = format!("{err}");
+    assert_eq!(msg.lines().count(), 1, "one sentence, one line: {msg}");
+    assert!(msg.contains("ask the user for the sheet or the range"), "{msg}");
+    // No crate error may reach the model.
+    assert!(!msg.contains("OdsError"), "{msg}");
+    assert!(!msg.contains("CellLimit"), "{msg}");
+}
+
+#[test]
+fn an_ods_is_measured_before_calamine_opens_it() {
+    // Placement is the point, and it is not testable by asserting "an error"
+    // arrived: an ODS is laid out inside calamine's open, so a check placed
+    // after the open would abort instead of returning. What proves the
+    // placement is WHICH sentence comes back. This one can only come from the
+    // pre-scan, because it names the span the pre-scan computed.
+    let err = read_doc("ods-far-corner.ods", json!({})).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("1048576 rows by 95 columns"), "{msg}");
+    assert!(msg.contains("more than temur will lay out"), "{msg}");
+}
+
+#[test]
+fn a_libreoffice_trailing_block_reads_the_same_as_the_sheet_without_it() {
+    // Every sheet LibreOffice saves ends with a trailing empty block
+    // declaring the rest of the sheet, so a pre-scan that summed DECLARED
+    // repeats would read this three-row spreadsheet as 1,048,576 by 16,384
+    // and refuse it. calamine drops the block, and so does the pre-scan.
+    let with_block = read_doc("trailing-block.ods", json!({})).unwrap();
+    let without = read_doc("plain-3x2.ods", json!({})).unwrap();
+    assert!(with_block.output.contains("North,1200"), "{}", with_block.output);
+    assert_eq!(
+        content_of(&with_block.output),
+        content_of(&without.output),
+        "the trailing block must change nothing"
+    );
+}
+
 #[test]
 fn a_document_under_a_secrets_dir_is_still_guarded() {
     // T54 changes nothing about T18: the guard runs before any open, so a
@@ -2418,8 +2471,12 @@ fn hostile_input_never_panics_and_always_answers() {
         "synth.ods",
         // T62: the bound fixtures are structurally valid, so the seeded
         // corruptions are the only thing that reaches their parsers sideways.
+        // ods-far-corner.ods is deliberately NOT here: a corruption that
+        // happened to defeat the pre-scan would allocate gigabytes inside
+        // calamine, and two direct tests already cover that file.
         "far-corner.xlsx",
         "declared-huge.xlsx",
+        "trailing-block.ods",
     ] {
         let bytes = std::fs::read(office_fixture(src)).unwrap();
         let ext = std::path::Path::new(src).extension().unwrap().to_str().unwrap();
