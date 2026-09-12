@@ -11,6 +11,16 @@
 //!
 //! 32-bit discipline: every size and offset is u64, and the caps below are
 //! hard because the address space is not. Zip input is treated as hostile.
+//!
+//! T62: a workbook is read within a bound, and the bound is a SAFETY
+//! property rather than a speed one. calamine lays a sheet out densely
+//! between the extreme cells that are really in it, so one cell in the far
+//! corner of a sheet asks for 1,048,576 x 16,384 x 32 bytes, and an
+//! allocation that large does not fail politely: it aborts the process,
+//! which `catch_unwind` cannot intercept. A 1,616-byte file was enough. So
+//! the xlsx family is STREAMED (never laid out), and the ODS arm, whose
+//! layout happens inside calamine's open where no later check can reach it,
+//! is measured before calamine is handed the path.
 
 use super::ToolError;
 use std::io::Read;
@@ -25,6 +35,15 @@ pub const MAX_INPUT_BYTES: u64 = 32 * 1024 * 1024;
 /// decompression bomb rather than an honest large workbook.
 pub const MAX_UNZIPPED_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Ceiling on the cells temur will RETAIN from one sheet while rendering a
+/// read's window, at 40 bytes a cell (`size_of::<calamine::Cell<Data>>()`,
+/// measured): 40 MB. It is a backstop, not the working bound. The working
+/// bound is the window itself, and read's 28 KB `MAX_BYTES` means no window
+/// can render more than about 14,000 cells, so this can only bite on a
+/// window more than about 500 columns wide. Cells ahead of the window are
+/// never retained, so no page is made unreachable by it.
+pub const MAX_SHEET_CELLS: u64 = 1_000_000;
+
 /// Extensions this module can turn into text. The read tool consults this
 /// before its binary refusal.
 pub fn is_document(ext: &str) -> bool {
@@ -36,12 +55,22 @@ pub fn is_document(ext: &str) -> bool {
 
 /// Text of a document, or ONE honest sentence the model can act on.
 ///
-/// `want_lines` is how many lines the caller can actually render (its
-/// offset+limit window). The PDF path stops producing pages once it has
-/// that many, so showing page one of a 300-page report does not cost the
-/// whole report. The returned flag is false when extraction stopped early,
-/// which is how the read tool knows not to quote a total line count.
-pub fn extract(path: &Path, want_lines: u64) -> Result<(String, bool), ToolError> {
+/// The window is the caller's own: `skip_lines` is how many lines it will
+/// discard (offset - 1) and `want_lines` how many lines it can render at
+/// all (offset - 1 + limit). Extraction stops one line past `want_lines`,
+/// so showing page one of a 300-page report does not cost the whole report
+/// and the caller can still tell "more follows" from "that was all". The
+/// returned flag is false when extraction stopped early, which is how the
+/// read tool knows not to quote a total line count.
+///
+/// `skip_lines` is what keeps a late page reachable: a workbook's cells
+/// ahead of the window are counted for line numbering and then dropped, so
+/// paging to row 400,000 costs no more memory than paging to row 1.
+pub fn extract(
+    path: &Path,
+    skip_lines: u64,
+    want_lines: u64,
+) -> Result<(String, bool), ToolError> {
     let meta = std::fs::metadata(path).map_err(|e| ToolError::failed(e.to_string()))?;
     if meta.len() > MAX_INPUT_BYTES {
         return Err(ToolError::failed(format!(
@@ -57,11 +86,12 @@ pub fn extract(path: &Path, want_lines: u64) -> Result<(String, bool), ToolError
         .unwrap_or("")
         .to_ascii_lowercase();
     match ext.as_str() {
+        // Pages come out in order from the first, so there is nothing this
+        // path can cheaply skip; it takes the far end of the window only.
         "pdf" => pdf(path, want_lines),
-        // Both of these parse their whole input by construction: a workbook
-        // is one zip and a docx body is one XML part, so there is no
-        // partial state to report and the text is always complete.
-        "xlsx" | "xlsm" | "xls" | "ods" => spreadsheet(path).map(|t| (t, true)),
+        "xlsx" | "xlsm" | "xls" | "ods" => spreadsheet(path, skip_lines, want_lines),
+        // A docx body is one XML part with no dense layout anywhere in it,
+        // so it is parsed whole and the text is always complete.
         "docx" => docx(path).map(|t| (t, true)),
         other => Err(ToolError::failed(format!(
             "temur cannot read {other} files as text."
@@ -162,17 +192,196 @@ fn pdf_open_error(msg: &str) -> ToolError {
 /// application last computed, which is the number a person would see. temur
 /// evaluates nothing, so a workbook whose cached values are stale shows the
 /// stale value rather than a guess.
-fn spreadsheet(path: &Path) -> Result<String, ToolError> {
-    use calamine::{open_workbook_auto, Reader};
+///
+/// Both pre-checks below run BEFORE calamine is handed the path, because
+/// both bound allocations calamine makes while opening a workbook or laying
+/// a sheet out. An allocation failure aborts rather than unwinding, so there
+/// is no catching it afterwards and no partial answer to give.
+fn spreadsheet(
+    path: &Path,
+    skip_lines: u64,
+    want_lines: u64,
+) -> Result<(String, bool), ToolError> {
+    use calamine::{open_workbook_auto, Sheets};
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "xlsx" | "xlsm" => workbook_parts_within_cap(path)?,
+        // xls is not a zip and has no streaming reader (see below).
+        _ => {}
+    }
     let mut wb = open_workbook_auto(path).map_err(|e| spreadsheet_error(&e.to_string()))?;
+    // `open_workbook_auto` picks the arm from the extension for every
+    // extension `is_document` admits, and only sniffs when it recognises
+    // none of them, which `is_document` makes unreachable. So the arm is
+    // known from the file name. xlsb is deliberately absent from
+    // `is_document` and therefore unreachable here; it has a cells reader
+    // too, if it is ever admitted.
+    let (text, complete) = if let Sheets::Xlsx(x) = &mut wb {
+        stream_sheets(x, skip_lines, want_lines)?
+    } else {
+        // Xls and Ods have no streaming reader in calamine 0.36, so they are
+        // still laid out whole and then rendered up to the window. Ods is
+        // bounded by the pre-scan above. Xls is bounded only by its own
+        // format maxima, 65,536 x 256 x 32 bytes = 536,870,912: survivable
+        // on this box, and a named residual on a low-memory 32-bit one,
+        // where that allocation can fail and failing means aborting.
+        dense_sheets(&mut wb, want_lines)?
+    };
+    if text.is_empty() {
+        return Err(ToolError::failed(
+            "This workbook has no sheets temur can read.",
+        ));
+    }
+    Ok((text, complete))
+}
+
+/// The xlsx family, streamed one cell at a time so no dense grid is ever
+/// laid out. This is the whole of the abort fix: `worksheet_range` would ask
+/// for the span between the extreme cells, and the stream asks for nothing
+/// beyond the cells that exist inside the caller's window.
+fn stream_sheets<RS: std::io::Read + std::io::Seek>(
+    x: &mut calamine::Xlsx<RS>,
+    skip_lines: u64,
+    want_lines: u64,
+) -> Result<(String, bool), ToolError> {
+    // DataType is what carries is_empty on a streamed cell's value.
+    use calamine::{Data, DataType, Reader};
     let mut out = String::new();
-    for name in wb.sheet_names().to_vec() {
+    let mut produced: u64 = 0;
+    let mut complete = true;
+    for name in x.sheet_names().to_vec() {
+        if produced > want_lines {
+            complete = false;
+            break;
+        }
+        let mut reader = match x.worksheet_cells_reader(&name) {
+            Ok(r) => r,
+            Err(e) => return Err(spreadsheet_error(&e.to_string())),
+        };
+        out.push_str(&format!("== Sheet: {name} ==\n"));
+        produced += 1;
+        // This sheet's rows, relative to its first row holding anything:
+        // rows below `lo` are counted for line numbering and dropped, and
+        // the stream stops one row past `hi`.
+        let lo = skip_lines.saturating_sub(produced);
+        let hi = want_lines.saturating_sub(produced);
+        let mut cells: Vec<(u32, u32, Data)> = Vec::new();
+        let mut origin: Option<u32> = None;
+        let mut min_col = u32::MAX;
+        let mut last_rel: u64 = 0;
+        let mut stopped = false;
+        loop {
+            let cell = match reader.next_cell() {
+                Ok(Some(c)) => c,
+                Ok(None) => break,
+                Err(e) => return Err(spreadsheet_error(&e.to_string())),
+            };
+            // The reader yields empty cells too; skip them exactly as
+            // calamine's own `worksheet_range_ref` does.
+            if cell.get_value().is_empty() {
+                continue;
+            }
+            let (row, col) = cell.get_position();
+            // The stream is row ordered, which every writer produces, so the
+            // first cell fixes the origin. A file that broke that would
+            // saturate here and render a truncated read, never an abort.
+            let first = *origin.get_or_insert(row);
+            let rel = u64::from(row.saturating_sub(first));
+            if rel > hi {
+                stopped = true;
+                break;
+            }
+            if col < min_col {
+                min_col = col;
+            }
+            if rel > last_rel {
+                last_rel = rel;
+            }
+            if rel >= lo {
+                if cells.len() as u64 >= MAX_SHEET_CELLS {
+                    stopped = true;
+                    break;
+                }
+                cells.push((row, col, Data::from(cell.get_value().clone())));
+            }
+        }
+        if stopped {
+            complete = false;
+            // The dense path renders the empty rows between the last cell it
+            // kept and the next one, so the window's worth of them is
+            // rendered here too. Two reasons, and the second is the load
+            // bearing one: it keeps row alignment with the path this
+            // replaces, and it keeps the invariant read.rs is built on, that
+            // a source which stopped early produced MORE lines than the
+            // window can show. Without it a sheet holding three rows and one
+            // stray cell a million rows down reports "End of file", which is
+            // the one thing this must never say while text remains. Capped so
+            // that synthesising lines cannot itself become the unbounded
+            // thing: a window a million lines wide is not a real request, and
+            // read's own 28 KB cap answers one long before this does.
+            last_rel = last_rel.max(hi.min(MAX_SHEET_CELLS));
+        }
+        if let Some(first) = origin {
+            cells.sort_unstable_by_key(|&(r, c, _)| (r, c));
+            let mut i = 0usize;
+            for rel in 0..=last_rel {
+                let row = first + rel as u32;
+                while i < cells.len() && cells[i].0 < row {
+                    i += 1;
+                }
+                let mut fields: Vec<String> = Vec::new();
+                while i < cells.len() && cells[i].0 == row {
+                    let at = (cells[i].1 - min_col) as usize;
+                    if fields.len() <= at {
+                        fields.resize(at + 1, String::new());
+                    }
+                    fields[at] = cell_text(&cells[i].2);
+                    i += 1;
+                }
+                // Trailing empties are formatting, not data.
+                while fields.last().map(|c| c.is_empty()).unwrap_or(false) {
+                    fields.pop();
+                }
+                out.push_str(&csv_row(&fields));
+                out.push('\n');
+            }
+            produced += last_rel + 1;
+        }
+    }
+    Ok((out, complete))
+}
+
+/// The arms with no streaming reader: laid out by calamine, then rendered up
+/// to the window so a million-row sheet does not build a megabyte of text
+/// for a 28 KB answer.
+fn dense_sheets<RS: std::io::Read + std::io::Seek>(
+    wb: &mut calamine::Sheets<RS>,
+    want_lines: u64,
+) -> Result<(String, bool), ToolError> {
+    use calamine::Reader;
+    let mut out = String::new();
+    let mut produced: u64 = 0;
+    let mut complete = true;
+    'sheets: for name in wb.sheet_names().to_vec() {
+        if produced > want_lines {
+            complete = false;
+            break;
+        }
         let range = match wb.worksheet_range(&name) {
             Ok(r) => r,
             Err(e) => return Err(spreadsheet_error(&e.to_string())),
         };
         out.push_str(&format!("== Sheet: {name} ==\n"));
+        produced += 1;
         for row in range.rows() {
+            if produced > want_lines {
+                complete = false;
+                break 'sheets;
+            }
             let mut cells: Vec<String> = row.iter().map(cell_text).collect();
             // Trailing empties are formatting, not data.
             while cells.last().map(|c| c.is_empty()).unwrap_or(false) {
@@ -180,14 +389,45 @@ fn spreadsheet(path: &Path) -> Result<String, ToolError> {
             }
             out.push_str(&csv_row(&cells));
             out.push('\n');
+            produced += 1;
         }
     }
-    if out.is_empty() {
-        return Err(ToolError::failed(
-            "This workbook has no sheets temur can read.",
-        ));
+    Ok((out, complete))
+}
+
+/// The parts a workbook read will inflate, against the decompression cap.
+///
+/// `MAX_UNZIPPED_BYTES` has been enforced on the docx path since T54 and
+/// never on this one. Only the parts a read touches are counted, for the
+/// reason the docx path gives: a workbook may carry megabytes of media that
+/// nothing here opens, and refusing it for that would be a false refusal.
+fn workbook_parts_within_cap(path: &Path) -> Result<(), ToolError> {
+    let file = std::fs::File::open(path).map_err(|e| ToolError::failed(e.to_string()))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|_| spreadsheet_error("malformed or not a spreadsheet"))?;
+    let mut total: u64 = 0;
+    for i in 0..archive.len() {
+        // Raw: the declared size is read from the entry's header and nothing
+        // is inflated to get it.
+        let zf = archive
+            .by_index_raw(i)
+            .map_err(|_| spreadsheet_error("malformed or not a spreadsheet"))?;
+        let name = zf.name();
+        let needed = name == "xl/workbook.xml"
+            || name == "xl/sharedStrings.xml"
+            || name == "xl/styles.xml"
+            || name.starts_with("xl/worksheets/");
+        if needed {
+            total = total.saturating_add(zf.size());
+        }
     }
-    Ok(out)
+    if total > MAX_UNZIPPED_BYTES {
+        return Err(ToolError::failed(format!(
+            "This workbook expands to more than {} MiB; temur will not unpack it.",
+            MAX_UNZIPPED_BYTES / (1024 * 1024)
+        )));
+    }
+    Ok(())
 }
 
 fn cell_text(c: &calamine::Data) -> String {

@@ -2269,6 +2269,120 @@ fn a_corrupt_workbook_says_so_without_leaking_the_crate_error() {
     assert_eq!(msg.lines().count(), 1, "{msg}");
 }
 
+// --- T62 P0a: a workbook is read within a bound ----------------------------
+
+#[test]
+fn a_workbook_with_a_far_corner_cell_is_read_instead_of_killing_temur() {
+    // Before T62 this test did not FAIL, it ABORTED the test binary. calamine
+    // lays a sheet out densely between the extreme cells that are really in
+    // it, and this file's extremes are A1 and XFD1048576, so the layout asks
+    // for 1,048,576 x 16,384 x 32 bytes = 549,755,813,888. An allocation that
+    // large fails, and a failed allocation aborts rather than unwinding, so
+    // the catch_unwind around extraction never sees it.
+    let out = read_doc("far-corner.xlsx", json!({})).unwrap();
+    assert!(out.output.contains("== Sheet: Regions =="), "{}", out.output);
+    assert!(out.output.contains("Region,Units"), "{}", out.output);
+    assert!(out.output.contains("North,1200"), "{}", out.output);
+    assert!(out.output.contains("South,940"), "{}", out.output);
+    // The stray cell is a million rows past the window, so the read stops at
+    // the window and says so instead of quoting a total it never counted.
+    assert!(
+        out.output.contains("More of this document was not extracted"),
+        "{}",
+        out.output
+    );
+}
+
+#[test]
+fn a_workbook_that_declares_a_huge_range_but_holds_three_rows_still_reads() {
+    // The guard against fixing the wrong thing. A DECLARED used range is not
+    // a bound and must never be treated as one: calamine derives the range
+    // from the cells that are really present, so this file (dimension
+    // A1:XFD1048576, three rows in it) reads in microseconds. A pre-scan of
+    // the declared range would refuse this and still abort on the file above.
+    let out = read_doc("declared-huge.xlsx", json!({})).unwrap();
+    assert!(out.output.contains("North,1200"), "{}", out.output);
+    assert!(out.output.contains("South,940"), "{}", out.output);
+    assert!(out.output.contains("End of file"), "{}", out.output);
+}
+
+#[test]
+fn a_workbook_whose_parts_declare_more_than_the_cap_is_refused() {
+    // MAX_UNZIPPED_BYTES has been enforced on the docx path since T54 and
+    // never on this one. Only the parts a read inflates are counted.
+    let err = read_doc("oversized-part.xlsx", json!({})).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("expands to more than 64 MiB"), "{msg}");
+    assert_eq!(msg.lines().count(), 1, "one sentence, one line: {msg}");
+}
+
+/// A 50,000 x 10 workbook, written by temur's own writer rather than
+/// committed: a 1.5 MB fixture to demonstrate a bound is a bad trade.
+fn big_workbook(dir: &std::path::Path, reg: &Registry, ctx: &mut ToolCtx) -> std::path::PathBuf {
+    let p = dir.join("big.xlsx");
+    let mut csv = String::new();
+    for r in 1..=50_000u64 {
+        for c in 0..10u64 {
+            if c > 0 {
+                csv.push(',');
+            }
+            csv.push_str(&(r * 10 + c).to_string());
+        }
+        csv.push('\n');
+    }
+    run(reg, ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": csv})).unwrap();
+    p
+}
+
+#[test]
+fn a_large_honest_workbook_costs_only_its_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = big_workbook(dir.path(), &reg, &mut ctx);
+
+    // A small explicit window, because the DEFAULT one is masked: 2000 rows
+    // of ten columns exceed read's 28 KB byte cap, and the byte-cap footer
+    // then hides which of the two stops fired. Five lines keeps the window
+    // itself the binding constraint, so the footer below is the observable
+    // proof that extraction touched six rows of fifty thousand: a path that
+    // rendered the whole sheet would know the total and quote it.
+    let out = run(&reg, &mut ctx, "read", json!({
+        "filePath": p.to_str().unwrap(), "limit": 5
+    })).unwrap();
+    assert!(out.output.contains("10,11,12,13,14,15,16,17,18,19"), "{}", out.output);
+    assert!(out.output.contains("40,41,42,43,44,45,46,47,48,49"), "{}", out.output);
+    assert!(!out.output.contains("50,51,52"), "past the window: {}", out.output);
+    assert!(
+        out.output.contains("More of this document was not extracted"),
+        "{}",
+        out.output
+    );
+    assert!(!out.output.contains("of 50001"), "no total was counted: {}", out.output);
+}
+
+#[test]
+fn paging_a_large_workbook_reaches_its_last_rows() {
+    // The guard on the retained-cell budget. Cells ahead of the window are
+    // counted for line numbering and then dropped, never held, so the
+    // 1,000,000-cell backstop cannot stand between the caller and a late
+    // page: with the budget on everything collected instead, a 10-column
+    // sheet would stop paging at row 100,000 and this read would be empty.
+    // Line 1 is the sheet header, so row 49,990 is line 49,991.
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = big_workbook(dir.path(), &reg, &mut ctx);
+
+    let out = run(&reg, &mut ctx, "read", json!({
+        "filePath": p.to_str().unwrap(), "offset": 49_991, "limit": 20
+    })).unwrap();
+    assert!(out.output.contains("499900,499901,499902"), "{}", out.output);
+    assert!(out.output.contains("500000,500001,500002"), "{}", out.output);
+    // Reaching the real end, not a truncation, is the whole point.
+    assert!(out.output.contains("End of file"), "{}", out.output);
+}
+
 #[test]
 fn a_document_under_a_secrets_dir_is_still_guarded() {
     // T54 changes nothing about T18: the guard runs before any open, so a
@@ -2302,6 +2416,10 @@ fn hostile_input_never_panics_and_always_answers() {
         "sample-timesheet.xlsx",
         "sample-notes.docx",
         "synth.ods",
+        // T62: the bound fixtures are structurally valid, so the seeded
+        // corruptions are the only thing that reaches their parsers sideways.
+        "far-corner.xlsx",
+        "declared-huge.xlsx",
     ] {
         let bytes = std::fs::read(office_fixture(src)).unwrap();
         let ext = std::path::Path::new(src).extension().unwrap().to_str().unwrap();

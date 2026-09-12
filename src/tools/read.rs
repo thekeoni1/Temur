@@ -78,9 +78,13 @@ impl Tool for ReadTool {
         let mut source_complete = true;
         let document = match path.extension().and_then(|e| e.to_str()) {
             Some(ext) if super::office::is_document(ext) => {
-                // Only the caller's own window is worth extracting.
-                let want_lines = offset.saturating_sub(1).saturating_add(limit);
-                let (text, complete) = super::office::extract(&path, want_lines)?;
+                // Only the caller's own window is worth extracting, and both
+                // ends of it are worth passing: T62's workbook path drops the
+                // rows ahead of the window instead of holding them, which is
+                // what keeps a late page reachable.
+                let skip_lines = offset.saturating_sub(1);
+                let want_lines = skip_lines.saturating_add(limit);
+                let (text, complete) = super::office::extract(&path, skip_lines, want_lines)?;
                 source_complete = complete;
                 Some(text)
             }

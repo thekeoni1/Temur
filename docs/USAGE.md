@@ -1429,6 +1429,13 @@ entries needed opened. Both refusals name the cap. The limits are
 fixed because temur is a 32-bit binary and the address space sets
 them.
 
+A read extracts only as far as its own window. A workbook or PDF read
+with the default 2000-line window stops there instead of rendering the
+whole file, and the result then says more was not extracted rather than
+quoting a total line count. A later `offset` extracts from the start
+again; the rows before the window are counted and dropped, so paging to
+row 400,000 costs no more memory than paging to row 1.
+
 Not supported: images of any kind, so a scanned PDF with no text layer
 is refused with a sentence saying so; encrypted PDFs, refused by name
 so you know to supply an unencrypted copy; writing `.pptx`; and
