@@ -1639,6 +1639,21 @@ one-liner gate stays deferred to the visibility flip (RUNBOOK).
   is one. (The bound itself shipped in T62 P0a and P0b. The laptop memo
   `3b9ee8e2` proposed a declared-size pre-scan; measurement showed the
   declared range is not the hazard, so that is not what was built.)
+- **A PDF temur wrote is greppable, and grep's line numbers are ones read
+  rejects.** `write` emits uncompressed content streams, so a PDF temur
+  produced holds its prose as plain bytes. grep skips a file only when a
+  NUL byte falls in its first 4,096 bytes (`src/tools/grep.rs:113`), and
+  such a PDF has none, so grep searches it as text and matches inside a
+  content stream. Observed in the first T62 P1 instrument smoke: the 4B
+  model was given a match at line 2337, read at that offset, was told the
+  file has 588 lines, then quoted `(The Kestrel-class hull survey is
+  deferred to the 2027 dry-dock window, which the board) Tj` as the
+  answer, operator and all. Three separate things are wrong: grep reports
+  matches in a format the user never sees, the line numbers belong to the
+  raw file rather than the extracted text `read` pages, and a model will
+  quote a content-stream operator as prose. Candidate (a) of T62 P1 would
+  close it because it dispatches on extension; candidate (b) would not,
+  because it only counts files the byte-skip dropped.
 - **The xls arm is still laid out whole.** calamine has no streaming
   reader for it, so a sheet is bounded only by the format's own maxima,
   65,536 x 256 x 32 bytes = 536,870,912. Survivable on a 64-bit box; on a

@@ -49,7 +49,7 @@
 #         EVAL_RUNS          how many times the nine tasks repeat (default 1);
 #                            the server and the pod are built ONCE and shared
 #                            across runs, so only model sampling varies
-#         EVAL_ONLY          run only task <n> (1..12) instead of the nine
+#         EVAL_ONLY          run only task <n> (1..13) instead of the nine
 #                            plus tasks 10 to 12. The SCORE line and the archived
 #                            results file both carry "(EVAL_ONLY=<n>, not a
 #                            published row)", so a one-task score can never
@@ -81,6 +81,39 @@ BARE_IMG=docker.io/library/busybox:stable
 # via the cd above, exactly like every other input here and never by
 # absolute path, so the script still runs from a clone anywhere.
 RESUME_FIXTURE=tests/fixtures/office/sample-resume.pdf
+
+# --- task 13 (T62 P1) -------------------------------------------------------
+# The fixture is BUILT here rather than committed. A PDF small enough to sit
+# in the repo is small enough for one read call to show whole, and task 13
+# exists to measure whether grep saves the model a second read, so a
+# committed PDF would be passed by every arm on its size alone. Measured:
+# read's 28 KB MAX_BYTES caps a default read at line 414 whatever the limit,
+# and at pad 100 the sentinel is at line 580 of 588.
+#
+# The padding rule, per Ruling T62-3: ONE fixed paragraph repeated a fixed
+# number of times, substituted where the committed base marks it, with the
+# target section after it. The base is the only committed part.
+T13_MD_BASE=tests/fixtures/office/ferry-review.md
+T13_PAD_COUNT=100
+T13_PAD_PARA='Sailing notes carried forward from the previous review. The north landing approach is unchanged, the tide window is unchanged, and the pilotage requirement is unchanged. The board has asked that these notes be reproduced in full each year so that any change to them is visible against the prior text rather than summarised away by the clerk.'
+# Pre-registered before launch, and deliberately absent from the prompt, so
+# it can only reach the transcript out of the document.
+T13_SENTINEL='Kestrel-class hull survey'
+# Ruling T62-4: temur's PDF writer emits UNCOMPRESSED content streams, so a
+# PDF it wrote carries its prose as plain bytes and grep searches it as text
+# (grep.rs:113 skips a file only for a NUL in its first 4,096 bytes). Real
+# PDFs are flate-compressed and do carry early NULs, which is why grep skips
+# them. Task 13 measures what a model does when grep skips a document, so the
+# fixture is compressed after the write path produces it. Bytes only; the
+# read-back is asserted byte-identical below.
+T13_COMPRESS=tests/fixtures/office/compress_pdf_streams.py
+# Written ONCE by the control arm and then asserted, so every arm reads the
+# same bytes: T13_GENERATE=1 builds it, and any later arm must be given the
+# path and both hashes the control arm printed.
+T13_GENERATE="${T13_GENERATE:-0}"
+T13_PDF="${T13_PDF:-}"
+T13_PDF_SHA256="${T13_PDF_SHA256:-}"
+T13_MD_SHA256="${T13_MD_SHA256:-}"
 # T60: the read-back for tasks 11 and 12 runs temur's read tool through
 # the tools test binary that `cargo test --release --target
 # i686-unknown-linux-musl --no-run` leaves beside the musl binary (the
@@ -168,6 +201,14 @@ echo "OK: model file present ($MODEL_GGUF)"
 
 [ -f "$RESUME_FIXTURE" ] || { echo "FAIL: task 10 fixture not found: $RESUME_FIXTURE"; exit 1; }
 echo "OK: task 10 fixture present ($RESUME_FIXTURE)"
+# Task 13's fixture is built, so what has to exist here is its SOURCE and the
+# padding marker the builder substitutes.
+[ -f "$T13_MD_BASE" ] || { echo "FAIL: task 13 fixture source not found: $T13_MD_BASE"; exit 1; }
+grep -q '^<!-- PADDING -->$' "$T13_MD_BASE" || { echo "FAIL: $T13_MD_BASE has no padding marker"; exit 1; }
+grep -qF -- "$T13_SENTINEL" "$T13_MD_BASE" || { echo "FAIL: $T13_MD_BASE does not carry the task 13 sentinel"; exit 1; }
+[ -f "$T13_COMPRESS" ] || { echo "FAIL: task 13 stream compressor not found: $T13_COMPRESS"; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "FAIL: task 13 needs python3 on the host for $T13_COMPRESS"; exit 1; }
+echo "OK: task 13 fixture source present ($T13_MD_BASE, pad $T13_PAD_COUNT, compressor $T13_COMPRESS)"
 
 # NEVER auto-pull. Missing image => print the exact command and stop.
 for img in "$LLAMA_IMAGE" "$APP_IMG" "$BARE_IMG"; do
@@ -200,10 +241,10 @@ done
 # are. The marker it puts on every score line is applied in report_round.
 if [ -n "$EVAL_ONLY" ]; then
     case "$EVAL_ONLY" in
-        *[!0-9]*) echo "FAIL: EVAL_ONLY must be a task number 1..12 (got '$EVAL_ONLY')"; exit 1 ;;
+        *[!0-9]*) echo "FAIL: EVAL_ONLY must be a task number 1..13 (got '$EVAL_ONLY')"; exit 1 ;;
     esac
-    if [ "$EVAL_ONLY" -lt 1 ] || [ "$EVAL_ONLY" -gt 12 ]; then
-        echo "FAIL: EVAL_ONLY must be a task number 1..12 (got '$EVAL_ONLY')"; exit 1
+    if [ "$EVAL_ONLY" -lt 1 ] || [ "$EVAL_ONLY" -gt 13 ]; then
+        echo "FAIL: EVAL_ONLY must be a task number 1..13 (got '$EVAL_ONLY')"; exit 1
     fi
 fi
 # T60: tasks 11 and 12 cannot be scored without the read-back binary, so
@@ -281,6 +322,7 @@ T59LOG="$EVAL_ROOT/task5-glob.txt"
 : > "$T59LOG"
 # T60: tasks 11 and 12, one line each per run, reported the same way.
 T60LOG="$EVAL_ROOT/documents.txt"
+T62LOG="$EVAL_ROOT/task13-pdf-section.txt"
 : > "$T60LOG"
 
 trimmed() { cat "$1" 2>/dev/null | tr -d '[:space:]' || true; }
@@ -388,9 +430,184 @@ archive_task() {
 read_back() {
     podman run --rm --network none \
         -v "$(dirname "$READBACK_BIN")":/suites:ro -v "$(dirname "$1")":/doc:ro \
-        -e TEMUR_EVAL_READBACK="/doc/$(basename "$1")" "$APP_IMG" \
+        -e TEMUR_EVAL_READBACK="/doc/$(basename "$1")" \
+        -e TEMUR_EVAL_READBACK_OFFSET="${2:-}" "$APP_IMG" \
         "/suites/$(basename "$READBACK_BIN")" eval_read_back --exact --nocapture 2>&1 \
         | sed -n '/^READBACK-BEGIN$/,/^READBACK-END$/p' | grep -v '^READBACK-' || true
+}
+
+# write_pdf <markdown> <out.pdf>: the fixture, written through temur's own
+# write path by the tools binary's eval_write_pdf hook. Same mechanism as
+# read_back above, for the same reason: write is a TOOL, reachable only from
+# a model turn, and a model cannot produce an exact fixture. Same code, same
+# target, same image as the binary under test.
+write_pdf() {
+    outdir=$(dirname "$2")
+    podman run --rm --network none \
+        -v "$(dirname "$READBACK_BIN")":/suites:ro -v "$(dirname "$1")":/src:ro \
+        -v "$outdir":/out \
+        -e TEMUR_EVAL_WRITE_SRC="/src/$(basename "$1")" \
+        -e TEMUR_EVAL_WRITE_PDF="/out/$(basename "$2")" "$APP_IMG" \
+        "/suites/$(basename "$READBACK_BIN")" eval_write_pdf --exact --nocapture 2>&1 \
+        | sed -n '/^WRITEPDF-BEGIN$/,/^WRITEPDF-END$/p' | grep -v '^WRITEPDF-' || true
+}
+
+# read_back_all <file>: every page of temur's read of <file>, concatenated, by
+# following the pagination footer until the read stops offering a next offset.
+# Preflight (ii) needs the WHOLE extracted text: the read tool's byte cap fires
+# at any limit, so a single call proves nothing about the pages past the first,
+# and task 13's target section is one of those pages.
+read_back_all() {
+    rba_off=1
+    rba_pages=0
+    while [ "$rba_pages" -lt 50 ]; do
+        rba_out=$(read_back "$1" "$rba_off")
+        printf '%s\n' "$rba_out"
+        rba_pages=$((rba_pages + 1))
+        rba_next=$(printf '%s\n' "$rba_out" | sed -n 's/.*Use offset=\([0-9]*\) to continue.*/\1/p' | tail -1)
+        [ -n "$rba_next" ] || return 0
+        rba_off="$rba_next"
+    done
+    echo "FAIL: read_back_all did not finish $1 in 50 pages"
+    return 1
+}
+
+# compress_pdf <in.pdf> <out.pdf>: flate-compress the content streams of a PDF
+# the write path produced, so the fixture has the byte shape of a real PDF.
+# Runs on the host, the way make_bound_fixtures.py does; see T13_COMPRESS.
+compress_pdf() {
+    python3 "$T13_COMPRESS" "$1" "$2"
+}
+
+# build_t13_md <out>: the committed base with the padding rule applied. The
+# ONLY builder of this markdown; its sha256 is asserted against the one the
+# generating arm recorded, so a drift here stops the task instead of quietly
+# producing a different document.
+build_t13_md() {
+    : > "$1"
+    while IFS= read -r line; do
+        if [ "$line" = "<!-- PADDING -->" ]; then
+            i=0
+            while [ "$i" -lt "$T13_PAD_COUNT" ]; do
+                printf '%s\n\n' "$T13_PAD_PARA" >> "$1"
+                i=$((i + 1))
+            done
+        else
+            printf '%s\n' "$line" >> "$1"
+        fi
+    done < "$T13_MD_BASE"
+}
+
+sha() { sha256sum "$1" | cut -d' ' -f1; }
+
+# t13_fixture <workdir>: leaves ferry-review.pdf in <workdir>, or exits.
+#
+# Generating arm (T13_GENERATE=1, which must be the CONTROL arm because the
+# fixture has to be the control binary's output): builds the markdown, writes
+# the PDF twice to show the write is deterministic, runs the preflight read at
+# the DEFAULT window, and STOPS if the sentinel is inside that read, because a
+# sentinel the first read already shows makes the task undiscriminating. Then
+# it prints the three values the other arms must be given.
+#
+# Every other arm: rebuilds the markdown, asserts its sha, asserts the PDF's
+# sha, and copies those exact bytes in.
+t13_fixture() {
+    dest="$1/ferry-review.pdf"
+    src="$1/ferry-review.src.md"
+    build_t13_md "$src"
+    got_md=$(sha "$src")
+    if [ "$T13_GENERATE" = "1" ]; then
+        [ -z "$T13_PDF" ] || { echo "FAIL: T13_GENERATE=1 and T13_PDF both set"; exit 1; }
+        # The uncompressed PDF the write path produces, kept for the read-back
+        # comparison below. Same basename as the fixture so read_back mounts it
+        # at the same container path and the two outputs are comparable as bytes.
+        raw="$1/raw"
+        mkdir -p "$raw"
+        write_pdf "$src" "$raw/$(basename "$dest")" > "$EVAL_TRANSCRIPT_DIR/task13.write.txt" 2>&1
+        [ -s "$raw/$(basename "$dest")" ] || { echo "FAIL: task 13 fixture was not written; see task13.write.txt"; exit 1; }
+        compress_pdf "$raw/$(basename "$dest")" "$dest" >> "$EVAL_TRANSCRIPT_DIR/task13.write.txt" 2>&1
+        [ -s "$dest" ] || { echo "FAIL: task 13 fixture compression produced nothing; see task13.write.txt"; exit 1; }
+        first=$(sha "$dest")
+        # Determinism over the WHOLE pipeline, write then compress. The second
+        # write must keep the .pdf extension: the write tool dispatches on it,
+        # so a name like ferry-review.pdf.again is written as PLAIN TEXT and the
+        # comparison would be a PDF against a text file. The first P1 instrument
+        # smoke caught exactly that.
+        det="$1/det"
+        mkdir -p "$det"
+        write_pdf "$src" "$det/$(basename "$dest")" >/dev/null 2>&1
+        compress_pdf "$det/$(basename "$dest")" "$det/c-$(basename "$dest")" >/dev/null 2>&1
+        second=$(sha "$det/c-$(basename "$dest")")
+        [ "$first" = "$second" ] || { echo "FAIL: task 13 fixture build is not deterministic ($first vs $second)"; exit 1; }
+        rm -rf "$det"
+        # Preflight STOP (i), Ruling T62-4: grep skips a file only when a NUL
+        # byte falls in its first 4,096 bytes (src/tools/grep.rs:113). Without
+        # one, grep searches the PDF as text and finds the sentence in a content
+        # stream, so the task's premise is false and it measures nothing.
+        t13_nul=$(head -c 4096 "$dest" | tr -dc '\0' | wc -c | tr -d ' ')
+        [ "$t13_nul" -ge 1 ] || {
+            echo "FAIL: task 13 preflight STOP: no NUL byte in the fixture's first 4096 bytes, so grep (src/tools/grep.rs:113) would search it as text and the task's premise is false"
+            exit 1
+        }
+        # Preflight STOP (ii), Ruling T62-4: compression changed the bytes and
+        # nothing else, so temur's read of the compressed fixture must equal its
+        # read of the uncompressed one. Both must be non-empty, or the
+        # comparison passes vacuously.
+        read_back_all "$raw/$(basename "$dest")" > "$EVAL_TRANSCRIPT_DIR/task13.readback-plain.txt" 2>&1
+        read_back_all "$dest" > "$EVAL_TRANSCRIPT_DIR/task13.readback-flate.txt" 2>&1
+        [ -s "$EVAL_TRANSCRIPT_DIR/task13.readback-plain.txt" ] && [ -s "$EVAL_TRANSCRIPT_DIR/task13.readback-flate.txt" ] || {
+            echo "FAIL: task 13 preflight STOP: a read-back is empty, so the read-back comparison would be vacuous"
+            exit 1
+        }
+        # The comparison has to cover the section the task asks about, which is
+        # past the first window. If the sentinel is absent from the full paged
+        # read, the paging stopped early and the comparison proves nothing.
+        grep -qF -- "$T13_SENTINEL" "$EVAL_TRANSCRIPT_DIR/task13.readback-flate.txt" || {
+            echo "FAIL: task 13 preflight STOP: the full paged read of the fixture does not reach the sentinel, so the read-back comparison does not cover the target section"
+            exit 1
+        }
+        cmp -s "$EVAL_TRANSCRIPT_DIR/task13.readback-plain.txt" "$EVAL_TRANSCRIPT_DIR/task13.readback-flate.txt" || {
+            echo "FAIL: task 13 preflight STOP: the read of the compressed fixture differs from the read of the uncompressed one"
+            diff "$EVAL_TRANSCRIPT_DIR/task13.readback-plain.txt" "$EVAL_TRANSCRIPT_DIR/task13.readback-flate.txt" | head -20
+            exit 1
+        }
+        rm -rf "$raw"
+        # The sentinel STOP below is about the DEFAULT window, so it reads the
+        # fixture the way a model's first read sees it.
+        read_back "$dest" > "$EVAL_TRANSCRIPT_DIR/task13.preflight.txt" 2>&1
+        # Preflight STOP, unchanged: the control binary's own read at the
+        # default window must NOT already show the sentinel.
+        if grep -qF -- "$T13_SENTINEL" "$EVAL_TRANSCRIPT_DIR/task13.preflight.txt"; then
+            echo "FAIL: task 13 preflight STOP: the sentinel is inside the first default read, so the task cannot discriminate"
+            exit 1
+        fi
+        echo "task13 fixture: $(wc -c < "$dest") bytes, md sha $got_md, pdf sha $first"
+        echo "task13 preflight: $t13_nul NUL bytes in the first 4096, so grep skips it (grep.rs:113); every page of the read-back byte-identical to the uncompressed PDF, sentinel reached"
+        echo "task13 preflight: sentinel NOT in the default read; first read ends: $(grep -o '(Output capped[^)]*)' "$EVAL_TRANSCRIPT_DIR/task13.preflight.txt" | head -1)"
+        echo "task13: pass these to every other arm:"
+        echo "  T13_PDF=<this run's copy>  T13_PDF_SHA256=$first  T13_MD_SHA256=$got_md"
+        cp "$dest" "$EVAL_TRANSCRIPT_DIR/ferry-review.pdf"
+    else
+        [ -n "$T13_PDF" ] && [ -n "$T13_PDF_SHA256" ] && [ -n "$T13_MD_SHA256" ] || {
+            echo "FAIL: task 13 needs T13_PDF, T13_PDF_SHA256 and T13_MD_SHA256 (or T13_GENERATE=1 on the control arm)"
+            exit 1
+        }
+        [ "$got_md" = "$T13_MD_SHA256" ] || {
+            echo "FAIL: task 13 markdown sha $got_md does not match T13_MD_SHA256 $T13_MD_SHA256"
+            exit 1
+        }
+        [ -f "$T13_PDF" ] || { echo "FAIL: T13_PDF not found: $T13_PDF"; exit 1; }
+        got_pdf=$(sha "$T13_PDF")
+        [ "$got_pdf" = "$T13_PDF_SHA256" ] || {
+            echo "FAIL: task 13 pdf sha $got_pdf does not match T13_PDF_SHA256 $T13_PDF_SHA256"
+            exit 1
+        }
+        cp "$T13_PDF" "$dest"
+        echo "task13 fixture: reused $T13_PDF, sha $got_pdf asserted equal across arms"
+    fi
+    # The source markdown must not be visible to the model: it holds the
+    # sentinel in plain text and would make a grep of the directory trivial.
+    rm -f "$src"
 }
 
 # score_document <file> <needle>: PASS needs BOTH the file and the needle
@@ -441,6 +658,7 @@ T10_NOTE=""
 T59_LINE=""
 T60_11_LINE=""
 T60_12_LINE=""
+T62_13_LINE=""
 
 # 1: plain write.
 n=1; name=write-file
@@ -683,6 +901,59 @@ archive_task "$n" "$T60_RES"
 echo "T60 (run $RUN): $T60_12_LINE"
 fi
 
+# 13: a named section of a multi-page PDF (T62 P1). The dogfood shape this
+# comes from: the model read a 10-K PDF, then ran grep, which skips any file
+# with a NUL in its first 4 KB and answered "No matches found" without saying
+# it had skipped anything, then reached for python3 and pdftotext, neither
+# present, and only then paged with read. The question is whether grep seeing
+# documents saves that detour.
+#
+# Reported OUTSIDE the nine-task denominator, exactly as 10, 11 and 12 are.
+#
+# PASS needs BOTH halves:
+#   1. the pre-registered sentinel in the FINAL assistant message, which can
+#      only have come from the document: it is absent from the prompt, and
+#      tool OUTPUT never reaches --plain;
+#   2. zero bash tool calls, because reaching for a shell is the detour the
+#      change is meant to remove.
+# "Final assistant message" is approximated as the prose after the LAST
+# tool-title line the plain UI printed; --plain gives one stream rather than
+# delimited turns. Recorded as an approximation in the report.
+n=13; name=pdf-section
+if wanted "$n"; then
+mkdir -p "$WORKROOT/task$n"
+t13_fixture "$WORKROOT/task$n"
+run_task "$n" "$name" \
+    'ferry-review.pdf is in this directory. According to its Maintenance Backlog section, what is deferred to the 2027 dry-dock window? Quote the sentence.'
+t="$EVAL_TRANSCRIPT_DIR/task$n.run$RUN.txt"
+T13_SECS=$SECS
+# Everything after the last tool-title line, then the tool-title lines
+# dropped anyway, so the harness's own echo of a path can never be the match.
+t13_final=$(awk '/^  [^ ]+ [a-z]+: /{last=NR} {l[NR]=$0} END{for (i=last+1; i<=NR; i++) print l[i]}' "$t" 2>/dev/null \
+    | grep -v -E '^  [^ ]+ [a-z]+: ' || true)
+t13_quote=0
+printf '%s\n' "$t13_final" | grep -qF -- "$T13_SENTINEL" && t13_quote=1
+t13_bash=$(grep -cE '^  [^ ]+ bash: ' "$t" 2>/dev/null || true)
+[ -n "$t13_bash" ] || t13_bash=0
+T62_13_RES=FAIL
+if [ "$TIMED_OUT" = "1" ]; then
+    T62_13_NOTE="TIMEOUT@${EVAL_TASK_TIMEOUT}s"
+elif [ "$t13_quote" = "1" ] && [ "$t13_bash" = "0" ]; then
+    T62_13_RES=PASS
+    T62_13_NOTE="quoted the section, no bash"
+elif [ "$t13_quote" = "1" ]; then
+    T62_13_NOTE="quoted the section but ran bash $t13_bash times"
+elif [ "$t13_bash" = "0" ]; then
+    T62_13_NOTE="never quoted the section, no bash"
+else
+    T62_13_NOTE="never quoted the section and ran bash $t13_bash times"
+fi
+T62_13_NOTE="$T62_13_NOTE (${T13_SECS}s)"
+T62_13_LINE="$name $T62_13_RES $T62_13_NOTE"
+archive_task "$n" "$T62_13_RES"
+echo "T62 (run $RUN): $T62_13_LINE"
+fi
+
 }
 
 # report_round: prints the run's table and appends its score to $SCORES.
@@ -715,6 +986,7 @@ report_round() {
       [ -z "$T59_LINE" ] || echo "# T59 (run $RUN): $T59_LINE"; \
       [ -z "$T60_11_LINE" ] || echo "# T60 (run $RUN): $T60_11_LINE"; \
       [ -z "$T60_12_LINE" ] || echo "# T60 (run $RUN): $T60_12_LINE"; \
+      [ -z "$T62_13_LINE" ] || echo "# T62 (run $RUN): $T62_13_LINE"; \
     } > "$EVAL_TRANSCRIPT_DIR/results.run$RUN.txt"
     printf '%s|%s|%s\n' "$RUN" "$SCORE" "$DENOM" >> "$SCORES"
     echo "SCORE (run $RUN): $SCORE/$DENOM$SCORE_MARK"
@@ -734,6 +1006,10 @@ report_round() {
         printf '%s|%s\n' "$RUN" "$line" >> "$T60LOG"
         echo "T60 (run $RUN): $line"
     done
+    if [ -n "$T62_13_LINE" ]; then
+        printf '%s|%s\n' "$RUN" "$T62_13_LINE" >> "$T62LOG"
+        echo "T62 (run $RUN): $T62_13_LINE"
+    fi
 }
 
 RUN=1

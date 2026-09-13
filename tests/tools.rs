@@ -3163,11 +3163,59 @@ fn eval_read_back() {
     let reg = Registry::standard();
     let root = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
     let mut ctx = ctx_in(&root);
-    let res = run(&reg, &mut ctx, "read", json!({"filePath": path.to_string_lossy()}));
+    // An optional window, so a caller can page the whole document instead of
+    // only the default first screen. The read tool's byte cap fires at any
+    // limit, so proving two files extract to the same TEXT takes more than one
+    // call; T62 Ruling T62-4 preflight (ii) needs the pages past the first.
+    let mut input = json!({"filePath": path.to_string_lossy()});
+    if let Some(v) = std::env::var_os("TEMUR_EVAL_READBACK_OFFSET") {
+        if let Ok(n) = v.to_string_lossy().parse::<u64>() {
+            input["offset"] = json!(n);
+        }
+    }
+    let res = run(&reg, &mut ctx, "read", input);
     println!("READBACK-BEGIN");
     match res {
         Ok(out) => println!("{}", out.output),
         Err(e) => println!("ERROR: {e}"),
     }
     println!("READBACK-END");
+}
+
+/// T62 P1: the same hook in the other direction, so the eval can build task
+/// 13's fixture through temur's OWN write path.
+///
+/// Why a test hook rather than the binary: `write` is a tool, reachable only
+/// from a model turn, and a model cannot produce an exact fixture. This is
+/// the mechanism `eval_read_back` already established and that tasks 11 and
+/// 12 are already scored by, so the eval already trusts it: the same code,
+/// compiled for the same target, run in the same container image.
+///
+/// Does nothing at all unless both env vars are set, so it is inert in every
+/// ordinary run of the suite.
+#[test]
+fn eval_write_pdf() {
+    let (src, dst) = match (
+        std::env::var_os("TEMUR_EVAL_WRITE_SRC"),
+        std::env::var_os("TEMUR_EVAL_WRITE_PDF"),
+    ) {
+        (Some(a), Some(b)) => (std::path::PathBuf::from(a), std::path::PathBuf::from(b)),
+        _ => return,
+    };
+    let body = std::fs::read_to_string(&src).expect("markdown source");
+    let reg = Registry::standard();
+    let root = dst.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let mut ctx = ctx_in(&root);
+    let res = run(
+        &reg,
+        &mut ctx,
+        "write",
+        json!({"filePath": dst.to_string_lossy(), "content": body}),
+    );
+    println!("WRITEPDF-BEGIN");
+    match res {
+        Ok(out) => println!("{}", out.output),
+        Err(e) => println!("ERROR: {e}"),
+    }
+    println!("WRITEPDF-END");
 }
