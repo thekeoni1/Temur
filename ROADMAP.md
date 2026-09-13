@@ -1629,6 +1629,29 @@ one-liner gate stays deferred to the visibility flip (RUNBOOK).
   `\text \mathrm \textbf \textit \mathbf` unwrap to their argument, `~`
   becomes a space; `\frac` and friends stay honest source by design.
 
+### T62 P1 as built (2026-09-13)
+
+`grep` searches a document as the text `read` would show, with
+`GREP_DOC_LINES = 20_000`, and a match reports the line number `read`'s
+`offset` accepts. A document that cannot be read as text is the one skip a
+document still has, and grep says how many and suggests reading one for the
+error. Three arms, Qwen3-4B, compact profile, `EVAL_RUNS=2`, one lock, the
+same fixture bytes asserted by sha across all three:
+
+| arm | nine scored | task 13 pdf-section |
+| --- | --- | --- |
+| control, unchanged build | 9/9 and 9/9 | FAIL, FAIL |
+| disclosure only | 9/9 and 9/9 | FAIL, PASS |
+| search the text | 9/9 and 9/9 | PASS, PASS |
+
+The control reformulated its grep pattern three times in run 1 and was told
+"No matches found" each time. The shipped arm was given document line numbers
+577 and 580 and paged to them. Prompt unchanged, 0 tokens in both profiles.
+Held-out tasks 10 to 12 moved in both directions across the arms and are
+recorded as variance, not as readings: task 12 is 1/2, 2/2 and 0/2 across the
+three arms and was 1/2 on the T60 full run, and its work directory is seeded
+empty, so grep had no document to touch on any arm.
+
 ### Queued from T61 (2026-09-12)
 
 - **An ODS with two far-apart cells is refused where an xlsx is read.**
@@ -1639,21 +1662,37 @@ one-liner gate stays deferred to the visibility flip (RUNBOOK).
   is one. (The bound itself shipped in T62 P0a and P0b. The laptop memo
   `3b9ee8e2` proposed a declared-size pre-scan; measurement showed the
   declared range is not the hazard, so that is not what was built.)
-- **A PDF temur wrote is greppable, and grep's line numbers are ones read
-  rejects.** `write` emits uncompressed content streams, so a PDF temur
-  produced holds its prose as plain bytes. grep skips a file only when a
-  NUL byte falls in its first 4,096 bytes (`src/tools/grep.rs:113`), and
-  such a PDF has none, so grep searches it as text and matches inside a
-  content stream. Observed in the first T62 P1 instrument smoke: the 4B
-  model was given a match at line 2337, read at that offset, was told the
-  file has 588 lines, then quoted `(The Kestrel-class hull survey is
-  deferred to the 2027 dry-dock window, which the board) Tj` as the
-  answer, operator and all. Three separate things are wrong: grep reports
-  matches in a format the user never sees, the line numbers belong to the
-  raw file rather than the extracted text `read` pages, and a model will
-  quote a content-stream operator as prose. Candidate (a) of T62 P1 would
-  close it because it dispatches on extension; candidate (b) would not,
-  because it only counts files the byte-skip dropped.
+- **CLOSED by T62 P1.** A PDF temur wrote was greppable as raw bytes, and
+  grep's match line numbers were ones `read`'s `offset` rejected: the 4B
+  model was handed a match at line 2337 of a 588-line document and quoted
+  `(The Kestrel-class hull survey is deferred to the 2027 dry-dock window,
+  which the board) Tj` as its answer, operator and all. grep now searches a
+  document as its extracted text, so the line numbers are the ones `read`
+  pages by and no content stream is ever matched.
+- **`read`'s truncation hint, and a footer that overstates what the model
+  got.** When a tool result is cut, the central marker tells the model to
+  "narrow the command, e.g. grep or head/tail, to see the elided middle".
+  That is `Tool::truncation_hint`'s default (`src/tools/mod.rs`), which only
+  `skill.rs` overrides, so `read` uses it. T62 P1 makes the advice TRUE for
+  documents, since grep now searches them, so no override is proposed. The
+  second half is still open: in the T62 P1 arms the footer said "Showing
+  lines 1-414" while the model had actually received lines 1-77 and 361-414,
+  because the read tool's own window and the central elision are applied
+  independently and only the first is described. A model trusting the footer
+  believes it holds 283 lines it never saw.
+- **grep returns the matching line, and a sentence can outrun it.** In T62
+  P1's arm-a run 2 the model answered from grep's output alone and quoted
+  "...which the board has requested be completed before the next season",
+  where the document says "...which the board accepted on the understanding
+  that the interim ultrasonic checks continue every eight weeks". It
+  invented the tail. The cause is NOT grep's 250-char `MAX_LINE_CHARS`,
+  which never fired: the longest line in that document's extracted text is
+  90 characters. Extracted PDF text is hard-wrapped at about 86 characters,
+  so a sentence spans two lines and grep returns only the one that matched,
+  ending mid-clause. Raising the char cap would change nothing. What would
+  help is context lines around a match, or a match line that says it is a
+  fragment. The same run still scored PASS, because the pre-registered rule
+  asks for the sentinel and no bash calls, and both held.
 - **The xls arm is still laid out whole.** calamine has no streaming
   reader for it, so a sheet is bounded only by the format's own maxima,
   65,536 x 256 x 32 bytes = 536,870,912. Survivable on a 64-bit box; on a

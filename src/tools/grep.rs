@@ -8,6 +8,13 @@ use std::time::Duration;
 
 const MAX_MATCHES: usize = 100;
 const MAX_LINE_CHARS: usize = 250;
+/// T62 P1(a): how much of a document grep turns into text before searching
+/// it. A bound is needed because grep reads EVERY file it walks, so without
+/// one a directory of long reports would each be extracted whole. 20,000
+/// lines is far past the 414 a default read shows and past every fixture
+/// here, so in practice it bounds the pathological case only. The walk
+/// deadline below bounds the aggregate cost separately.
+const GREP_DOC_LINES: u64 = 20_000;
 /// T53/D21: bounds on the WALK, not on the match caps above. Same values
 /// and the same measurements as glob.rs, and they matter more here: grep
 /// READS every file it visits, so the 248,916 files under the operator's
@@ -80,6 +87,11 @@ impl Tool for GrepTool {
 
         let mut matches: Vec<String> = Vec::new();
         let mut total = 0usize;
+        // T62 P1: the one skip a document still has once grep searches its
+        // text. Extraction can fail on a corrupt or encrypted file, and a
+        // silent skip there is the same false answer the raw-byte skip used to
+        // give: "No matches found" for a document nobody searched.
+        let mut docs_unreadable = 0usize;
         'walk: for entry in ignore::WalkBuilder::new(&root).build().flatten() {
             // Before the read, and for every entry including directories.
             if ctx.cancel.is_set() {
@@ -107,13 +119,36 @@ impl Tool for GrepTool {
                     continue;
                 }
             }
-            let Ok(bytes) = std::fs::read(entry.path()) else {
-                continue;
-            };
-            if bytes[..bytes.len().min(4096)].contains(&0) {
-                continue; // binary
+            // T62 P1(a): a document is searched as the TEXT read would show,
+            // not as raw bytes. Raw bytes are the wrong thing twice over: a
+            // compressed document matches nothing, and an uncompressed one
+            // matches inside a content stream and reports a line number
+            // read's offset rejects. Extraction failure is not a match and
+            // not an error: the file is skipped, exactly as the byte path
+            // skips a binary.
+            let is_doc = entry
+                .path()
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(super::office::is_document)
+                .unwrap_or(false);
+            let owned: String;
+            if is_doc {
+                let Ok((doc, _)) = super::office::extract(entry.path(), 0, GREP_DOC_LINES) else {
+                    docs_unreadable += 1;
+                    continue;
+                };
+                owned = doc;
+            } else {
+                let Ok(bytes) = std::fs::read(entry.path()) else {
+                    continue;
+                };
+                if bytes[..bytes.len().min(4096)].contains(&0) {
+                    continue; // binary
+                }
+                owned = String::from_utf8_lossy(&bytes).into_owned();
             }
-            let text = String::from_utf8_lossy(&bytes);
+            let text = owned;
             for (lineno, line) in text.lines().enumerate() {
                 if re.is_match(line) {
                     total += 1;
@@ -158,6 +193,21 @@ impl Tool for GrepTool {
             }
             out
         };
+        // Before any walk-stop line, so "the search was cut short" stays the
+        // last word when both apply.
+        if docs_unreadable > 0 {
+            if !output.is_empty() && !output.ends_with('\n') {
+                output.push('\n');
+            }
+            let (noun, verb, obj) = if docs_unreadable == 1 {
+                ("file", "was", "it")
+            } else {
+                ("files", "were", "one")
+            };
+            output.push_str(&format!(
+                "{docs_unreadable} document {noun} could not be read as text and {verb} skipped; read {obj} to see the error."
+            ));
+        }
         if let Some(s) = stop {
             if !output.is_empty() && !output.ends_with('\n') {
                 output.push('\n');

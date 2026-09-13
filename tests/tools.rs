@@ -715,6 +715,151 @@ fn grep_regex_include_and_binary_skip() {
     assert!(matches!(err, ToolError::InvalidInput(_)));
 }
 
+// --- T62 P1(a): grep searches a document as text ---------------------------
+
+#[test]
+fn a_compressed_pdf_is_searched_as_text_not_as_bytes() {
+    // sample-resume.pdf is flate-compressed and carries NULs in its first
+    // 4 KB, so the byte path skipped it entirely and answered "No matches
+    // found" for text that is plainly in the document.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(office_fixture("sample-resume.pdf"), dir.path().join("resume.pdf")).unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "Jordan"})).unwrap();
+    assert!(out.output.contains("resume.pdf:"), "{}", out.output);
+    assert!(!out.output.contains("No matches found"), "{}", out.output);
+}
+
+#[test]
+fn the_line_number_grep_reports_is_one_read_offset_accepts() {
+    // The whole point of (a): a model can act on the number. grep's line N
+    // and read's offset=N must name the same line of the same extracted
+    // text, so the number is taken from grep and handed to read.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(office_fixture("sample-resume.pdf"), dir.path().join("resume.pdf")).unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "Experience"})).unwrap();
+    let line = out
+        .output
+        .lines()
+        .find(|l| l.contains("resume.pdf:"))
+        .expect("a match line");
+    // "<path>:<lineno>: <text>"
+    let lineno: u64 = line
+        .split(':')
+        .nth(1)
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no line number in {line}"));
+
+    let back = run(
+        &reg,
+        &mut ctx,
+        "read",
+        json!({"filePath": dir.path().join("resume.pdf").to_str().unwrap(),
+               "offset": lineno, "limit": 1}),
+    )
+    .unwrap();
+    assert!(
+        back.output.contains("Experience"),
+        "grep said line {lineno} but read at that offset shows:\n{}",
+        back.output
+    );
+}
+
+#[test]
+fn a_document_grep_cannot_extract_is_skipped_not_an_error() {
+    // Extraction failure must not fail the grep: the rest of the walk is still
+    // searched and the result is not an error. What it must NOT be is silent,
+    // which is the whole point of the disclosure below.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("broken.pdf"), b"%PDF-1.4\nnot really a pdf\n").unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "findme here\n").unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "findme"})).unwrap();
+    assert!(out.output.contains("notes.txt:1:"), "{}", out.output);
+    assert!(out.output.contains("Found 1 matches"), "{}", out.output);
+    // Matches and a skip both appear, and the skip never reads as a match.
+    assert!(
+        out.output.contains(
+            "1 document file could not be read as text and was skipped; read it to see the error."
+        ),
+        "{}",
+        out.output
+    );
+}
+
+#[test]
+fn a_document_that_cannot_be_read_as_text_is_disclosed() {
+    // The residue (a) leaves: a document grep could not turn into text is the
+    // only document it still skips, and answering "No matches found" for it is
+    // the same false answer the raw-byte skip used to give.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("broken.pdf"), b"%PDF-1.4\nnot really a pdf\n").unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "backlog"})).unwrap();
+    assert!(out.output.contains("No matches found"), "{}", out.output);
+    assert!(
+        out.output.contains(
+            "1 document file could not be read as text and was skipped; read it to see the error."
+        ),
+        "{}",
+        out.output
+    );
+}
+
+#[test]
+fn the_unreadable_document_disclosure_agrees_in_number() {
+    // Both forms pinned either side of the boundary.
+    for (count, want) in [
+        (1usize, "1 document file could not be read as text and was skipped; read it to see the error."),
+        (2usize, "2 document files could not be read as text and were skipped; read one to see the error."),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..count {
+            std::fs::write(dir.path().join(format!("b{i}.pdf")), b"%PDF-1.4\nnope\n").unwrap();
+        }
+        let reg = Registry::standard();
+        let mut ctx = ctx_in(dir.path());
+        let out = run(&reg, &mut ctx, "grep", json!({"pattern": "anything"})).unwrap();
+        assert!(out.output.contains(want), "count {count}: {}", out.output);
+    }
+}
+
+#[test]
+fn a_readable_document_is_never_counted_as_unreadable() {
+    // sample-resume.pdf is now SEARCHED, not skipped, so it must not appear in
+    // the unreadable count. The inverse of the candidate-(b) test it replaces.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(office_fixture("sample-resume.pdf"), dir.path().join("resume.pdf")).unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "Jordan"})).unwrap();
+    assert!(out.output.contains("resume.pdf:"), "{}", out.output);
+    assert!(!out.output.contains("could not be read as text"), "{}", out.output);
+}
+
+#[test]
+fn a_non_document_binary_is_still_skipped_by_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.o"), [0u8, 1, 2, 3]).unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "anything"})).unwrap();
+    // Exactly "No matches found": a non-document binary is skipped by bytes and
+    // is NOT counted as an unreadable document.
+    assert_eq!(out.output, "No matches found", "{}", out.output);
+}
+
 // --- T53 P1: a walk can be interrupted, and cannot run forever (D21) -------
 //
 // The shipped constants are deliberately large, so every limit test injects

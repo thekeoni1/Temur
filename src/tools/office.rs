@@ -484,6 +484,19 @@ fn ods_content_xml(path: &Path) -> Result<String, ToolError> {
 /// The residual this leaves: a sheet with two genuinely far-apart cells is
 /// refused here, where the xlsx arm now reads it. Closing that needs an ODS
 /// parser of our own, which is queued rather than built.
+///
+/// A second, smaller residual, on the column origin. This scan and calamine
+/// agree on the SPAN: both measure a sheet as its first populated row to its
+/// last by its leftmost populated column to its rightmost, and calamine pads
+/// an empty row to that same width (`&empty_cells[col_min..]`, ods.rs 535), so
+/// the figure checked here is the one calamine builds. What is NOT counted is
+/// calamine's transient `empty_cells` buffer, which it allocates at
+/// `col_max + 1` cells, measured from column ZERO rather than from the
+/// leftmost populated column, so a sheet whose content sits far to the right
+/// costs a little more during the open than its span implies. Bounded by
+/// calamine's own MAX_COLUMNS of 16,384 at 32 bytes a cell, that is 512 KiB
+/// per sheet, which is why it is named here and deliberately left out of the
+/// cap rather than folded into it.
 fn ods_span_within_cap(path: &Path) -> Result<(), ToolError> {
     use quick_xml::events::Event;
     use quick_xml::Reader;

@@ -4,6 +4,23 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **`grep` now searches a document instead of skipping it in silence.**
+  `grep` reads raw bytes and skips any file with a NUL byte in its first
+  4 KB, which is every real PDF, spreadsheet and Word file, and it said
+  only "No matches found" afterwards. A model cannot tell that from
+  having searched the file and found nothing, so it concludes the text is
+  absent and stops. Measured on a 4B model against an unchanged build:
+  asked for a named section of a 13-page PDF, the unchanged build failed
+  both runs, reformulating the pattern three times in one of them and
+  receiving the same empty answer each time. A file whose extension
+  `grep` can turn into text is now searched as that text, and a match
+  reports the line number `read`'s `offset` accepts, so the number is one
+  the model can act on. The same measurement passed both runs. A document
+  that cannot be read as text is still skipped, and `grep` now says how
+  many and suggests reading one to see the error. Searching a file that
+  is not a document is unchanged, and so is the prompt: 0 tokens in both
+  profiles.
+
 - **A workbook with one cell in a far corner could abort temur, and now
   reads within a bound.** A spreadsheet is laid out in memory between the
   cells it really holds, so a sheet with a value in A1 and another in the
@@ -16,8 +33,9 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   during the open, and one whose content spans more than two million
   cells is refused with a sentence saying what to ask for instead. The
   64 MiB decompression cap, which applied only to `.docx` before, now
-  applies to workbooks. Reading a spreadsheet is otherwise unchanged,
-  byte for byte.
+  applies to workbooks. The text of a spreadsheet read is unchanged, byte
+  for byte; a read that stops at its window says so instead of quoting a
+  total, as a PDF read already does.
 
 - **An unattended run that stops to ask or to declare victory is told to
   finish and prove it.** When nobody is reading a session, a turn that
