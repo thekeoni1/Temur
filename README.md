@@ -240,6 +240,13 @@ read-only: config, key-file metadata, endpoint reachability, and
 whether each configured model and context window matches what the
 server reports, one authenticated listing per keyed endpoint.
 
+When a tool wants to change your system, temur asks. At that prompt `a`
+allows every later call of that same tool for the rest of the session, where
+`y` allows just the one: useful once you have seen what a run is doing, and
+scoped to the tool that asked, not to everything. It covers `write` and `edit`
+always, and `bash` only where a key sandbox is present, because the keyless
+bash prompt offers `y/N` alone by design.
+
 One-shot mode runs exactly one full agentic turn (tool calls included)
 and exits: assistant prose on stdout, tool and status chrome on
 stderr, exit code by outcome (0 completed turn, 1 provider or startup
