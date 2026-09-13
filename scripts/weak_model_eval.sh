@@ -46,6 +46,14 @@
 #                            the bound kills is recorded FAIL with a
 #                            TIMEOUT@<n>s note in the results table.
 #         EVAL_MAX_TOKENS    per-turn completion budget (default 3072)
+#         THINKING_KWARGS    llama.cpp --chat-template-kwargs value, passed as
+#                            ONE argument so JSON with spaces survives, e.g.
+#                            '{"enable_thinking": false}'. Unset: not passed.
+#         EVAL_SERVER_FLAGS  extra llama.cpp server flags, word-split, e.g.
+#                            '-ngl 99' for GPU offload. Unset: not passed.
+#         READBACK_BIN       explicit tools test binary for the tasks 11, 12
+#                            and 13 read-backs, overriding the newest tools-*
+#                            beside MUSL_BIN. Unset: discovered as before.
 #         EVAL_RUNS          how many times the nine tasks repeat (default 1);
 #                            the server and the pod are built ONCE and shared
 #                            across runs, so only model sampling varies
@@ -75,6 +83,17 @@ MUSL_BIN="${MUSL_BIN:-/home/dev/rustcode-target/i686-unknown-linux-musl/release/
 # Pinned llama.cpp server build (tag scheme: server-b<build>); update
 # deliberately, never track latest.
 LLAMA_IMAGE="${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b10438}"
+# T61 queue, "the weak-model eval is a 4B-only instrument": three optional
+# knobs for driving it past that. Each is a NO-OP when unset, and with all
+# three unset the composed server argv and every header line are
+# byte-identical to before they existed.
+#   THINKING_KWARGS    passed as --chat-template-kwargs <value>, one argument,
+#                      so a JSON value containing spaces survives
+#   EVAL_SERVER_FLAGS  extra server flags, word-split on purpose (-ngl 99)
+#   READBACK_BIN       an explicit tools test binary, overriding the newest
+#                      tools-* found beside MUSL_BIN
+THINKING_KWARGS="${THINKING_KWARGS:-}"
+EVAL_SERVER_FLAGS="${EVAL_SERVER_FLAGS:-}"
 APP_IMG=docker.io/i386/debian:stable
 BARE_IMG=docker.io/library/busybox:stable
 # Task 10's seed document, found relative to this script's own directory
@@ -121,7 +140,12 @@ T13_MD_SHA256="${T13_MD_SHA256:-}"
 # The read tool prints nothing a --plain transcript carries, and --mock
 # persists nothing, so a test hook is the one way to see what the parsers
 # make of a file without a model in the loop.
-READBACK_BIN=$(ls -t "$(dirname "$MUSL_BIN")/deps/tools-"* 2>/dev/null | grep -v '\.d$' | head -1 || true)
+# An explicit READBACK_BIN wins, so a run can score against a binary that is
+# not the newest in that deps dir; unset, the discovery is unchanged. Which of
+# the two happened is recorded BEFORE the default expansion, since afterwards
+# the variable looks the same either way.
+READBACK_BIN_SOURCE=$([ -n "${READBACK_BIN:-}" ] && echo explicit || echo discovered)
+READBACK_BIN="${READBACK_BIN:-$(ls -t "$(dirname "$MUSL_BIN")/deps/tools-"* 2>/dev/null | grep -v '\.d$' | head -1 || true)}"
 CTX="${CTX:-8192}"
 PROMPT_PROFILE="${PROMPT_PROFILE:-compact}"
 EVAL_TASK_TIMEOUT="${EVAL_TASK_TIMEOUT:-1200}"
@@ -249,14 +273,19 @@ if [ -n "$EVAL_ONLY" ]; then
 fi
 # T60: tasks 11 and 12 cannot be scored without the read-back binary, so
 # a run that would reach them refuses here rather than after the model
-# has spent its minutes on them.
-if [ -z "$EVAL_ONLY" ] || [ "$EVAL_ONLY" = 11 ] || [ "$EVAL_ONLY" = 12 ]; then
+# has spent its minutes on them. Task 13 belongs in this list too and was
+# missing from it: T62 P1 gave task 13 a fixture built through write_pdf and
+# three preflights that read it back, all of which need this binary, but left
+# the guard naming only 11 and 12. An EVAL_ONLY=13 run without it failed deep
+# inside the fixture build instead of here with the build command.
+if [ -z "$EVAL_ONLY" ] || [ "$EVAL_ONLY" = 11 ] || [ "$EVAL_ONLY" = 12 ] \
+    || [ "$EVAL_ONLY" = 13 ]; then
     [ -n "$READBACK_BIN" ] && [ -x "$READBACK_BIN" ] || {
-        echo "FAIL: no tools test binary beside $MUSL_BIN (tasks 11 and 12 read documents back through it)"
+        echo "FAIL: no tools test binary beside $MUSL_BIN (tasks 11, 12 and 13 read documents back through it, and task 13 also writes its fixture through it)"
         echo "  build it first:  cargo test --release --target i686-unknown-linux-musl --no-run"
         exit 1
     }
-    echo "OK: read-back binary present ($READBACK_BIN)"
+    echo "OK: read-back binary present ($READBACK_BIN, $READBACK_BIN_SOURCE)"
 fi
 
 echo "==== pod bring-up (--network none) ===="
@@ -269,11 +298,25 @@ if [ -n "$CHAT_TEMPLATE_FILE" ]; then
     TMPL_MOUNT="-v $CHAT_TEMPLATE_FILE:$TMPL_DEST:ro"
     TMPL_ARG="--chat-template-file $TMPL_DEST"
 fi
-# shellcheck disable=SC2086  # $TMPL_* are deliberately word-split
-podman run -d --pod "$POD" --name "$POD-llama" \
-    -v "$MODEL_GGUF":/model.gguf:ro $TMPL_MOUNT "$LLAMA_IMAGE" \
-    -m /model.gguf -c "$CTX" --jinja $TMPL_ARG --host 127.0.0.1 --port 8080 >/dev/null
-echo "server starting (ctx $CTX, --jinja${CHAT_TEMPLATE_FILE:+, template $CHAT_TEMPLATE_FILE})"
+# start_server: compose the server argv and launch it. `set --` is used
+# inside a function so it cannot disturb the script's own positionals, and
+# because a JSON --chat-template-kwargs value contains spaces and must arrive
+# as ONE argument, which the word-splitting idiom used for $TMPL_ARG cannot
+# do. With all three knobs unset the argv is byte-identical to the line this
+# replaced: -m, -c, --jinja, the optional template, --host, --port.
+start_server() {
+    set -- -m /model.gguf -c "$CTX" --jinja
+    [ -z "$CHAT_TEMPLATE_FILE" ] || set -- "$@" --chat-template-file "$TMPL_DEST"
+    [ -z "$THINKING_KWARGS" ] || set -- "$@" --chat-template-kwargs "$THINKING_KWARGS"
+    # shellcheck disable=SC2086  # deliberate word split: several flags
+    [ -z "$EVAL_SERVER_FLAGS" ] || set -- "$@" $EVAL_SERVER_FLAGS
+    set -- "$@" --host 127.0.0.1 --port 8080
+    # shellcheck disable=SC2086  # $TMPL_MOUNT is deliberately word-split
+    podman run -d --pod "$POD" --name "$POD-llama" \
+        -v "$MODEL_GGUF":/model.gguf:ro $TMPL_MOUNT "$LLAMA_IMAGE" "$@" >/dev/null
+}
+start_server
+echo "server starting (ctx $CTX, --jinja${CHAT_TEMPLATE_FILE:+, template $CHAT_TEMPLATE_FILE}${THINKING_KWARGS:+, chat template kwargs $THINKING_KWARGS}${EVAL_SERVER_FLAGS:+, server flags $EVAL_SERVER_FLAGS})"
 template_banner
 
 i=0
@@ -1030,7 +1073,7 @@ done
 
 echo "==== summary ===="
 echo "  model     : $MODEL_GGUF"
-echo "  server    : $LLAMA_IMAGE, ctx $CTX, --jinja"
+echo "  server    : $LLAMA_IMAGE, ctx $CTX, --jinja${THINKING_KWARGS:+, chat template kwargs $THINKING_KWARGS}${EVAL_SERVER_FLAGS:+, server flags $EVAL_SERVER_FLAGS}"
 echo "  template  : $(template_desc)"
 echo "  profile   : $PROMPT_PROFILE, max_tokens $EVAL_MAX_TOKENS"
 echo "  transcripts: $EVAL_TRANSCRIPT_DIR/task<n>.run<r>.txt"

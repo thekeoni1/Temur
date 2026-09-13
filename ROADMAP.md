@@ -1729,14 +1729,20 @@ empty, so grep had no document to touch on any arm.
   experiment 1.** `cell-desktop.sh` is the experiment-1 script and lacks
   `-lv 4`, which is what cost measurement 2 its per-cell GPU readback.
   `cell-desktop-exp2.sh` is the parent for anything on this box.
-- **The weak-model eval is a 4B-only instrument and the docs should not
-  imply otherwise.** `scripts/weak_model_eval.sh` cannot hold thinking off
-  on a hybrid model: it has no way to pass `--chat-template-kwargs`, its
-  only template lever is a substitute template file its own text calls
-  not comparable, and its server line carries no GPU flags. Measurement 3
-  dropped its eval stage for this reason. Wanted: a `THINKING_KWARGS`
-  knob, optional GPU flags, and a documented way to supply the tools test
-  binary that tasks 11 and 12 need beside a rebuilt parent binary.
+- **The weak-model eval is still validated only on the 4B, though the
+  knobs it lacked now exist.** The three knobs that bullet asked for
+  shipped in T62 item 6: `THINKING_KWARGS` passes
+  `--chat-template-kwargs` as one argument so a JSON value with spaces
+  survives, `EVAL_SERVER_FLAGS` appends server flags such as `-ngl 99`,
+  and `READBACK_BIN` names the tools test binary explicitly instead of
+  taking the newest beside `MUSL_BIN`. Each is inert when unset, proven by
+  composing the server argv both ways and diffing it. What remains open is
+  the claim the bullet's title made: no model other than the 4B has been
+  measured through this instrument, so a reading from one is not yet
+  comparable to any published row, and the only template lever is still a
+  substitute template file whose own text says it is not comparable.
+  Measurement 3 dropped its eval stage for the missing knobs; that reason
+  is gone, the validation gap is not.
 
 ### Queued from T60 (2026-09-11)
 
