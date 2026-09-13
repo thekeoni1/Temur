@@ -517,10 +517,18 @@ pub struct OpenAiCompatConfig {
     /// rule as `APP_SECRET_FILE`, never env or argv. `None` = keyless
     /// (local servers need no credential).
     pub api_key_file: Option<String>,
-    /// Advisory context-window size (tokens) of the SERVED model — a
-    /// property of the server (llama.cpp `-c`), which temur cannot query.
-    /// `None` = awareness off. Powers warnings only: no compaction, no
-    /// trimming, no request-side enforcement.
+    /// Advisory context-window size (tokens) of the SERVED model, a
+    /// property of the server (llama.cpp `-c`) which temur cannot query.
+    /// `None` = awareness off.
+    ///
+    /// What it powers, corrected in T62 item 6 because the old wording said
+    /// "warnings only: no compaction, no trimming" and that is no longer
+    /// true: the context advisory and its latch
+    /// (`Session::crossing_at`, which returns `None` without a window),
+    /// auto-compaction where enabled, since it fires from that same
+    /// crossing, and the context-scaled tool-output ceiling
+    /// (`project::cap_chars`). Still no request-side enforcement: nothing
+    /// here trims or rejects an outgoing request.
     pub context_window: Option<u64>,
     /// Which wire key carries the token cap (T25 F7). Same contract as
     /// [`ProfileConfig::max_tokens_parameter`]: `"max_tokens"` (the

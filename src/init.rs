@@ -185,6 +185,32 @@ fn compat_max_tokens(template_name: &str) -> Option<u32> {
     }
 }
 
+/// A hosted template's baked `context_window`, for providers whose served
+/// window is a published property of the model id the template defaults to.
+/// Absent means "leave it unset", which turns the context advisory,
+/// auto-compaction and the context-scaled tool-output ceiling off for that
+/// profile until the operator adds a line by hand.
+///
+/// Gemini is the one template that can bake this honestly: it serves a
+/// single published window for the versioned id the template already
+/// defaults to, `gemini-3.6-flash`, at 1,000,000 tokens as of this
+/// commit's knowledge date, 2026-09-13. Same knowledge-of-date caveat the
+/// anthropic profiles carry: a provider that changes the window under a
+/// versioned id would make this stale, which is why the id is versioned
+/// rather than a floating alias. No PRICES are baked for any hosted
+/// non-anthropic provider (T51): those rot faster than windows do, and
+/// docs/USAGE.md shows where to put them instead. openai and xai bake
+/// nothing here, so their renders stay byte-identical.
+///
+/// Same lookup shape as [`compat_base_url`] and [`compat_max_tokens`], for
+/// the same reason: the fresh render and `init --add` must agree.
+fn compat_context_window(template_name: &str) -> Option<u64> {
+    match template_name {
+        "gemini" => Some(1_000_000),
+        _ => None,
+    }
+}
+
 /// How many listed model ids the picker prints before folding the rest
 /// into an "... and N more" line (a number still selects any of them).
 const MODEL_LIST_CAP: usize = 20;
@@ -276,8 +302,16 @@ fn render_config(
                 Some(n) => format!("  \"max_tokens\": {n},\n"),
                 None => String::new(),
             };
+            // Inside the openai_compat block, because that is where the field
+            // lives for this provider shape. Omitted entirely when the
+            // template bakes none, so openai and xai render byte-identically
+            // to before.
+            let window = match compat_context_window(template.name) {
+                Some(n) => format!("                     \"context_window\": {n},\n"),
+                None => String::new(),
+            };
             format!(
-                "{{\n  \"provider\": \"openai-compat\",\n{limit}  \"openai_compat\": {{ \"base_url\": \"{base}\",\n                     \"model\": {m},\n                     \"api_key_file\": {k} }}\n}}\n"
+                "{{\n  \"provider\": \"openai-compat\",\n{limit}  \"openai_compat\": {{ \"base_url\": \"{base}\",\n                     \"model\": {m},\n{window}                     \"api_key_file\": {k} }}\n}}\n"
             )
         }
         other => unreachable!("unknown template {other}"),
@@ -1083,6 +1117,12 @@ pub fn run_add(
             if let Some(n) = compat_max_tokens(hosted) {
                 p.insert("max_tokens".to_string(), n.into());
             }
+            // The served window where the template bakes one, exactly as the
+            // fresh render does; a profile without it has the advisory,
+            // auto-compaction and the scaled tool-output ceiling off.
+            if let Some(n) = compat_context_window(hosted) {
+                p.insert("context_window".to_string(), n.into());
+            }
             p.insert("api_key_file".to_string(), key.display().to_string().into());
             new_profiles.push((hosted.to_string(), p.into()));
             key_file = Some(key);
@@ -1481,6 +1521,54 @@ mod tests {
     }
 
     #[test]
+    fn the_gemini_render_bakes_its_context_window_and_resolves_it() {
+        let t = &TEMPLATES[3];
+        assert_eq!(t.name, "gemini");
+        let rendered = render_config(t, t.default_model, Some("/tmp/k"), None, None);
+        assert!(
+            rendered.contains("\"context_window\": 1000000"),
+            "{rendered}"
+        );
+        // Baked is not the same as reaching the profile: parse it and check
+        // the resolved value, since an unset window turns the advisory,
+        // auto-compaction and the scaled tool-output ceiling off.
+        let cfg: crate::config::Config = serde_json::from_str(&rendered).expect("parses");
+        let profiles = cfg.resolved_profiles().expect("profiles validate");
+        let (_, resolved) = cfg.startup_selection(&profiles).expect("selection resolves");
+        assert_eq!(resolved.context_window, Some(1_000_000));
+    }
+
+    #[test]
+    fn the_context_window_lookup_bakes_only_for_gemini() {
+        // The table itself. That the two WRITE paths agree is proven through
+        // the real `init --add` in add_hosted_templates_add_one_profile_each,
+        // which is why the lookup is a function and not a literal.
+        assert_eq!(compat_context_window("gemini"), Some(1_000_000));
+        for name in ["openai", "xai", "anthropic", "local"] {
+            assert_eq!(compat_context_window(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_openai_and_xai_renders_are_byte_exact_and_bake_no_window() {
+        // Pinned byte-exactly because T62 item 6 added a field to this
+        // render for gemini only: these two must not have moved. There was
+        // no prior expected string for them, so these are the pins.
+        let openai = render_config(&TEMPLATES[2], "gpt-4o", Some("/tmp/k"), None, None);
+        assert_eq!(
+            openai,
+            "{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 16384,\n  \"openai_compat\": { \"base_url\": \"https://api.openai.com/v1\",\n                     \"model\": \"gpt-4o\",\n                     \"api_key_file\": \"/tmp/k\" }\n}\n"
+        );
+        let xai = render_config(&TEMPLATES[4], "grok-4", Some("/tmp/k"), None, None);
+        assert_eq!(
+            xai,
+            "{\n  \"provider\": \"openai-compat\",\n  \"openai_compat\": { \"base_url\": \"https://api.x.ai/v1\",\n                     \"model\": \"grok-4\",\n                     \"api_key_file\": \"/tmp/k\" }\n}\n"
+        );
+        assert!(!openai.contains("context_window"), "{openai}");
+        assert!(!xai.contains("context_window"), "{xai}");
+    }
+
+    #[test]
     fn anthropic_render_is_byte_exact_for_the_default_profile() {
         let t = &TEMPLATES[1]; // anthropic
         let rendered =
@@ -1690,6 +1778,13 @@ mod tests {
             // others bake nothing and inherit the config's global, which in
             // this merge target is the local template's 4096.
             assert_eq!(p.max_tokens, compat_max_tokens(template).unwrap_or(4096), "{template}");
+            // T62 item 6: gemini's served window is baked by `init --add`
+            // exactly as the fresh render bakes it. Unlike max_tokens above, a
+            // profile does NOT inherit the config's global context_window, so
+            // the templates that bake none resolve to None and their advisory,
+            // auto-compaction and scaled tool-output ceiling stay off. That
+            // asymmetry is why baking it matters here.
+            assert_eq!(p.context_window, compat_context_window(template), "{template}");
             assert_eq!(
                 p.api_key_file.as_deref(),
                 Some(key.display().to_string().as_str()),

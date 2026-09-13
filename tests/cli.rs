@@ -557,20 +557,34 @@ fn init_bare_relative_key_path_lands_in_the_working_directory() {
 
 #[test]
 fn init_hosted_compat_templates_exact_configs() {
-    // The fourth field is the baked "max_tokens" line, present only where
-    // the provider's completion cap is below temur's global default: gpt-4o
+    // The fifth field is the baked "max_tokens" line, present only where the
+    // provider's completion cap is below temur's global default: gpt-4o
     // rejects anything above 16384 (T13, live 2026-08-05), Gemini accepted
     // the global 32000 on the same run, xAI is unverified and bakes nothing.
-    for (answer, name, base, model, limit) in [
-        ("3", "openai", "https://api.openai.com/v1", "gpt-4o", "  \"max_tokens\": 16384,\n"),
+    //
+    // The sixth is the baked "context_window" line (T62 item 6), which only
+    // gemini carries: gemini-3.6-flash publishes one figure for its served
+    // window, and without the line the advisory, auto-compaction and the
+    // scaled tool-output ceiling are off for the profile. openai and xai are
+    // expected byte-identical to before that change.
+    for (answer, name, base, model, limit, window) in [
+        (
+            "3",
+            "openai",
+            "https://api.openai.com/v1",
+            "gpt-4o",
+            "  \"max_tokens\": 16384,\n",
+            "",
+        ),
         (
             "4",
             "gemini",
             "https://generativelanguage.googleapis.com/v1beta/openai",
             "gemini-3.6-flash",
             "",
+            "                     \"context_window\": 1000000,\n",
         ),
-        ("5", "xai", "https://api.x.ai/v1", "grok-4", ""),
+        ("5", "xai", "https://api.x.ai/v1", "grok-4", "", ""),
     ] {
         let sb = sandbox();
         let mut c = sb.cmd();
@@ -582,7 +596,7 @@ fn init_hosted_compat_templates_exact_configs() {
         assert_eq!(
             written,
             format!(
-                "{{\n  \"provider\": \"openai-compat\",\n{limit}  \"openai_compat\": {{ \"base_url\": \"{base}\",\n                     \"model\": \"{model}\",\n                     \"api_key_file\": \"{}\" }}\n}}\n",
+                "{{\n  \"provider\": \"openai-compat\",\n{limit}  \"openai_compat\": {{ \"base_url\": \"{base}\",\n                     \"model\": \"{model}\",\n{window}                     \"api_key_file\": \"{}\" }}\n}}\n",
                 key.display()
             ),
             "template {name}"

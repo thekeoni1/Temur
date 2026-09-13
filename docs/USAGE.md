@@ -599,10 +599,43 @@ in endpoint and default model; the xAI one, for instance (OpenAI:
 }
 ```
 
-The OpenAI template is the one exception to that shape: it also writes
+The OpenAI template is the one exception on `max_tokens`: it also writes
 `"max_tokens": 16384`, because gpt-4o caps completions there and rejects
 anything larger, while temur's default is 32000. The others accept the
-default and bake nothing.
+default.
+
+The Gemini template bakes one thing of its own, the served context window,
+because `gemini-3.6-flash` publishes a single figure for it:
+
+```json
+{
+  "provider": "openai-compat",
+  "openai_compat": { "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+                     "model": "gemini-3.6-flash",
+                     "context_window": 1000000,
+                     "api_key_file": "/home/you/.secrets/temur-gemini-key" }
+}
+```
+
+Without that line the context usage advisory, auto-compaction and the
+context-scaled tool-output ceiling are all off for the profile, and a
+profile does not inherit a global `context_window` the way it inherits
+`max_tokens`. The figure is right for the versioned id the template
+defaults to; check it if you point the profile at a different model.
+
+Prices are not baked, for Gemini or any other hosted non-Anthropic
+provider, because they change more often than windows do. Add them
+yourself if you want cost reporting:
+
+```json
+                     "price_input_per_mtok": 0.75,
+                     "price_output_per_mtok": 3.75
+```
+
+Those two numbers are an example to check, not values temur maintains. They
+are the promotional rate on Google's Gemini API pricing page as read on
+2026-09-13, which that page gives until 2026-12-31, with 1.50 and 7.50 per
+million tokens after it. Read the page before relying on either pair.
 
 The OpenAI, Gemini, and Anthropic paths were verified against the real
 endpoints on 2026-08-05, with two follow-up legs on 2026-08-10; xAI

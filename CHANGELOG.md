@@ -4,6 +4,18 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- **A fresh Gemini profile now knows its own context window.** `temur
+  init` and `init --add gemini` write `"context_window": 1000000`, the
+  published window of the `gemini-3.6-flash` id the template already
+  defaults to. Without it the context usage advisory, auto-compaction and
+  the context-scaled tool-output ceiling were all off until you added the
+  line by hand, and a profile does not inherit a global `context_window`
+  the way it inherits `max_tokens`, so `init --add gemini` left you with
+  no window at all. The OpenAI and xAI renders are unchanged, byte for
+  byte. Prices are still opt-in for every hosted non-Anthropic provider,
+  because they change more often than windows do; `docs/USAGE.md` shows
+  where they go and names the date its example was read.
+
 - **`grep` now searches a document instead of skipping it in silence.**
   `grep` reads raw bytes and skips any file with a NUL byte in its first
   4 KB, which is every real PDF, spreadsheet and Word file, and it said
