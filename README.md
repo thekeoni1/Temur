@@ -32,8 +32,8 @@ and [docs/COMPARISON.md](docs/COMPARISON.md).
   order of 90 MB. temur's release binary has no interpreter and no
   shared libraries, so it loads on old x86 machines, armv7 industrial
   controllers, OpenWrt-class devices, `FROM scratch` containers, and
-  rescue/initramfs environments. The v0.34.0 binaries measure 9.51 MB
-  on i686 and 11.44 MB on x86_64: the PDF, spreadsheet and document
+  rescue/initramfs environments. The v0.35.0 binaries measure 9.87 MB
+  on i686 and 11.71 MB on x86_64: the PDF, spreadsheet and document
   parsers are compiled in, the price of reading documents with nothing
   installed.
 - Offline is a first-class mode. The OpenAI-compatible provider runs
@@ -180,11 +180,11 @@ One-liner (detects your arch, downloads, verifies the checksum, installs to
 `~/.local/bin`; refuses to install anything unverified):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/thekeoni1/Temur/v0.34.0/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/thekeoni1/Temur/v0.35.0/scripts/install.sh | sh
 ```
 
 Piping to `sh` is a trust decision: [read the script
-first](https://github.com/thekeoni1/Temur/blob/v0.34.0/scripts/install.sh) if
+first](https://github.com/thekeoni1/Temur/blob/v0.35.0/scripts/install.sh) if
 you prefer. The checksum step defends against transport corruption and a
 mismatched artifact. It is not a substitute for trusting the release source,
 since the sums come from the same place as the binaries.
@@ -196,10 +196,10 @@ so copy it fresh each time; `temur --version` shows what is installed.
 Manual install (example: x86_64; substitute your triple):
 
 ```sh
-curl -fsSLO https://github.com/thekeoni1/Temur/releases/download/v0.34.0/temur-v0.34.0-x86_64-unknown-linux-musl
-curl -fsSLO https://github.com/thekeoni1/Temur/releases/download/v0.34.0/SHA256SUMS
+curl -fsSLO https://github.com/thekeoni1/Temur/releases/download/v0.35.0/temur-v0.35.0-x86_64-unknown-linux-musl
+curl -fsSLO https://github.com/thekeoni1/Temur/releases/download/v0.35.0/SHA256SUMS
 sha256sum -c --ignore-missing SHA256SUMS
-install -m 755 temur-v0.34.0-x86_64-unknown-linux-musl ~/.local/bin/temur
+install -m 755 temur-v0.35.0-x86_64-unknown-linux-musl ~/.local/bin/temur
 ```
 
 Build from source (any Rust-supported target): the musl-static recipe

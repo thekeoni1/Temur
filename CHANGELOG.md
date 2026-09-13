@@ -4,6 +4,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+## v0.35.0 - 2026-09-13
+
 - **A fresh Gemini profile now knows its own context window.** `temur
   init` and `init --add gemini` write `"context_window": 1000000`, the
   published window of the `gemini-3.6-flash` id the template already
