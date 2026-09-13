@@ -10659,3 +10659,123 @@ OK.
   single-line editing.
 - The dogfood act D22 needs, a real model driving a real session against
   a file in cwd, remains the operator's and is still pending.
+
+## v0.35.0 ship record - shipped PUBLIC, the office-write release
+
+2026-09-13. **T59 through T62 shipped at tag `v0.35.0`: temur writes
+Word and PDF documents, and searches inside office files.** A MINOR
+bump, the third public release, cut from `e2a6057` on the laptop
+toolchain. Stage 2 ran to completion on its first attempt; no gate
+stopped the cycle. The one thing worth recording ahead of the routine
+evidence is the size margin, because it is the first release where the
+README's own 32-bit claim is close to false.
+
+### The size sentence, and how little room is left
+
+Raw byte counts, read from the staged files: i686 **9,869,908 bytes**,
+x86_64 **11,708,656 bytes**, aarch64 9,636,176, armv7 8,917,512.
+Divided by 1,000,000 to two decimals that is **9.87 MB** and **11.71
+MB**, and those are the figures written into README lines 35-37 by the
+bump commit.
+
+`README:29` ("A single static ELF, under 10 MB on 32-bit") still holds
+and was left numberless and unreworded, as T62-7 ruled. But the i686
+binary is now **130,092 bytes** under 10,000,000, a margin of 1.30%,
+down from 487,468 bytes at v0.34.0. Growth this cycle was +357,376 B on
+i686 (+3.76%) and +266,112 B on x86_64. One more release of this size
+makes `README:29` false. That is a decision for the next cut, recorded
+here so it is not discovered by a reader.
+
+One measurement note. RUNBOOK's earlier size paragraph says "divided by
+1,000,000 to two decimals", which is ambiguous between rounding and
+truncation. Both v0.34.0 figures are identical either way, so history
+did not settle it, and it changes a digit here: 9,869,908 rounds to
+9.87 and truncates to 9.86. The operator ruled ROUNDING, which is the
+plain reading of the sentence and the direction that does not flatter
+the binary. Future cuts should read this as rounding.
+
+### The cut
+
+The tree was fast-forwarded from `1fa9dad` to the anchor `e2a6057`
+(`--ff-only`, 10 commits, strict ancestor, no divergence) before
+anything else. The version bump landed as a SINGLE commit on top of the
+anchor, `8b216da`, parent verified `e2a6057`, five files: `Cargo.toml`,
+`Cargo.lock`, `scripts/install.sh`, `README.md` and `CHANGELOG.md`.
+
+Procedure delta worth carrying forward: v0.34.0 cut its CHANGELOG
+section in a SEPARATE commit (`a9dce16`). That is not available when the
+tag must land on a bump commit whose parent is the anchor, because the
+separate commit would sit between them. The CHANGELOG heading was
+folded into the bump commit instead. The `## Unreleased` heading was
+left in place above the new `## v0.35.0 - 2026-09-13` heading, matching
+what `a9dce16` did.
+
+The annotated tag `v0.35.0` is tag object `136d5c6` on `8b216da`, with
+the message "temur v0.35.0 - writes Word and PDF documents, and
+searches inside office files (T59-T62)". `release.sh` was re-run after
+the tag existed so the published title was READ BACK from the tag
+object rather than typed, and the `gh release create` invocation was
+copied from what the script printed.
+
+### Gates
+
+- `release.sh` GREEN twice: once at the pre-amend bump commit, once at
+  `8b216da` with the tag in place. "RELEASE v0.35.0: 4/4 ARTIFACTS
+  GATED" both times, and the four byte counts were identical across the
+  two runs, which is the evidence that amending the README prose
+  reached no binary.
+- `check.sh` in full, both paths, including the container and busybox
+  smokes and the TUI pty smokes.
+- Leak gate clean. The ONLY history hit is `083eb33`, allow-listed as
+  already public since 2026-09-08, exactly as at the v0.34.0 cut.
+- Version skew: `install.sh` and README match 0.35.0 and all targets.
+- `metadata_drift.sh`: no drift, all four baked profiles match
+  models.dev.
+- Cut on rustc 1.96.1 (31fca3adb 2026-06-26).
+
+### Ruling 4, and a control that earned its keep
+
+Run three times: on the bump commit before pushing main, on the tag
+object before pushing it, and over tracked files. Every scan returned
+0, and the live control fired each time (1 hit in `083eb33`'s message,
+2 in its diff).
+
+The control is the part worth recording. The FIRST control attempt
+returned 0, which would have made three zeros vacuous and shipped an
+unverified scan. The control was malformed, not the gate: it was
+written `git log --all --format=%B 083eb33 -1`, and `--all` makes `-1`
+select the newest commit across all refs rather than the named one. The
+correct form is `git log -1 --format=%B 083eb33`. A control that
+returns 0 is not a passing control, it is a broken one, and the only
+reason this was caught is that Ruling 4 requires the control to fire
+rather than merely to be run.
+
+### Publication and live verification
+
+Pushed `e2a6057..8b216da` to `origin/main`, then the tag. Release
+created public, not a draft and not a prerelease, with five assets: the
+four bare binaries and SHA256SUMS (428 B). Published asset sizes match
+the staged bytes exactly.
+
+The README one-liner was then run VERBATIM into a fresh empty HOME, as
+a real user would: a live fetch of `install.sh` from the `v0.35.0` tag
+on raw.githubusercontent.com, piped to `sh`, which downloaded the
+x86_64 asset from the published release, reported "checksum verified.",
+installed it, and printed `temur 0.35.0`. The installed file is
+11,708,656 bytes, identical to the published asset. Before publication
+the same installer was also exercised offline against the staged
+directory over `python3 -m http.server`, which is the test that would
+have caught a staging error without touching GitHub.
+
+### What this release does NOT establish
+
+- ARM remains verified at build level only, per ROADMAP T7; the
+  hardware smoke is still pending hardware.
+- The four dogfood findings raised the same day against the v0.34.0
+  binary (F1 missing date in the system prompt, F3 edit
+  double-application, F4 repeated-call loops, F5 endpoint-less provider
+  errors) are NOT addressed by this release. F2, the v0.34.0 write path
+  putting plain text at a `.pdf` or `.docx` path, IS fixed here: that
+  is T60, and it is the reason this release is named for document
+  writing. F1 in particular ships in v0.35.0 unfixed and was a
+  deliberate, recorded decision, not an oversight.
