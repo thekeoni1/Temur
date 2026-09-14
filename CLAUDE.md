@@ -85,3 +85,23 @@ enforced by the OS, not just by these rules. Do not try to escalate around them.
   before claiming; ask before reordering priorities or flipping
   defaults (thinking off, hosted default claude-sonnet-5, local
   default Qwen3-4B-Instruct-2507).
+- Before reporting a phase to planning, the implementing session runs an independent
+  check: a fresh subagent that is given only the spec, the diff, the draft report, and
+  the gate and scan logs, never the conversation, and answers three questions in
+  writing: does the diff do what the spec says and nothing else; do the logs contain
+  every line the spec requires; does the report's every number and quoted string
+  appear in a primary. Its answer goes in the report verbatim, disagreements included.
+  This check does not replace planning's own verification from primaries.
+
+## Context management and self-correction
+- When context is degrading, write the current state (what is done, what is verified,
+  what is next, with shas and paths) to the milestone report before compacting or
+  handing work off.
+- After a long conversation, re-read the relevant files before editing. For a large
+  file, read focused chunks rather than one huge output.
+- After any correction from the human or from planning, record the pattern in the
+  milestone report under a "corrections" heading, with the wrong assumption named.
+- If a fix fails twice, stop and re-read the relevant code top-down. State what
+  assumption was wrong before trying again.
+- When a new milestone or idea is verified, scope it and add it to ROADMAP.md with the
+  operator's approval, never silently.

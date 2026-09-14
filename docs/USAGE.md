@@ -12,7 +12,8 @@ scripting recipes, skills, and the key-isolation model.
 > capture setup inline, like "/compact", differ only as stated). Input was piped, where a
 > terminal would echo the typed line after `>`; the transcripts show the
 > input inline exactly as a terminal session displays it. The startup
-> version banner (`temur <version> (model=..., thinking=...)`) is
+> version banner (`temur <version> (model=..., thinking=...)`, followed
+> for an openai-compat profile by its endpoint label) is
 > omitted so this document does not go stale on version bumps.
 >
 > These transcripts predate the approval default. They were captured
@@ -132,8 +133,10 @@ never reaches the model or the history (which also means a literal
 message starting with `/` cannot be sent):
 
 - `/help` - list commands
-- `/status` - profile, provider, model, thinking, prompt profile,
-  context use, an estimated session cost when the active profile is
+- `/status` - profile, provider, model, the endpoint of an openai-compat
+  profile (`local 127.0.0.1:8080` or `hosted api.example.com`), thinking,
+  prompt profile, context use, an estimated session cost when the active
+  profile is
   keyed and priced (see "Cost estimate"), session file
 - `/model` - list profiles, then two hint lines saying what a
   non-profile argument does · `/model <name>` - switch profiles
@@ -959,17 +962,37 @@ that WARN line (34% measured, 35% estimated). If your window is between
 16384 and 20479 and you have no `prompt_profile`, v0.30.1 moves you
 from the full descriptions to the compact ones.
 
+### Today's date in the prompt
+
+Both default system prompts carry `Today's date is YYYY-MM-DD (UTC).`
+just before the working-directory line, so a model knows the current
+year. The date is fixed when the session starts, so a `/model` switch
+sends the same prompt prefix even across midnight. Set `TEMUR_TODAY` to
+pin it:
+
+```
+TEMUR_TODAY=2026-01-01 temur
+```
+
+A value not shaped `YYYY-MM-DD` is ignored with a startup notice. `--mock`
+runs use 2026-01-01 unless `TEMUR_TODAY` is set. An explicit
+`system_prompt` in config replaces the default prompt, so it carries no
+date line unless you write one. The line costs 18 tokens in each profile.
+
 ### The prompt floor
 
 The floor is what a turn costs before the conversation starts. Measured
-live on 2026-09-08 (llama.cpp `server-b10438`, Qwen3-4B-Instruct-2507
-Q4_K_M, `context_window` 12288, one request per profile, the reported
-input-token count):
+live on 2026-09-14 (Qwen3-4B-Instruct-2507 Q4_K_M, `context_window`
+12288, cwd `/home/dev/temur-desktop`, one request per profile, the
+reported input-token count). The compact figure came from llama.cpp
+`server-b10438` on CPU. The full figure came from `server-cuda-b10438`
+with `-ngl 99`, because a CPU server did not finish that prefill inside
+doctor's 300-second bound; the token count does not depend on the device.
 
 | Prompt profile | Floor | Left of a 12288 window |
 | --- | --- | --- |
-| `full` | 7,433 tokens | ~4,855 |
-| `compact` | 3,205 tokens | ~9,083 |
+| `full` | 7,448 tokens | ~4,840 |
+| `compact` | 3,220 tokens | ~9,068 |
 
 That is the reason auto-selection exists: on the full profile a 12288
 window is 60% spent before the model reads the task, and at a
@@ -982,7 +1005,7 @@ rather than quoting the table above:
 
 ```
 PASS: prompt floor (estimate): ~2459 tokens; window 12288; 20% of the window
-NOTE: that estimate is prompt bytes divided by 4, which is not tokenization: expect it to be off by some percent in either direction. A networked run against a keyless openai-compat server reports a measured figure instead. Reference measurement (2026-09-08, llama.cpp, Qwen3-4B-Instruct-2507): 7,433 tokens for the full profile, 3,205 for the compact one.
+NOTE: that estimate is prompt bytes divided by 4, which is not tokenization: expect it to be off by some percent in either direction. A networked run against a keyless openai-compat server reports a measured figure instead. Reference measurement (2026-09-14, llama.cpp, Qwen3-4B-Instruct-2507, measured from a short working-directory path; a longer one raises both): 7,448 tokens for the full profile, 3,220 for the compact one.
 NOTE: the prompt floor moves with the length of the cwd path and the number of installed skills, both of which ride in the system prompt
 ```
 

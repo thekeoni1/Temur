@@ -220,9 +220,9 @@ advisory fires immediately. 1024 to 4096 is a sensible local range.
 The stock tool descriptions are the OpenCode-ported prompts, sized for
 Claude-class context windows (~24 KB of tool text). On a small local
 window that is a tax before the conversation starts: measured against a
-live llama.cpp server, the full profile spends 7,433 prompt tokens
+live llama.cpp server, the full profile spends 7,448 prompt tokens
 before the task is read, 60% of a 12288-token window. The compact
-profile spends 3,205.
+profile spends 3,220.
 
 ```json
 { "prompt_profile": "compact" }

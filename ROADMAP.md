@@ -1629,6 +1629,175 @@ one-liner gate stays deferred to the visibility flip (RUNBOOK).
   `\text \mathrm \textbf \textit \mathbf` unwrap to their argument, `~`
   becomes a space; `\frac` and friends stay honest source by design.
 
+### T63 as built (2026-09-14)
+
+The dogfood fast-follow, on top of v0.35.0 with no version bump. P0
+`f153268` was pushed alone and is CI-green; P1 `249bb28`, P3 `3e63383`,
+P4 `fe09766`, P2a `3b2f0e4`, P2b `403c6c4` and the docs commit stack on
+it. Every phase was cold-gated on rustc 1.96.1 in a fresh target dir.
+
+P0 pins rustc 1.96.1, the release toolchain, in `rust-toolchain.toml`,
+and CI installs it with `rustup toolchain install` (run 34888004800, and
+the container-gate dispatch 34905735014, both green). The release profile
+is now fat LTO with one codegen unit, the largest saving that keeps
+opt-level 3:
+
+| i686 musl release on 1.96.1 | bytes |
+| --- | --- |
+| strip, thin LTO (before) | 9,872,396 |
+| codegen-units=1 | 8,869,004 |
+| fat LTO | 8,644,172 |
+| fat LTO + codegen-units=1 (shipped) | 8,269,292 |
+| opt-level=s (not adopted) | 7,998,124 |
+| opt-level=z (not adopted) | 7,867,660 |
+
+A v0.35.0 rebuild on this toolchain is still 2,488 bytes larger than the
+published asset. The host gcc that compiles ring differs (15.2 against
+13.3) and the pin does not cover it, so the desktop size STOP stays at
+10,000,000. After P2b the binary is 8,288,780 bytes.
+
+P1 puts today's date (UTC) in both prompts, `TEMUR_TODAY` overrides it,
+and doctor's reference floor was re-measured. P3 names the endpoint in
+network errors: a refused connection reads "nothing is listening at
+127.0.0.1:8080: is your model server running? (temur doctor checks
+reachability)". P4 learns the trained context from the `/models` listing
+(falling back to `/props`) and names `-c 20480` in the startup compact
+notice, probes at startup for a compact-window local session as well
+(one bounded 3 s GET, two in the fallback), labels an openai-compat
+endpoint local or hosted in the banner, `/status`, the TUI header and
+doctor, and appends the next extracted line to a pdf/docx grep hit that
+stops mid-sentence. P2a refuses an edit that is already applied. P2b
+marks a repeated identical read of an unchanged file and rewords the
+nothing-to-change edit error.
+
+Prompt floor, Qwen3-4B, `context_window` 12288, cwd
+`/home/dev/temur-desktop`:
+
+| profile | before the date line | after | server |
+| --- | --- | --- | --- |
+| full | 7,430 | 7,448 | `server-cuda-b10438`, `-ngl 99` |
+| compact | 3,202 | 3,220 | `server-b10438`, CPU |
+
+The full profile could not be measured on CPU: doctor's 300 s bound
+expired before the prefill finished.
+
+One twelve-task reading on the P2b binary, Qwen3-4B, compact profile,
+defaults, against the v0.35.0 soak on the same box:
+
+| reading | T63 | v0.35.0 soak |
+| --- | --- | --- |
+| nine scored | 9/9 | 9/9 |
+| task 11 memo-docx | PASS | PASS |
+| task 12 summary-pdf | PASS | FAIL |
+| task 13 pdf-section | PASS | PASS |
+| wall clock | 1,200 s | 1,078 s |
+
+Task 12 is variance across both readings. On task 13 the soak's model
+invented the tail of the sentence it quoted ("which the board has
+approved."); this reading quoted the fixture's sentence verbatim. The
+final word was model-completed: the grep hit ended one word short,
+because the sentence spans three extracted lines and the continuation
+appends one. No task repeated a read of an unchanged file, so the P2b
+marker was not exercised.
+
+### Queued from T63 (2026-09-14)
+
+- opt-level s/z: measure a fixed CPU workload (office::extract on the
+  largest fixture, the mock-replay suite) x5 on both binaries before
+  adopting.
+- doctor's measured floor times out on CPU for the full profile at 12288;
+  either a smaller probe prompt with a stated correction, or the note says
+  the measurement needs a fast server.
+- The /model auto notice does not know the trained size, so the `-c`
+  advice appears at startup only.
+- document-hit continuation: append until sentence punctuation, bounded
+  at three lines, instead of exactly one.
+- The compact floor at the local template's default window of 8192 is 56
+  tokens under doctor's 40% WARN line after the date line (3,220 against
+  3,276.8). The next prompt addition of that size tips the default local
+  setup into a WARN. The remedy to name is the server window (`-c`), and a
+  smaller prompt is the wrong direction.
+- F6: serve.sh runs llama-server without --parallel while COMPARISON
+  measures with --parallel 1; count it as a defect only after an OOM is
+  reproduced THROUGH serve.sh.
+- The RUNBOOK ship record should carry the SHA256SUMS lines, one sha256 per
+  published asset, so a soak compares against the release machine's own
+  record. The v0.35.0 ship record listed byte counts only.
+- The T62 RIDERS (6R) are the six items of the T62 brief's item 6:
+  `/model <profile> --save`, the Gemini `models/` prefix in the raw-id
+  advisory, LaTeX spacing and wrappers, docx code indentation, the
+  `/models` two-ids line, and serve.sh SERVER_ARGS. The three pushed
+  commits titled "T62 item 6A/6B/6C" (`961b34d`, `278b66d`, `e2a6057`)
+  are a different batch and closed none of them (Ruling T62-11). All six
+  riders are still open.
+
+### Queued from the harness survey (2026-09-13)
+
+Planning read the READMEs and docs of OpenCode, Hermes Agent and
+AnythingLLM on 2026-09-13 and kept the eight items that fit a static,
+offline, weak-model agent. Ordered by planning's preference. None is a
+v0.35.0 item; the ROADMAP text below lands with the next docs commit
+after the v0.35.0 cut. Each is measured on the twelve-task eval where
+model-facing behaviour changes; the rest are gate-only.
+
+- **Pattern permissions (from OpenCode).** One `permission` config block
+  mapping a tool, and optionally a pattern, to `allow`, `ask` or `deny`:
+  bash rules match the command text (`git *`, `rm *`), read/edit/write/glob
+  rules match paths, last matching rule wins, and the session allow
+  (`a`) and the keyless-bash y/N stay as the interactive layer on top.
+  Two defaults taken from OpenCode: `.env` files denied to `read` unless
+  allowed, and paths outside the project root needing an explicit allow
+  (the KeyGuard already denies the configured key files; this is the
+  general form). No model measurement: it only removes actions. First
+  in this group because it generalises something already shipped.
+- **Capped memory files (from Hermes).** Two files under the config
+  dir, notes and user profile, with hard character caps in the low
+  thousands (Hermes: 2,200 and 1,375), injected as a frozen snapshot at
+  session start, edited through ONE tool with add, replace and remove,
+  and an error at capacity that makes the model consolidate before it
+  can add. The caps are what make it fit an 8192 window. Measure: a
+  two-session eval task where session 2 needs a fact from session 1.
+- **Skill staging and progressive disclosure (from Hermes).** Skills
+  advertise metadata only and load in full on demand (already the shape
+  of temur's skill tool; confirm the listing cost); an agent-authored or
+  agent-edited skill is STAGED under a pending directory for the user to
+  approve, never written live. This is the promotion path the skills
+  catalog seed lacks. Gate-only until the catalog seed is built.
+- **Shell and file injection in skill templates (from OpenCode
+  commands).** A skill body may embed the output of a shell command and
+  the contents of a named file before the model sees the prompt, so the
+  harness runs the tests and hands the output over rather than hoping a
+  4B decides to. Measure on a task whose fix needs the test output.
+- **Post-edit formatter and check command (from OpenCode formatters,
+  standing in for LSP diagnostics).** Per-project config lines: a
+  formatter command with a file placeholder run after write/edit, and a
+  check command whose first N lines come back as tool output. Zero
+  dependencies; both off unless configured. Measure the check command
+  on the eval (harness over model: the model reads the error it could
+  not predict).
+- **Per-turn file snapshots with `/undo`, no git.** OpenCode's undo
+  needs a git repository and Hermes's needs its own store; temur's
+  should save the prior bytes of every file a turn writes or edits into
+  the session store, so undo works on a busybox box. Restores files and
+  drops the turn's messages together. u64 sizes, capped total, oldest
+  turn evicted first. Gate-only plus a sigint-style test.
+- **Document summarisation over chunks (from AnythingLLM's summarize
+  skill, without the vector store).** For a document that cannot fit
+  the window, a map-reduce summary through the served model, bounded by
+  the same extraction window grep uses. No embedding model, no index.
+  Measure before any retrieval design: a task that asks a question of a
+  fixture PDF larger than the window.
+- **A `question` tool (OpenCode `question`, Hermes `clarify`).** The
+  model can stop and ask one question instead of guessing; `-p` answers
+  "no user present" and the turn ends. Cheapest to measure: the eval
+  tasks with an ambiguous ask.
+
+Not carried over, on purpose: cron and messaging gateways (the OS
+scheduler over `temur -p`), remote terminal backends, MCP, a remote
+skills hub, browser automation, workspaces and vector databases, and
+SQLite FTS session search (a C library in the static build; a grep over
+the session files is the temur analog).
+
 ### T62 P1 as built (2026-09-13)
 
 `grep` searches a document as the text `read` would show, with

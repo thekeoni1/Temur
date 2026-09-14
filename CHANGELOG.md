@@ -4,6 +4,58 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- temur now builds with rustc 1.96.1, pinned in `rust-toolchain.toml` for
+  local builds and CI, and the release profile uses fat LTO with one
+  codegen unit. On that toolchain the i686 binary drops from 9,872,396 to
+  8,269,292 bytes. The C compiler that builds ring is not pinned, so a
+  build on another machine can still differ by a few thousand bytes.
+
+- The system prompt now carries today's date in UTC, so a model knows the
+  current year. Set `TEMUR_TODAY=YYYY-MM-DD` to override it; any other
+  value is ignored with a startup notice. `--mock` runs use 2026-01-01.
+  The line costs 18 tokens in each prompt profile.
+
+- A network error now names the server it could not reach. A refused
+  connection reads `nothing is listening at 127.0.0.1:8080: is your model
+  server running? (temur doctor checks reachability)`, and other network
+  errors and timeouts end with `(endpoint host:port)`. The label never
+  carries a username, password, path or query.
+
+- When a local model was trained for a larger window than the server
+  allocates, the compact-profile notice at startup says to start the
+  server with `-c 20480` or more. temur reads the trained size from the
+  server's `/models` listing and falls back to `/props` for the served
+  size. To reach `temur init`'s local setup, which sets `context_window`
+  to 8192, startup now makes one bounded 3 s keyless GET for a
+  compact-window local session where before there was none, two in the
+  fallback case. The `-c` advice appears at startup only; a `/model`
+  switch keeps the earlier wording. `temur doctor` adds that a
+  `context_window` below 20480 also means the compact profile and the 8k
+  tool-output cap.
+
+- For openai-compat profiles the startup banner, `/status` and the TUI
+  header say whether the endpoint is local (loopback, a private or
+  link-local address, `localhost` or a `.local` name) or hosted, and
+  `temur doctor` notes that a hosted profile costs money per request.
+
+- A `grep` hit in a PDF or Word document whose extracted line stops
+  mid-sentence now includes the next extracted line, once, so a wrapped
+  sentence reaches the model whole or nearly whole. The reported line
+  number is unchanged, and spreadsheets are excluded.
+
+- An edit that has already been applied is refused instead of applied a
+  second time. Resending an edit whose new text extends the old text in
+  place used to append the addition twice. With `replaceAll`, a file where
+  some matches are already edited is refused outright, and the message
+  says how many.
+
+- A read that repeats the previous read of an unchanged file now starts
+  with `[unchanged: identical to your previous read of this file]` and
+  still returns the content. A repeated identical read now returns a
+  marked result, so the futile-call guard fires one call later on
+  repeated reads. An edit whose new text equals the old text now says
+  there is nothing to change and to continue with the task.
+
 ## v0.35.0 - 2026-09-13
 
 - **A fresh Gemini profile now knows its own context window.** `temur
