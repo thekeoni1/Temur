@@ -128,7 +128,12 @@ impl AnthropicProvider {
                 // accumulated partial (F5) — an Err here would throw away
                 // already-streamed content the landing policy wants.
                 Err(_) if cancel.is_set() => break,
-                Err(e) => return Err(ProviderError::Stream(e.to_string())),
+                Err(e) => {
+                    return Err(ProviderError::Stream(format!(
+                        "{e} (endpoint {})",
+                        crate::provider::endpoint_label(&self.base_url)
+                    )))
+                }
             };
             match &ev {
                 SseEvent::ContentBlockStart { content_block, .. } => {
@@ -193,12 +198,12 @@ impl Provider for AnthropicProvider {
             cancel,
         ) {
             Ok(reader) => self.drive(reader, on_event, cancel),
-            Err(e) => Err(transport_error_to_provider(e)),
+            Err(e) => Err(transport_error_to_provider(e, &self.base_url)),
         }
     }
 }
 
-fn transport_error_to_provider(e: TransportError) -> ProviderError {
+fn transport_error_to_provider(e: TransportError, base_url: &str) -> ProviderError {
     match e {
         TransportError::Status { code, body, .. } => {
             // Anthropic error envelope: {"type":"error","error":{"type":..,"message":..}}
@@ -223,12 +228,23 @@ fn transport_error_to_provider(e: TransportError) -> ProviderError {
             }
         }
         TransportError::Io(msg) => ProviderError::Network(msg),
+        // T63 P3: a real network failure names the endpoint (host:port only).
+        TransportError::Unreachable { refused: true, .. } => ProviderError::Network(format!(
+            "nothing is listening at {}: is your model server running? (temur doctor checks reachability)",
+            crate::provider::endpoint_label(base_url)
+        )),
+        TransportError::Unreachable { message, .. } => ProviderError::Network(format!(
+            "{message} (endpoint {})",
+            crate::provider::endpoint_label(base_url)
+        )),
         // T50: the ordinary turn-error path, same as any other network
-        // failure. Control returns, the session stays intact, and no
-        // string pinned by T21/T43 changes.
-        TransportError::Timeout { phase, .. } => {
-            ProviderError::Network(format!("timed out waiting for {phase} from the server"))
-        }
+        // failure. Control returns and the session stays intact. The
+        // "network: " prefix and the T21/T43 wording stay; T63 P3 appends
+        // the endpoint.
+        TransportError::Timeout { phase, .. } => ProviderError::Network(format!(
+            "timed out waiting for {phase} from the server (endpoint {})",
+            crate::provider::endpoint_label(base_url)
+        )),
     }
 }
 
@@ -269,5 +285,45 @@ mod tests {
         let mut messages = serde_json::json!([]);
         AnthropicProvider::mark_last_cacheable_block(&mut messages); // no panic
         assert_eq!(messages.as_array().unwrap().len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod endpoint_error_tests {
+    use super::*;
+
+    /// T63 P3: each network failure names host:port and never the
+    /// userinfo or query of the base URL; the non-network `Io` values
+    /// (an interrupt here) are left exactly as they were.
+    #[test]
+    fn a_network_error_names_the_endpoint_and_nothing_else_of_the_url() {
+        let base = "https://user:secret@api.anthropic.com?token=abc";
+        let refused = transport_error_to_provider(
+            TransportError::Unreachable { message: "io: Connection refused (os error 111)".into(), refused: true },
+            base,
+        )
+        .to_string();
+        assert_eq!(
+            refused,
+            "network: nothing is listening at api.anthropic.com:443: is your model server running? (temur doctor checks reachability)"
+        );
+        let other = transport_error_to_provider(
+            TransportError::Unreachable { message: "host not found".into(), refused: false },
+            base,
+        )
+        .to_string();
+        assert_eq!(other, "network: host not found (endpoint api.anthropic.com:443)");
+        let timeout = transport_error_to_provider(
+            TransportError::Timeout { phase: "connect".into(), retryable: true },
+            base,
+        )
+        .to_string();
+        assert_eq!(timeout, "network: timed out waiting for connect from the server (endpoint api.anthropic.com:443)");
+        let interrupted =
+            transport_error_to_provider(TransportError::Io("interrupted by user".into()), base).to_string();
+        assert_eq!(interrupted, "network: interrupted by user");
+        for m in [&refused, &other, &timeout] {
+            assert!(!m.contains("secret") && !m.contains("token"), "{m}");
+        }
     }
 }

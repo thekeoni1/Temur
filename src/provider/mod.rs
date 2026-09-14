@@ -655,3 +655,87 @@ pub trait Provider {
         cancel: &CancelToken,
     ) -> Result<ResponseMessage, ProviderError>;
 }
+
+/// The `host:port` of a base URL, for naming an endpoint in an error message
+/// (T63 P3). Hand-rolled like the other base-URL helpers: the scheme picks
+/// the default port, and userinfo, path, query and fragment are dropped, so a
+/// credential or a query token in the URL never reaches an error. Anything
+/// left that is not a host or port character yields "the configured
+/// endpoint" instead of a partial string.
+pub fn endpoint_label(base_url: &str) -> String {
+    const FALLBACK: &str = "the configured endpoint";
+    let (default_port, rest) = if let Some(r) = base_url.strip_prefix("https://") {
+        ("443", r)
+    } else if let Some(r) = base_url.strip_prefix("http://") {
+        ("80", r)
+    } else {
+        ("", base_url)
+    };
+    // An '@' after the first '/', '?' or '#' cannot be told apart from a
+    // password that contains one of those raw, and naming what precedes it
+    // could print part of that password. Name nothing instead.
+    if let (Some(at), Some(delim)) = (rest.rfind('@'), rest.find(['/', '?', '#'])) {
+        if delim < at {
+            return FALLBACK.to_string();
+        }
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
+    let clean = !host_port.is_empty()
+        && host_port
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']' | '_' | '%'));
+    if !clean {
+        return FALLBACK.to_string();
+    }
+    // A bracketed IPv6 literal has colons of its own; its port, if any,
+    // follows the closing bracket.
+    let port_part = match host_port.rfind(']') {
+        Some(close) => host_port[close..].rsplit_once(':').map(|(_, p)| p),
+        None => host_port.rsplit_once(':').map(|(_, p)| p),
+    };
+    let has_port = match port_part {
+        Some(p) if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => true,
+        Some(_) => return FALLBACK.to_string(),
+        None => false,
+    };
+    if has_port || default_port.is_empty() {
+        host_port.to_string()
+    } else {
+        format!("{host_port}:{default_port}")
+    }
+}
+
+#[cfg(test)]
+mod endpoint_label_tests {
+    use super::endpoint_label;
+
+    #[test]
+    fn it_is_host_and_port_with_the_scheme_default() {
+        assert_eq!(endpoint_label("http://127.0.0.1:8080/v1"), "127.0.0.1:8080");
+        assert_eq!(endpoint_label("https://api.openai.com/v1"), "api.openai.com:443");
+        assert_eq!(endpoint_label("http://localhost/v1"), "localhost:80");
+        assert_eq!(endpoint_label("https://api.anthropic.com"), "api.anthropic.com:443");
+        assert_eq!(endpoint_label("http://[::1]:8080/v1"), "[::1]:8080");
+        assert_eq!(endpoint_label("http://[::1]/v1"), "[::1]:80");
+    }
+
+    #[test]
+    fn it_never_carries_userinfo_a_query_or_a_fragment() {
+        let out = endpoint_label("https://user:secret@example.com:8443/v1?key=abc#frag");
+        assert_eq!(out, "example.com:8443");
+        assert_eq!(endpoint_label("https://example.com?token=x"), "example.com:443");
+        // Malformed: a space, no host, a raw '/', '?' or '#' inside the
+        // password, a non-numeric port. Each names nothing rather than part of the URL.
+        for bad in [
+            "http://ex ample.com/v1",
+            "http:///v1",
+            "http://user:pa/ss@host/v1",
+            "http://user:1234?x@host/v1",
+            "http://user:12#34@host/v1",
+            "http://host:pa/v1",
+        ] {
+            assert_eq!(endpoint_label(bad), "the configured endpoint", "{bad:?}");
+        }
+    }
+}

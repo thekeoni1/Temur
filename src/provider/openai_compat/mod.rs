@@ -145,7 +145,12 @@ impl OpenAiCompatProvider {
                 // cancellation, not a failure: keep the accumulated partial
                 // (F5) instead of throwing away already-streamed content.
                 Err(_) if cancel.is_set() => break,
-                Err(e) => return Err(ProviderError::Stream(e.to_string())),
+                Err(e) => {
+                    return Err(ProviderError::Stream(format!(
+                        "{e} (endpoint {})",
+                        crate::provider::endpoint_label(&self.base_url)
+                    )))
+                }
             };
             if data.trim() == "[DONE]" {
                 break;
@@ -218,7 +223,7 @@ impl Provider for OpenAiCompatProvider {
         // D19: the provider named the fix in the error body. Anything that is
         // not that exact rejection falls through with byte-identical text.
         if !is_token_cap_rejection(&err, sent) {
-            return Err(transport_error_to_provider(err));
+            return Err(transport_error_to_provider(err, &self.base_url));
         }
         // ONE retry with the other name and the SAME value, same URL, same
         // credential, same cancel token. post_stream_with_retries polls the
@@ -248,9 +253,9 @@ impl Provider for OpenAiCompatProvider {
             // way, both names are wrong for this endpoint and only the
             // operator can settle it, so say which knob settles it.
             Err(e2) if is_token_cap_rejection(&e2, other) => {
-                Err(append_knob_hint(transport_error_to_provider(e2)))
+                Err(append_knob_hint(transport_error_to_provider(e2, &self.base_url)))
             }
-            Err(e2) => Err(transport_error_to_provider(e2)),
+            Err(e2) => Err(transport_error_to_provider(e2, &self.base_url)),
         }
     }
 }
@@ -321,7 +326,7 @@ fn append_knob_hint(e: ProviderError) -> ProviderError {
     }
 }
 
-fn transport_error_to_provider(e: TransportError) -> ProviderError {
+fn transport_error_to_provider(e: TransportError, base_url: &str) -> ProviderError {
     match e {
         TransportError::Status { code, body, .. } => {
             // ErrorPayload, not ErrorEnvelope: Google answers with the
@@ -344,11 +349,62 @@ fn transport_error_to_provider(e: TransportError) -> ProviderError {
             }
         }
         TransportError::Io(msg) => ProviderError::Network(msg),
+        // T63 P3: a real network failure names the endpoint (host:port only).
+        TransportError::Unreachable { refused: true, .. } => ProviderError::Network(format!(
+            "nothing is listening at {}: is your model server running? (temur doctor checks reachability)",
+            crate::provider::endpoint_label(base_url)
+        )),
+        TransportError::Unreachable { message, .. } => ProviderError::Network(format!(
+            "{message} (endpoint {})",
+            crate::provider::endpoint_label(base_url)
+        )),
         // T50: the ordinary turn-error path, same as any other network
-        // failure. Control returns, the session stays intact, and no
-        // string pinned by T21/T43 changes.
-        TransportError::Timeout { phase, .. } => {
-            ProviderError::Network(format!("timed out waiting for {phase} from the server"))
+        // failure. Control returns and the session stays intact. The
+        // "network: " prefix and the T21/T43 wording stay; T63 P3 appends
+        // the endpoint.
+        TransportError::Timeout { phase, .. } => ProviderError::Network(format!(
+            "timed out waiting for {phase} from the server (endpoint {})",
+            crate::provider::endpoint_label(base_url)
+        )),
+    }
+}
+
+#[cfg(test)]
+mod endpoint_error_tests {
+    use super::*;
+
+    /// T63 P3: each network failure names host:port and never the
+    /// userinfo or query of the base URL; the non-network `Io` values
+    /// (an interrupt here) are left exactly as they were.
+    #[test]
+    fn a_network_error_names_the_endpoint_and_nothing_else_of_the_url() {
+        let base = "http://user:secret@127.0.0.1:8080/v1?token=abc";
+        let refused = transport_error_to_provider(
+            TransportError::Unreachable { message: "io: Connection refused (os error 111)".into(), refused: true },
+            base,
+        )
+        .to_string();
+        assert_eq!(
+            refused,
+            "network: nothing is listening at 127.0.0.1:8080: is your model server running? (temur doctor checks reachability)"
+        );
+        let other = transport_error_to_provider(
+            TransportError::Unreachable { message: "host not found".into(), refused: false },
+            base,
+        )
+        .to_string();
+        assert_eq!(other, "network: host not found (endpoint 127.0.0.1:8080)");
+        let timeout = transport_error_to_provider(
+            TransportError::Timeout { phase: "connect".into(), retryable: true },
+            base,
+        )
+        .to_string();
+        assert_eq!(timeout, "network: timed out waiting for connect from the server (endpoint 127.0.0.1:8080)");
+        let interrupted =
+            transport_error_to_provider(TransportError::Io("interrupted by user".into()), base).to_string();
+        assert_eq!(interrupted, "network: interrupted by user");
+        for m in [&refused, &other, &timeout] {
+            assert!(!m.contains("secret") && !m.contains("token"), "{m}");
         }
     }
 }

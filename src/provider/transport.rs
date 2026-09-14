@@ -19,6 +19,13 @@ pub enum TransportError {
     },
     #[error("io/connect: {0}")]
     Io(String),
+    /// A real network failure from the HTTP layer (T63 P3), kept apart from
+    /// [`TransportError::Io`], which also carries an interrupt and the
+    /// mock-replay and capture-file errors. Only this variant gains the
+    /// endpoint when a provider reports it. `refused` is an OS-level
+    /// connection refusal: nothing is listening at that address.
+    #[error("network: {message}")]
+    Unreachable { message: String, refused: bool },
     /// A T50 timeout: the request never got past `phase` inside the bound
     /// that phase allows. Separate from [`TransportError::Io`] for one
     /// reason, and it is a behavioral one rather than a cosmetic one: this
@@ -35,6 +42,7 @@ impl TransportError {
                 matches!(code, 408 | 429) || *code >= 500
             }
             TransportError::Io(_) => true,
+            TransportError::Unreachable { .. } => true,
             TransportError::Timeout { retryable, .. } => *retryable,
         }
     }
@@ -43,6 +51,7 @@ impl TransportError {
         match self {
             TransportError::Status { retry_after, .. } => *retry_after,
             TransportError::Io(_) => None,
+            TransportError::Unreachable { .. } => None,
             TransportError::Timeout { .. } => None,
         }
     }
@@ -174,10 +183,10 @@ pub fn chat_agent_with(
 ///   which is the same order as the three-minute hang this milestone exists
 ///   to remove.
 /// - Connect and Resolve stay retryable, matching what a refused connection
-///   already does today (`Io` is retryable), because a failure to reach the
+///   already does today (a network failure is retryable), because a failure to reach the
 ///   host genuinely can be transient. Composed worst case is
 ///   10 + 2 + 10 + 4 + 10 = 36s.
-/// - Anything else ureq adds later falls through to the old `Io` behavior
+/// - Anything else ureq adds later falls through to the ordinary network-failure behavior
 ///   rather than silently inheriting a rule written without it in mind
 ///   (`ureq::Timeout` is `#[non_exhaustive]`).
 pub fn classify_send_error(e: ureq::Error) -> TransportError {
@@ -189,7 +198,15 @@ pub fn classify_send_error(e: ureq::Error) -> TransportError {
                 retryable,
             }
         }
-        other => TransportError::Io(other.to_string()),
+        // Same text as before ("io: ..."), now in its own variant.
+        ureq::Error::Io(io) => TransportError::Unreachable {
+            refused: io.kind() == std::io::ErrorKind::ConnectionRefused,
+            message: format!("io: {io}"),
+        },
+        other => TransportError::Unreachable {
+            message: other.to_string(),
+            refused: false,
+        },
     }
 }
 
@@ -330,5 +347,33 @@ impl Read for TeeReader {
             let _ = self.out.write_all(&buf[..n]);
         }
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod unreachable_tests {
+    use super::*;
+
+    /// A refused connect is the one case the provider message treats
+    /// specially, so it must be recognized by kind, not by text. It stays
+    /// retryable, as `Io` was.
+    #[test]
+    fn a_refused_connection_is_unreachable_and_marked_refused() {
+        let e = classify_send_error(ureq::Error::Io(std::io::Error::from(
+            std::io::ErrorKind::ConnectionRefused,
+        )));
+        match &e {
+            TransportError::Unreachable { refused, message } => {
+                assert!(*refused);
+                assert!(message.starts_with("io: "), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(e.retryable());
+        assert_eq!(e.retry_after(), None);
+
+        let e = classify_send_error(ureq::Error::HostNotFound);
+        assert!(matches!(e, TransportError::Unreachable { refused: false, .. }), "{e:?}");
+        assert!(e.retryable());
     }
 }
