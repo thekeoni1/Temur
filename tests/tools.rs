@@ -3409,3 +3409,63 @@ fn a_document_hit_carries_the_rest_of_a_wrapped_sentence() {
     .unwrap();
     assert!(back.output.contains("Kestrel-class"), "{}", back.output);
 }
+
+/// T63 P2a, the EDIT IDEMPOTENCY GUARD (named so; the edit tool's own "F3"
+/// is the indentation-delta feature). The repro from the spec: an edit whose
+/// newString extends oldString in place, sent twice, appended twice, because
+/// oldString still matches inside the already-edited line.
+#[test]
+fn an_already_applied_edit_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("cart.py");
+    std::fs::write(
+        &f,
+        "def total(items):\n    total = 0\n    for item in items:\n        total += item[\"qty\"]\n    return total\n",
+    )
+    .unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let old = "        total += item[\"qty\"]";
+    let new = format!("{old} * item[\"unit_price\"]");
+    let args = json!({"filePath": f.to_str().unwrap(), "oldString": old, "newString": new});
+
+    run(&reg, &mut ctx, "edit", args.clone()).unwrap();
+    let once = std::fs::read_to_string(&f).unwrap();
+    assert_eq!(once.matches("unit_price").count(), 1, "{once}");
+
+    let second = run(&reg, &mut ctx, "edit", args);
+    let after = std::fs::read_to_string(&f).unwrap();
+    assert_eq!(after, once, "the second identical edit must not change the file:\n{after}");
+    let err = second.expect_err("the second identical edit must be refused");
+    assert!(err.to_string().contains("this edit looks already applied"), "{err}");
+}
+
+/// T63 P2a: a wrap edit, where newString contains oldString but is not yet
+/// in the file, still applies. Resending it is refused, and replaceAll
+/// refuses when any site is already applied rather than applying it twice.
+#[test]
+fn a_wrap_edit_applies_once_and_replace_all_never_double_applies() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("w.js");
+    std::fs::write(&f, "foo();\n").unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let wrap = json!({"filePath": f.to_str().unwrap(), "oldString": "foo()", "newString": "try { foo() }"});
+    run(&reg, &mut ctx, "edit", wrap.clone()).unwrap();
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "try { foo() };\n");
+    let again = run(&reg, &mut ctx, "edit", wrap).expect_err("the resent wrap must be refused");
+    assert!(again.to_string().contains("this edit looks already applied"), "{again}");
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "try { foo() };\n");
+
+    // replaceAll with one site already applied and one fresh: refused, file untouched.
+    let g = dir.path().join("r.txt");
+    std::fs::write(&g, "a = 1 + tax\nb = 1\n").unwrap();
+    let all = json!({"filePath": g.to_str().unwrap(), "oldString": "1", "newString": "1 + tax", "replaceAll": true});
+    let refused = run(&reg, &mut ctx, "edit", all).expect_err("an applied site must refuse replaceAll");
+    assert!(refused.to_string().contains("this edit looks already applied"), "{refused}");
+    assert!(
+        refused.to_string().contains("With replaceAll, 1 of 2 match sites already carry newString, so nothing was changed."),
+        "a mixed replaceAll says how many sites are done: {refused}"
+    );
+    assert_eq!(std::fs::read_to_string(&g).unwrap(), "a = 1 + tax\nb = 1\n");
+}

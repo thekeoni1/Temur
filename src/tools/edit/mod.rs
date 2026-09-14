@@ -82,6 +82,24 @@ impl Tool for EditTool {
                 "oldString appears {matches} times in the file. Provide more surrounding context to make it unique, or set replaceAll to true."
             )));
         }
+        // T63 P2a, the EDIT IDEMPOTENCY GUARD: a resent edit whose newString
+        // extends oldString in place would apply a second time, because
+        // oldString still matches inside the edited text. The fuzzy path is
+        // not reached here and is unchanged.
+        let applied = applied_sites(&content, &p.old_string, &p.new_string);
+        if applied > 0 {
+            let mut msg = "this edit looks already applied: newString is already present at the match site. Read the file before editing it again."
+                .to_string();
+            // A mixed replaceAll (some sites done, some not) is refused
+            // outright, never partially applied, and says how many are done
+            // so the model reads the file instead of guessing.
+            if p.replace_all {
+                msg.push_str(&format!(
+                    " With replaceAll, {applied} of {matches} match sites already carry newString, so nothing was changed."
+                ));
+            }
+            return Err(ToolError::failed(msg));
+        }
         let (new_content, count) = if p.replace_all {
             (content.replace(&p.old_string, &p.new_string), matches)
         } else {
@@ -93,6 +111,29 @@ impl Tool for EditTool {
             output: format!("Edited {} ({count} replacement(s))", path.display()),
         })
     }
+}
+
+/// T63 P2a: how many matches of `old` sit where replacing `old` with `new`
+/// has already happened. For each offset k at which `old` sits inside `new`,
+/// a match of `old` at byte i is already applied when the text starting at
+/// i - k is exactly `new`. Any such match refuses the edit, with or without
+/// `replaceAll` (Ruling on P2a: replacing all would apply that site a second
+/// time). A `new` that contains `old` but is not yet in the file (a wrap
+/// edit) has no such match, so it goes through. A `new` that contains `old`
+/// more than once counts each of its matches.
+fn applied_sites(content: &str, old: &str, new: &str) -> usize {
+    let offsets: Vec<usize> = new.match_indices(old).map(|(k, _)| k).collect();
+    if offsets.is_empty() {
+        return 0;
+    }
+    content
+        .match_indices(old)
+        .filter(|(i, _)| {
+            offsets
+                .iter()
+                .any(|&k| *i >= k && content.get(*i - k..).is_some_and(|rest| rest.starts_with(new)))
+        })
+        .count()
 }
 
 impl EditTool {
