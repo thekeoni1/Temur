@@ -1,0 +1,9 @@
+# The rustc the release is cut on, so every machine builds temur with the
+# same Rust compiler as the shipped binary. The host C compiler that builds
+# ring is not pinned and can still move the binary size by a few thousand
+# bytes between machines. Only the i686 targets are listed; CI adds the
+# other release targets itself.
+[toolchain]
+channel = "1.96.1"
+profile = "minimal"
+targets = ["i686-unknown-linux-gnu", "i686-unknown-linux-musl"]

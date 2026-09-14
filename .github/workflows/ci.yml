@@ -29,10 +29,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential gcc-multilib libc6-i386 libc6-dev-i386
 
-      - name: Install Rust (stable, i686 gnu target)
+      - name: Install Rust (pinned by rust-toolchain.toml, i686 gnu target)
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install
+          rustup show
           rustup target add i686-unknown-linux-gnu
 
       - uses: actions/cache@v4
@@ -86,10 +86,10 @@ jobs:
           sudo apt-get install -y build-essential gcc-13-multilib libc6-i386 libc6-dev-i386 \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf qemu-user-static
 
-      - name: Install Rust (stable, all four musl release targets)
+      - name: Install Rust (pinned by rust-toolchain.toml, all four musl release targets)
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install
+          rustup show
           rustup target add i686-unknown-linux-musl x86_64-unknown-linux-musl \
             aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf
 
