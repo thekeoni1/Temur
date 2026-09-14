@@ -3364,3 +3364,48 @@ fn eval_write_pdf() {
     }
     println!("WRITEPDF-END");
 }
+
+/// T63 P4 (c): extracted PDF text wraps a long sentence at the writer's line
+/// width, and a hit on the first half used to show only that half (task 13
+/// quoted "which the board has approved." from a line ending "which the
+/// board"). A prose document hit now carries the next extracted line, once,
+/// at the hit's own line number. A raw text file is unchanged.
+#[test]
+fn a_document_hit_carries_the_rest_of_a_wrapped_sentence() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let sentence = "The Kestrel-class hull survey is deferred to the 2027 dry-dock window, which the board accepted on the understanding that the interim checks continue.";
+    let pdf = dir.path().join("wrapped.pdf");
+    run(&reg, &mut ctx, "write", json!({"filePath": pdf.to_str().unwrap(), "content": sentence})).unwrap();
+    std::fs::write(
+        dir.path().join("wrapped.txt"),
+        "The Kestrel note, which the board\naccepted later.\n",
+    )
+    .unwrap();
+
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "Kestrel"})).unwrap();
+    let pdf_hit = out.output.lines().find(|l| l.contains("wrapped.pdf:")).expect("a pdf hit");
+    assert!(
+        pdf_hit.contains("Kestrel-class") && pdf_hit.contains("accepted on the understanding"),
+        "the hit must carry the continuation: {}",
+        out.output
+    );
+    let txt_hit = out.output.lines().find(|l| l.contains("wrapped.txt:")).expect("a txt hit");
+    assert!(txt_hit.ends_with("which the board"), "a raw file is unchanged: {}", out.output);
+
+    // The number is still the hit's own line: read at that offset shows it.
+    let n: u64 = pdf_hit
+        .split(':')
+        .nth(1)
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no line number in {pdf_hit}"));
+    let back = run(
+        &reg,
+        &mut ctx,
+        "read",
+        json!({"filePath": pdf.to_str().unwrap(), "offset": n, "limit": 1}),
+    )
+    .unwrap();
+    assert!(back.output.contains("Kestrel-class"), "{}", back.output);
+}

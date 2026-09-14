@@ -2207,7 +2207,7 @@ fn model_switch_updates_everything_and_next_turn_uses_it() {
         &mut h.ctx(&mut session, &build),
     );
     assert!(
-        events.contains(&AgentEvent::ModelSwitched { model: "model-b".into(), provider: "openai-compat".into() }),
+        events.contains(&AgentEvent::ModelSwitched { model: "model-b".into(), provider: "openai-compat".into(), host: Some("hosted b.test".into()) }),
         "chrome signal present: {events:?}"
     );
     assert!(
@@ -3409,7 +3409,7 @@ fn raw_id_switch_keeps_profile_settings_and_the_save_records_it() {
         commands::parse("/model raw-model-x"),
         &mut h.ctx(&mut session, &build),
     );
-    assert!(events.contains(&AgentEvent::ModelSwitched { model: "raw-model-x".into(), provider: "openai-compat".into() }));
+    assert!(events.contains(&AgentEvent::ModelSwitched { model: "raw-model-x".into(), provider: "openai-compat".into(), host: Some("hosted b.test".into()) }));
     assert!(
         notices(&events)
             .iter()
@@ -3518,7 +3518,7 @@ fn model_switch_save_switches_then_persists_to_the_profile_site() {
         commands::parse("/model raw-x --save"),
         &mut h.ctx(&mut session, &build),
     );
-    assert!(events.contains(&AgentEvent::ModelSwitched { model: "raw-x".into(), provider: "openai-compat".into() }));
+    assert!(events.contains(&AgentEvent::ModelSwitched { model: "raw-x".into(), provider: "openai-compat".into(), host: Some("hosted b.test".into()) }));
     assert!(
         notices(&events).iter().any(|n| n.starts_with("saved model raw-x to ")),
         "{events:?}"
@@ -3592,7 +3592,7 @@ fn model_switch_save_persist_failure_keeps_the_switch() {
         commands::parse("/model raw-x --save"),
         &mut h.ctx(&mut session, &build),
     );
-    assert!(events.contains(&AgentEvent::ModelSwitched { model: "raw-x".into(), provider: "anthropic".into() }));
+    assert!(events.contains(&AgentEvent::ModelSwitched { model: "raw-x".into(), provider: "anthropic".into(), host: None }));
     assert!(
         notices(&events)
             .iter()
@@ -3806,6 +3806,7 @@ fn hop_rule1_exact_model_match_activates_that_profile() {
     assert!(events.contains(&AgentEvent::ModelSwitched {
         model: "claude-opus-5".into(),
         provider: "anthropic".into(),
+        host: None,
     }));
     assert_eq!(
         notices(&events),
@@ -3832,6 +3833,7 @@ fn hop_rule1_inexact_takes_first_anthropic_profile_then_overrides() {
     assert!(events.contains(&AgentEvent::ModelSwitched {
         model: "claude-opus-4-8".into(),
         provider: "anthropic".into(),
+        host: None,
     }));
     assert_eq!(
         notices(&events),

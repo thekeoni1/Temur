@@ -41,7 +41,7 @@ pub fn draw(app: &mut App, frame: &mut Frame) {
 }
 
 fn draw_header(app: &App, frame: &mut Frame, area: Rect) {
-    let right = format!("{} · temur {}", app.model, app.version);
+    let right = header_right(app, area.width as usize);
     let title = app.title.as_deref().unwrap_or("new session");
     let left_budget = (area.width as usize).saturating_sub(display_width(&right) + 3);
     let title = truncate_width(title, left_budget);
@@ -496,4 +496,28 @@ fn draw_footer(app: &App, frame: &mut Frame, area: Rect) {
         Span::styled(right, dim()),
     ]);
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/// T63 P4 (D26): the header's right side. For an openai-compat selection it
+/// names where the model runs, `local host:port` or `hosted host`, between
+/// the model and the version. When that would crowd the session title at
+/// this width, the host is shortened first and dropped last; the model is
+/// never cut.
+fn header_right(app: &App, width: usize) -> String {
+    let plain = format!("{} \u{b7} temur {}", app.model, app.version);
+    let Some(host) = app.host.as_deref() else {
+        return plain;
+    };
+    // Columns the title keeps, plus the separator and draw_header's padding.
+    const TITLE_MIN: usize = 12;
+    let frame = display_width(&plain) + display_width(" \u{b7} ") + 3 + TITLE_MIN;
+    let budget = width.saturating_sub(frame);
+    let host = if display_width(host) <= budget {
+        host.to_string()
+    } else if budget >= 8 {
+        truncate_width(host, budget).to_string()
+    } else {
+        return plain;
+    };
+    format!("{} \u{b7} {host} \u{b7} temur {}", app.model, app.version)
 }

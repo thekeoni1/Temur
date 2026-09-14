@@ -28,7 +28,10 @@ pub enum AgentEvent {
     /// Carries the provider (T16) so UIs can drop `/models`-cached ids when
     /// a switch changes the provider: a llama.cpp listing must never judge
     /// anthropic ids, and vice versa.
-    ModelSwitched { model: String, provider: String },
+    /// T63 P4 (D26): `host` is the locality label of an openai-compat
+    /// selection (`local host:port` or `hosted host`), `None` otherwise, so
+    /// the TUI header follows a switch.
+    ModelSwitched { model: String, provider: String, host: Option<String> },
     /// T8 `/thinking`: session thinking flipped (chrome/state signal, like
     /// [`ModelSwitched`](Self::ModelSwitched)).
     ThinkingChanged(bool),

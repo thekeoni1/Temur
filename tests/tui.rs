@@ -469,6 +469,7 @@ fn turn_tails_keep_the_model_they_ran_on_across_a_switch() {
     a.fold(&AgentEvent::ModelSwitched {
         model: "claude-opus-5".into(),
         provider: "anthropic".into(),
+        host: None,
     });
     a.submit("second");
     a.fold(&AgentEvent::TurnComplete {
@@ -575,6 +576,7 @@ fn headless_end_to_end_through_the_ui_seam_body() {
 
     let (mut ui, snapshot) = TuiUi::headless(
         SessionInfo {
+            host: None,
             model: "claude-sonnet-5".into(),
             thinking: false,
             cwd: dir.path().display().to_string(),
@@ -766,6 +768,7 @@ fn headless_submission_clears_a_stale_token_body() {
 
     let (mut ui, snapshot) = TuiUi::headless(
         SessionInfo {
+            host: None,
             model: "claude-sonnet-5".into(),
             thinking: false,
             cwd: dir.path().display().to_string(),
@@ -834,6 +837,7 @@ fn headless_coalesced_enter_esc_interrupt_survives_body() {
 
     let (mut ui, snapshot) = TuiUi::headless(
         SessionInfo {
+            host: None,
             model: "claude-sonnet-5".into(),
             thinking: false,
             cwd: dir.path().display().to_string(),
@@ -895,6 +899,7 @@ fn headless_esc_interrupts_a_blocked_turn_end_to_end_body() {
 
     let (mut ui, snapshot) = TuiUi::headless(
         SessionInfo {
+            host: None,
             model: "claude-sonnet-5".into(),
             thinking: false,
             cwd: dir.path().display().to_string(),
@@ -948,12 +953,14 @@ fn fold_provider_change_clears_cached_model_ids_same_provider_keeps() {
     a.fold(&AgentEvent::ModelSwitched {
         model: "qwen3-4b".into(),
         provider: "openai-compat".into(),
+        host: None,
     });
     assert_eq!(a.model_ids.len(), 2, "same-provider switch keeps the cache");
     // Profile switch to another provider: cache dropped, baseline updated.
     a.fold(&AgentEvent::ModelSwitched {
         model: "claude-sonnet-5".into(),
         provider: "anthropic".into(),
+        host: None,
     });
     assert!(a.model_ids.is_empty(), "provider change drops the cache");
     assert_eq!(a.provider, "anthropic");
@@ -961,6 +968,7 @@ fn fold_provider_change_clears_cached_model_ids_same_provider_keeps() {
     a.fold(&AgentEvent::ModelSwitched {
         model: "qwen3-4b".into(),
         provider: "openai-compat".into(),
+        host: None,
     });
     assert!(a.model_ids.is_empty());
 }
@@ -968,7 +976,7 @@ fn fold_provider_change_clears_cached_model_ids_same_provider_keeps() {
 #[test]
 fn fold_model_switched_and_thinking_changed_update_chrome() {
     let mut a = app();
-    a.fold(&AgentEvent::ModelSwitched { model: "model-b".into(), provider: String::new() });
+    a.fold(&AgentEvent::ModelSwitched { model: "model-b".into(), provider: String::new(), host: None });
     assert_eq!(a.model, "model-b");
     a.fold(&AgentEvent::ThinkingChanged(true));
     assert!(a.thinking);
@@ -1059,6 +1067,7 @@ fn headless_command_flow_status_leaves_title_alone_body() {
 
     let (mut ui, snapshot) = TuiUi::headless(
         SessionInfo {
+            host: None,
             model: "claude-sonnet-5".into(),
             thinking: false,
             cwd: dir.path().display().to_string(),
@@ -1209,6 +1218,7 @@ fn headless_command_flow_switch_updates_chrome_and_clear_resets_body() {
 
     let (mut ui, snapshot) = TuiUi::headless_steps(
         SessionInfo {
+            host: None,
             model: "claude-sonnet-5".into(),
             thinking: false,
             cwd: dir.path().display().to_string(),
@@ -1470,6 +1480,7 @@ fn headless_markdown_fixture_renders_in_final_frame_body() {
 
     let (mut ui, snapshot) = TuiUi::headless(
         SessionInfo {
+            host: None,
             model: "claude-sonnet-5".into(),
             thinking: false,
             cwd: dir.path().display().to_string(),
@@ -1757,6 +1768,7 @@ fn headless_tab_completion_submits_the_completed_command_body() {
 
     let (mut ui, snapshot) = TuiUi::headless(
         SessionInfo {
+            host: None,
             model: "claude-sonnet-5".into(),
             thinking: false,
             cwd: dir.path().display().to_string(),
@@ -2000,6 +2012,7 @@ fn headless_resume_backscroll_renders_in_final_frame_body() {
 
     let (mut ui, snapshot) = TuiUi::headless(
         SessionInfo {
+            host: None,
             model: "claude-sonnet-5".into(),
             thinking: false,
             cwd: "/test".into(),
@@ -2156,6 +2169,7 @@ fn approval_turn(answer: KeyCode) -> (tempfile::TempDir, Vec<String>) {
     ];
     let (mut ui, snapshot) = TuiUi::headless_steps(
         SessionInfo {
+            host: None,
             model: "claude-sonnet-5".into(),
             thinking: false,
             cwd: dir.path().display().to_string(),
@@ -2303,6 +2317,7 @@ impl temur::ui::tui::EventSource for BurstSource {
 
 fn burst_info(cwd: String) -> SessionInfo {
     SessionInfo {
+        host: None,
         model: "claude-sonnet-5".into(),
         thinking: false,
         cwd,
@@ -2823,6 +2838,7 @@ fn esc_mid_turn_interrupts_once_and_the_queued_input_starts_no_new_turn_body() {
     };
     let (mut ui, snapshot) = TuiUi::headless_with_source(
         SessionInfo {
+            host: None,
             model: "claude-sonnet-5".into(),
             thinking: false,
             cwd: dir.path().display().to_string(),
@@ -3038,6 +3054,7 @@ fn a_prompt_open_sent_before_a_submit_does_not_clear_that_submits_busy() {
 
     let (mut ui, _snapshot) = TuiUi::headless_with_source(
         SessionInfo {
+            host: None,
             model: "claude-sonnet-5".into(),
             thinking: false,
             cwd: "/tmp".into(),
@@ -3140,4 +3157,48 @@ fn a_turn_that_survives_the_race_is_still_interruptible() {
         matches!(a.handle_key(key(KeyCode::Esc)), Action::Interrupt),
         "Esc must still interrupt a turn that won the race"
     );
+}
+
+/// T63 P4 (D26): an openai-compat selection's header says where the model
+/// runs, and at 80 columns a long host is shortened before the model is.
+#[test]
+fn the_header_names_a_local_or_hosted_endpoint() {
+    let mut a = app();
+    a.model = "qwen3-4b".into();
+    a.host = Some("local 127.0.0.1:8080".into());
+    let rows = render(&mut a, 80, 12);
+    assert!(rows[0].contains("qwen3-4b \u{b7} local 127.0.0.1:8080 \u{b7} temur 0.1.0"), "{:?}", rows[0]);
+    a.host = Some("hosted api.example.com".into());
+    let rows = render(&mut a, 80, 12);
+    assert!(rows[0].contains("hosted api.example.com"), "{:?}", rows[0]);
+    a.host = Some("hosted a-very-long-hostname.that-keeps-on-going.internal-corp.example.invalid".into());
+    let rows = render(&mut a, 80, 12);
+    assert!(rows[0].contains("qwen3-4b"), "the model is never cut: {:?}", rows[0]);
+    assert!(rows[0].contains("temur 0.1.0"), "{:?}", rows[0]);
+    assert!(!rows[0].contains("example.invalid"), "the long host is shortened: {:?}", rows[0]);
+    // No label, no change: the pre-T63 header.
+    a.host = None;
+    let rows = render(&mut a, 80, 12);
+    assert!(rows[0].contains("qwen3-4b \u{b7} temur 0.1.0"), "{:?}", rows[0]);
+    assert!(!rows[0].contains("local") && !rows[0].contains("hosted"), "{:?}", rows[0]);
+}
+
+#[test]
+fn a_model_switch_carries_the_host_into_the_header() {
+    let mut a = app();
+    a.fold(&AgentEvent::ModelSwitched {
+        model: "qwen3-4b".into(),
+        provider: "openai-compat".into(),
+        host: Some("local 127.0.0.1:8080".into()),
+    });
+    assert_eq!(a.host.as_deref(), Some("local 127.0.0.1:8080"));
+    assert!(render(&mut a, 80, 12)[0].contains("local 127.0.0.1:8080"));
+    a.fold(&AgentEvent::ModelSwitched {
+        model: "claude-sonnet-5".into(),
+        provider: "anthropic".into(),
+        host: None,
+    });
+    assert_eq!(a.host, None);
+    let header = render(&mut a, 80, 12)[0].clone();
+    assert!(!header.contains("local"), "{header:?}");
 }

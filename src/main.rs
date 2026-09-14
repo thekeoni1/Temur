@@ -368,16 +368,37 @@ fn repl(
     if let Some(note) = prompt_date_note {
         pending_notices.push(note);
     }
+    // T63 P4 (D25, Rulings T63-7 and T63-8): one keyless GET of the listing
+    // reads served and trained, with /props as the fallback for served. With
+    // no window configured the probe fills it (case 1). With a configured
+    // window below the auto threshold on an auto profile it only learns the
+    // trained size (case 2): the configured window stays authoritative and is
+    // never replaced or compared here, and the only effect is the wording of
+    // the compact notice below.
+    let mut probed_trained: Option<u64> = None;
+    let mut window_probed = false;
     if temur::config::wants_startup_context_probe(&resolved, mock.is_some()) {
-        if let Some(n) = temur::provider::probe_props_context(
+        let fills_window = resolved.context_window.is_none();
+        let server = temur::provider::probe_server_context(
             &resolved.base_url,
             std::time::Duration::from_secs(temur::provider::KEYLESS_LISTING_TIMEOUT_SECS),
-        ) {
-            pending_notices.push(temur::config::apply_probed_context_window(&mut resolved, n));
+        );
+        probed_trained = server.trained;
+        if let (true, Some(n)) = (fills_window, server.served) {
+            pending_notices.push(temur::config::apply_probed_context_window_from(
+                &mut resolved,
+                n,
+                server.served_from,
+            ));
+            window_probed = true;
         }
     }
     let is_compat = resolved.provider == "openai-compat";
     let model = resolved.model.clone();
+    // T63 P4 (D26): where an openai-compat selection points, for the banner
+    // and the TUI header. Other providers show exactly what they did.
+    let host_label = (resolved.provider == "openai-compat")
+        .then(|| temur::provider::endpoint_locality(&resolved.base_url));
     let cwd_display = cwd.display().to_string();
     // T9: the ACTIVE prompt profile — starts as the startup selection's
     // (profile's own > global > full), then tracks `/model` switches.
@@ -411,7 +432,11 @@ fn repl(
         resolved.prompt_profile,
         resolved.context_window,
     ) {
-        pending_notices.push(temur::config::auto_compact_notice(w));
+        pending_notices.push(temur::config::auto_compact_notice_with(
+            w,
+            probed_trained,
+            window_probed,
+        ));
     }
     let mut pending_loaded: Option<AgentEvent> = None;
     let seed = if resume || resume_key.is_some() {
@@ -506,7 +531,13 @@ fn repl(
         }
         None => {
             if banner {
-                println!("temur {VERSION} (model={model}, thinking={})", cfg.thinking);
+                match &host_label {
+                    Some(host) => println!(
+                        "temur {VERSION} (model={model}, thinking={}) \u{b7} {host}",
+                        cfg.thinking
+                    ),
+                    None => println!("temur {VERSION} (model={model}, thinking={})", cfg.thinking),
+                }
             }
             match &capture {
                 // Tee raw SSE bodies to <base>.<n>.sse for the golden
@@ -674,6 +705,8 @@ fn repl(
                 profiles: profiles.keys().cloned().collect(),
                 // T16: the clear-on-provider-change baseline for cached ids.
                 provider: resolved.provider.clone(),
+                // T63 P4 (D26): the header's locality label.
+                host: host_label.clone(),
             },
             // T6: the render thread holds the session's cancel token so
             // Esc can interrupt a running turn.

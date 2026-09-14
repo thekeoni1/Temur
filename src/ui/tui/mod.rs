@@ -36,6 +36,9 @@ pub struct SessionInfo {
     /// The provider active at startup (T16): the baseline the cached-ids
     /// clear-on-provider-change comparison starts from.
     pub provider: String,
+    /// T63 P4 (D26): the startup selection's locality label for the header,
+    /// `None` for providers other than openai-compat.
+    pub host: Option<String>,
 }
 
 enum ToUi {
@@ -364,6 +367,7 @@ impl TuiUi {
                 // out so the mode never outlives the process.
                 set_bracketed_paste(true);
                 let mut app = App::new(info.model, info.thinking, info.cwd, info.version);
+                app.host = info.host;
                 app.profiles = info.profiles;
                 app.provider = info.provider;
                 let (_, end) =
@@ -428,6 +432,7 @@ impl TuiUi {
                 let backend = ratatui::backend::TestBackend::new(width, height);
                 let terminal = Terminal::new(backend).expect("test backend");
                 let mut app = App::new(info.model, info.thinking, info.cwd, info.version);
+                app.host = info.host;
                 app.profiles = info.profiles;
                 app.provider = info.provider;
                 let (terminal, _) =

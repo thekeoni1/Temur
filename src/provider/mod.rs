@@ -656,6 +656,9 @@ pub trait Provider {
     ) -> Result<ResponseMessage, ProviderError>;
 }
 
+/// What [`endpoint_label`] prints when a base URL has no clean host and port.
+pub const ENDPOINT_FALLBACK: &str = "the configured endpoint";
+
 /// The `host:port` of a base URL, for naming an endpoint in an error message
 /// (T63 P3). Hand-rolled like the other base-URL helpers: the scheme picks
 /// the default port, and userinfo, path, query and fragment are dropped, so a
@@ -663,7 +666,7 @@ pub trait Provider {
 /// left that is not a host or port character yields "the configured
 /// endpoint" instead of a partial string.
 pub fn endpoint_label(base_url: &str) -> String {
-    const FALLBACK: &str = "the configured endpoint";
+    const FALLBACK: &str = ENDPOINT_FALLBACK;
     let (default_port, rest) = if let Some(r) = base_url.strip_prefix("https://") {
         ("443", r)
     } else if let Some(r) = base_url.strip_prefix("http://") {
@@ -737,5 +740,184 @@ mod endpoint_label_tests {
         ] {
             assert_eq!(endpoint_label(bad), "the configured endpoint", "{bad:?}");
         }
+    }
+}
+
+/// T63 P4 (D26): whether a base URL points at this machine or its private
+/// network. Loopback, RFC 1918 private IPv4, link-local, `localhost` and
+/// `.local` names are local. Everything else is hosted, including a URL
+/// [`endpoint_label`] cannot name, since hosted is the side that can cost
+/// money and the safer thing to say when unsure.
+pub fn is_local_endpoint(base_url: &str) -> bool {
+    let label = endpoint_label(base_url);
+    if label == ENDPOINT_FALLBACK {
+        return false;
+    }
+    let host = host_part(&label);
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    let lower = bare.to_ascii_lowercase();
+    if lower == "localhost" || lower.ends_with(".local") {
+        return true;
+    }
+    if let Ok(ip) = bare.parse::<std::net::Ipv4Addr>() {
+        return ip.is_loopback() || ip.is_private() || ip.is_link_local();
+    }
+    if let Ok(ip) = bare.parse::<std::net::Ipv6Addr>() {
+        return ip.is_loopback() || (ip.segments()[0] & 0xffc0) == 0xfe80;
+    }
+    false
+}
+
+/// The locality label an openai-compat selection shows (T63 P4, D26):
+/// `local host:port` or `hosted host`. Built on [`endpoint_label`], so it
+/// never carries userinfo, a path or a query.
+pub fn endpoint_locality(base_url: &str) -> String {
+    let label = endpoint_label(base_url);
+    if is_local_endpoint(base_url) {
+        format!("local {label}")
+    } else if label == ENDPOINT_FALLBACK {
+        "hosted endpoint".to_string()
+    } else {
+        format!("hosted {}", host_part(&label))
+    }
+}
+
+/// The host of an [`endpoint_label`] `host:port`, brackets kept on IPv6.
+fn host_part(host_port: &str) -> &str {
+    if host_port.starts_with('[') {
+        return host_port.find(']').map_or(host_port, |close| &host_port[..=close]);
+    }
+    match host_port.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => h,
+        _ => host_port,
+    }
+}
+
+/// T63 P4 (D25, Ruling T63-7): what a llama.cpp listing says about context
+/// in its first model's `meta` block, as `(served, trained)` from `n_ctx`
+/// and `n_ctx_train`. Each is `None` when absent, zero or unparseable.
+/// Pure, unit-tested against canned JSON.
+pub fn parse_models_context(body: &str) -> (Option<u64>, Option<u64>) {
+    let Ok(v) = serde_json::from_str::<Value>(body) else {
+        return (None, None);
+    };
+    let meta = v.get("data").and_then(|d| d.get(0)).and_then(|m| m.get("meta"));
+    let field = |k: &str| meta.and_then(|m| m.get(k)).and_then(Value::as_u64).filter(|&n| n > 0);
+    (field("n_ctx"), field("n_ctx_train"))
+}
+
+/// Served and trained context for a keyless endpoint (T63 P4, D25).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerContext {
+    /// The server's context allocation.
+    pub served: Option<u64>,
+    /// The model's trained context, known only from a listing `meta` block.
+    pub trained: Option<u64>,
+    /// Which request produced `served`: `/v1/models` or `/props`.
+    pub served_from: &'static str,
+}
+
+/// T63 P4 (D25, Ruling T63-7): ONE bounded keyless GET of `{base}/models`
+/// reads served and trained from the first model's `meta`. When that yields
+/// no served size (an older llama.cpp, a server with no `meta`, or any
+/// failure), [`probe_props_context`] supplies served alone and trained stays
+/// `None`, so a server sees at most two requests. Same base-URL-only
+/// signature as the other keyless probes, so it cannot attach auth, and the
+/// same "None on any problem" contract.
+pub fn probe_server_context(base_url: &str, timeout: std::time::Duration) -> ServerContext {
+    use std::io::Read;
+    rustls::crypto::ring::default_provider().install_default().ok();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_global(Some(timeout))
+        .build()
+        .new_agent();
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let (served, trained) = match agent.get(&url).call() {
+        Ok(res) if (200..300).contains(&res.status().as_u16()) => {
+            let mut body = String::new();
+            let _ = res
+                .into_body()
+                .into_reader()
+                .take(64 * 1024)
+                .read_to_string(&mut body);
+            parse_models_context(&body)
+        }
+        _ => (None, None),
+    };
+    if served.is_some() {
+        return ServerContext { served, trained, served_from: "/v1/models" };
+    }
+    ServerContext {
+        served: probe_props_context(base_url, timeout),
+        trained,
+        served_from: "/props",
+    }
+}
+
+#[cfg(test)]
+mod locality_and_server_context_tests {
+    use super::*;
+
+    #[test]
+    fn local_means_this_machine_or_its_private_network() {
+        for local in [
+            "http://127.0.0.1:8080/v1",
+            "http://localhost:8080/v1",
+            "http://10.0.0.5:8080/v1",
+            "http://172.16.3.4/v1",
+            "http://192.168.1.20:1234/v1",
+            "http://169.254.10.1/v1",
+            "http://gpu-box.local:8080/v1",
+            "http://[::1]:8080/v1",
+            "http://[fe80::1]/v1",
+        ] {
+            assert!(is_local_endpoint(local), "{local}");
+            assert!(endpoint_locality(local).starts_with("local "), "{local}");
+        }
+        for hosted in [
+            "https://api.openai.com/v1",
+            "http://8.8.8.8/v1",
+            "http://172.32.0.1/v1",
+            "http://b.test/v1",
+            "http://ex ample.com/v1",
+        ] {
+            assert!(!is_local_endpoint(hosted), "{hosted}");
+            assert!(endpoint_locality(hosted).starts_with("hosted "), "{hosted}");
+        }
+    }
+
+    #[test]
+    fn the_locality_label_is_short_and_names_nothing_but_the_host() {
+        assert_eq!(endpoint_locality("http://127.0.0.1:8080/v1"), "local 127.0.0.1:8080");
+        assert_eq!(endpoint_locality("https://api.openai.com/v1"), "hosted api.openai.com");
+        assert_eq!(endpoint_locality("http://b.test/v1"), "hosted b.test");
+        assert_eq!(
+            endpoint_locality("https://user:secret@api.example.com/v1?key=abc"),
+            "hosted api.example.com"
+        );
+        assert_eq!(endpoint_locality("http://[::1]:8080/v1"), "local [::1]:8080");
+        assert_eq!(endpoint_locality("http://user:pa/ss@host/v1"), "hosted endpoint");
+    }
+
+    #[test]
+    fn models_meta_gives_served_and_trained() {
+        let both = r#"{"object":"list","data":[{"id":"/model.gguf","meta":{"n_ctx":12288,"n_ctx_train":262144,"n_vocab":151936}}]}"#;
+        assert_eq!(parse_models_context(both), (Some(12288), Some(262144)));
+        let served_only = r#"{"data":[{"id":"m","meta":{"n_ctx":8192}}]}"#;
+        assert_eq!(parse_models_context(served_only), (Some(8192), None));
+        let no_meta = r#"{"data":[{"id":"served-a"},{"id":"served-b"}]}"#;
+        assert_eq!(parse_models_context(no_meta), (None, None));
+        let zero = r#"{"data":[{"id":"m","meta":{"n_ctx":0,"n_ctx_train":0}}]}"#;
+        assert_eq!(parse_models_context(zero), (None, None));
+        assert_eq!(parse_models_context("not json"), (None, None));
+        assert_eq!(parse_models_context(r#"{"data":[]}"#), (None, None));
+    }
+
+    #[test]
+    fn an_unreachable_server_gives_nothing_and_says_where_it_looked_last() {
+        // Nothing listens on port 1: both GETs fail inside the bound.
+        let ctx = probe_server_context("http://127.0.0.1:1/v1", std::time::Duration::from_secs(2));
+        assert_eq!(ctx, ServerContext { served: None, trained: None, served_from: "/props" });
     }
 }

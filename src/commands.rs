@@ -191,6 +191,12 @@ fn profile_word(p: PromptProfile, source: PromptProfileSource) -> &'static str {
 /// [`crate::config::auto_compact_notice`] with startup, so a `/model`
 /// switch that lands on the auto-chosen compact profile explains itself in
 /// exactly the words the startup line used.
+/// T63 P4 (D26): the locality label an openai-compat selection shows in the
+/// TUI header and in /status, `None` for every other provider.
+fn host_label(p: &ResolvedProfile) -> Option<String> {
+    (p.provider == "openai-compat").then(|| crate::provider::endpoint_locality(&p.base_url))
+}
+
 fn auto_compact_notice(p: &ResolvedProfile) -> Option<AgentEvent> {
     match (p.prompt_profile_source, p.prompt_profile, p.context_window) {
         (PromptProfileSource::Auto, PromptProfile::Compact, Some(w)) => {
@@ -363,6 +369,11 @@ fn status(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
             _ => "context: no usage reported yet".into(),
         }),
     ];
+    // T63 P4 (D26): where an openai-compat selection points, on its own line
+    // so the provider line keeps the shape tests and users already read.
+    if let Some(host) = host_label(ctx.active_resolved) {
+        out.insert(2, notice(format!("endpoint: {host}")));
+    }
     out.extend(cost_line);
     // Absent means absent, no placeholder: the same rule the cost line uses.
     if let Some(line) = ctx.project_instructions {
@@ -537,6 +548,7 @@ fn model_switch(ctx: &mut CommandCtx, name: String) -> Vec<AgentEvent> {
         AgentEvent::ModelSwitched {
             model: profile.model.clone(),
             provider: profile.provider.clone(),
+            host: host_label(profile),
         },
         notice(format!(
             "switched to {name} ({} · {})",
@@ -651,11 +663,13 @@ fn hop_switch(ctx: &mut CommandCtx, id: String, name: String) -> Vec<AgentEvent>
     }
     // T41: the hop is a full activation, so it re-ran the auto rule too.
     let auto = auto_compact_notice(&ctx.profiles[&name]);
+    let hop_host = host_label(&ctx.profiles[&name]);
     if id == hop_model {
         let mut out = vec![
             AgentEvent::ModelSwitched {
                 model: id.clone(),
                 provider: hop_provider,
+                host: hop_host.clone(),
             },
             notice(format!(
                 "{id:?} is an anthropic model - switched to profile {name:?} (anthropic, {id})"
@@ -670,6 +684,7 @@ fn hop_switch(ctx: &mut CommandCtx, id: String, name: String) -> Vec<AgentEvent>
                 AgentEvent::ModelSwitched {
                     model: id.clone(),
                     provider: hop_provider,
+                    host: hop_host.clone(),
                 },
                 notice(format!(
                     "{id:?} looks anthropic - hopped to profile {name:?} (its key file and limits apply), model {id}"
@@ -688,6 +703,7 @@ fn hop_switch(ctx: &mut CommandCtx, id: String, name: String) -> Vec<AgentEvent>
                 AgentEvent::ModelSwitched {
                     model: hop_model.clone(),
                     provider: hop_provider,
+                    host: hop_host.clone(),
                 },
                 notice(format!(
                     "hopped to profile {name:?}, but the model override to {id:?} failed — the profile's own model {hop_model} is active"
@@ -710,6 +726,7 @@ fn plain_raw_switch(ctx: &mut CommandCtx, id: &str) -> Vec<AgentEvent> {
         AgentEvent::ModelSwitched {
             model: id.to_string(),
             provider: ctx.active_resolved.provider.clone(),
+            host: host_label(ctx.active_resolved),
         },
         notice(format!(
             "switched model to {id} ({} · profile settings kept)",

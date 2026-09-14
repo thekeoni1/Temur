@@ -8,6 +8,13 @@ use std::time::Duration;
 
 const MAX_MATCHES: usize = 100;
 const MAX_LINE_CHARS: usize = 250;
+
+/// Whether an extracted document line ends a sentence, or a clause that
+/// stands on its own (T63 P4 (c)): `.`, `!`, `?`, `:` or `;` once trailing
+/// whitespace is dropped.
+fn ends_a_sentence(line: &str) -> bool {
+    line.trim_end().ends_with(['.', '!', '?', ':', ';'])
+}
 /// T62 P1(a): how much of a document grep turns into text before searching
 /// it. A bound is needed because grep reads EVERY file it walks, so without
 /// one a directory of long reports would each be extracted whole. 20,000
@@ -132,6 +139,15 @@ impl Tool for GrepTool {
                 .and_then(|e| e.to_str())
                 .map(super::office::is_document)
                 .unwrap_or(false);
+            // T63 P4 (c): prose documents only. A spreadsheet row rarely ends
+            // in punctuation, and gluing the next row onto a hit would imply a
+            // relation between two rows that the sheet does not state.
+            let is_prose = is_doc
+                && entry
+                    .path()
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "pdf" | "docx"));
             let owned: String;
             if is_doc {
                 let Ok((doc, _)) = super::office::extract(entry.path(), 0, GREP_DOC_LINES) else {
@@ -149,11 +165,26 @@ impl Tool for GrepTool {
                 owned = String::from_utf8_lossy(&bytes).into_owned();
             }
             let text = owned;
-            for (lineno, line) in text.lines().enumerate() {
+            let mut lines = text.lines().enumerate().peekable();
+            while let Some((lineno, line)) = lines.next() {
                 if re.is_match(line) {
                     total += 1;
                     if matches.len() < MAX_MATCHES {
-                        let shown: String = line.chars().take(MAX_LINE_CHARS).collect();
+                        // T63 P4 (c): extracted document text wraps a sentence
+                        // across lines, and a hit showing only the first half
+                        // left a model to finish the sentence itself. A prose
+                        // document line that does not end a sentence carries
+                        // the next extracted line, once. The line number stays
+                        // the hit's own, so read's offset still agrees.
+                        let joined;
+                        let hit = match lines.peek() {
+                            Some((_, next)) if is_prose && !ends_a_sentence(line) => {
+                                joined = format!("{} {}", line.trim_end(), next.trim_start());
+                                joined.as_str()
+                            }
+                            _ => line,
+                        };
+                        let shown: String = hit.chars().take(MAX_LINE_CHARS).collect();
                         matches.push(format!(
                             "{}:{}: {shown}",
                             entry.path().display(),

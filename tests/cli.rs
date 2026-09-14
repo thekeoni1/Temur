@@ -1469,45 +1469,74 @@ fn status_marks_an_auto_chosen_profile_as_auto() {
     assert!(!stdout.contains("(auto)"), "explicit is not auto: {stdout}");
 }
 
-// ---- T42 P4: the startup /props probe ----
+// ---- T42 P4, widened by T63 P4: the startup context probe ----
 
-/// A canned llama.cpp for the startup path: one keyless GET of `/props`
-/// answering with an n_ctx, then one chat completion so the one-shot turn
-/// finishes. Sequential on one listener, so the ORDER is asserted too:
-/// the probe has to happen before the session exists.
-#[test]
-fn startup_probes_props_for_a_missing_context_window() {
+/// A canned llama.cpp answering sequential connections in order. Each
+/// request head is handed back as it arrives, so a test pins the ORDER of
+/// what temur asked, and a missing request fails the test instead of
+/// leaving it waiting on `accept`.
+fn sequential_server(
+    responses: Vec<(&'static str, String)>,
+) -> (String, std::sync::mpsc::Receiver<String>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://127.0.0.1:{}/v1", listener.local_addr().unwrap().port());
-    let sse = std::fs::read_to_string(fixture("text_simple.sse")).unwrap();
-    let server = std::thread::spawn(move || {
-        let mut heads = Vec::new();
-        let bodies: [(&str, String); 2] = [
-            ("application/json", r#"{"default_generation_settings":{"n_ctx":12288}}"#.into()),
-            ("text/event-stream", sse),
-        ];
-        for (ctype, body) in bodies {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for (ctype, body) in responses {
             use std::io::Read;
-            let (mut stream, _) = listener.accept().unwrap();
+            let Ok((mut stream, _)) = listener.accept() else { return };
             let mut req = Vec::new();
             let mut buf = [0u8; 4096];
             loop {
-                let n = stream.read(&mut buf).unwrap();
+                let n = stream.read(&mut buf).unwrap_or(0);
                 req.extend_from_slice(&buf[..n]);
                 if n == 0 || req.windows(4).any(|w| w == b"\r\n\r\n") {
                     break;
                 }
             }
-            heads.push(String::from_utf8_lossy(&req).into_owned());
+            let _ = tx.send(String::from_utf8_lossy(&req).into_owned());
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             let _ = stream.write_all(response.as_bytes());
         }
-        heads
     });
+    (base, rx)
+}
 
+/// The request heads the server saw, in order, lowercased. Waits a bounded
+/// time for each expected one; the process has already exited by the time
+/// this runs, so a short bound is enough.
+fn heads_seen(rx: &std::sync::mpsc::Receiver<String>, expected: usize) -> Vec<String> {
+    let mut heads = Vec::new();
+    while heads.len() < expected {
+        match rx.recv_timeout(std::time::Duration::from_secs(20)) {
+            Ok(h) => heads.push(h.to_ascii_lowercase()),
+            Err(_) => break,
+        }
+    }
+    heads
+}
+
+fn assert_no_credential_header(head: &str) {
+    assert!(
+        !head.contains("authorization") && !head.contains("x-api-key"),
+        "a startup probe sent a credential header: {head}"
+    );
+}
+
+/// No window configured, and a listing with no `meta` (an older llama.cpp,
+/// or another server): served falls back to `/props` (T63 P4, Ruling
+/// T63-7). The probe still happens before the session exists.
+#[test]
+fn startup_probes_props_for_a_missing_context_window() {
+    let sse = std::fs::read_to_string(fixture("text_simple.sse")).unwrap();
+    let (base, rx) = sequential_server(vec![
+        ("application/json", r#"{"object":"list","data":[{"id":"local-gguf"}]}"#.into()),
+        ("application/json", r#"{"default_generation_settings":{"n_ctx":12288}}"#.into()),
+        ("text/event-stream", sse),
+    ]);
     let sb = sandbox();
     // Keyless openai-compat with NO context_window and the default (auto)
     // prompt profile: exactly the shape that ran blind before T42.
@@ -1518,56 +1547,69 @@ fn startup_probes_props_for_a_missing_context_window() {
     c.args(["-p", "hi"]);
     let (code, stdout, stderr) = run(c, "");
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
-    assert!(
-        stderr.contains("context window 12288 detected from the server (/props)"),
-        "{stderr}"
-    );
-    // The consequence the probe unlocks, in T41's own words: 12288 is below
-    // the auto threshold, so the profile flips and says so.
-    assert!(
-        stderr.contains("prompt profile: compact (context_window 12288 is below"),
-        "{stderr}"
-    );
+    assert!(stderr.contains("context window 12288 detected from the server (/props)"), "{stderr}");
+    // No trained size on this path, so T41's own words are unchanged.
+    assert!(stderr.contains("prompt profile: compact (context_window 12288 is below"), "{stderr}");
 
-    let heads = server.join().unwrap();
-    assert_eq!(heads.len(), 2, "one probe, one completion");
-    let probe = heads[0].to_ascii_lowercase();
-    assert!(probe.starts_with("get /props "), "{probe}");
-    assert!(
-        !probe.contains("authorization") && !probe.contains("x-api-key"),
-        "the startup probe sent a credential header: {probe}"
-    );
-    assert!(heads[1].to_ascii_lowercase().starts_with("post /v1/chat/completions "));
+    let heads = heads_seen(&rx, 3);
+    assert_eq!(heads.len(), 3, "listing, /props fallback, completion: {heads:?}");
+    assert!(heads[0].starts_with("get /v1/models "), "{}", heads[0]);
+    assert!(heads[1].starts_with("get /props "), "{}", heads[1]);
+    assert_no_credential_header(&heads[0]);
+    assert_no_credential_header(&heads[1]);
+    assert!(heads[2].starts_with("post /v1/chat/completions "), "{}", heads[2]);
 }
 
+/// No window configured, and a llama.cpp listing whose `meta` carries both
+/// sizes: ONE probe request, and the compact notice names the -c flag
+/// because the model was trained for more (T63 P4, case 1).
 #[test]
-fn a_configured_context_window_is_never_probed_over() {
-    // The server would answer 12288 if asked. It must not be asked: a
-    // configured window is authoritative, and doctor already warns when
-    // the two disagree.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let base = format!("http://127.0.0.1:{}/v1", listener.local_addr().unwrap().port());
+fn startup_reads_served_and_trained_from_the_listing_meta() {
     let sse = std::fs::read_to_string(fixture("text_simple.sse")).unwrap();
-    let server = std::thread::spawn(move || {
-        use std::io::Read;
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut req = Vec::new();
-        let mut buf = [0u8; 4096];
-        loop {
-            let n = stream.read(&mut buf).unwrap();
-            req.extend_from_slice(&buf[..n]);
-            if n == 0 || req.windows(4).any(|w| w == b"\r\n\r\n") {
-                break;
-            }
-        }
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}",
-            sse.len()
-        );
-        let _ = stream.write_all(response.as_bytes());
-        String::from_utf8_lossy(&req).into_owned()
-    });
+    let (base, rx) = sequential_server(vec![
+        (
+            "application/json",
+            r#"{"object":"list","data":[{"id":"local-gguf","meta":{"n_ctx":12288,"n_ctx_train":262144}}]}"#.into(),
+        ),
+        ("text/event-stream", sse),
+    ]);
+    let sb = sandbox();
+    sb.write_config(&format!(
+        r#"{{"provider":"openai-compat","openai_compat":{{"base_url":"{base}","model":"local-gguf"}}}}"#
+    ));
+    let mut c = sb.cmd();
+    c.args(["-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains("context window 12288 detected from the server (/v1/models)"), "{stderr}");
+    assert!(
+        stderr.contains(
+            "prompt profile: compact (the server allocates 12288; this model supports 262144; start the server with -c 20480 or more to select the full profile, or set prompt_profile to \"full\")"
+        ),
+        "{stderr}"
+    );
+    let heads = heads_seen(&rx, 2);
+    assert_eq!(heads.len(), 2, "one probe, one completion: {heads:?}");
+    assert!(heads[0].starts_with("get /v1/models "), "{}", heads[0]);
+    assert_no_credential_header(&heads[0]);
+    assert!(heads[1].starts_with("post /v1/chat/completions "), "{}", heads[1]);
+}
 
+/// A configured window below the auto threshold on the default (auto)
+/// profile, `temur init`'s local template: startup probes for the TRAINED
+/// size only. The configured window is authoritative, so it is never
+/// replaced (no "detected" line), and the notice says to raise it too
+/// (T63 P4, Ruling T63-8, case 2).
+#[test]
+fn a_configured_compact_window_is_never_replaced_but_learns_the_trained_size() {
+    let sse = std::fs::read_to_string(fixture("text_simple.sse")).unwrap();
+    let (base, rx) = sequential_server(vec![
+        (
+            "application/json",
+            r#"{"object":"list","data":[{"id":"local-gguf","meta":{"n_ctx":12288,"n_ctx_train":262144}}]}"#.into(),
+        ),
+        ("text/event-stream", sse),
+    ]);
     let sb = sandbox();
     sb.write_config(&format!(
         r#"{{"provider":"openai-compat","openai_compat":{{"base_url":"{base}","model":"local-gguf","context_window":8192}}}}"#
@@ -1576,10 +1618,39 @@ fn a_configured_context_window_is_never_probed_over() {
     c.args(["-p", "hi"]);
     let (code, stdout, stderr) = run(c, "");
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
-    assert!(!stderr.contains("/props"), "no probe was made: {stderr}");
-    // The FIRST request the server saw is the completion, not a probe.
-    let head = server.join().unwrap().to_ascii_lowercase();
-    assert!(head.starts_with("post /v1/chat/completions "), "{head}");
+    assert!(!stderr.contains("detected from the server"), "the window was replaced: {stderr}");
+    assert!(
+        stderr.contains(
+            "prompt profile: compact (context_window 8192 is below 20480; this model supports 262144; start the server with -c 20480 or more and raise context_window to match to select the full profile, or set prompt_profile to \"full\")"
+        ),
+        "{stderr}"
+    );
+    let heads = heads_seen(&rx, 2);
+    assert_eq!(heads.len(), 2, "one probe, one completion: {heads:?}");
+    assert!(heads[0].starts_with("get /v1/models "), "{}", heads[0]);
+    assert_no_credential_header(&heads[0]);
+    assert!(heads[1].starts_with("post /v1/chat/completions "), "{}", heads[1]);
+}
+
+/// An explicit prompt_profile with a configured window is never probed:
+/// nothing the probe could learn would change what is printed (T63-8). The
+/// FIRST request the server sees is the completion.
+#[test]
+fn a_configured_context_window_with_an_explicit_profile_is_never_probed() {
+    let sse = std::fs::read_to_string(fixture("text_simple.sse")).unwrap();
+    let (base, rx) = sequential_server(vec![("text/event-stream", sse)]);
+    let sb = sandbox();
+    sb.write_config(&format!(
+        r#"{{"provider":"openai-compat","prompt_profile":"compact","openai_compat":{{"base_url":"{base}","model":"local-gguf","context_window":8192}}}}"#
+    ));
+    let mut c = sb.cmd();
+    c.args(["-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!stderr.contains("detected from the server"), "no probe was made: {stderr}");
+    let heads = heads_seen(&rx, 1);
+    assert_eq!(heads.len(), 1, "{heads:?}");
+    assert!(heads[0].starts_with("post /v1/chat/completions "), "{}", heads[0]);
 }
 
 // ------------------------------- T46 P2: one-shot -p refuses mutations

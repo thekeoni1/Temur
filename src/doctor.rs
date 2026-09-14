@@ -144,6 +144,11 @@ fn run_with_sandbox_probe(
             return finish(r);
         }
     };
+    // T63 P4 (D26): a hosted openai-compat endpoint bills per request, which a
+    // local model server does not, and the base URL alone does not say so.
+    if active.provider == "openai-compat" && !crate::provider::is_local_endpoint(&active.base_url) {
+        writeln!(r.out, "NOTE: this profile is hosted; requests cost money on the provider's terms")?;
+    }
 
     // Credentials, active selection first (FAILs are startup blockers),
     // then every named profile's key file (WARN only: an unusable inactive
@@ -331,10 +336,13 @@ fn context_check(
 ) -> std::io::Result<()> {
     let probed = if !no_network && p.provider == "openai-compat" && p.api_key_file.is_none() {
         *props.entry(p.base_url.clone()).or_insert_with(|| {
-            crate::provider::probe_props_context(
+            // T63 P4 (D25, Ruling T63-7): the same probe startup uses, so the
+            // two never disagree about served.
+            crate::provider::probe_server_context(
                 &p.base_url,
                 std::time::Duration::from_secs(crate::provider::KEYLESS_LISTING_TIMEOUT_SECS),
             )
+            .served
         })
     } else {
         None
@@ -348,10 +356,22 @@ fn context_check(
             "{prefix}context_window {c} is larger than the server context allocation (n_ctx {n}) at {}: the context advisory fires too late and requests can fail at the real limit",
             p.base_url
         )),
-        (Some(n), Some(c)) => r.warn(&format!(
-            "{prefix}context_window {c} is smaller than the server context allocation (n_ctx {n}) at {}: safe, but the advisory fires earlier than it needs to",
-            p.base_url
-        )),
+        (Some(n), Some(c)) => {
+            // T63 P4 (D25): a small configured window also costs the full
+            // profile and the larger tool-output cap, not just advisory timing.
+            let below = if c < crate::config::PROMPT_AUTO_COMPACT_BELOW {
+                format!(
+                    "; below {} that also means the compact profile and the 8k tool-output cap",
+                    crate::config::PROMPT_AUTO_COMPACT_BELOW
+                )
+            } else {
+                String::new()
+            };
+            r.warn(&format!(
+                "{prefix}context_window {c} is smaller than the server context allocation (n_ctx {n}) at {}: safe, but the advisory fires earlier than it needs to{below}",
+                p.base_url
+            ))
+        }
         (Some(n), None) => r.warn(&format!(
             "{prefix}no context_window configured; the server at {} allocates n_ctx {n}: add \"context_window\": {n} to the profile",
             p.base_url
@@ -1957,6 +1977,61 @@ mod tests {
         );
         let (_, out) = doctor_over(&cfg, false);
         assert!(!out.contains("is larger than context_window"), "{out}");
+    }
+
+    /// T63 P4 (D25, Ruling T63-7): served comes from the listing's meta when
+    /// it is there, and /props stays the fallback when it is not.
+    #[test]
+    fn context_check_prefers_listing_meta_and_falls_back_to_props() {
+        let base = canned_server_with_props(
+            r#"{"data":[{"id":"served","meta":{"n_ctx":8192,"n_ctx_train":262144}}]}"#,
+            r#"{"default_generation_settings":{"n_ctx":4096}}"#,
+        );
+        let (_, out) = doctor_over(&keyless_config_with_window(&base, "served", 8192), false);
+        assert!(
+            out.contains("PASS: context_window 8192 matches the server context allocation (n_ctx 8192)"),
+            "meta wins over /props: {out}"
+        );
+        let base = canned_server_with_props(
+            r#"{"data":[{"id":"served"}]}"#,
+            r#"{"default_generation_settings":{"n_ctx":4096}}"#,
+        );
+        let (_, out) = doctor_over(&keyless_config_with_window(&base, "served", 4096), false);
+        assert!(
+            out.contains("PASS: context_window 4096 matches the server context allocation (n_ctx 4096)"),
+            "no meta falls back to /props: {out}"
+        );
+    }
+
+    /// T63 P4 (D25): below the auto threshold a smaller configured window
+    /// also costs the full profile and the larger tool-output cap.
+    #[test]
+    fn context_check_smaller_and_below_threshold_names_the_compact_cost() {
+        let base = canned_server_with_props(
+            r#"{"data":[{"id":"served","meta":{"n_ctx":32768,"n_ctx_train":262144}}]}"#,
+            r#"{"default_generation_settings":{"n_ctx":32768}}"#,
+        );
+        let (_, out) = doctor_over(&keyless_config_with_window(&base, "served", 8192), false);
+        assert!(
+            out.contains("; below 20480 that also means the compact profile and the 8k tool-output cap"),
+            "{out}"
+        );
+        let (_, out) = doctor_over(&keyless_config_with_window(&base, "served", 24576), false);
+        assert!(out.contains("is smaller than the server context allocation (n_ctx 32768)"), "{out}");
+        assert!(!out.contains("below 20480"), "at or above the threshold nothing is added: {out}");
+    }
+
+    /// T63 P4 (D26): a hosted openai-compat profile gets the cost NOTE and a
+    /// local one does not. No network: the hosted base is never contacted.
+    #[test]
+    fn a_hosted_openai_compat_profile_gets_the_cost_note() {
+        let (_, out) = doctor_over(&keyless_config("https://api.example.com/v1", "m"), true);
+        assert!(
+            out.contains("NOTE: this profile is hosted; requests cost money on the provider's terms"),
+            "{out}"
+        );
+        let (_, out) = doctor_over(&keyless_config("http://127.0.0.1:8080/v1", "m"), true);
+        assert!(!out.contains("this profile is hosted"), "{out}");
     }
 
     #[test]

@@ -159,6 +159,36 @@ impl PromptProfileSpec {
 /// startup and `/model` so the two can never word it differently. Only
 /// ever called for an `Auto` selection that landed on compact, which by
 /// construction has a window.
+/// T63 P4 (D25, Rulings T63-7 and T63-8): the startup compact notice, which
+/// names the server's `-c` flag when the model was trained for a window the
+/// full profile could use. `trained` comes only from the startup probe, so
+/// a `/model` switch passes `None` and keeps [`auto_compact_notice`]'s
+/// wording. `window_probed` says whether the window came from the server
+/// (case 1) or from config (case 2). In case 2 raising `-c` alone does not
+/// select the full profile, so the notice says to raise `context_window` too.
+pub fn auto_compact_notice_with(context_window: u64, trained: Option<u64>, window_probed: bool) -> String {
+    let w = context_window;
+    match trained {
+        Some(t) if t >= PROMPT_AUTO_COMPACT_BELOW && w < PROMPT_AUTO_COMPACT_BELOW => {
+            if window_probed {
+                format!(
+                    "prompt profile: compact (the server allocates {w}; this model supports {t}; \
+                     start the server with -c {PROMPT_AUTO_COMPACT_BELOW} or more to select the full \
+                     profile, or set prompt_profile to \"full\")"
+                )
+            } else {
+                format!(
+                    "prompt profile: compact (context_window {w} is below {PROMPT_AUTO_COMPACT_BELOW}; \
+                     this model supports {t}; start the server with -c {PROMPT_AUTO_COMPACT_BELOW} or \
+                     more and raise context_window to match to select the full profile, or set \
+                     prompt_profile to \"full\")"
+                )
+            }
+        }
+        _ => auto_compact_notice(w),
+    }
+}
+
 pub fn auto_compact_notice(context_window: u64) -> String {
     format!(
         "prompt profile: compact (context_window {context_window} is below \
@@ -166,26 +196,39 @@ pub fn auto_compact_notice(context_window: u64) -> String {
     )
 }
 
-/// T42 P4: does this selection want the startup `/props` probe?
+/// T42 P4, widened by T63 P4 (Ruling T63-8): does this selection want the
+/// startup context probe ([`crate::provider::probe_server_context`])?
 ///
 /// Deliberately narrow, and every clause is load-bearing. `openai-compat`
 /// with NO key file is the keyless local endpoint the probe was built for
-/// in T22, and it is the only shape [`crate::provider::probe_props_context`]
-/// can be pointed at: that function takes a base URL and nothing else, so
-/// it cannot attach auth by construction. An UNSET `context_window` is the
-/// only case worth asking about, because a configured one is authoritative
-/// and is never probed over (doctor already warns when the two disagree,
-/// which is the right place for that conversation). And `--mock` replays
-/// fixtures with no server to ask.
+/// in T22, and it is the only shape the probe can be pointed at: it takes a
+/// base URL and nothing else, so it cannot attach auth by construction. And
+/// `--mock` replays fixtures with no server to ask. Past that, exactly two
+/// cases, both load-bearing:
 ///
-/// Costs at most one 3-second GET, once, on a run that would otherwise
-/// have had no window at all: no advisory, no auto-compaction, and the
-/// unscaled tool-output ceiling.
+/// 1. An UNSET `context_window`: the probe fills it (served) and also reads
+///    the trained size. Costs at most one 3-second GET (two in the /props
+///    fallback) on a run that would otherwise have had no window at all: no
+///    advisory, no auto-compaction, and the unscaled tool-output ceiling.
+/// 2. A SET `context_window` below [`PROMPT_AUTO_COMPACT_BELOW`] on an
+///    `Auto` prompt profile, so compact will be selected: the probe learns
+///    the TRAINED size only, to word the compact notice. The configured
+///    window stays authoritative and is never replaced or compared at
+///    startup (doctor already warns when the two disagree, which is the
+///    right place for that conversation). This is `temur init`'s local
+///    template (8192). It costs one bounded 3-second keyless GET at startup
+///    where there was none before, two in the fallback case. An explicit
+///    `prompt_profile` means no probe, because nothing printed could change.
 pub fn wants_startup_context_probe(p: &ResolvedProfile, is_mock: bool) -> bool {
     !is_mock
         && p.provider == "openai-compat"
         && p.api_key_file.is_none()
-        && p.context_window.is_none()
+        && match p.context_window {
+            None => true,
+            Some(w) => {
+                w < PROMPT_AUTO_COMPACT_BELOW && p.prompt_profile_source == PromptProfileSource::Auto
+            }
+        }
 }
 
 /// T42 P4: fold a probed window into the resolved selection, returning the
@@ -200,11 +243,18 @@ pub fn wants_startup_context_probe(p: &ResolvedProfile, is_mock: bool) -> bool {
 /// the existing T41 line ([`auto_compact_notice`]) says so right after
 /// this one, in the same words startup and `/model` have always used.
 pub fn apply_probed_context_window(p: &mut ResolvedProfile, n: u64) -> String {
+    apply_probed_context_window_from(p, n, "/props")
+}
+
+/// [`apply_probed_context_window`] naming the request the window came from
+/// (T63 P4): `/v1/models` when the listing's `meta` carried it, `/props`
+/// on the fallback.
+pub fn apply_probed_context_window_from(p: &mut ResolvedProfile, n: u64, source: &str) -> String {
     p.context_window = Some(n);
     if p.prompt_profile_source == PromptProfileSource::Auto {
         p.prompt_profile = auto_prompt_profile(Some(n));
     }
-    probed_context_notice(n)
+    probed_context_notice_from(n, source)
 }
 
 /// The T42 P4 startup line. Names the SOURCE, because a number nobody
@@ -212,8 +262,13 @@ pub fn apply_probed_context_window(p: &mut ResolvedProfile, n: u64) -> String {
 /// CONSEQUENCE, because the three things it switches on are exactly the
 /// three a user would otherwise wonder about.
 pub fn probed_context_notice(n: u64) -> String {
+    probed_context_notice_from(n, "/props")
+}
+
+/// [`probed_context_notice`] naming its source request (T63 P4).
+pub fn probed_context_notice_from(n: u64, source: &str) -> String {
     format!(
-        "context window {n} detected from the server (/props); the context advisory, \
+        "context window {n} detected from the server ({source}); the context advisory, \
          auto-compaction, and the tool-output cap now use it"
     )
 }
@@ -985,10 +1040,28 @@ mod tests {
         assert!(wants_startup_context_probe(&keyless_local(), false));
         // --mock has no server to ask.
         assert!(!wants_startup_context_probe(&keyless_local(), true));
-        // A configured window is authoritative and is never probed over.
+        // Case 2 (T63 P4, Ruling T63-8): a configured window below the auto
+        // threshold on an Auto profile probes, for the trained size only.
         let mut p = keyless_local();
         p.context_window = Some(8192);
+        assert!(wants_startup_context_probe(&p, false));
+        // Case 2 does not apply at or above the threshold (full is chosen
+        // anyway), to an explicit profile (nothing printed could change),
+        // to a key file, or under --mock.
+        let mut p = keyless_local();
+        p.context_window = Some(PROMPT_AUTO_COMPACT_BELOW);
         assert!(!wants_startup_context_probe(&p, false));
+        let mut p = keyless_local();
+        p.context_window = Some(8192);
+        p.prompt_profile_source = PromptProfileSource::Explicit;
+        assert!(!wants_startup_context_probe(&p, false));
+        let mut p = keyless_local();
+        p.context_window = Some(8192);
+        p.api_key_file = Some("/srv/secrets/key".into());
+        assert!(!wants_startup_context_probe(&p, false));
+        let mut p = keyless_local();
+        p.context_window = Some(8192);
+        assert!(!wants_startup_context_probe(&p, true));
         // A keyed endpoint: the T22 probe is keyless by construction and
         // is not pointed at anything that expects auth.
         let mut p = keyless_local();
@@ -1366,6 +1439,32 @@ mod tests {
         assert_eq!(base.context_window, None);
         assert_eq!(base.prompt_profile, crate::tools::PromptProfile::Full);
         assert_eq!(base.prompt_profile_source, PromptProfileSource::Auto);
+    }
+
+    /// T63 P4 (D25): the -c advice appears only when the trained size says
+    /// the full profile is reachable, with case 1 and case 2 worded for what
+    /// the user actually has to change.
+    #[test]
+    fn the_startup_compact_notice_names_minus_c_only_when_training_allows_it() {
+        let probed = auto_compact_notice_with(12288, Some(262_144), true);
+        assert_eq!(
+            probed,
+            "prompt profile: compact (the server allocates 12288; this model supports 262144; start the server with -c 20480 or more to select the full profile, or set prompt_profile to \"full\")"
+        );
+        let configured = auto_compact_notice_with(8192, Some(262_144), false);
+        assert_eq!(
+            configured,
+            "prompt profile: compact (context_window 8192 is below 20480; this model supports 262144; start the server with -c 20480 or more and raise context_window to match to select the full profile, or set prompt_profile to \"full\")"
+        );
+        // Unknown or too-small trained sizes keep today's text exactly.
+        assert_eq!(auto_compact_notice_with(8192, None, false), auto_compact_notice(8192));
+        assert_eq!(auto_compact_notice_with(8192, Some(16_384), true), auto_compact_notice(8192));
+        for line in [&probed, &configured] {
+            assert!(line.is_ascii() && !line.contains('\n'), "{line}");
+        }
+        // The window source is named when it came from the listing.
+        assert!(probed_context_notice_from(12288, "/v1/models").contains("(/v1/models)"));
+        assert_eq!(probed_context_notice(12288), probed_context_notice_from(12288, "/props"));
     }
 
     #[test]

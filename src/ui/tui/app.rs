@@ -140,6 +140,10 @@ pub struct App {
     // Session info for chrome.
     pub title: Option<String>,
     pub model: String,
+    /// T63 P4 (D26): the selection's locality label for the header, `None`
+    /// for providers other than openai-compat. Tracked via
+    /// [`AgentEvent::ModelSwitched`].
+    pub host: Option<String>,
     pub thinking: bool,
     pub cwd: String,
     pub version: String,
@@ -191,6 +195,7 @@ impl App {
             turn_started_ms: 0,
             title: None,
             model,
+            host: None,
             thinking,
             cwd,
             version,
@@ -315,12 +320,13 @@ impl App {
             // separately, so these fold silently into chrome. A provider
             // change drops the cached `/models` ids (T16): they described
             // the OLD provider's catalog.
-            AgentEvent::ModelSwitched { model, provider } => {
+            AgentEvent::ModelSwitched { model, provider, host } => {
                 if *provider != self.provider {
                     self.model_ids.clear();
                     self.provider = provider.clone();
                 }
                 self.model = model.clone();
+                self.host = host.clone();
             }
             AgentEvent::ThinkingChanged(on) => self.thinking = *on,
             AgentEvent::SessionCleared => {
