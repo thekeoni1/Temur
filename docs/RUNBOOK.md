@@ -10779,3 +10779,136 @@ have caught a staging error without touching GitHub.
   is T60, and it is the reason this release is named for document
   writing. F1 in particular ships in v0.35.0 unfixed and was a
   deliberate, recorded decision, not an oversight.
+
+## v0.35.0 published-asset soak (desktop, recorded 2026-09-14)
+
+The published i686 asset was downloaded anonymously on the desktop,
+checked against `SHA256SUMS`, smoked in containers and measured with one
+twelve-task eval on Qwen3-4B. Both readings that could fail at one run
+held: 9/9 on the nine scored tasks, and task 11 PASS.
+
+### The cut, as found
+
+Tag `v0.35.0` is annotated tag object
+`136d5c62b66b399b5b24de8433d77dce7c3c0bbe` on commit `8b216da`, parent
+`e2a6057`. `origin/main` after the cut was `039a562`, and the desktop
+clone fast-forwarded `e2a6057..039a562` with `--ff-only`. Nothing was
+retagged.
+
+### The asset
+
+`temur-v0.35.0-i686-unknown-linux-musl`, **9,869,908 bytes**, sha256
+**`7282830a760cd0ee40ed13f577762969b54c27a15e4887f703e2050d1ba690a0`**.
+
+It was fetched with plain `curl -fL` from the release URL, with
+`GH_TOKEN` and `GITHUB_TOKEN` unset. `sha256sum -c --ignore-missing
+SHA256SUMS` printed OK for it, and `SHA256SUMS` is 428 bytes. The byte
+count equals the ship record above. The sha256 equals a second anonymous
+download planning took on this box. The ship record lists no per-asset
+sha256, so there was no laptop-side value to compare.
+
+`scripts/install.sh` from the tagged tree, run inside
+`docker.io/i386/debian:stable`, printed `checksum verified.` and
+`temur 0.35.0`, and the installed file has the asset's sha256 and byte
+count. Two details of that container matter to anyone repeating it:
+
+- In a container on this box `uname -m` says `x86_64`, so run
+  `install.sh` under `linux32`. Without it the installer picks the x86_64
+  asset.
+- The image ships no curl and no wget. `curl` was installed with
+  `apt-get` inside the throwaway container first.
+
+### Container smoke on the asset
+
+The downloaded asset, mounted read-only.
+
+| check | result |
+| --- | --- |
+| i386 debian, `temur --version` | `temur 0.35.0` |
+| i386 debian, `temur doctor --no-network`, fresh container | completes; 0 pass, 0 warn, 1 fail (no config file) |
+| i386 debian, `temur init` then `doctor --no-network` | 7 pass, 0 warn, 0 fail |
+| `busybox:stable`, `temur --version` | `temur 0.35.0` |
+
+The second doctor run gives doctor a config written by the asset's own
+`temur init`, so its checks have something to read. It is an instrument
+smoke and is counted nowhere. `busybox:stable` was pulled fresh for this
+(image `b116e155`). `check.sh` was not edited: its busybox line only
+needs a directory holding a file named `temur`.
+
+### Judge binary and size
+
+Built from `git archive v0.35.0` with rustc 1.98.0, in a fresh target dir
+with `CARGO_TARGET_DIR` and `TEMUR_TARGET_DIR` both set.
+
+- Tools test binary `tools-ea9d6e531c16b2c8`, sha256
+  `633b2526103396cc991ed7c327fd872c6feaf995369da7afc77a406dcad9bfe4`.
+- Desktop i686 release of `8b216da`: 9,605,420 bytes, sha256
+  `e4f7fdc0973b8150d53aabd3bdaadf2c2df53112a7b6a76986eab1cfb18823f9`.
+
+The gap, asset minus desktop, is **+264,488 bytes**, so the desktop STOP
+is 10,000,000 - 264,488 = **9,735,512**. The laptop cut on rustc 1.96.1.
+
+### The eval reading
+
+`scripts/weak_model_eval.sh` at the tag with its defaults (CTX 8192,
+compact profile, thinking unset, `EVAL_MAX_TOKENS` 3072, `EVAL_MIN` 0,
+CPU only), model `Qwen3-4B-Instruct-2507-Q4_K_M.gguf`, one run, on the
+downloaded asset. Before the server started, the driver asserted the
+asset's sha256 and byte count and required `/app/temur --version` in the
+container to print `temur 0.35.0`. `READBACK_BIN` was set to the judge
+above and the preflight said `explicit`. It ran under the heavy-job lock
+on 2026-09-14, 1078 s wall clock.
+
+The expectation was corrected in writing before the reading. The P1 arms
+passed tasks 12 and 13 three times in six each, and the tag's grep is
+candidate (a) plus (b)'s skipped-documents sentence, a combination no arm
+ran. That left the nine and task 11 as the only readings that could fail
+at one run.
+
+| reading | result | expectation |
+| --- | --- | --- |
+| nine scored tasks | 9/9 | 9/9 |
+| 11 memo-docx | PASS, read back 9:30 | PASS |
+| 12 summary-pdf | FAIL, no summary.pdf | none |
+| 13 pdf-section | PASS, quoted the section, no bash | PASS |
+
+D22 resume-feedback also passed. Task 12 does not use grep, and grep is
+the only code on the eval's path that differs between the arms and the
+asset (the Gemini template change in `init.rs` and `config.rs` is not
+exercised by a local-model eval). Task 12 has now passed 3 of 7 readings.
+Here the model globbed for source
+documents, found none, and asked for the content without writing a file,
+though the prompt carries all three points. Task 13 is the first reading
+of the a+b grep. Its fixture reproduced the P1 control arm's sha256
+(`52a62858...`), so it read the same document the arms read. (b)'s
+sentence did not fire on task 13, observed in the session file's grep
+result; `--plain` transcripts do not carry tool output.
+
+The eval runs `/app/temur` inside the mount, so a published asset is
+staged under the name `temur`. The first launch passed the asset under
+its release filename, and every task failed within a second on
+`executable file /app/temur not found`. No model turn happened, and it
+counts as no reading (Ruling T62-14). A launch before that stopped at the
+driver's own check, because `curl -o` leaves the file at mode 644.
+
+Archive: `~/temur-eval-archive/v0.35.0-soak/`.
+
+### Finding: task 13's quote has an invented tail
+
+A grep hit in a document is one extracted line, and line 580 stops in
+the middle of the sentence:
+
+    /work/ferry-review.pdf:580: The Kestrel-class hull survey is deferred to the 2027 dry-dock window, which the board
+
+The model quoted:
+
+    The Kestrel-class hull survey is deferred to the 2027 dry-dock window, which the board has approved.
+
+The fixture, `tests/fixtures/office/ferry-review.md:77-78`, joined across
+its line break:
+
+    The Kestrel-class hull survey is deferred to the 2027 dry-dock window, which the board accepted on the understanding that the interim ultrasonic checks continue every eight weeks.
+
+Task 13 still passes, because its criterion is the sentinel. This is the
+second observation of the P1 residual and the first on a released
+binary. It is queued as T63 P4 item (c).
