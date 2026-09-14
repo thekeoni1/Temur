@@ -279,6 +279,18 @@ fn repl(
     // are validated inside resolved_profiles below).
     cfg.prompt_profile_spec()?;
     let cwd = std::env::current_dir()?;
+    // T63: the date the prompt carries, resolved once here while `mock` is
+    // still borrowable. A /model profile swap reuses it, so the prompt prefix
+    // stays byte-stable for the session even across midnight.
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (prompt_date, prompt_date_note) = temur::prompt::prompt_date(
+        mock.is_some(),
+        std::env::var("TEMUR_TODAY").ok().as_deref(),
+        now_secs,
+    );
 
     // Session persistence (T5), resolved up front so a bad cap is a startup
     // error, not a mid-session surprise. Default-on for live runs; disabled
@@ -353,6 +365,9 @@ fn repl(
     // Declared here rather than below because this notice must land before
     // the T41 auto-profile line it can cause.
     let mut pending_notices: Vec<String> = Vec::new();
+    if let Some(note) = prompt_date_note {
+        pending_notices.push(note);
+    }
     if temur::config::wants_startup_context_probe(&resolved, mock.is_some()) {
         if let Some(n) = temur::provider::probe_props_context(
             &resolved.base_url,
@@ -550,7 +565,7 @@ fn repl(
     // startup and `/model` prompt-profile swaps both call it. The config
     // override wins in EITHER profile; the skills section (advertising
     // installed skills so the model knows the skill tool is worth calling)
-    // and {cwd} are captured here. Infallible, so a switch can call it after
+    // and {cwd} and {date} are captured here. Infallible, so a switch can call it after
     // its provider build already succeeded.
     // T18: built here rather than at set_key_guard below, because T55 has
     // to consult the SAME guard before it opens a project file. One rule,
@@ -574,7 +589,11 @@ fn repl(
 
     let rebuild_system = |profile: temur::tools::PromptProfile| -> String {
         let base_system = cfg.system_prompt.clone().unwrap_or_else(|| {
-            temur::prompt::system_prompt_template(profile).replace("{cwd}", &cwd_display)
+            temur::prompt::render(
+                temur::prompt::system_prompt_template(profile),
+                &cwd_display,
+                &prompt_date,
+            )
         });
         // After the template and the skills section, from the text
         // captured above: a /model profile swap never re-reads disk, so

@@ -439,9 +439,20 @@ fn session_system_prompt(
     guard: &crate::tools::KeyGuard,
 ) -> String {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Doctor has no --mock. A malformed TEMUR_TODAY falls back to the clock
+    // here as it does in a session, and the session is where it is reported.
+    let (date, _) =
+        crate::prompt::prompt_date(false, std::env::var("TEMUR_TODAY").ok().as_deref(), now);
     let base = cfg.system_prompt.clone().unwrap_or_else(|| {
-        crate::prompt::system_prompt_template(p.prompt_profile)
-            .replace("{cwd}", &cwd.display().to_string())
+        crate::prompt::render(
+            crate::prompt::system_prompt_template(p.prompt_profile),
+            &cwd.display().to_string(),
+            &date,
+        )
     });
     let skill_override = std::env::var("TEMUR_SKILLS_DIR")
         .or_else(|_| std::env::var("OPENCODE_SKILLS_DIR"))
@@ -502,21 +513,27 @@ fn floor_estimate(system: &str, defs: &[crate::provider::ToolDef]) -> u64 {
 /// direction. The calibration is re-measured whenever the prefix
 /// changes, because a stale reference is worse than none: T53's D22
 /// sentence moved both templates, and T54's `spreadsheet` definition
-/// moved both again. Current figures (2026-09-08, llama.cpp
-/// `server-b10438`, Qwen3-4B-Instruct-2507 Q4_K_M, `context_window`
-/// 12288, cwd /home/dev/temur-desktop): 7,433 counted tokens for the
-/// full profile and 3,205 for the compact one, against T53's 6,972 and
-/// 2,744 and F6's pre-T53 6,991 and 2,763 (RUNBOOK, 2026-08-29). The
-/// +461 both profiles gained is one tool definition, and it is the same
+/// moved both again, and T63's date line moved both a third time.
+/// Current figures (2026-09-14, Qwen3-4B-Instruct-2507 Q4_K_M,
+/// `context_window` 12288, cwd /home/dev/temur-desktop): 7,448 counted
+/// tokens for the full profile (llama.cpp `server-cuda-b10438`, `-ngl 99`,
+/// because a CPU server does not answer the full prefill inside the probe
+/// bound) and 3,220 for the compact one (`server-b10438`, CPU). The same
+/// day, the build without the date line counted 7,430 and 3,202, so the
+/// line costs 18 tokens in each profile. That cwd is a short path; a
+/// longer working directory raises both figures. Earlier references:
+/// 2026-09-08's 7,433 and 3,205, T53's 6,972 and 2,744, and F6's pre-T53
+/// 6,991 and 2,763 (RUNBOOK, 2026-08-29). The +461 both profiles gained
+/// between T53 and 2026-09-08 is one tool definition, and it is the same
 /// number twice because the compact profile trims DESCRIPTIONS and does
-/// not drop tools. Against the new figures this estimator reads 7,645
-/// for the full profile in the same run, i.e. 2.9% HIGH, not low: the
+/// not drop tools. Against the current full figure this estimator reads
+/// 7,635 with the same binary and cwd, i.e. 2.5% HIGH, not low: the
 /// estimate and the count weigh the same bytes but chars/4 is not
 /// tokenization, and a different cwd path or skill set moves both.
 /// Anyone who wants the real number can have it, from the measured
 /// line, for one request.
 const PROMPT_FLOOR_ESTIMATE_NOTE: &str =
-    "NOTE: that estimate is prompt bytes divided by 4, which is not tokenization: expect it to be off by some percent in either direction. A networked run against a keyless openai-compat server reports a measured figure instead. Reference measurement (2026-09-08, llama.cpp, Qwen3-4B-Instruct-2507): 7,433 tokens for the full profile, 3,205 for the compact one.";
+    "NOTE: that estimate is prompt bytes divided by 4, which is not tokenization: expect it to be off by some percent in either direction. A networked run against a keyless openai-compat server reports a measured figure instead. Reference measurement (2026-09-14, llama.cpp, Qwen3-4B-Instruct-2507, measured from a short working-directory path; a longer one raises both): 7,448 tokens for the full profile, 3,220 for the compact one.";
 
 /// What moves the number, printed with every floor line, measured or not.
 /// Both ingredients are things the reader can change and neither is
@@ -2589,9 +2606,11 @@ mod tests {
         // A representative cwd, not this checkout's: the floor moves with
         // the path length, and the tie must not depend on where the
         // repository happens to live.
-        let system =
-            crate::prompt::system_prompt_template(crate::tools::PromptProfile::Full)
-                .replace("{cwd}", "/home/user/projects/example-project");
+        let system = crate::prompt::render(
+            crate::prompt::system_prompt_template(crate::tools::PromptProfile::Full),
+            "/home/user/projects/example-project",
+            "2026-01-01",
+        );
         let defs = crate::tools::Registry::standard_with_skills(vec![])
             .with_profile(crate::tools::PromptProfile::Full)
             .definitions();
