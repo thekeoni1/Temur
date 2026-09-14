@@ -62,7 +62,7 @@ impl Tool for EditTool {
         }
         if p.old_string == p.new_string {
             return Err(ToolError::InvalidInput(
-                "newString must be different from oldString".into(),
+                "newString equals oldString: there is nothing to change. If the file already reads the way you want, do not edit it again; continue with the task.".into(),
             ));
         }
         let path = resolve_path(ctx, &p.file_path);

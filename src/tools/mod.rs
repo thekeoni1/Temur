@@ -261,6 +261,10 @@ pub struct ToolCtx {
     /// session read it, so a resumed session must re-read before
     /// overwriting.
     read_paths: std::collections::HashSet<PathBuf>,
+    /// T63 P2b: per canonical path, the identity of the last successful file
+    /// read ([`ReadKey`]), so an identical read of an unchanged file can say
+    /// so. Starts empty, like `read_paths`, and for the same reason.
+    last_reads: std::collections::HashMap<PathBuf, ReadKey>,
 }
 
 impl ToolCtx {
@@ -277,6 +281,7 @@ impl ToolCtx {
             output_cap: MAX_OUTPUT_CHARS,
             walk_limits: None,
             read_paths: std::collections::HashSet::new(),
+            last_reads: std::collections::HashMap::new(),
         }
     }
 
@@ -292,6 +297,17 @@ impl ToolCtx {
     pub fn was_read(&self, path: &std::path::Path) -> bool {
         self.read_paths
             .contains(&std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
+    }
+
+    /// T63 P2b: record this file read and say whether it repeats the
+    /// previous read of the same file exactly: same window, same length,
+    /// same modification time. A read with no known mtime is never called
+    /// identical, since nothing would show the file had changed.
+    pub fn note_read(&mut self, path: &std::path::Path, key: ReadKey) -> bool {
+        let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.last_reads
+            .insert(canon, key)
+            .is_some_and(|prev| prev == key && key.mtime.is_some())
     }
 }
 
@@ -663,4 +679,15 @@ fn resolve_path(ctx: &ToolCtx, p: &str) -> PathBuf {
     } else {
         ctx.cwd.join(path)
     }
+}
+
+/// T63 P2b: what makes two reads of a file identical: the same window
+/// (`offset`, `limit`) over the same bytes, judged by length and
+/// modification time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadKey {
+    pub offset: u64,
+    pub limit: u64,
+    pub len: u64,
+    pub mtime: Option<std::time::SystemTime>,
 }

@@ -72,6 +72,14 @@ impl Tool for ReadTool {
         if meta.is_dir() {
             return read_dir(&path, offset, limit, title);
         }
+        // T63 P2b: this read's identity, for the repeat marker below. Taken
+        // from the metadata already in hand, before the file is opened.
+        let read_key = super::ReadKey {
+            offset,
+            limit,
+            len: meta.len(),
+            mtime: meta.modified().ok(),
+        };
         // T54 (D20): a PDF or office document becomes text HERE, before the
         // binary refusal that used to be the whole answer. The guard has
         // already run above, so this opens nothing the guard denies.
@@ -182,6 +190,11 @@ impl Tool for ReadTool {
             output.push_str(&format!("\n(End of file - total {lines} lines)\n"));
         }
         output.push_str("</content>");
+        // T63 P2b: an identical read of an unchanged file says so on its first
+        // line, and still returns the content in full.
+        if ctx.note_read(&path, read_key) {
+            output.insert_str(0, "[unchanged: identical to your previous read of this file]\n");
+        }
         // T19: a successful file read arms write's read-first check.
         ctx.record_read(&path);
         Ok(ToolOutput { title, output })

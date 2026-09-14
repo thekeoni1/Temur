@@ -1595,7 +1595,7 @@ fn edit_invalid_inputs_unchanged_by_fuzzy() {
         "filePath": fp, "oldString": "same", "newString": "same"
     }))
     .unwrap_err();
-    assert!(err.to_string().contains("must be different"));
+    assert!(err.to_string().contains("newString equals oldString: there is nothing to change"));
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "content\n");
 }
 
@@ -2173,7 +2173,11 @@ fn t33_real_scalars_and_absence_are_unchanged() {
 
     // Absent -> whole file; real null -> whole file; real numbers -> bound.
     let whole = run(&reg, &mut ctx, "read", json!({"filePath": rp})).unwrap().output;
-    let nulls = run(&reg, &mut ctx, "read",
+    // T63 P2b: the null read runs on a fresh context. On the same context it
+    // is the same window over the same unchanged file, so it would carry the
+    // repeat marker; what T33 pins is that null and absent parse alike.
+    let mut fresh = ctx_in(dir.path());
+    let nulls = run(&reg, &mut fresh, "read",
         json!({"filePath": rp, "offset": null, "limit": null})).unwrap().output;
     assert_eq!(whole, nulls);
     let out = run(&reg, &mut ctx, "read",
@@ -3468,4 +3472,66 @@ fn a_wrap_edit_applies_once_and_replace_all_never_double_applies() {
         "a mixed replaceAll says how many sites are done: {refused}"
     );
     assert_eq!(std::fs::read_to_string(&g).unwrap(), "a = 1 + tax\nb = 1\n");
+}
+
+/// T63 P2b (b): an identical read of an unchanged file says so on its first
+/// line and still returns the content. A changed file, a different window,
+/// and a directory read normally.
+#[test]
+fn a_repeated_identical_read_is_marked_unchanged() {
+    const MARK: &str = "[unchanged: identical to your previous read of this file]";
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("notes.txt");
+    std::fs::write(&f, "one\ntwo\nthree\n").unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let args = json!({"filePath": f.to_str().unwrap()});
+
+    let first = run(&reg, &mut ctx, "read", args.clone()).unwrap().output;
+    assert!(!first.contains(MARK), "{first}");
+    let second = run(&reg, &mut ctx, "read", args.clone()).unwrap().output;
+    assert!(second.starts_with(MARK), "{second}");
+    assert!(second.contains("2: two"), "the content is still returned: {second}");
+
+    // Same window, changed file: not identical.
+    std::fs::write(&f, "one\ntwo\nthree\nfour\n").unwrap();
+    let changed = run(&reg, &mut ctx, "read", args).unwrap().output;
+    assert!(!changed.contains(MARK), "{changed}");
+    assert!(changed.contains("4: four"), "{changed}");
+
+    // Same file, different window: not identical.
+    let windowed =
+        run(&reg, &mut ctx, "read", json!({"filePath": f.to_str().unwrap(), "offset": 2})).unwrap().output;
+    assert!(!windowed.contains(MARK), "{windowed}");
+
+    // A directory listing is never marked.
+    let dir_args = json!({"filePath": dir.path().to_str().unwrap()});
+    run(&reg, &mut ctx, "read", dir_args.clone()).unwrap();
+    let dir_again = run(&reg, &mut ctx, "read", dir_args).unwrap().output;
+    assert!(!dir_again.contains(MARK), "{dir_again}");
+}
+
+/// T63 P2b (a): an edit whose newString equals oldString says there is
+/// nothing to change and to move on.
+#[test]
+fn an_edit_with_nothing_to_change_says_to_continue() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("same.txt");
+    std::fs::write(&f, "x = 1\n").unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let err = run(
+        &reg,
+        &mut ctx,
+        "edit",
+        json!({"filePath": f.to_str().unwrap(), "oldString": "x = 1", "newString": "x = 1"}),
+    )
+    .expect_err("an edit with nothing to change must be refused");
+    assert!(
+        err.to_string().contains(
+            "newString equals oldString: there is nothing to change. If the file already reads the way you want, do not edit it again; continue with the task."
+        ),
+        "{err}"
+    );
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "x = 1\n");
 }
