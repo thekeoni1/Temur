@@ -47,6 +47,7 @@ fn file_with(history: Vec<RequestMessage>) -> SessionFile {
         todos: vec![],
         last_context_used: Some(165),
         name: None,
+        errors: Vec::new(),
     }
 }
 
@@ -61,6 +62,7 @@ fn as_ref(f: &SessionFile) -> SessionFileRef<'_> {
         todos: &f.todos,
         last_context_used: f.last_context_used,
         name: f.name.as_deref(),
+        errors: &f.errors,
     }
 }
 
@@ -332,6 +334,7 @@ fn provider_state_round_trips_through_a_saved_session() {
         todos: &[],
         last_context_used: None,
         name: None,
+        errors: &[],
     };
     store::save(&path, &r, temur::config::DEFAULT_SESSION_MAX_BYTES, &mut |_| {}).unwrap();
     let f = store::load(&path).unwrap();

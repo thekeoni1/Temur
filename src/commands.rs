@@ -276,8 +276,11 @@ pub fn complete(
     let args: Vec<&str> = match head {
         "/model" => {
             let mut args: Vec<&str> = profiles.iter().map(String::as_str).collect();
+            // T64 P0 (R2): listing ids are offered bare, the form the
+            // wire takes.
             for id in model_ids {
-                if !args.contains(&id.as_str()) {
+                let id = bare_id(id);
+                if !args.contains(&id) {
                     args.push(id);
                 }
             }
@@ -410,6 +413,7 @@ fn clear(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
             todos: snap.todos,
             last_context_used: snap.last_context_used,
             name: ctx.session_name.as_deref(),
+            errors: snap.errors,
         };
         if let Err(e) = session_store::save(path, &file, ctx.session_max_bytes, &mut |_| {}) {
             out.push(notice(format!(
@@ -461,6 +465,7 @@ fn compact(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
                     todos: snap.todos,
                     last_context_used: snap.last_context_used,
                     name: ctx.session_name.as_deref(),
+                    errors: snap.errors,
                 };
                 if let Err(e) =
                     session_store::save(path, &file, ctx.session_max_bytes, &mut |_| {})
@@ -612,7 +617,7 @@ fn activate_profile(ctx: &mut CommandCtx, name: &str) -> Result<(), AgentEvent> 
 /// the key file read inside the build path. The replay guard already fired
 /// in [`model_switch`].
 fn raw_model_switch(ctx: &mut CommandCtx, id: String) -> Vec<AgentEvent> {
-    let listed = ctx.cached_models.iter().any(|m| m.id == id);
+    let listed = ctx.cached_models.iter().any(|m| bare_id(&m.id) == bare_id(&id));
     if !listed && id.starts_with("claude-") && ctx.active_resolved.provider != "anthropic" {
         // Exact-model match first, else first anthropic profile; BTreeMap
         // iteration is name order, which is the tiebreak by design.
@@ -649,6 +654,14 @@ fn raw_model_switch(ctx: &mut CommandCtx, id: String) -> Vec<AgentEvent> {
         )));
     }
     out
+}
+
+/// T64 P0 (R2): Gemini's listing carries every id as `models/<id>`, while
+/// the wire and init use the bare id. Every comparison against a listing
+/// strips one leading `models/` on both sides; the active model string
+/// itself is never rewritten.
+fn bare_id(id: &str) -> &str {
+    id.strip_prefix("models/").unwrap_or(id)
 }
 
 /// The T16 cross-provider hop: full activation of `name` (an anthropic
@@ -768,17 +781,22 @@ fn model_save_current(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
 
 /// `/model <raw-id> --save` (T15): the raw switch, then persistence — only
 /// after the switch succeeded, so a bad endpoint or credential can never
-/// end up saved. A PROFILE name with `--save` is a clean error: what a
-/// profile save would mean is the startup "profile" key, which stays a
-/// hand edit (out of scope by design).
+/// end up saved.
+///
+/// T64 P0 (R1): `/model <profile> --save` has the same shape. It switches
+/// to the profile, and only when that profile is then active does it
+/// write the startup "profile" key. A failed activation leaves the file
+/// alone.
 fn model_switch_save(ctx: &mut CommandCtx, id: String) -> Vec<AgentEvent> {
     if ctx.replay_mode {
         return vec![notice("/model is unavailable in replay/capture mode")];
     }
     if ctx.profiles.contains_key(&id) {
-        return vec![notice(format!(
-            "--save persists a raw model id, and {id:?} is a profile — the startup profile is the \"profile\" key in config.json, edited by hand"
-        ))];
+        let mut out = model_switch(ctx, id.clone());
+        if ctx.active_profile.as_deref() == Some(id.as_str()) {
+            out.push(profile_persist_notice(ctx, &id));
+        }
+        return out;
     }
     let mut out = raw_model_switch(ctx, id.clone());
     // Persist only when the REQUESTED id is what ended up active: a failed
@@ -825,6 +843,20 @@ fn persist_notice(ctx: &CommandCtx) -> AgentEvent {
     }
 }
 
+/// The R1 persistence step: the startup "profile" key, with the path
+/// quoted the way [`persist_notice`] quotes it.
+fn profile_persist_notice(ctx: &CommandCtx, name: &str) -> AgentEvent {
+    match crate::config::persist_profile(ctx.config_path, name) {
+        Ok(()) => notice(format!(
+            "saved \"profile\": {name:?} to {}",
+            ctx.config_path.display()
+        )),
+        Err(e) => notice(format!(
+            "profile {name:?} is active for this session but was NOT saved as the startup profile: {e}"
+        )),
+    }
+}
+
 /// `/models`: list model ids from the active provider. Read-only toward the
 /// session but a LIVE network GET — so it is replay-guarded like the
 /// mutators (ReplayTransport ignores URLs and pops fixtures; a live GET
@@ -866,8 +898,9 @@ fn off_listing_notice(
     ctx: &CommandCtx,
     entries: &[crate::provider::ModelEntry],
 ) -> Option<String> {
-    let listed = entries.iter().any(|e| e.id == *ctx.model)
-        || crate::provider::newest_dated_alias(ctx.model, entries.iter().map(|e| e.id.as_str()))
+    let active = bare_id(ctx.model.as_str());
+    let listed = entries.iter().any(|e| bare_id(&e.id) == active)
+        || crate::provider::newest_dated_alias(active, entries.iter().map(|e| bare_id(&e.id)))
             .is_some();
     if listed {
         return None;

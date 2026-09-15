@@ -157,8 +157,9 @@ message starting with `/` cannot be sent):
   fields survive; when a profile is active - including one a hop just
   activated - the save site is that profile's `model` and the notice
   names it) · `/model --save` - persist the currently active model;
-  `--save` with a profile name is an error (the startup profile stays
-  the hand-edited `profile` key)
+  `/model <profile> --save` - switch to the profile, then write it as
+  the startup `profile` key in config.json (the same surgical edit,
+  made only when the switch succeeds)
 - `/models` - list model ids from the active provider (live GET; ids
   feed `/model` Tab completion in the TUI)
 - `/clear` - wipe the session; the empty state is persisted immediately,
@@ -841,8 +842,7 @@ template; `local` adds a keyless `local` profile through the same
 base-URL question and model picker as the fresh wizard. A name
 collision with any existing profile aborts the whole merge with the
 file untouched. Afterwards `/model <name>` switches to the new
-profile; set `"profile": "<name>"` in config.json to make it the
-startup default.
+profile, and `/model <name> --save` also makes it the startup default.
 
 For keyed templates the wizard (fresh or `--add`) creates the key
 file empty (mode 600), then offers a hidden paste prompt: input is

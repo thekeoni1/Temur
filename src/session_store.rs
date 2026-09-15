@@ -102,7 +102,28 @@ pub struct SessionFile {
     /// direction — a pre-T10 file loads as the default session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// T64 P0 (R6): the provider errors turns ended on, oldest first, at
+    /// most [`MAX_SESSION_ERRORS`]. Absent when empty, so an error-free
+    /// file stays byte-identical to the pre-R6 shape and FORMAT_VERSION
+    /// stays 1.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<SessionError>,
 }
+
+/// T64 P0 (R6): one provider error a turn ended on, recorded as the UI
+/// showed it (already redacted).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionError {
+    /// How many history messages there were when the turn failed. A
+    /// resume that drops a dangling prompt can leave this past the end of
+    /// the resumed history; that is recorded, not corrected.
+    pub history_len: u64,
+    pub model: String,
+    pub message: String,
+}
+
+/// How many [`SessionError`] entries a session keeps; the oldest go first.
+pub const MAX_SESSION_ERRORS: usize = 50;
 
 /// The saving half: borrowed fields so writing a multi-megabyte history never
 /// clones it. Serialize-only by construction — `SessionFile` is the read side.
@@ -121,6 +142,13 @@ pub struct SessionFileRef<'a> {
     /// See [`SessionFile::name`]; `Option<&str>` keeps the struct `Copy`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<&'a str>,
+    /// See [`SessionFile::errors`].
+    #[serde(skip_serializing_if = "no_errors")]
+    pub errors: &'a [SessionError],
+}
+
+fn no_errors(errors: &&[SessionError]) -> bool {
+    errors.is_empty()
 }
 
 /// What a resumed `Session` is rebuilt from. Moved out of a `SessionFile`, so
@@ -130,6 +158,7 @@ pub struct SessionSeed {
     pub session_usage: Usage,
     pub todos: Vec<TodoItem>,
     pub last_context_used: Option<u64>,
+    pub errors: Vec<SessionError>,
 }
 
 // --------------------------------------------------------------------- paths
@@ -683,6 +712,7 @@ pub fn seed(file: SessionFile) -> SessionSeed {
         session_usage: file.session_usage,
         todos: file.todos,
         last_context_used: file.last_context_used,
+        errors: file.errors,
     }
 }
 

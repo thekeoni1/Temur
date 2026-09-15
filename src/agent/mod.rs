@@ -107,6 +107,26 @@ pub fn turn_error_notice(e: &AgentError, model: &str) -> String {
     format!("provider error: {e}{pointer}")
 }
 
+/// T64 P0 (R6): the one path both of main's turn-failure arms take. The
+/// notice is built by [`turn_error_notice`], scrubbed of the registered
+/// credential (T18), recorded into the session and returned for the UI,
+/// so the session file and the screen carry the same string. The save
+/// that already follows a failed turn writes it.
+pub fn report_turn_error(session: &mut Session, e: &AgentError, model: &str) -> String {
+    let text = session.registry.redact(turn_error_notice(e, model));
+    session.errors.push(crate::session_store::SessionError {
+        history_len: session.history.len() as u64,
+        model: model.to_string(),
+        message: text.clone(),
+    });
+    let excess = session
+        .errors
+        .len()
+        .saturating_sub(crate::session_store::MAX_SESSION_ERRORS);
+    session.errors.drain(..excess);
+    text
+}
+
 pub struct SessionConfig {
     pub model: String,
     pub max_tokens: u32,
@@ -216,6 +236,9 @@ pub struct Session {
     cancel: CancelToken,
     /// T40 P2: where this session writes itself. `None` = never persist.
     persist: Option<PersistTarget>,
+    /// T64 P0 (R6): provider errors turns ended on; see
+    /// [`report_turn_error`].
+    errors: Vec<crate::session_store::SessionError>,
     /// T40 P2: the save-failure notice is once per PROCESS, not per write.
     /// It lives here rather than in the caller because mid-turn writes and
     /// the end-of-turn write must share one latch: a full disk should say
@@ -261,6 +284,7 @@ pub struct SessionSnapshot<'a> {
     pub session_usage: Usage,
     pub todos: &'a [TodoItem],
     pub last_context_used: Option<u64>,
+    pub errors: &'a [crate::session_store::SessionError],
 }
 
 /// The synthesized error result every never-executed `tool_use` is answered
@@ -516,9 +540,9 @@ impl Session {
         let mut tool_ctx = ToolCtx::new(cfg.cwd.clone());
         // One token per session: an Esc must reach a running bash too.
         tool_ctx.cancel = cancel.clone();
-        let (history, session_usage, todos, last_context_used) = match seed {
-            Some(s) => (s.history, s.session_usage, s.todos, s.last_context_used),
-            None => (Vec::new(), Usage::default(), Vec::new(), None),
+        let (history, session_usage, todos, last_context_used, errors) = match seed {
+            Some(s) => (s.history, s.session_usage, s.todos, s.last_context_used, s.errors),
+            None => (Vec::new(), Usage::default(), Vec::new(), None, Vec::new()),
         };
         tool_ctx.todos = todos;
         // T26: a resumed session starts latched at whatever it already
@@ -541,6 +565,7 @@ impl Session {
             save_failure_notified: false,
             trim_notified: false,
             unattended_nudge_sent: false,
+            errors,
         }
     }
 
@@ -641,6 +666,7 @@ impl Session {
             todos: &self.tool_ctx.todos,
             last_context_used: self.last_context_used,
             name: target.name.as_deref(),
+            errors: &self.errors,
         };
         let mut trim_notices: Vec<String> = Vec::new();
         let result = crate::session_store::save(&target.path, &file, target.max_bytes, &mut |n| {
@@ -724,6 +750,7 @@ impl Session {
             session_usage: self.session_usage,
             todos: &self.tool_ctx.todos,
             last_context_used: self.last_context_used,
+            errors: &self.errors,
         }
     }
 
@@ -796,6 +823,7 @@ impl Session {
         self.session_usage = seed.session_usage;
         self.tool_ctx.todos = seed.todos;
         self.last_context_used = seed.last_context_used;
+        self.errors = seed.errors;
         self.context_warned = false;
         // T26: the restored totals are spend that already happened; resuming
         // an expensive session must not replay its advisories.

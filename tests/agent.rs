@@ -737,6 +737,7 @@ fn resume_command_emits_the_advisory_when_the_restored_estimate_is_hot() {
         todos: &[],
         last_context_used: Some(900),
         name: Some("hot"),
+        errors: &[],
     };
     store::save(
         &sdir.path().join("test-9999-hot.json"),
@@ -962,6 +963,7 @@ fn saved(history: Vec<RequestMessage>, todos: Vec<temur::tools::TodoItem>) -> Se
         todos,
         last_context_used: Some(1200),
         name: None,
+        errors: Vec::new(),
     }
 }
 
@@ -2355,6 +2357,7 @@ fn clear_persists_the_empty_session_immediately() {
         todos: snap.todos,
         last_context_used: snap.last_context_used,
         name: None,
+        errors: snap.errors,
     };
     temur::session_store::save(&path, &file, temur::config::DEFAULT_SESSION_MAX_BYTES, &mut |_| {})
         .unwrap();
@@ -2638,6 +2641,7 @@ fn session_with_usage(dir: &std::path::Path) -> Session {
         todos: vec![],
         last_context_used: Some(1200),
         name: None,
+        errors: Vec::new(),
     };
     let (seed, _) = store::prepare_seed(file);
     session.load_seed(seed);
@@ -2685,6 +2689,7 @@ fn status_cost_estimate_shows_four_decimals_below_a_cent() {
         todos: vec![],
         last_context_used: Some(1_000),
         name: None,
+        errors: Vec::new(),
     };
     let (seed, _) = store::prepare_seed(file);
     session.load_seed(seed);
@@ -3452,6 +3457,7 @@ fn raw_id_switch_keeps_profile_settings_and_the_save_records_it() {
         todos: snap.todos,
         last_context_used: snap.last_context_used,
         name: None,
+        errors: snap.errors,
     };
     temur::session_store::save(&path, &file, temur::config::DEFAULT_SESSION_MAX_BYTES, &mut |_| {})
         .unwrap();
@@ -3528,6 +3534,9 @@ fn model_switch_save_switches_then_persists_to_the_profile_site() {
     assert_eq!(v["profiles"]["b"]["model"], "raw-x");
     assert_eq!(v["profiles"]["b"]["keep_me"], 1, "unknown fields survive: {saved}");
     assert_eq!(v["future_field"], true, "{saved}");
+    // T64 P0 (R1): a raw id still goes through persist_model and never
+    // touches the startup profile key.
+    assert!(v.get("profile").is_none(), "{saved}");
 }
 
 #[test]
@@ -3553,26 +3562,100 @@ fn model_save_current_persists_without_switching() {
     assert_eq!(v["model"], "claude-sonnet-5", "anthropic base site is the top-level key");
 }
 
+/// T64 P0 (R1): `/model <profile> --save` switches, then writes the
+/// startup "profile" key through the same surgical writer.
 #[test]
-fn model_save_with_a_profile_name_is_a_clean_error_and_switches_nothing() {
+fn model_save_with_a_profile_name_switches_then_writes_the_startup_profile_key() {
     let dir = tempfile::tempdir().unwrap();
     let (mut session, _) = session_with(dir.path(), vec![]);
     let mut h = CmdHarness::new();
-    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
-        unreachable!("a profile name with --save must not build")
-    };
+    harness_with_config(
+        &mut h,
+        dir.path(),
+        r#"{"model":"base-m","profiles":{"b":{"provider":"openai-compat","model":"model-b","keep_me":1}},"future_field":true}"#,
+    );
     let events = commands::run(
         commands::parse("/model b --save"),
-        &mut h.ctx(&mut session, &build),
+        &mut h.ctx(&mut session, &build_ok),
     );
-    assert!(!events.iter().any(|e| matches!(e, AgentEvent::ModelSwitched { .. })));
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::ModelSwitched { .. })), "{events:?}");
+    assert_eq!(h.active.as_deref(), Some("b"));
+    let want = format!("saved \"profile\": \"b\" to {}", h.config_path.display());
+    assert!(notices(&events).iter().any(|n| *n == want), "{events:?}");
+
+    let saved = std::fs::read_to_string(&h.config_path).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(keys, ["model", "profiles", "future_field", "profile"], "{saved}");
+    assert_eq!(v["profile"], "b", "{saved}");
+    assert_eq!(v["model"], "base-m", "persist_model did not run: {saved}");
+    assert_eq!(v["profiles"]["b"]["model"], "model-b", "{saved}");
+    assert_eq!(v["profiles"]["b"]["keep_me"], 1, "{saved}");
+}
+
+#[test]
+fn a_profile_switch_without_save_or_one_that_fails_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    harness_with_config(
+        &mut h,
+        dir.path(),
+        r#"{"profiles":{"b":{"provider":"openai-compat","model":"model-b"}}}"#,
+    );
+    let before = std::fs::read(&h.config_path).unwrap();
+
+    // Without --save the switch happens and the file is untouched.
+    let events = commands::run(commands::parse("/model b"), &mut h.ctx(&mut session, &build_ok));
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::ModelSwitched { .. })), "{events:?}");
+    assert!(!notices(&events).iter().any(|n| n.starts_with("saved")), "{events:?}");
+    assert_eq!(std::fs::read(&h.config_path).unwrap(), before);
+
+    // With --save and a failed activation nothing switches and nothing is
+    // written.
+    let mut h2 = CmdHarness::new();
+    h2.config_path = h.config_path.clone();
+    let fail = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        Err(temur::error::Error::Config("no key".into()))
+    };
+    let events = commands::run(commands::parse("/model b --save"), &mut h2.ctx(&mut session, &fail));
+    assert!(!events.iter().any(|e| matches!(e, AgentEvent::ModelSwitched { .. })), "{events:?}");
+    assert!(notices(&events).iter().any(|n| n.contains("failed")), "{events:?}");
+    assert!(!notices(&events).iter().any(|n| n.starts_with("saved")), "{events:?}");
+    assert_eq!(h2.active, None);
+    assert_eq!(std::fs::read(&h.config_path).unwrap(), before);
+}
+
+#[test]
+fn a_profile_save_that_cannot_be_written_keeps_the_switch_and_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+
+    // No config file: the switch stands, the notice says why, and no file
+    // is created.
+    let mut h = CmdHarness::new();
+    h.config_path = dir.path().join("absent.json");
+    let events = commands::run(commands::parse("/model b --save"), &mut h.ctx(&mut session, &build_ok));
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::ModelSwitched { .. })), "{events:?}");
+    assert_eq!(h.active.as_deref(), Some("b"));
     assert!(
         notices(&events)
             .iter()
-            .any(|n| n.contains("\"b\" is a profile") && n.contains("\"profile\" key")),
+            .any(|n| n.contains("NOT saved as the startup profile") && n.contains("no config file")),
         "{events:?}"
     );
-    assert_eq!(h.model, "claude-sonnet-5", "no switch happened");
+    assert!(!h.config_path.exists());
+
+    // The session knows the profile but the file does not define it.
+    let mut h = CmdHarness::new();
+    harness_with_config(&mut h, dir.path(), r#"{"model":"m"}"#);
+    let before = std::fs::read(&h.config_path).unwrap();
+    let events = commands::run(commands::parse("/model b --save"), &mut h.ctx(&mut session, &build_ok));
+    assert!(
+        notices(&events).iter().any(|n| n.contains("NOT saved") && n.contains("not found")),
+        "{events:?}"
+    );
+    assert_eq!(std::fs::read(&h.config_path).unwrap(), before);
 }
 
 #[test]
@@ -3678,6 +3761,50 @@ fn model_list_appends_the_raw_id_hints_after_the_profiles() {
         ],
         "{ns:?}"
     );
+}
+
+/// T64 P0 (R2): Gemini lists `models/<id>`. The raw switch, `/models` and
+/// Tab completion all compare bare ids, and the active string is never
+/// rewritten.
+#[test]
+fn a_models_prefixed_listing_matches_bare_ids_on_all_three_surfaces() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let listing = ["models/gemini-flash-latest", "models/gemini-3.6-flash"];
+
+    for typed in ["gemini-flash-latest", "models/gemini-flash-latest"] {
+        let mut h = CmdHarness::new();
+        h.cached_models = entries(&listing);
+        let events = commands::run(
+            commands::parse(&format!("/model {typed}")),
+            &mut h.ctx(&mut session, &build_ok),
+        );
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::ModelSwitched { .. })), "{events:?}");
+        assert_eq!(h.model, typed, "the active string is what was typed");
+        assert!(
+            !notices(&events).iter().any(|n| n.contains("not in the last /models listing")),
+            "{typed}: {events:?}"
+        );
+    }
+
+    for active in ["gemini-flash-latest", "models/gemini-flash-latest"] {
+        let mut h = CmdHarness::new();
+        h.model = active.into();
+        h.list = Box::new(move |_| Ok(entries(&listing)));
+        let events = commands::run(commands::parse("/models"), &mut h.ctx(&mut session, &build_ok));
+        assert_eq!(
+            events,
+            vec![AgentEvent::ModelsListed(listing.iter().map(|s| s.to_string()).collect())],
+            "{active} is not off-listing"
+        );
+    }
+
+    let ids: Vec<String> = listing.iter().map(|s| s.to_string()).collect();
+    let bare = vec!["/model gemini-flash-latest", "/model gemini-3.6-flash"];
+    assert_eq!(commands::complete("/model gemini", &[], &ids, &[]), bare);
+    // A profile named like a bare id stays first and is offered once.
+    let profiles = vec!["gemini-flash-latest".to_string()];
+    assert_eq!(commands::complete("/model gemini", &profiles, &ids, &[]), bare);
 }
 
 #[test]
@@ -4025,6 +4152,7 @@ fn write_session(
         todos: vec![],
         last_context_used: None,
         name: name.map(String::from),
+        errors: Vec::new(),
     };
     let r = store::SessionFileRef {
         version: f.version,
@@ -4036,6 +4164,7 @@ fn write_session(
         todos: &f.todos,
         last_context_used: f.last_context_used,
         name: f.name.as_deref(),
+        errors: &[],
     };
     store::save(
         &dir.join(file_name),
@@ -4522,6 +4651,7 @@ fn resuming_an_expensive_session_never_advises_for_money_already_spent() {
         },
         todos: vec![],
         last_context_used: None,
+        errors: Vec::new(),
     };
     let mut session = priced_session(
         dir.path(),
@@ -5360,6 +5490,7 @@ fn the_end_of_turn_file_is_what_it_would_have_been_before_p2() {
         todos: snap.todos,
         last_context_used: snap.last_context_used,
         name: None,
+        errors: snap.errors,
     };
     temur::session_store::save(&reference, &file, 1_000_000, &mut |_| {}).unwrap();
     assert_eq!(
@@ -7114,3 +7245,173 @@ fn a_raw_switch_on_a_local_server_is_not_gated_by_the_model_name() {
         vec![temur::provider::MaxTokensParam::MaxTokens]
     );
 }
+
+// ------------------------------------------ T64 P0 (R6): errors on disk
+
+/// Every turn fails with this body.
+struct BodyFailingProvider {
+    message: String,
+}
+
+impl Provider for BodyFailingProvider {
+    fn stream(
+        &self,
+        _req: &ChatRequest,
+        _on_event: &mut dyn FnMut(StreamEvent),
+        _cancel: &CancelToken,
+    ) -> Result<ResponseMessage, ProviderError> {
+        Err(ProviderError::Api {
+            status: 500,
+            kind: "server_error".into(),
+            message: self.message.clone(),
+        })
+    }
+}
+
+fn r6_cfg(dir: &std::path::Path) -> SessionConfig {
+    SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens: 32_000,
+        system: Some("test system".into()),
+        thinking: false,
+        cwd: dir.to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+        max_tokens_source: None,
+        prose_tool_calls: true,
+        cost_rates: None,
+        cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
+        unattended: false,
+    }
+}
+
+fn r6_session(dir: &std::path::Path, path: &std::path::Path, message: &str) -> Session {
+    let mut session = Session::new(
+        Box::new(BodyFailingProvider { message: message.into() }),
+        Registry::standard(),
+        r6_cfg(dir),
+    );
+    session.set_persist_target(Some(persist_target(path)));
+    session
+}
+
+/// What main does when a turn fails: report the error, then save.
+fn r6_fail_and_save(session: &mut Session, prompt: &str) -> String {
+    let err = session.turn(prompt, &mut |_| {}).expect_err("every turn fails");
+    let text = temur::agent::report_turn_error(session, &err, "claude-sonnet-5");
+    session.persist_now(&mut |_| {});
+    text
+}
+
+#[test]
+fn a_failed_turn_leaves_its_error_in_the_session_file_and_resume_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.json");
+    let mut session = r6_session(dir.path(), &path, "overloaded");
+    let text = r6_fail_and_save(&mut session, "hello");
+    assert_eq!(text, "provider error: api error (HTTP 500) server_error: overloaded");
+
+    let loaded = store::load(&path).unwrap();
+    assert_eq!(
+        loaded.errors,
+        vec![store::SessionError {
+            history_len: session.history().len() as u64,
+            model: "claude-sonnet-5".into(),
+            message: text.clone(),
+        }]
+    );
+    assert!(loaded.errors[0].history_len >= 1, "the failed prompt is in the history");
+
+    // load -> prepare_seed -> resume -> save keeps the entry, even though
+    // the dangling prompt is dropped on the way.
+    let (seed, _) = store::prepare_seed(loaded);
+    assert_eq!(seed.errors.len(), 1);
+    let mut resumed = Session::resume(
+        Box::new(BodyFailingProvider { message: "again".into() }),
+        Registry::standard(),
+        r6_cfg(dir.path()),
+        seed,
+    );
+    resumed.set_persist_target(Some(persist_target(&path)));
+    resumed.persist_now(&mut |_| {});
+    assert_eq!(store::load(&path).unwrap().errors.len(), 1);
+
+    // A second failure appends after it.
+    r6_fail_and_save(&mut resumed, "hello again");
+    let errors = store::load(&path).unwrap().errors;
+    assert_eq!(errors.len(), 2);
+    assert_eq!(errors[0].message, text);
+    assert!(errors[1].message.ends_with("server_error: again"), "{errors:?}");
+}
+
+#[test]
+fn an_error_free_session_file_has_no_errors_key_and_old_files_still_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.json");
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![msg_with_usage(
+            vec![text("done")],
+            StopReason::EndTurn,
+            serde_json::json!({"input_tokens": 10, "output_tokens": 5}),
+        )],
+    );
+    session.set_persist_target(Some(persist_target(&path)));
+    session.turn("go", &mut |_| {}).unwrap();
+    session.persist_now(&mut |_| {});
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(!raw.contains("\"errors\""), "{raw}");
+
+    // A pre-R6 file, which never had the key, loads with none.
+    let old = dir.path().join("old.json");
+    std::fs::write(
+        &old,
+        r#"{"version":1,"provider":"anthropic","model":"m","cwd":"/w","history":[]}"#,
+    )
+    .unwrap();
+    assert!(store::load(&old).unwrap().errors.is_empty());
+}
+
+#[test]
+fn a_session_keeps_only_the_most_recent_fifty_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.json");
+    let mut session = r6_session(dir.path(), &path, "unused");
+    for i in 0..55 {
+        let err = temur::agent::AgentError::Provider(ProviderError::Network(format!("n{i}")));
+        temur::agent::report_turn_error(&mut session, &err, "claude-sonnet-5");
+    }
+    session.persist_now(&mut |_| {});
+    let errors = store::load(&path).unwrap().errors;
+    assert_eq!(errors.len(), temur::session_store::MAX_SESSION_ERRORS);
+    assert!(errors[0].message.ends_with("network: n5"), "{:?}", errors[0]);
+    assert!(errors[49].message.ends_with("network: n54"), "{:?}", errors[49]);
+}
+
+#[test]
+fn a_registered_key_in_an_error_body_is_redacted_on_screen_and_on_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.json");
+    let key = "sk-test-0123456789abcdef";
+    let mut session = r6_session(dir.path(), &path, &format!("key {key} was rejected"));
+    session.set_redaction_key(Some(key.into()));
+    let text = r6_fail_and_save(&mut session, "hi");
+    assert!(text.contains("key [redacted] was rejected"), "{text}");
+    assert!(!text.contains(key), "{text}");
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(!raw.contains(key), "{raw}");
+    assert!(raw.contains("key [redacted] was rejected"), "{raw}");
+
+    // A key under MIN_REDACTABLE_KEY_CHARS is left alone (the T18 rule).
+    let short = "abc1234";
+    assert!(short.chars().count() < temur::tools::MIN_REDACTABLE_KEY_CHARS);
+    let path2 = dir.path().join("s2.json");
+    let mut session = r6_session(dir.path(), &path2, &format!("key {short} was rejected"));
+    session.set_redaction_key(Some(short.into()));
+    let text = r6_fail_and_save(&mut session, "hi");
+    assert!(text.contains(&format!("key {short} was rejected")), "{text}");
+}
+

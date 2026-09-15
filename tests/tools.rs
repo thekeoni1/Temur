@@ -3741,3 +3741,22 @@ fn plain_text_over_an_ods_keeps_the_workbook_beside_it() {
     );
 }
 
+// --------------------------------------------------------- T64 P0 (R4)
+
+#[test]
+fn a_docx_code_block_keeps_its_indentation() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("code.docx");
+    let content = "Before.\n\n```\nfn main() {\n  two\n    four\n        eight\n\ttab\n}\n```\n\nAfter.\n";
+    run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": content})).unwrap();
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+    assert_eq!(
+        doc_lines(&out.output),
+        ["Before.", "fn main() {", "  two", "    four", "        eight", "\ttab", "}", "After."],
+        "{}",
+        out.output
+    );
+}
+

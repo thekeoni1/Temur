@@ -1158,12 +1158,12 @@ pub fn run_add(
         let name = &new_profiles[0].0;
         writeln!(
             out,
-            "/model {name} switches to it; set \"profile\": \"{name}\" in config.json to\nmake it the startup default."
+            "/model {name} switches to it; /model {name} --save also makes it the\nstartup default."
         )?;
     } else {
         writeln!(
             out,
-            "/model <name> switches to one; set \"profile\": \"<name>\" in config.json to\nmake it the startup default."
+            "/model <name> switches to one; /model <name> --save also makes it the\nstartup default."
         )?;
     }
     Ok(())
@@ -1798,8 +1798,10 @@ mod tests {
                 out.contains(&format!("/model {template} switches to it")),
                 "{template}: {out}"
             );
+            // T64 P0 (R1): the startup default is set with --save now, not
+            // by editing the "profile" key by hand.
             assert!(
-                out.contains(&format!("\"profile\": \"{template}\"")),
+                out.contains(&format!("/model {template} --save also makes it the")),
                 "{template}: {out}"
             );
         }

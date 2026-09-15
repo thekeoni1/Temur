@@ -930,23 +930,8 @@ pub fn persist_model(
     provider: &str,
     model: &str,
 ) -> Result<(), crate::error::Error> {
-    let raw = match std::fs::read_to_string(cfg_path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(crate::error::Error::Config(
-                "no config file; run temur init first".into(),
-            ))
-        }
-        Err(e) => return Err(e.into()),
-    };
-    let mut v: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| crate::error::Error::Config(format!("{}: {e}", cfg_path.display())))?;
-    let Some(root) = v.as_object_mut() else {
-        return Err(crate::error::Error::Config(format!(
-            "{}: not a JSON object",
-            cfg_path.display()
-        )));
-    };
+    let mut v = read_config_object(cfg_path)?;
+    let root = v.as_object_mut().expect("read_config_object returns an object");
     let model_value = serde_json::Value::String(model.to_string());
     match active_profile {
         Some(name) => {
@@ -980,6 +965,51 @@ pub fn persist_model(
         }
     }
     write_config_value(cfg_path, &v)
+}
+
+/// T64 P0 (R1): write the startup `"profile"` key, the `/model <profile>
+/// --save` edit, by the same surgical rules as [`persist_model`]: key
+/// order and unknown fields survive, an existing key keeps its place, and
+/// a new one goes last. The profile must exist in the file itself.
+pub fn persist_profile(cfg_path: &std::path::Path, name: &str) -> Result<(), crate::error::Error> {
+    let mut v = read_config_object(cfg_path)?;
+    let root = v.as_object_mut().expect("read_config_object returns an object");
+    let in_file = root
+        .get("profiles")
+        .and_then(|p| p.as_object())
+        .is_some_and(|p| p.contains_key(name));
+    if !in_file {
+        return Err(crate::error::Error::Config(format!(
+            "profile {name:?} not found in {}",
+            cfg_path.display()
+        )));
+    }
+    root.insert("profile".to_string(), serde_json::Value::String(name.to_string()));
+    write_config_value(cfg_path, &v)
+}
+
+/// The config file as a JSON object, for the surgical `--save` edits. A
+/// missing file is an error and nothing is created: there is no file
+/// shape to preserve.
+fn read_config_object(cfg_path: &std::path::Path) -> Result<serde_json::Value, crate::error::Error> {
+    let raw = match std::fs::read_to_string(cfg_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(crate::error::Error::Config(
+                "no config file; run temur init first".into(),
+            ))
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let v: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| crate::error::Error::Config(format!("{}: {e}", cfg_path.display())))?;
+    if !v.is_object() {
+        return Err(crate::error::Error::Config(format!(
+            "{}: not a JSON object",
+            cfg_path.display()
+        )));
+    }
+    Ok(v)
 }
 
 /// Serialize an edited config `Value` back to disk: pretty 2-space with a
@@ -1800,6 +1830,50 @@ mod tests {
         std::fs::write(&path, json).unwrap();
         persist_model(&path, profile, provider, model).unwrap();
         std::fs::read_to_string(&path).unwrap()
+    }
+
+    #[test]
+    fn persist_profile_writes_the_startup_key_and_keeps_the_file_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        let read = |p: &std::path::Path| std::fs::read_to_string(p).unwrap();
+        let keys = |s: &str| -> Vec<String> {
+            let v: serde_json::Value = serde_json::from_str(s).unwrap();
+            v.as_object().unwrap().keys().cloned().collect()
+        };
+
+        // A new key goes last; unknown fields and the other keys survive.
+        std::fs::write(
+            &p,
+            r#"{"model":"m","profiles":{"a":{"provider":"anthropic","model":"x","keep":1}},"future":true}"#,
+        )
+        .unwrap();
+        persist_profile(&p, "a").unwrap();
+        let saved = read(&p);
+        assert_eq!(keys(&saved), ["model", "profiles", "future", "profile"], "{saved}");
+        let v: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(v["profile"], "a");
+        assert_eq!(v["profiles"]["a"]["keep"], 1, "{saved}");
+        assert_eq!(v["model"], "m", "{saved}");
+
+        // An existing key keeps its place.
+        std::fs::write(&p, r#"{"profile":"b","profiles":{"a":{},"b":{}},"z":0}"#).unwrap();
+        persist_profile(&p, "a").unwrap();
+        let saved = read(&p);
+        assert_eq!(keys(&saved), ["profile", "profiles", "z"], "{saved}");
+        assert!(saved.contains(r#""profile": "a""#), "{saved}");
+
+        // A profile the file does not define: an error, the file untouched.
+        let before = read(&p);
+        let err = persist_profile(&p, "nope").unwrap_err().to_string();
+        assert!(err.contains("not found"), "{err}");
+        assert_eq!(read(&p), before);
+
+        // No file: an error, and nothing is created.
+        let missing = dir.path().join("absent.json");
+        let err = persist_profile(&missing, "a").unwrap_err().to_string();
+        assert!(err.contains("no config file"), "{err}");
+        assert!(!missing.exists());
     }
 
     #[test]

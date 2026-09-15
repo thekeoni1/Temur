@@ -744,6 +744,9 @@ fn docx(path: &Path) -> Result<String, ToolError> {
     let mut cur = String::new();
     let mut cells: Vec<String> = Vec::new();
     let mut in_table = false;
+    // T64 P0 (R4): the paragraph carries our writer's "Code" style, so its
+    // leading whitespace is indentation, not layout noise.
+    let mut code = false;
 
     loop {
         match reader.read_event() {
@@ -762,6 +765,14 @@ fn docx(path: &Path) -> Result<String, ToolError> {
                     cells.clear();
                 } else if n == b"tc" || (n == b"p" && !in_table) {
                     cur.clear();
+                    code = false;
+                } else if n == b"pStyle" {
+                    code = is_code_style(&e);
+                }
+            }
+            Ok(Event::Empty(e)) => {
+                if e.local_name().as_ref() == b"pStyle" {
+                    code = is_code_style(&e);
                 }
             }
             Ok(Event::Text(t)) => {
@@ -792,7 +803,7 @@ fn docx(path: &Path) -> Result<String, ToolError> {
                     out.push_str(&cells.join("\t"));
                     out.push('\n');
                 } else if n == b"p" && !in_table {
-                    out.push_str(cur.trim());
+                    out.push_str(if code { cur.trim_end() } else { cur.trim() });
                     out.push('\n');
                 }
             }
@@ -805,6 +816,14 @@ fn docx(path: &Path) -> Result<String, ToolError> {
         ));
     }
     Ok(out)
+}
+
+/// Is this `pStyle` element the "Code" style our own writer emits
+/// (docx_document_xml)? Exact and case-sensitive, because it is our id.
+fn is_code_style(e: &quick_xml::events::BytesStart) -> bool {
+    e.attributes()
+        .flatten()
+        .any(|a| a.key.local_name().as_ref() == b"val" && a.value.as_ref() == b"Code")
 }
 
 /// One named entry out of a zip container, with the decompression cap

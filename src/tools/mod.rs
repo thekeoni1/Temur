@@ -658,7 +658,7 @@ impl Registry {
 
     /// Scrub every occurrence of the registered key from one string (T18).
     /// No-op without a registered key of redactable length.
-    fn redact(&self, s: String) -> String {
+    pub(crate) fn redact(&self, s: String) -> String {
         match &self.redact_key {
             Some(key)
                 if key.chars().count() >= MIN_REDACTABLE_KEY_CHARS

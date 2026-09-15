@@ -609,25 +609,25 @@ mod latex {
             // double-dollar is not a currency form.
             if let Some(inner) = between(rest, "$$", "$$") {
                 if !inner.trim().is_empty() {
-                    out.push_str(render(inner).trim());
+                    out.push_str(&render_span(inner));
                     i += 4 + inner.len();
                     continue;
                 }
             } else if let Some(inner) = between(rest, "\\(", "\\)") {
                 if !inner.trim().is_empty() {
-                    out.push_str(render(inner).trim());
+                    out.push_str(&render_span(inner));
                     i += 4 + inner.len();
                     continue;
                 }
             } else if let Some(inner) = between(rest, "\\[", "\\]") {
                 if !inner.trim().is_empty() {
-                    out.push_str(render(inner).trim());
+                    out.push_str(&render_span(inner));
                     i += 4 + inner.len();
                     continue;
                 }
             } else if let Some(inner) = between(rest, "$", "$") {
                 if is_math(inner) {
-                    out.push_str(render(inner).trim());
+                    out.push_str(&render_span(inner));
                     i += 2 + inner.len();
                     continue;
                 }
@@ -647,6 +647,21 @@ mod latex {
         Some(&body[..end])
     }
 
+    /// A span as it reads in prose: rendered, trimmed at both ends, and
+    /// every run of spaces inside it collapsed to one (T64 P0, R3). Math
+    /// ignores source spacing, so a reader loses nothing.
+    fn render_span(inner: &str) -> String {
+        let rendered = render(inner);
+        let mut out = String::with_capacity(rendered.len());
+        for c in rendered.trim().chars() {
+            if c == ' ' && out.ends_with(' ') {
+                continue;
+            }
+            out.push(c);
+        }
+        out
+    }
+
     /// One recognized span's interior, with the delimiters already gone.
     fn render(src: &str) -> String {
         let mut out = String::with_capacity(src.len());
@@ -663,6 +678,26 @@ mod latex {
                         .count();
                     if name_len > 0 {
                         let name = &after[..name_len];
+                        // T64 P0 (R3): spacing commands are one space, and
+                        // the five wrappers unwrap to their argument. Text
+                        // mode has no superscripts, so a \text* argument is
+                        // emitted as written and a \math* one is rendered.
+                        if matches!(name, "quad" | "qquad") {
+                            out.push(' ');
+                            i += 1 + name_len;
+                            continue;
+                        }
+                        if matches!(name, "text" | "textbf" | "textit" | "mathrm" | "mathbf") {
+                            if let Some((arg, raw)) = braced(&after[name_len..]) {
+                                if name.starts_with("text") {
+                                    out.push_str(arg);
+                                } else {
+                                    out.push_str(&render(arg));
+                                }
+                                i += 1 + name_len + raw;
+                                continue;
+                            }
+                        }
                         if let Some(sym) = symbol(name) {
                             out.push_str(sym);
                         } else if is_text_operator(name) {
@@ -697,6 +732,10 @@ mod latex {
                             }
                         }
                     }
+                }
+                '~' => {
+                    out.push(' ');
+                    i += 1;
                 }
                 '^' | '_' => {
                     let after = &rest[1..];
@@ -737,6 +776,27 @@ mod latex {
         }
         let c = after.chars().next()?;
         Some((&after[..c.len_utf8()], c.len_utf8()))
+    }
+
+    /// A brace-balanced `{...}` group at the start of `s`: its interior and
+    /// the bytes the group occupies. None when `s` does not open with `{`
+    /// or the group never closes, so the command stays as source.
+    fn braced(s: &str) -> Option<(&str, usize)> {
+        let body = s.strip_prefix('{')?;
+        let mut depth = 1usize;
+        for (k, c) in body.char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some((&body[..k], k + 2));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     /// Lift a whole run, or nothing. The Unicode super/subscript alphabets
@@ -865,6 +925,34 @@ mod tests {
     fn latex_acceptance_example_from_the_roadmap() {
         let out = plain(&render(r"Solve $ \int 2x \cos(x^2)\,dx $", 60));
         assert_eq!(out, vec!["   Solve ∫ 2x cos(x²) dx"]);
+    }
+
+    /// T64 P0 (R3): the dogfood string that came back with `\quad`,
+    /// `\text{}` and `~` still in it.
+    #[test]
+    fn latex_spacing_commands_and_wrappers_read_as_prose() {
+        let out = plain(&render(
+            r"$y = x^2 - 2x + 3 \quad \text{or in vertex form:} \quad y = (x - 1)^2 + 2$",
+            80,
+        ));
+        assert_eq!(out, vec!["   y = x\u{00b2} - 2x + 3 or in vertex form: y = (x - 1)\u{00b2} + 2"]);
+        // \qquad and ~ are one space; \math* arguments render, \text* ones
+        // are emitted as written.
+        assert_eq!(
+            plain(&render(r"$a~b \qquad \mathbf{v^2} \mathrm{d}x \textbf{x^2} \textit{it}$", 80)),
+            vec!["   a b v\u{00b2} dx x^2 it"]
+        );
+        // \frac and friends stay honest source.
+        assert_eq!(plain(&render(r"$\frac{a}{b}$", 80)), vec![r"   \frac{a}{b}"]);
+        // Ruling T64-6: a negative thin space pulls glyphs together.
+        assert_eq!(plain(&render(r"$x\!y$", 80)), vec!["   xy"]);
+        // Space runs collapse inside a span, its padding included.
+        assert_eq!(plain(&render("a $ x^2   +   1 $ b", 80)), vec!["   a x\u{00b2} + 1 b"]);
+        // Outside any span nothing changes.
+        assert_eq!(
+            plain(&render(r"prose ~ keeps \quad as written", 80)),
+            vec![r"   prose ~ keeps \quad as written"]
+        );
     }
 
     /// THE CURRENCY GUARD. Nothing between the dollars is a LaTeX signal,

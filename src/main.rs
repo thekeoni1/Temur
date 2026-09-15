@@ -808,7 +808,8 @@ fn repl(
         // the exit code must say so (130) even if an error raced the cancel.
         let interrupted = plain_cancel.is_set();
         if let Err(e) = &result {
-            ui.event(&AgentEvent::Notice(temur::agent::turn_error_notice(
+            ui.event(&AgentEvent::Notice(temur::agent::report_turn_error(
+                &mut session,
                 e,
                 &current_model,
             )));
@@ -910,7 +911,8 @@ fn repl(
             // Provider-level failure: surface through the UI seam and keep
             // the session alive. (Behavior note, docs/TUI.md: in the plain
             // REPL this line moved from stderr to stdout with M-B.)
-            ui.event(&AgentEvent::Notice(temur::agent::turn_error_notice(
+            ui.event(&AgentEvent::Notice(temur::agent::report_turn_error(
+                &mut session,
                 &e,
                 &current_model,
             )));
