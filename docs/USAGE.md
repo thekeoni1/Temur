@@ -1877,11 +1877,14 @@ kind of futile call: the third identical result in a row, and every one
 after, from a call whose arguments are new to the turn. A call whose
 arguments the turn has already seen is judged by the first rule only.
 An empty result and `(no output)` never count, because distinct real
-work (`mkdir`, `touch`, `chmod`) returns exactly that. An acknowledgement
-from `edit`, `write`, the `spreadsheet` tool or `todowrite` never counts
-either, because a change made is not information re-fetched. Both kinds feed
-the same count, and the brackets at the end of each notice say how many
-came from each rule.
+work (`mkdir`, `touch`, `chmod`) returns exactly that, and neither do
+`grep`'s `No matches found` and `glob`'s `No files found`, which twenty
+distinct searches that find nothing all return. An acknowledgement from
+`edit`, `write`, the `spreadsheet` tool or `todowrite` never counts
+either when the call succeeded, because a change made is not information
+re-fetched; a failed one changed nothing, so it counts like any other
+result. Both kinds feed the same count, and the brackets at the end of
+each notice say how many came from each rule.
 
 Rereading a file you just wrote is never futile, because the result
 changed. A failing call counts exactly like a succeeding one, since an

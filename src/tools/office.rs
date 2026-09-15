@@ -747,6 +747,16 @@ fn docx(path: &Path) -> Result<String, ToolError> {
     // T64 P0 (R4): the paragraph carries our writer's "Code" style, so its
     // leading whitespace is indentation, not layout noise.
     let mut code = false;
+    // T64 P4 (Ruling T64-26, F-5): the reader runs with quick-xml's default
+    // trim_text(false), so the whitespace BETWEEN elements arrives as a Text
+    // event of its own. temur's writer emits document.xml on one line and
+    // has none, but a pretty-printed document.xml contributes its own
+    // indentation to every paragraph, and R4's trim_end() above then keeps
+    // the leading part of it as if it were code indentation. A paragraph's
+    // text is what its `w:t` runs hold and nothing else, so only that is
+    // collected. This also leaves out `w:instrText` field codes and
+    // `w:delText` tracked deletions, neither of which is document text.
+    let mut in_t = false;
 
     loop {
         match reader.read_event() {
@@ -768,6 +778,8 @@ fn docx(path: &Path) -> Result<String, ToolError> {
                     code = false;
                 } else if n == b"pStyle" {
                     code = is_code_style(&e);
+                } else if n == b"t" {
+                    in_t = true;
                 }
             }
             Ok(Event::Empty(e)) => {
@@ -776,14 +788,16 @@ fn docx(path: &Path) -> Result<String, ToolError> {
                 }
             }
             Ok(Event::Text(t)) => {
-                if let Ok(d) = t.decode() {
-                    cur.push_str(&d);
+                if in_t {
+                    if let Ok(d) = t.decode() {
+                        cur.push_str(&d);
+                    }
                 }
             }
             // Entity references arrive as their OWN event: ignoring them
             // silently drops "&" and friends from the text. Found in the
             // T54 P0 spike, where a sentence lost its ampersand.
-            Ok(Event::GeneralRef(r)) => {
+            Ok(Event::GeneralRef(r)) if in_t => {
                 if let Ok(d) = r.decode() {
                     if let Some(res) = quick_xml::escape::resolve_predefined_entity(&d) {
                         cur.push_str(res);
@@ -805,6 +819,8 @@ fn docx(path: &Path) -> Result<String, ToolError> {
                 } else if n == b"p" && !in_table {
                     out.push_str(if code { cur.trim_end() } else { cur.trim() });
                     out.push('\n');
+                } else if n == b"t" {
+                    in_t = false;
                 }
             }
             _ => {}

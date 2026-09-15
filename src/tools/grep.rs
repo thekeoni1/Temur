@@ -9,6 +9,13 @@ use std::time::Duration;
 const MAX_MATCHES: usize = 100;
 const MAX_LINE_CHARS: usize = 250;
 
+/// T64 P4 (Ruling T64-26): what a grep that walked the whole tree and
+/// matched nothing answers. It is the ANSWER of a finished search, not
+/// information fetched again, so the futile-result guard in the agent
+/// excludes it by this constant the way it excludes an empty output. Kept
+/// here, next to its only producer, so the two cannot drift apart.
+pub const GREP_NO_MATCHES: &str = "No matches found";
+
 /// Whether an extracted document line ends a sentence, or a clause that
 /// stands on its own (T63 P4 (c)): `.`, `!`, `?`, `:` or `;` once trailing
 /// whitespace is dropped.
@@ -214,7 +221,7 @@ impl Tool for GrepTool {
             if stop.is_some() {
                 String::new()
             } else {
-                "No matches found".to_string()
+                GREP_NO_MATCHES.to_string()
             }
         } else {
             let mut out = format!("Found {total}{} matches\n", if total >= MAX_MATCHES { "+" } else { "" });

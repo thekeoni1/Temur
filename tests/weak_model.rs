@@ -2074,3 +2074,119 @@ fn an_acknowledgement_between_identical_results_resets_the_streak() {
     assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
 }
 
+
+#[test]
+fn a_failed_acknowledgement_does_not_reset_the_streak() {
+    // T64 P4 (Amendment 3, F-1). Ten edits in ONE batch, each with a
+    // DIFFERENT oldString and none of them in the file. Every fingerprint is
+    // new, so nothing counts by input; every result is the same NOT_FOUND
+    // text, so the streak runs 1..10 and each result from the third on is
+    // futile: 8, past the notice threshold of 6 and under the stop at 18.
+    //
+    // A failed edit changed nothing, so it acknowledges nothing. With
+    // `!is_error &&` removed, `acknowledges("edit")` resets the streak at
+    // every one of the ten calls, the count is 0 and no notice is sent.
+    //
+    // One batch, so the T4 consecutive-failure cap (five consecutive
+    // all-errored batches) is not what is being measured here.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), "content\n").unwrap();
+    let calls: Vec<ContentBlock> = (0..10)
+        .map(|k| {
+            tool_use(
+                &format!("tu_e{k}"),
+                "edit",
+                serde_json::json!({
+                    "filePath": "f.txt",
+                    "oldString": format!("absent{k}"),
+                    "newString": "z",
+                }),
+            )
+        })
+        .collect();
+    let responses = vec![
+        msg(calls, StopReason::ToolUse),
+        msg(vec![text("done")], StopReason::EndTurn),
+    ];
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "keep going");
+
+    assert_eq!(requests.borrow().len(), 2);
+    // The edits really did fail, and the file is untouched: nothing was
+    // acknowledged, which is the whole claim.
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ToolEnd { is_error: true, .. })));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+        "content\n"
+    );
+    let notice = futile_notice(&events).expect("a batch of failed edits must count");
+    assert!(notice.starts_with("8 tool calls"), "{notice}");
+    assert!(notice.contains("(0 by input, 8 by result)"), "{notice}");
+}
+
+#[test]
+fn twenty_fruitless_globs_never_count_as_futile() {
+    // T64 P4 (Amendment 3, F-2). Twenty globs, twenty DIFFERENT patterns,
+    // none of them matching anything. "No files found" is the answer of a
+    // search that finished, not information fetched again, so it resets the
+    // streak exactly as an empty output does and the turn runs to its end.
+    //
+    // Without the GLOB_NO_FILES exclusion the twenty identical answers build
+    // a streak, the notice fires at the eighth call and the turn is STOPPED
+    // at the twentieth with "18 ... (0 by input, 18 by result)" -- telling
+    // the model it repeated calls when every pattern was distinct.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), "content\n").unwrap();
+    let mut responses: Vec<ResponseMessage> = (0..20)
+        .map(|k| {
+            msg(
+                vec![tool_use(
+                    "tu_g",
+                    "glob",
+                    serde_json::json!({"pattern": format!("**/*.ext{k}")}),
+                )],
+                StopReason::ToolUse,
+            )
+        })
+        .collect();
+    responses.push(msg(vec![text("done")], StopReason::EndTurn));
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "search the repo");
+
+    assert_eq!(requests.borrow().len(), 21);
+    // The globs really did answer with the constant the guard excludes.
+    assert!(format!("{:?}", requests.borrow().last().unwrap())
+        .contains(temur::tools::GLOB_NO_FILES));
+    assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
+}
+
+#[test]
+fn twenty_fruitless_greps_never_count_as_futile() {
+    // T64 P4 (Amendment 3, F-2), the same claim for grep's "No matches
+    // found". Twenty distinct patterns, no match anywhere, no notice and no
+    // stop; without the GREP_NO_MATCHES exclusion the turn stops at twenty.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), "content\n").unwrap();
+    let mut responses: Vec<ResponseMessage> = (0..20)
+        .map(|k| {
+            msg(
+                vec![tool_use(
+                    "tu_r",
+                    "grep",
+                    serde_json::json!({"pattern": format!("zzz{k}qqq")}),
+                )],
+                StopReason::ToolUse,
+            )
+        })
+        .collect();
+    responses.push(msg(vec![text("done")], StopReason::EndTurn));
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "search the repo");
+
+    assert_eq!(requests.borrow().len(), 21);
+    assert!(format!("{:?}", requests.borrow().last().unwrap())
+        .contains(temur::tools::GREP_NO_MATCHES));
+    assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
+}

@@ -126,6 +126,20 @@ pub struct SessionError {
 /// How many [`SessionError`] entries a session keeps; the oldest go first.
 pub const MAX_SESSION_ERRORS: usize = 50;
 
+/// T64 P4 (Ruling T64-26): the cap, in chars, on a STORED error message.
+/// A provider's error text is whatever the server sent, so it is unbounded,
+/// and [`save`] cannot shed it: the trim path sheds HISTORY, while `errors`
+/// rides the envelope every trim keeps. Fifty uncapped messages could
+/// therefore push the envelope past `session_max_bytes` and leave the
+/// session permanently unsaveable. The cap is on the copy that is stored
+/// only; what the screen showed is never truncated.
+///
+/// The 64 KiB floor ([`crate::config::MIN_SESSION_MAX_BYTES`]) with fifty
+/// maximal errors is a configuration pathology, recorded and not fixed:
+/// 50 * (1000 + a marker) still exceeds it, and the answer there is not to
+/// configure a 64 KiB cap.
+pub const MAX_SESSION_ERROR_CHARS: usize = 1000;
+
 /// The saving half: borrowed fields so writing a multi-megabyte history never
 /// clones it. Serialize-only by construction — `SessionFile` is the read side.
 /// Every field is `Copy`, which is what lets the trim path rebuild it with a

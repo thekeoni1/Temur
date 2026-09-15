@@ -537,7 +537,17 @@ fn model_switch(ctx: &mut CommandCtx, name: String) -> Vec<AgentEvent> {
     if ctx.replay_mode {
         return vec![notice("/model is unavailable in replay/capture mode")];
     }
-    if ctx.active_profile.as_deref() == Some(name.as_str()) {
+    // T64 P4 (Ruling T64-26, F-4): "already on" is a claim about the LIVE
+    // selection, not about the name alone. A raw switch on top of a profile
+    // keeps the profile NAME active (that is deliberate: the raw selection
+    // is the profile with only the model replaced), so testing the name
+    // alone turned `/model <that profile>` into a no-op that left the
+    // session on the raw id and said it was on the profile. When the live
+    // model has moved off the profile's own model, the profile is activated
+    // again, as an ordinary switch.
+    if ctx.active_profile.as_deref() == Some(name.as_str())
+        && ctx.profiles.get(&name).is_some_and(|p| p.model == *ctx.model)
+    {
         return vec![notice(format!("already on profile {name:?}"))];
     }
     // Profile names win on collision (T9): a raw model id shadowed by a
@@ -793,7 +803,15 @@ fn model_switch_save(ctx: &mut CommandCtx, id: String) -> Vec<AgentEvent> {
     }
     if ctx.profiles.contains_key(&id) {
         let mut out = model_switch(ctx, id.clone());
-        if ctx.active_profile.as_deref() == Some(id.as_str()) {
+        // T64 P4 (Ruling T64-26, F-4): persist only when the profile is what
+        // the session is actually RUNNING, name and model both. The name
+        // alone let a startup "profile" key be written for a profile the
+        // session had been switched off, which is neither the switch the
+        // user asked for nor a save that matches the live state. This is
+        // the same test the raw branch below has always made.
+        if ctx.active_profile.as_deref() == Some(id.as_str())
+            && ctx.profiles.get(&id).is_some_and(|p| p.model == *ctx.model)
+        {
             out.push(profile_persist_notice(ctx, &id));
         }
         return out;

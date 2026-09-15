@@ -7,6 +7,10 @@ use serde_json::{json, Value};
 use std::time::{Duration, SystemTime};
 
 const MAX_RESULTS: usize = 100;
+/// T64 P4 (Ruling T64-26): what a glob that walked the whole tree and
+/// matched nothing answers. The agent's futile-result guard excludes it by
+/// this constant, for the reason given on [`super::GREP_NO_MATCHES`].
+pub const GLOB_NO_FILES: &str = "No files found";
 /// T53/D21: bounds on the WALK, not on the output above. Measured on this
 /// box with the same ignore::WalkBuilder the tools use: the temur repo is
 /// 192 entries in 10 ms, /home/dev is 93,035 entries in 0.7 s warm and
@@ -190,7 +194,7 @@ impl Tool for GlobTool {
             if stop.is_some() {
                 String::new()
             } else {
-                "No files found".to_string()
+                GLOB_NO_FILES.to_string()
             }
         } else {
             listing

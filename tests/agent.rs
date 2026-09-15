@@ -2300,7 +2300,15 @@ fn same_profile_switch_is_a_friendly_noop() {
     let dir = tempfile::tempdir().unwrap();
     let (mut session, _) = session_with(dir.path(), vec![]);
     let mut h = CmdHarness::new();
+    // T64 P4 (F-4): the live selection has to match the profile, because
+    // "already on profile" is now a claim about what the session is
+    // RUNNING, not about the name alone. Name active but model elsewhere is
+    // the post-raw-switch state, and that one re-activates on purpose; see
+    // a_plain_profile_switch_after_a_raw_switch_re_activates.
     h.active = Some("b".into());
+    h.provider_name = "openai-compat".into();
+    h.model = "model-b".into();
+    h.active_resolved = h.profiles["b"].clone();
     let calls = Rc::new(RefCell::new(0u32));
     let c = calls.clone();
     let build = move |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
@@ -3636,6 +3644,155 @@ fn a_profile_switch_without_save_or_one_that_fails_writes_nothing() {
     assert!(notices(&events).iter().any(|n| n.contains("failed")), "{events:?}");
     assert!(!notices(&events).iter().any(|n| n.starts_with("saved")), "{events:?}");
     assert_eq!(h2.active, None);
+    assert_eq!(std::fs::read(&h.config_path).unwrap(), before);
+}
+
+#[test]
+fn a_profile_save_after_a_raw_switch_re_activates_the_profile() {
+    // T64 P4 (Amendment 3, F-4), case (a). /model b, then /model raw-x, then
+    // /model b --save. A raw switch keeps the profile NAME active, so the old
+    // name-only short-circuit made the last command a no-op that still wrote
+    // the startup key: the file said "b" while the session ran raw-x.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    harness_with_config(
+        &mut h,
+        dir.path(),
+        r#"{"profiles":{"b":{"provider":"openai-compat","model":"model-b"}}}"#,
+    );
+
+    commands::run(commands::parse("/model b"), &mut h.ctx(&mut session, &build_ok));
+    assert_eq!(h.model, "model-b");
+    commands::run(commands::parse("/model raw-x"), &mut h.ctx(&mut session, &build_ok));
+    assert_eq!(h.model, "raw-x", "the raw switch moved the live model");
+    assert_eq!(h.active.as_deref(), Some("b"), "and kept the profile name");
+
+    let events = commands::run(
+        commands::parse("/model b --save"),
+        &mut h.ctx(&mut session, &build_ok),
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::ModelSwitched { .. })),
+        "the profile is activated again: {events:?}"
+    );
+    assert!(
+        !notices(&events).iter().any(|n| n.contains("already on profile")),
+        "{events:?}"
+    );
+    assert_eq!(h.model, "model-b", "the session really is on the profile now");
+    assert_eq!(h.active.as_deref(), Some("b"));
+    assert!(
+        notices(&events).iter().any(|n| n.contains(r#"saved "profile": "b""#)),
+        "{events:?}"
+    );
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&h.config_path).unwrap()).unwrap();
+    assert_eq!(saved["profile"], "b");
+}
+
+#[test]
+fn a_profile_save_with_nothing_in_between_persists_without_re_activating() {
+    // T64 P4 (Amendment 3, F-4), case (b). The short-circuit still holds when
+    // the live model has NOT moved: no second activation, and the key is
+    // still written. This is the control on case (a): the fix must not turn
+    // every --save into a rebuild of the provider.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    harness_with_config(
+        &mut h,
+        dir.path(),
+        r#"{"profiles":{"b":{"provider":"openai-compat","model":"model-b"}}}"#,
+    );
+
+    commands::run(commands::parse("/model b"), &mut h.ctx(&mut session, &build_ok));
+    let events = commands::run(
+        commands::parse("/model b --save"),
+        &mut h.ctx(&mut session, &build_ok),
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, AgentEvent::ModelSwitched { .. })),
+        "nothing moved, so nothing is re-activated: {events:?}"
+    );
+    assert!(
+        notices(&events).iter().any(|n| n.contains(r#"already on profile "b""#)),
+        "{events:?}"
+    );
+    assert!(
+        notices(&events).iter().any(|n| n.contains(r#"saved "profile": "b""#)),
+        "{events:?}"
+    );
+    assert_eq!(h.model, "model-b");
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&h.config_path).unwrap()).unwrap();
+    assert_eq!(saved["profile"], "b");
+}
+
+#[test]
+fn a_plain_profile_switch_after_a_raw_switch_re_activates() {
+    // T64 P4 (Amendment 3, F-4), case (c). Without --save: /model b after a
+    // raw switch is a real switch back, not "already on profile b".
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+
+    commands::run(commands::parse("/model b"), &mut h.ctx(&mut session, &build_ok));
+    commands::run(commands::parse("/model raw-x"), &mut h.ctx(&mut session, &build_ok));
+    let events = commands::run(commands::parse("/model b"), &mut h.ctx(&mut session, &build_ok));
+
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::ModelSwitched { .. })),
+        "{events:?}"
+    );
+    assert!(
+        !notices(&events).iter().any(|n| n.contains("already on profile")),
+        "{events:?}"
+    );
+    assert!(
+        notices(&events).iter().any(|n| n.contains("switched to b")),
+        "{events:?}"
+    );
+    assert_eq!(h.model, "model-b");
+    assert_eq!(h.active.as_deref(), Some("b"));
+}
+
+#[test]
+fn a_profile_save_persists_nothing_when_the_re_activation_fails() {
+    // T64 P4 (Amendment 3, F-4). The second half of the fix, isolated: after
+    // a raw switch the profile name is still active, so a --save gated on
+    // the name alone wrote the startup key even when the re-activation it
+    // depends on had just failed. The gate is on the live model, and the
+    // live model is still the raw id.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    harness_with_config(
+        &mut h,
+        dir.path(),
+        r#"{"profiles":{"b":{"provider":"openai-compat","model":"model-b"}}}"#,
+    );
+    commands::run(commands::parse("/model b"), &mut h.ctx(&mut session, &build_ok));
+    commands::run(commands::parse("/model raw-x"), &mut h.ctx(&mut session, &build_ok));
+    let before = std::fs::read(&h.config_path).unwrap();
+
+    let failing = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        Err(temur::error::Error::Secret("cannot read key".into()))
+    };
+    let events = commands::run(
+        commands::parse("/model b --save"),
+        &mut h.ctx(&mut session, &failing),
+    );
+
+    assert!(
+        notices(&events).iter().any(|n| n.contains("session unchanged")),
+        "{events:?}"
+    );
+    assert!(
+        !notices(&events).iter().any(|n| n.contains("saved \"profile\"")),
+        "a failed switch must not be saved: {events:?}"
+    );
+    assert_eq!(h.model, "raw-x", "the session is still on the raw id");
     assert_eq!(std::fs::read(&h.config_path).unwrap(), before);
 }
 
@@ -7398,6 +7555,71 @@ fn an_error_free_session_file_has_no_errors_key_and_old_files_still_load() {
     )
     .unwrap();
     assert!(store::load(&old).unwrap().errors.is_empty());
+}
+
+#[test]
+fn a_huge_provider_error_is_capped_on_disk_but_not_on_screen() {
+    // T64 P4 (Amendment 3, F-3). `errors` rides the part of the session
+    // envelope that the trim path can never shed, so an unbounded provider
+    // message is a way to make a session permanently unsaveable. The STORED
+    // copy is capped; what the screen showed is not.
+    let cap = temur::session_store::MAX_SESSION_ERROR_CHARS;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.json");
+    let mut session = r6_session(dir.path(), &path, &"x".repeat(100_000));
+    session.set_persist_target(Some(temur::agent::PersistTarget {
+        max_bytes: temur::config::DEFAULT_SESSION_MAX_BYTES,
+        ..persist_target(&path)
+    }));
+
+    let text = r6_fail_and_save(&mut session, "hello");
+    // On screen: the whole thing, untouched.
+    assert_eq!(text.chars().count(), 100_051, "the UI string is not capped");
+    assert!(text.ends_with('x'), "the UI string is not capped");
+
+    // On disk: cap chars, then the marker.
+    let head: String = text.chars().take(cap).collect();
+    let errors = store::load(&path).unwrap().errors;
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].message, format!("{head} (truncated)"));
+    assert_eq!(errors[0].message.chars().count(), cap + " (truncated)".chars().count());
+
+    // Fifty of them still save, with the history intact, under the DEFAULT
+    // cap. Uncapped this is five megabytes of envelope that no trim can
+    // reach, and every later save would fail with UnitTooLarge.
+    for i in 1..temur::session_store::MAX_SESSION_ERRORS {
+        let err = temur::agent::AgentError::Provider(ProviderError::Network(format!(
+            "{i}{}",
+            "y".repeat(100_000)
+        )));
+        temur::agent::report_turn_error(&mut session, &err, "claude-sonnet-5");
+    }
+    session.persist_now(&mut |_| {});
+    let loaded = store::load(&path).unwrap();
+    assert_eq!(loaded.errors.len(), temur::session_store::MAX_SESSION_ERRORS);
+    assert!(!loaded.history.is_empty(), "the history survived the save");
+    for e in &loaded.errors {
+        assert!(e.message.chars().count() <= cap + " (truncated)".chars().count(), "{e:?}");
+    }
+    let on_disk = std::fs::metadata(&path).unwrap().len();
+    assert!(on_disk < temur::config::DEFAULT_SESSION_MAX_BYTES, "{on_disk} bytes");
+}
+
+#[test]
+fn the_stored_error_cap_cuts_on_a_char_boundary() {
+    // T64 P4 (Amendment 3, F-3). A cut taken in BYTES would either panic or
+    // write invalid UTF-8 here: the message is all three-byte chars.
+    let cap = temur::session_store::MAX_SESSION_ERROR_CHARS;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.json");
+    let mut session = r6_session(dir.path(), &path, &"\u{20ac}".repeat(2_000));
+    let text = r6_fail_and_save(&mut session, "hello");
+
+    let stored = &store::load(&path).unwrap().errors[0].message;
+    let head: String = text.chars().take(cap).collect();
+    assert_eq!(*stored, format!("{head} (truncated)"));
+    assert!(stored.ends_with("\u{20ac} (truncated)"), "{stored}");
+    assert_eq!(stored.chars().count(), cap + " (truncated)".chars().count());
 }
 
 #[test]

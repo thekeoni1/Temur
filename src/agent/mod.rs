@@ -10,7 +10,7 @@ use crate::provider::{
     StopReason, Usage,
 };
 use crate::session_store::SessionSeed;
-use crate::tools::{Registry, TodoItem, ToolCtx};
+use crate::tools::{Registry, TodoItem, ToolCtx, GLOB_NO_FILES, GREP_NO_MATCHES};
 use events::AgentEvent;
 
 /// Mirrors OpenCode's doom-loop threshold: N identical consecutive tool
@@ -114,10 +114,21 @@ pub fn turn_error_notice(e: &AgentError, model: &str) -> String {
 /// that already follows a failed turn writes it.
 pub fn report_turn_error(session: &mut Session, e: &AgentError, model: &str) -> String {
     let text = session.registry.redact(turn_error_notice(e, model));
+    // T64 P4 (Ruling T64-26, F-3): cap the STORED copy. `text` is returned
+    // uncapped, so the screen shows what it showed; only the session file
+    // is bounded. The cut is taken by CHARS, not bytes: a provider message
+    // is arbitrary UTF-8 and slicing mid-character would panic.
+    let stored = match text
+        .char_indices()
+        .nth(crate::session_store::MAX_SESSION_ERROR_CHARS)
+    {
+        None => text.clone(),
+        Some((cut, _)) => format!("{} (truncated)", &text[..cut]),
+    };
     session.errors.push(crate::session_store::SessionError {
         history_len: session.history.len() as u64,
         model: model.to_string(),
-        message: text.clone(),
+        message: stored,
     });
     let excess = session
         .errors
@@ -1932,10 +1943,23 @@ impl Session {
                         // spreadsheet, todowrite; see
                         // `Registry::acknowledges`), which is progress rather
                         // than information re-fetched.
+                        // T64 P4 (Ruling T64-26, F-1): only a call that
+                        // SUCCEEDED. A failed edit or write changed nothing,
+                        // so it acknowledges nothing, and treating it as
+                        // progress let one interleaved failure hide the
+                        // repetition this guard exists to catch.
+                        // T64 P4 (Ruling T64-26, F-2): so do the constant
+                        // answers of a search that finished and found
+                        // nothing. GREP_NO_MATCHES and GLOB_NO_FILES are
+                        // what twenty DISTINCT searches over an empty result
+                        // set all return, which is the empty-output case in
+                        // different words. Exact strings only (Ruling T64-8).
                         let trimmed = output.trim();
                         if trimmed.is_empty()
                             || trimmed == "(no output)"
-                            || self.registry.acknowledges(&name)
+                            || trimmed == GREP_NO_MATCHES
+                            || trimmed == GLOB_NO_FILES
+                            || (!is_error && self.registry.acknowledges(&name))
                         {
                             last_result_hash = None;
                             result_streak = 0;

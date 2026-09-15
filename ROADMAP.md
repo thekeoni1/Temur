@@ -1635,10 +1635,10 @@ The 6R cycle, on top of v0.35.0 and T63. P0a `1ab23b5` was pushed alone
 and is CI-green (run 34964759353); the v0.36.0 cut anchor moved to it.
 Everything after it is local on `t64-stack` until the laptop reports the
 cut done: P0 `3ed63ea`, P1 `c655282`, the P0 follow-up `46a4591`, P1b
-`cc99a3a`, the P1b follow-up `106f2fc` and this docs commit. Every commit
-was cold-gated on rustc 1.96.1 in a fresh target dir, and from P1 on each
-gate log records that the target dir was absent before launch and the
-binary's size and sha.
+`cc99a3a`, the P1b follow-up `106f2fc`, the docs commit and the review
+follow-up below. Every commit was cold-gated on rustc 1.96.1 in a fresh
+target dir, and from P1 on each gate log records that the target dir was
+absent before launch and the binary's size and sha.
 
 P0a stops two ways of losing a document. `edit` says why it cannot change
 a file: `File not found` only for a missing path, "not UTF-8 text" for a
@@ -1672,6 +1672,15 @@ Two findings shaped it: T36's pinned counter test, which a by-result
 count on a repeated input would have tripped (so a repeated input stays
 T36's to judge), and the edit acknowledgement, identical for three
 different edits to one file.
+
+A review follow-up closes five findings from a code review of the whole
+stack: a failed edit or write no longer resets the futile-result streak,
+the answers of a `grep` or `glob` that found nothing never count, a
+stored provider error is cut to 1,000 characters so `errors` cannot make
+a session unsaveable, `/model <profile> --save` persists only when the
+session is running that profile's model, and docx extraction reads text
+from `w:t` runs only, so a pretty-printed `document.xml` no longer comes
+back with its own indentation.
 
 | i686 musl release on 1.96.1 | bytes |
 | --- | --- |

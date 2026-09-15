@@ -3760,6 +3760,67 @@ fn a_docx_code_block_keeps_its_indentation() {
     );
 }
 
+// --------------------------------------------------------- T64 P4 (F-5)
+
+/// A .docx holding nothing but the given `word/document.xml`. The reader
+/// opens that one entry, so no other part is needed; the point is to feed it
+/// XML that temur's own writer would never emit.
+fn docx_with_document_xml(path: &std::path::Path, xml: &str) {
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    zip.start_file("word/document.xml", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    std::io::Write::write_all(&mut zip, xml.as_bytes()).unwrap();
+    zip.finish().unwrap();
+}
+
+#[test]
+fn a_pretty_printed_docx_does_not_read_back_its_own_xml_indentation() {
+    // T64 P4 (Amendment 3, F-5). quick-xml runs with trim_text(false), so
+    // the newlines and four-space indentation BETWEEN these elements arrive
+    // as Text events. Collecting them made a foreign document's XML layout
+    // look like content: R4's trim_end() kept it in front of every Code
+    // line, and an ordinary paragraph got it between its runs.
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("pretty.docx");
+    docx_with_document_xml(
+        &p,
+        concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n",
+            "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">\n",
+            "    <w:body>\n",
+            "        <w:p>\n",
+            "            <w:pPr>\n",
+            "                <w:pStyle w:val=\"Code\"/>\n",
+            "            </w:pPr>\n",
+            "            <w:r>\n",
+            "                <w:t xml:space=\"preserve\">    four spaces of code</w:t>\n",
+            "            </w:r>\n",
+            "        </w:p>\n",
+            "        <w:p>\n",
+            "            <w:r>\n",
+            "                <w:t>one</w:t>\n",
+            "            </w:r>\n",
+            "            <w:r>\n",
+            "                <w:t xml:space=\"preserve\"> two</w:t>\n",
+            "            </w:r>\n",
+            "        </w:p>\n",
+            "    </w:body>\n",
+            "</w:document>\n",
+        ),
+    );
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+    // The Code paragraph keeps the four spaces that are inside its w:t and
+    // gains nothing; the two runs join with nothing added between them.
+    assert_eq!(
+        doc_lines(&out.output),
+        ["    four spaces of code", "one two"],
+        "{}",
+        out.output
+    );
+}
+
 // --------------------------------------------------- T64 P1b follow-up (A2)
 
 #[test]

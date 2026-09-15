@@ -21,6 +21,8 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 pub use bash::{sandbox_available, APPROVAL_DENIED, SANDBOX_REFUSAL};
+pub use glob::GLOB_NO_FILES;
+pub use grep::GREP_NO_MATCHES;
 pub use guard::KeyGuard;
 /// T54 P3: A1 range parsing, public so the tool tests can pin the shapes
 /// a model actually writes without going through a whole workbook.
