@@ -1425,6 +1425,11 @@ the model. Counted per nudged cell, a tool call followed it in 4 of 24
 [COMPARISON.md](COMPARISON.md#same-rig-one-commit-apart-the-unattended-nudge-4b-row-refreshed-2026-09-11)
 and the 8B sub-row below it.
 
+To turn the nudge off, set `"unattended_nudge": false` in the config,
+top-level next to `provider`. An unattended turn then ends where the
+model stops, as it did before the nudge existed. `temur doctor`
+accepts the key and runs no check for it.
+
 ## Documents and spreadsheets
 
 temur reads PDFs and office files and writes spreadsheets with no

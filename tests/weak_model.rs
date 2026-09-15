@@ -103,6 +103,17 @@ fn session_with_flags(
     prose_tool_calls: bool,
     unattended: bool,
 ) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
+    session_with_nudge(dir, responses, prose_tool_calls, unattended, true)
+}
+
+/// T64 P1: the mode bools plus the `unattended_nudge` opt-out.
+fn session_with_nudge(
+    dir: &std::path::Path,
+    responses: Vec<ResponseMessage>,
+    prose_tool_calls: bool,
+    unattended: bool,
+    unattended_nudge: bool,
+) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
     let requests = Rc::new(RefCell::new(vec![]));
     let provider = MockProvider {
         responses: RefCell::new(responses),
@@ -124,6 +135,7 @@ fn session_with_flags(
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact: false,
         unattended,
+        unattended_nudge,
     };
     (
         Session::new(Box::new(provider), Registry::standard(), cfg),
@@ -1751,6 +1763,39 @@ fn the_unattended_nudge_fires_once_per_session_not_once_per_turn() {
             .count(),
         1
     );
+}
+
+/// T64 P1: `"unattended_nudge": false` turns the nudge off. The same
+/// script that earns a nudge below ends after its claim, as before T61.
+#[test]
+fn the_unattended_nudge_can_be_turned_off() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("plus_comm.v"), "Theorem plus_comm.\nAdmitted.\n").unwrap();
+    let (mut session, requests) = session_with_nudge(
+        dir.path(),
+        vec![
+            msg(
+                vec![tool_use(
+                    "tu_1",
+                    "write",
+                    serde_json::json!({"filePath": "plus_comm.v", "content": "Theorem plus_comm.\nProof. reflexivity. Qed.\n"}),
+                )],
+                StopReason::ToolUse,
+            ),
+            msg(vec![text("The proof is now complete and should compile.")], StopReason::EndTurn),
+            msg(vec![text("I ran coqc and it compiles.")], StopReason::EndTurn),
+        ],
+        true,
+        true,
+        false,
+    );
+    let events = collect_events(&mut session, "prove it");
+    assert!(unattended_notices(&events).is_empty(), "{:?}", notices(&events));
+    assert_eq!(
+        user_texts(&session).iter().filter(|t| t.as_str() == UNATTENDED_NUDGE).count(),
+        0
+    );
+    assert_eq!(requests.borrow().len(), 2, "no third request: the turn ended on the claim");
 }
 
 #[test]

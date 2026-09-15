@@ -170,6 +170,10 @@ pub struct SessionConfig {
     /// not a terminal. A TUI session and a plain REPL on a real terminal
     /// are never unattended, and main.rs is the only place that knows.
     pub unattended: bool,
+    /// T64 P1: the config's `unattended_nudge` opt-out, resolved (default
+    /// true). The nudge is its only reader; `unattended` above stays the
+    /// plain fact about how temur was invoked.
+    pub unattended_nudge: bool,
 }
 
 impl SessionConfig {
@@ -206,6 +210,7 @@ impl SessionConfig {
             // has not been told about the invocation mode, and assuming
             // somebody IS reading is the arm that adds nothing.
             unattended: false,
+            unattended_nudge: true,
         }
     }
 }
@@ -2098,6 +2103,7 @@ impl Session {
                         // (which nobody will answer). A read-only turn that
                         // states its answer is finished, and is left alone.
                         unattended_stop = self.cfg.unattended
+                            && self.cfg.unattended_nudge
                             && !self.unattended_nudge_sent
                             && (any_mutating_dispatched || text.trim_end().ends_with('?'));
                     }

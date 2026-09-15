@@ -1515,6 +1515,18 @@ mod tests {
         );
     }
 
+    /// T64 P1: the opt-out key is a real config field, so doctor's parse
+    /// accepts it with no new check.
+    #[test]
+    fn doctor_accepts_the_unattended_nudge_key() {
+        let base = canned_server(r#"{"data":[{"id":"served-b"}]}"#);
+        let mut cfg = keyless_config(&base, "served-b");
+        cfg.insert_str(1, r#""unattended_nudge":false,"#);
+        let (healthy, out) = doctor_over(&cfg, false);
+        assert!(healthy, "{out}");
+        assert!(out.contains("PASS: config parsed:"), "{out}");
+    }
+
     #[test]
     fn model_check_warn_when_absent_names_model_and_ids_but_stays_healthy() {
         let base = canned_server(r#"{"data":[{"id":"real-1"},{"id":"real-2"}]}"#);

@@ -678,6 +678,9 @@ fn repl(
     // the stdin test is what separates a piped REPL from a typed one.
     session_cfg.unattended =
         oneshot.is_some() || (!use_tui && !std::io::stdin().is_terminal());
+    // T64 P1: the config can turn the nudge off. `unattended` above stays
+    // the plain fact; only the nudge reads this.
+    session_cfg.unattended_nudge = cfg.unattended_nudge_enabled();
     session_cfg.system = Some(system);
     let registry =
         Registry::standard_with_skills(skill_dirs).with_profile(current_prompt_profile);

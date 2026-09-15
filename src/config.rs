@@ -384,6 +384,10 @@ pub struct Config {
     /// survive is a property of HOW temur was invoked, not of which model
     /// answered, so a `/model` switch must not change it.
     pub auto_compact: Option<bool>,
+    /// T64 P1: `false` turns off the T61 unattended continue nudge, so an
+    /// unattended session ends as it did before T61. `None` and `true`
+    /// keep it on. Base config only, like `auto_compact` above.
+    pub unattended_nudge: Option<bool>,
 }
 
 /// One named profile: a nickname bundling provider + model + endpoint +
@@ -630,6 +634,7 @@ impl Default for Config {
             project_instructions: true,
             cost_advisory_step_usd: None,
             auto_compact: None,
+            unattended_nudge: None,
         }
     }
 }
@@ -699,6 +704,12 @@ impl Config {
     /// user and keep the advisory plus `/compact`.
     pub fn auto_compact_enabled(&self, oneshot: bool) -> bool {
         self.auto_compact.unwrap_or(oneshot)
+    }
+
+    /// T64 P1: whether the unattended nudge may fire. On unless the config
+    /// says `"unattended_nudge": false`.
+    pub fn unattended_nudge_enabled(&self) -> bool {
+        self.unattended_nudge.unwrap_or(true)
     }
 
     /// Resolve and validate EVERY named profile eagerly. Called at startup so
@@ -1830,6 +1841,35 @@ mod tests {
         std::fs::write(&path, json).unwrap();
         persist_model(&path, profile, provider, model).unwrap();
         std::fs::read_to_string(&path).unwrap()
+    }
+
+    #[test]
+    fn unattended_nudge_defaults_on_and_false_turns_it_off() {
+        assert!(Config::default().unattended_nudge_enabled());
+        let on: Config = serde_json::from_str(r#"{"unattended_nudge": true}"#).unwrap();
+        assert!(on.unattended_nudge_enabled());
+        let off: Config = serde_json::from_str(r#"{"unattended_nudge": false}"#).unwrap();
+        assert!(!off.unattended_nudge_enabled());
+    }
+
+    #[test]
+    fn unattended_nudge_survives_both_surgical_writers() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        std::fs::write(
+            &p,
+            r#"{"unattended_nudge":false,"model":"m","profiles":{"a":{"provider":"anthropic","model":"x"}}}"#,
+        )
+        .unwrap();
+        persist_model(&p, None, "anthropic", "m2").unwrap();
+        persist_profile(&p, "a").unwrap();
+        let saved = std::fs::read_to_string(&p).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(v["unattended_nudge"], false, "{saved}");
+        assert_eq!(v["model"], "m2", "{saved}");
+        assert_eq!(v["profile"], "a", "{saved}");
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys[0], "unattended_nudge", "{saved}");
     }
 
     #[test]

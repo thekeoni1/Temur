@@ -356,6 +356,7 @@ fn moving_breakpoint_advances_across_agent_iterations() {
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact: false,
         unattended: false,
+        unattended_nudge: true,
     };
     let mut session = Session::new(Box::new(provider), Registry::standard(), cfg);
     session.turn("do the smoke task", &mut |_| {}).unwrap();
