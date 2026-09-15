@@ -1351,8 +1351,10 @@ fn rotating_repertoire_notices_at_six_and_stops_at_eighteen() {
 
     let notice = futile_notice(&events).expect("futile notice");
     assert!(notice.starts_with("6 tool calls this turn"), "{notice}");
+    // T64 P1b: the UI notices now say which guard counted; every call here
+    // repeats its own input, so all 18 are by input.
     assert!(notices(&events).iter().any(|n| n
-        == "stopped: 18 tool calls this turn repeated earlier calls with unchanged results"));
+        == "stopped: 18 tool calls this turn repeated earlier calls with unchanged results (18 by input, 0 by result)"));
 
     // The notice fires exactly once, and rides the SAME user message as the
     // results it is about: request 10 carries it as trailing text after the
@@ -1830,3 +1832,119 @@ fn the_unattended_notice_is_emitted_once_and_verbatim() {
         vec!["unattended: the turn ended without a tool call; one continue nudge sent"]
     );
 }
+
+// ---------------------------------------------------------------------------
+// T64 P1b (F11): the result-hash guard. T36 keys on {name}:{input}, so a
+// one-character change to the input evaded it while the result stayed
+// byte-identical. Same counter, same notice and stop, and the model-facing
+// text unchanged; only the UI notices carry the per-guard tallies.
+// ---------------------------------------------------------------------------
+
+fn stop_notice(events: &[AgentEvent]) -> Option<String> {
+    notices(&events.to_vec())
+        .into_iter()
+        .find(|n| n.starts_with("stopped: ") && n.contains("unchanged results"))
+}
+
+#[test]
+fn identical_results_under_changing_inputs_notice_at_six_and_stop_at_eighteen() {
+    // Twenty distinct commands, one output. Dispatches 1 and 2 build the
+    // streak; from dispatch 3 each is futile, so the count is dispatch-2:
+    // the notice at dispatch 8 (count 6), the stop at dispatch 20 (count 18).
+    // Exactly 20 responses: a 21st request would panic the mock.
+    let dir = tempfile::tempdir().unwrap();
+    let responses: Vec<ResponseMessage> =
+        (1..=20).map(|i| bash_call(&format!("echo same #{i}"))).collect();
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "keep going");
+
+    assert_eq!(requests.borrow().len(), 20);
+    let notice = futile_notice(&events).expect("futile notice");
+    assert_eq!(
+        notice,
+        "6 tool calls this turn repeated earlier calls with unchanged results; asked the model to use what it already has (0 by input, 6 by result)"
+    );
+    assert_eq!(
+        stop_notice(&events).as_deref(),
+        Some("stopped: 18 tool calls this turn repeated earlier calls with unchanged results (0 by input, 18 by result)")
+    );
+}
+
+#[test]
+fn no_output_results_never_count_as_repeats() {
+    // Twenty distinct commands that print nothing each return exactly
+    // "(no output)": legitimate work, never futile.
+    let dir = tempfile::tempdir().unwrap();
+    let mut responses: Vec<ResponseMessage> =
+        (1..=20).map(|i| bash_call(&format!("true #{i}"))).collect();
+    responses.push(msg(vec![text("done")], StopReason::EndTurn));
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "keep going");
+
+    assert_eq!(requests.borrow().len(), 21);
+    assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
+    assert!(stop_notice(&events).is_none(), "{:?}", notices(&events));
+}
+
+#[test]
+fn a_rotation_with_changing_results_never_counts() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut responses: Vec<ResponseMessage> =
+        (1..=20).map(|i| bash_call(&format!("echo {i}"))).collect();
+    responses.push(msg(vec![text("done")], StopReason::EndTurn));
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "keep going");
+
+    assert_eq!(requests.borrow().len(), 21);
+    assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
+}
+
+#[test]
+fn a_call_both_guards_match_is_counted_once() {
+    // Three commands cycling, all printing "x". Dispatch 3 is the first
+    // futile call and T36 has not seen its input, so it counts by result.
+    // From dispatch 4 every call repeats its own input with the same
+    // result, and counts by input only. The tallies always sum to the
+    // count: the notice at dispatch 8, the stop at dispatch 20.
+    let dir = tempfile::tempdir().unwrap();
+    let cycle = ["echo x", "echo x #b", "echo x #c"];
+    let responses: Vec<ResponseMessage> = (0..20).map(|i| bash_call(cycle[i % 3])).collect();
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "keep going");
+
+    assert_eq!(requests.borrow().len(), 20);
+    let notice = futile_notice(&events).expect("futile notice");
+    assert!(notice.starts_with("6 tool calls this turn"), "{notice}");
+    assert!(notice.ends_with("(5 by input, 1 by result)"), "{notice}");
+    assert_eq!(
+        stop_notice(&events).as_deref(),
+        Some("stopped: 18 tool calls this turn repeated earlier calls with unchanged results (17 by input, 1 by result)")
+    );
+}
+
+#[test]
+fn a_two_input_alternation_is_stopped_by_the_alternating_pair_guard_first() {
+    // Ruling T64-11 asked where this evasion lands. `cat f` and `cat f `
+    // (a trailing space) alternate with one result. From dispatch 3 each
+    // call repeats a fingerprint this turn has seen, so T36 counts it by
+    // input and the result guard never does: its count needs an unseen
+    // input. The count never reaches the notice at 6, because T4's
+    // alternating-pair guard sees A,B,A,B,A,B at the sixth response and
+    // stops before dispatching it.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f"), "same\n").unwrap();
+    let responses: Vec<ResponseMessage> =
+        (0..10).map(|i| bash_call(if i % 2 == 0 { "cat f" } else { "cat f " })).collect();
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "keep going");
+
+    assert_eq!(requests.borrow().len(), 6);
+    assert!(
+        notices(&events).iter().any(|n| n == "stopped: two tool calls alternated 3 times in a row"),
+        "{:?}",
+        notices(&events)
+    );
+    assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
+    assert!(stop_notice(&events).is_none(), "{:?}", notices(&events));
+}
+

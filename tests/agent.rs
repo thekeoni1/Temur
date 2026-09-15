@@ -4421,6 +4421,10 @@ fn new_session_redirects_persistence_without_writing_a_file() {
         vec![msg(vec![text("answer")], StopReason::EndTurn)],
     );
     collect_events(&mut session, "old conversation");
+    // T64-12: an R6 error entry the old conversation explains.
+    let err = temur::agent::AgentError::Provider(ProviderError::Network("reset".into()));
+    temur::agent::report_turn_error(&mut session, &err, "claude-sonnet-5");
+    assert_eq!(session.snapshot().errors.len(), 1);
     let mut h = CmdHarness::new();
     h.sessions_dir = sdir.path().to_path_buf();
     h.cwd = dir.path().to_path_buf(); // a real directory, so the hash is stable
@@ -4439,6 +4443,7 @@ fn new_session_redirects_persistence_without_writing_a_file() {
         "{events:?}"
     );
     assert!(session.history().is_empty(), "in-memory state cleared");
+    assert!(session.snapshot().errors.is_empty(), "/new drops the R6 errors too");
     assert_eq!(h.session_name.as_deref(), Some("myalpha"));
     let new_path = h.persist.clone().unwrap();
     assert!(new_path

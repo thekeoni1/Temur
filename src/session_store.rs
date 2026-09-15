@@ -105,7 +105,8 @@ pub struct SessionFile {
     /// T64 P0 (R6): the provider errors turns ended on, oldest first, at
     /// most [`MAX_SESSION_ERRORS`]. Absent when empty, so an error-free
     /// file stays byte-identical to the pre-R6 shape and FORMAT_VERSION
-    /// stays 1.
+    /// stays 1. Both `/clear` and `/new` drop the record along with the
+    /// history it describes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<SessionError>,
 }

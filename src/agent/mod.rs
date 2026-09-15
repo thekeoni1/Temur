@@ -835,10 +835,10 @@ impl Session {
         self.reset_cost_latch();
     }
 
-    /// Wipe the conversation (`/clear`): history, usage totals, context
-    /// estimate, warning latch, todos, and the R6 error entries, which
-    /// describe history that no longer exists (T64-10). Provider, model,
-    /// and config stay.
+    /// Wipe the conversation (`/clear`, and `/new` through this same call):
+    /// history, usage totals, context estimate, warning latch, todos, and
+    /// the R6 error entries, which describe history that no longer exists
+    /// (T64-10, T64-12). Provider, model, and config stay.
     pub fn clear_history(&mut self) {
         self.history.clear();
         self.errors.clear();
@@ -1414,6 +1414,14 @@ impl Session {
             std::collections::HashMap::new();
         let mut futile_count: u32 = 0;
         let mut futile_notice_sent = false;
+        // T64 P1b (F11): the same counter, fed by a second guard keyed on
+        // the RESULT alone, so a one-character change to the input cannot
+        // evade it. The two tallies always sum to `futile_count` and exist
+        // only so the UI notices can say which guard fired.
+        let mut futile_by_input: u32 = 0;
+        let mut futile_by_result: u32 = 0;
+        let mut last_result_hash: Option<u64> = None;
+        let mut result_streak: u32 = 0;
         // T40 per-turn auto-compaction state: the crossing waiting to be
         // acted on at the next safe point, and how many compactions this
         // turn has already spent against MAX_AUTO_COMPACTIONS_PER_TURN.
@@ -1899,12 +1907,48 @@ impl Session {
                         // failures, so nineteen byte-identical range errors
                         // count exactly like nineteen identical successes.
                         let result_hash = hash_result(&output);
-                        match futile_results.get(&futile_fingerprint) {
-                            Some(prev) if *prev == result_hash => futile_count += 1,
-                            _ => {
-                                futile_results.insert(futile_fingerprint, result_hash);
-                            }
+                        // Taken before the insert below: a fingerprint this
+                        // turn has already seen is T36's to judge.
+                        let seen_input = futile_results.contains_key(&futile_fingerprint);
+                        let by_input = matches!(
+                            futile_results.get(&futile_fingerprint),
+                            Some(prev) if *prev == result_hash
+                        );
+                        if !by_input {
+                            futile_results.insert(futile_fingerprint, result_hash);
                         }
+                        // T64 P1b: the third identical result in a row, and
+                        // every one after, is futile when its input is new.
+                        // The STREAK is tracked over every dispatched result,
+                        // seen or unseen fingerprint alike; only the count
+                        // below is gated on an unseen fingerprint (Ruling
+                        // T64-11). Do not narrow the streak to unseen inputs.
+                        // An empty result and "(no output)" are what distinct
+                        // legitimate calls return (mkdir, touch, chmod), so
+                        // they neither count nor extend the streak: they
+                        // reset it. Exact strings only (Ruling T64-8).
+                        let trimmed = output.trim();
+                        if trimmed.is_empty() || trimmed == "(no output)" {
+                            last_result_hash = None;
+                            result_streak = 0;
+                        } else if last_result_hash == Some(result_hash) {
+                            result_streak += 1;
+                        } else {
+                            last_result_hash = Some(result_hash);
+                            result_streak = 1;
+                        }
+                        // A call both guards match is counted once, by input.
+                        // By result counts only a NEW input: the F11 evasion
+                        // is an unseen fingerprint returning the same result,
+                        // while a seen fingerprint whose result changed has
+                        // made progress by T36's own definition (the
+                        // counters in changed_results_never_count_as_futile).
+                        if by_input {
+                            futile_by_input += 1;
+                        } else if result_streak >= 3 && !seen_input {
+                            futile_by_result += 1;
+                        }
+                        futile_count = futile_by_input + futile_by_result;
                         ui(AgentEvent::ToolEnd {
                             name,
                             title,
@@ -1959,7 +2003,7 @@ impl Session {
                             ),
                         });
                         ui(AgentEvent::Notice(format!(
-                            "{futile_count} tool calls this turn repeated earlier calls with unchanged results; asked the model to use what it already has"
+                            "{futile_count} tool calls this turn repeated earlier calls with unchanged results; asked the model to use what it already has ({futile_by_input} by input, {futile_by_result} by result)"
                         )));
                     }
                     self.history.push(RequestMessage {
@@ -1974,7 +2018,7 @@ impl Session {
                     }
                     if futile_stop {
                         ui(AgentEvent::Notice(format!(
-                            "stopped: {futile_count} tool calls this turn repeated earlier calls with unchanged results"
+                            "stopped: {futile_count} tool calls this turn repeated earlier calls with unchanged results ({futile_by_input} by input, {futile_by_result} by result)"
                         )));
                         break;
                     }
