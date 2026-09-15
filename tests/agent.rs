@@ -2349,6 +2349,9 @@ fn clear_persists_the_empty_session_immediately() {
         vec![msg(vec![text("answer")], StopReason::EndTurn)],
     );
     collect_events(&mut session, "question");
+    // T64 P0 follow-up: an R6 error entry this session's history explains.
+    let err = temur::agent::AgentError::Provider(ProviderError::Network("reset".into()));
+    temur::agent::report_turn_error(&mut session, &err, "claude-sonnet-5");
 
     let path = dir.path().join("session.json");
     // Mimic the driver-loop save that would have happened after the turn.
@@ -2368,6 +2371,7 @@ fn clear_persists_the_empty_session_immediately() {
     temur::session_store::save(&path, &file, temur::config::DEFAULT_SESSION_MAX_BYTES, &mut |_| {})
         .unwrap();
     assert!(!temur::session_store::load(&path).unwrap().history.is_empty());
+    assert_eq!(temur::session_store::load(&path).unwrap().errors.len(), 1);
 
     let mut h = CmdHarness::new();
     h.persist = Some(path.clone());
@@ -2382,6 +2386,8 @@ fn clear_persists_the_empty_session_immediately() {
     // The file on disk is already empty — quit + --continue resumes empty.
     let loaded = temur::session_store::load(&path).unwrap();
     assert!(loaded.history.is_empty());
+    assert!(session.snapshot().errors.is_empty());
+    assert!(loaded.errors.is_empty(), "/clear empties the errors too");
     let (seed, _) = temur::session_store::prepare_seed(loaded);
     assert!(seed.history.is_empty());
 }

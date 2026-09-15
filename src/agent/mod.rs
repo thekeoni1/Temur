@@ -836,9 +836,12 @@ impl Session {
     }
 
     /// Wipe the conversation (`/clear`): history, usage totals, context
-    /// estimate, warning latch, and todos. Provider, model, and config stay.
+    /// estimate, warning latch, todos, and the R6 error entries, which
+    /// describe history that no longer exists (T64-10). Provider, model,
+    /// and config stay.
     pub fn clear_history(&mut self) {
         self.history.clear();
+        self.errors.clear();
         self.session_usage = Usage::default();
         self.last_context_used = None;
         self.context_warned = false;
