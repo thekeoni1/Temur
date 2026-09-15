@@ -65,6 +65,12 @@ byte range, so `Solve $ \int 2x \cos(x^2)\,dx $` renders as
   `\geq` ≥, `\neq` ≠, `\approx` ≈, `\to` →, `\infty` ∞, the Greek set and
   the usual relations); `\,` and `\;` become a space; `\cos`, `\sin`,
   `\log` and their family lose the backslash.
+- Spacing and wrappers (T64): `\:`, `\quad`, `\qquad` and `~` also
+  become a space, `\!` renders as nothing, and every run of spaces
+  inside a span collapses to one. `\text`, `\textbf`, `\textit`,
+  `\mathrm` and `\mathbf` with a braced argument unwrap to it: a
+  `\text` argument comes out as written, since text mode has no
+  superscripts, and a `\math` one is rendered like the rest of the span.
 - What degrades: anything structural (`\frac`, `\lim`, `\begin`,
   `\left`) stays VERBATIM with its backslash inside the span, because a
   line-based renderer has no two-dimensional placement to put it in.

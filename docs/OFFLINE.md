@@ -878,7 +878,7 @@ Knobs: `MUSL_BIN`, `LLAMA_IMAGE`, `CTX` (default 8192), `PROMPT_PROFILE`
 (default `compact`, written into the generated keyless config),
 `EVAL_TASK_TIMEOUT` (seconds per task, default 1200; `0` disables it),
 `EVAL_MIN` (default 0 = informational; a nonzero value makes the script
-exit 1 below that score), `EVAL_ONLY` (a task number 1 to 10; only that
+exit 1 below that score), `EVAL_ONLY` (a task number 1 to 13; only that
 task runs, and the score line and the archived results file both carry
 `EVAL_ONLY=<n>, not a published row`), and `EVAL_TRANSCRIPT_DIR`
 (per-task transcripts are kept there for debugging). Also
@@ -889,6 +889,13 @@ banner, the summary, and a header line on every archived
 own identifies the exact template bytes it was measured under (a path
 alone would not: template files get fetched at a tag and hand-edited
 while a recipe is being found).
+
+Reading the transcripts: a notice temur prints on stderr appears in the
+plain transcript as an `[!]` line, but a nudge temur returns inside a
+tool result does not. The spreadsheet tool's xlsx-only reply and the
+missing-converter line on a failed bash are two of those. Count them
+from the session JSON under each task's archived artifacts, because a
+grep of the transcripts undercounts them.
 
 `scripts/offline_demo.sh` has no template knob. It is a
 fixed acceptance demo on a known-good model, where the only thing a

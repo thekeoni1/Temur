@@ -246,6 +246,13 @@ rename) and the FORMAT contains no timestamps, so a power cut at any
 instant leaves the previous complete file, resumable on a clock-less
 device.
 
+When a turn ends on a provider error, the file also records that error
+under `errors`: the message as the screen showed it (a registered API key
+already replaced with `[redacted]`), the model, and the history length at
+the time. It keeps the most recent 50. `/clear` and `/new` drop them with
+the history they describe, and the key is absent from a session that has
+had no errors.
+
 The save happens *within* a turn as well as at the end of one. An
 agentic turn can run for many minutes across many tool calls, so the
 session is written after each assistant message (before its tools run,
@@ -729,7 +736,9 @@ shipped: its streaming responses report `finish_reason` "stop" while
 attaching real tool calls, and it requires the opaque thought
 signature on each call to be echoed back on the following request.
 Model ids in its listing all carry a `models/` prefix, and the bare
-form works on the wire. Appearing in that listing is no guarantee an
+form works on the wire. temur ignores the prefix when it compares ids,
+so a bare id draws no "not in the listing" note and Tab completion
+offers the bare form. Appearing in that listing is no guarantee an
 id is usable, since retired ids stay listed and 404 for new accounts.
 
 Two more optional keys: `sessions_dir` overrides where saved sessions
@@ -1853,18 +1862,29 @@ those the model is told once, in the tool results themselves, that what
 it is re-fetching is already in front of it:
 
 ```
-  [!] 6 tool calls this turn repeated earlier calls with unchanged results; asked the model to use what it already has
+  [!] 6 tool calls this turn repeated earlier calls with unchanged results; asked the model to use what it already has (6 by input, 0 by result)
 ```
 
 At eighteen the turn ends:
 
 ```
-  [!] stopped: 18 tool calls this turn repeated earlier calls with unchanged results
+  [!] stopped: 18 tool calls this turn repeated earlier calls with unchanged results (18 by input, 0 by result)
 ```
 
+A model can also dodge that rule by changing its arguments by one
+character and getting the same answer back. So temur counts a second
+kind of futile call: the third identical result in a row, and every one
+after, from a call whose arguments are new to the turn. A call whose
+arguments the turn has already seen is judged by the first rule only.
+An empty result and `(no output)` never count, because distinct real
+work (`mkdir`, `touch`, `chmod`) returns exactly that. An acknowledgement
+from `edit`, `write`, the `spreadsheet` tool or `todowrite` never counts
+either, because a change made is not information re-fetched. Both kinds feed
+the same count, and the brackets at the end of each notice say how many
+came from each rule.
+
 Rereading a file you just wrote is never futile, because the result
-changed. Neither is a call with different arguments, however similar it
-looks. A failing call counts exactly like a succeeding one, since an
+changed. A failing call counts exactly like a succeeding one, since an
 identical error message is just as uninformative the second time. The
 real false positive is the opposite case: if you ask a model to POLL
 for something outside temur, waiting on a file another process writes

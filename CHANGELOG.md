@@ -4,11 +4,54 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## v0.36.0 - 2026-09-16
 
+- `/model <profile> --save` switches to the profile and makes it the
+  startup default by writing the `profile` key into config.json. It is
+  the same careful edit `/model <id> --save` makes: your key order and
+  unknown fields survive, and nothing is written if the switch fails.
+  The setup wizard's closing line now says this instead of telling you
+  to edit the file.
+
+- A Gemini model id no longer draws the "not in the last /models
+  listing" or "not in this listing" note. Gemini lists ids as
+  `models/<id>`, and temur now ignores that prefix when it compares ids.
+  Tab completion offers the bare id.
+
+- Math in replies reads better in the TUI. Inside a formula, `\quad`,
+  `\qquad` and `~` render as a space; `\text`, `\textbf`, `\textit`,
+  `\mathrm` and `\mathbf` render their argument; and runs of spaces
+  collapse to one. `\frac` and similar commands still show as source.
+
+- Reading a `.docx` that temur wrote keeps the indentation of its code
+  blocks.
+
+- When a turn ends on a provider error, the session file now records it:
+  the message as shown, the model, and how far the history had got. A
+  registered API key in the error text is replaced with `[redacted]`, on
+  screen and on disk. A session keeps the most recent 50 entries,
+  `/clear` and `/new` drop them, and a session with no errors saves
+  exactly as before.
+
+- `"unattended_nudge": false` in the config turns off the continue nudge
+  that an unattended run (`-p`, or a REPL fed from a pipe) gets when a
+  turn ends without a tool call.
+
+- The futile-call guard now also catches a model that changes its tool
+  input slightly and gets the same result back. From the third identical
+  result in a row, a call whose input is new to the turn counts as
+  futile. An empty result and `(no output)` never count, and neither
+  does an acknowledgement from `edit`, `write`, the `spreadsheet` tool or
+  `todowrite`, because a change made is not information re-fetched. The
+  two notices
+  now end with how many calls each rule counted, for example `(4 by
+  input, 2 by result)`; the text the model reads is unchanged.
+
 - Writing over an existing document (.xlsx, .xlsm, .xls, .ods, .docx or
   .pdf) no longer destroys it. The old file is first renamed to
   `<name>.previous.<ext>` in the same directory, replacing any older copy,
   and the result line says where it is. The `spreadsheet` tool does the
-  same when it replaces a workbook. `edit` on a .xlsx, .docx or .pdf now
+  same when it replaces a workbook. A symlink at the target is moved
+  aside like any other file, and the new document is a regular file.
+  `edit` on a .xlsx, .docx or .pdf now
   says temur cannot edit documents in place and points to `read` and
   `write`; on a file that is not UTF-8 it says so, and `File not found`
   now means the file is missing.

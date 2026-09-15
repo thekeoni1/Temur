@@ -1629,6 +1629,117 @@ one-liner gate stays deferred to the visibility flip (RUNBOOK).
   `\text \mathrm \textbf \textit \mathbf` unwrap to their argument, `~`
   becomes a space; `\frac` and friends stay honest source by design.
 
+### T64 as built (2026-09-15)
+
+The 6R cycle, on top of v0.35.0 and T63. P0a `1ab23b5` was pushed alone
+and is CI-green (run 34964759353); the v0.36.0 cut anchor moved to it.
+Everything after it is local on `t64-stack` until the laptop reports the
+cut done: P0 `3ed63ea`, P1 `c655282`, the P0 follow-up `46a4591`, P1b
+`cc99a3a`, the P1b follow-up `106f2fc` and this docs commit. Every commit
+was cold-gated on rustc 1.96.1 in a fresh target dir, and from P1 on each
+gate log records that the target dir was absent before launch and the
+binary's size and sha.
+
+P0a stops two ways of losing a document. `edit` says why it cannot change
+a file: `File not found` only for a missing path, "not UTF-8 text" for a
+binary, the io error otherwise, and for .xlsx, .docx or .pdf that temur
+cannot edit documents in place. `write` and the `spreadsheet` tool move
+an existing document (all six extensions `read` extracts) to
+`<stem>.previous.<ext>` before writing, keep one generation, and put it
+back if the new write fails. The read-first rule could not guard this,
+because reading the source through `office::extract` is what armed the
+overwrite.
+
+P0 carries the riders. R1: `/model <profile> --save` writes the startup
+`profile` key through the same surgical writer as `persist_model`. R2:
+the raw switch, Tab completion and the `/models` off-listing note compare
+ids with a leading `models/` stripped. R3: inside math spans, `\quad`,
+`\qquad` and `~` are a space, five wrappers unwrap, space runs collapse,
+and `\!` stays empty. R4: a docx paragraph in the writer's Code style
+keeps its leading whitespace. R6: a provider error a turn ends on is
+recorded in the session file as `errors` (history length, model, the
+message as shown with the registered key redacted), at most 50, dropped
+by `/clear` and `/new`, absent when empty, so FORMAT_VERSION stays 1.
+
+P1 adds `"unattended_nudge": false`. P1b makes the futile-call guard
+count by result as well as by input: from the third identical result in
+a row, a call whose input is new to the turn counts. Empty results,
+`(no output)`, and acknowledgements from edit, write, spreadsheet and
+todowrite reset the streak and never count. Both rules feed one counter,
+so the notice at 6 and the stop at 18 are unchanged, and the model-facing
+text is unchanged; the UI notices end with "(N by input, N by result)".
+Two findings shaped it: T36's pinned counter test, which a by-result
+count on a repeated input would have tripped (so a repeated input stays
+T36's to judge), and the edit acknowledgement, identical for three
+different edits to one file.
+
+| i686 musl release on 1.96.1 | bytes |
+| --- | --- |
+| T63 (P2b) | 8,288,780 |
+| P0a | 8,292,940 |
+| P0 | 8,308,748 |
+| P1 + /clear follow-up | 8,309,324 |
+| P1b | 8,310,028 |
+| P1b follow-up | 8,310,284 |
+
+P2 measured instead of guessing. The write.txt .pdf misread appeared in
+3 of 10 archived task-12 transcripts, which crossed the spec's "more
+than one", so one reworded sentence went to a pre-registered A/B on
+`cc99a3a`, six task-12 runs per arm, interleaved, classified blind to arm
+and result before any results line was read:
+
+| arm | misread | PASS |
+| --- | --- | --- |
+| control (write.txt as shipped) | 0/6 | 6/6 |
+| candidate (one sentence) | 0/6 | 5/6 |
+
+Disposition (Ruling T64-16): write.txt .pdf misread: measured 3/10 in
+pre-T63 archives; one-sentence A/B on the T64 stack (cc99a3a, 6 per arm)
+found the misread 0/12 and candidate PASS 5/6 vs control 6/6; not
+adopted; re-measure only if a reading on a shipped stack shows the
+misread again. Not to be re-run until liked.
+
+In the same twelve runs no futile-call notice fired, so both P1b tallies
+were 0 in every run. That is the first sighting of P1b on real
+transcripts. The unattended nudge fired in 11, the spreadsheet tool's
+xlsx-only reply in 10, and the missing-converter reply in 1. F12, read's
+`N: ` prefixes copied into written documents, measured 0 in 90 of 90
+model-written documents in the archives, so no fix was proposed.
+
+Two riders from 6R were dropped, not built. `/models` two-ids: never
+reproduced; T27's regression pin stands; reopen only with terminal,
+width and the id list from a live session. serve.sh SERVER_ARGS:
+deliberately open per this document's own judgment; the eval case it was
+written for is covered by EVAL_SERVER_FLAGS since T62 item 6B. The other
+four riders are closed by P0.
+
+The python3 sentence was not measured in T64. The twelve-task eval reads
+9/9 for the 4B on every arm since T59, so it cannot show a one-sentence
+gain. The evidence for the sentence came from the Aug 27 harness_compare
+matrix (1 of 32 cells, modernize-scientific-stack), so that matrix's
+failing subset is the only instrument that can measure it. That is its
+own milestone with its own spend, after launch, and no sentence was
+written.
+
+### Queued from T64 (2026-09-15)
+
+- The end-of-T64 reading: one twelve-task reading on the whole stack,
+  pre-registered (nine 9/9 and task 11 falsifiable, 12 variance, 13 as
+  read before, guard-fire counts per task). It waits on the operator's
+  authorisation.
+- P1b's remaining false-positive class, which that reading's guard-fire
+  counts watch for: new distinct inputs returning identical
+  non-boilerplate text three times in a row, such as `wc -l` on
+  equal-length files or different bash commands failing with the same
+  `(exit code 1)`.
+- R6: a resume that drops a dangling prompt can leave an entry's
+  `history_len` past the end of the resumed history. Recorded, not
+  corrected.
+- F7 (doctor passes a model whose parallel-call format llama.cpp's
+  parser rejects) and F13 (llama.cpp's template date string; send
+  `chat_template_kwargs.date_string` only to a local llama.cpp) are T65.
+- The two A/B binaries are recorded by sha in the T64 report.
+
 ### T63 as built (2026-09-14)
 
 The dogfood fast-follow, on top of v0.35.0 with no version bump. P0
