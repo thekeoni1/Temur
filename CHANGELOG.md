@@ -4,6 +4,15 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- Writing over an existing document (.xlsx, .xlsm, .xls, .ods, .docx or
+  .pdf) no longer destroys it. The old file is first renamed to
+  `<name>.previous.<ext>` in the same directory, replacing any older copy,
+  and the result line says where it is. The `spreadsheet` tool does the
+  same when it replaces a workbook. `edit` on a .xlsx, .docx or .pdf now
+  says temur cannot edit documents in place and points to `read` and
+  `write`; on a file that is not UTF-8 it says so, and `File not found`
+  now means the file is missing.
+
 - temur now builds with rustc 1.96.1, pinned in `rust-toolchain.toml` for
   local builds and CI, and the release profile uses fat LTO with one
   codegen unit. On that toolchain the i686 binary drops from 9,872,396 to

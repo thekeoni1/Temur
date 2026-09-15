@@ -201,22 +201,40 @@ impl Tool for SpreadsheetTool {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| ToolError::failed(e.to_string()))?;
         }
-        office::write_workbook(&path, &sheets, &charts)?;
+        // T64 P0a: the existing workbook moves aside first, as in write.
+        let previous = if existed {
+            let prev = office::previous_copy_path(&path);
+            ctx.guard.check(&prev)?;
+            office::move_aside(&path, &prev)?;
+            Some(prev)
+        } else {
+            None
+        };
+        if let Err(e) = office::write_workbook(&path, &sheets, &charts) {
+            return Err(match &previous {
+                Some(prev) => office::put_back(&path, prev, e),
+                None => e,
+            });
+        }
         ctx.record_read(&path);
 
         let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let sheet_count = sheets.len();
         let chart_count = charts.len();
-        Ok(ToolOutput {
-            title: p.file_path,
-            output: format!(
-                "{} {} ({sheet_count} sheet{}, {chart_count} chart{}, {bytes} bytes)",
-                if existed { "Overwrote" } else { "Created" },
+        let counts = format!(
+            "({sheet_count} sheet{}, {chart_count} chart{}, {bytes} bytes)",
+            if sheet_count == 1 { "" } else { "s" },
+            if chart_count == 1 { "" } else { "s" }
+        );
+        let output = match &previous {
+            Some(prev) => format!(
+                "Replaced {} {counts}; the previous document is at {}",
                 path.display(),
-                if sheet_count == 1 { "" } else { "s" },
-                if chart_count == 1 { "" } else { "s" }
+                prev.display()
             ),
-        })
+            None => format!("Created {} {counts}", path.display()),
+        };
+        Ok(ToolOutput { title: p.file_path, output })
     }
 }
 

@@ -2739,10 +2739,10 @@ fn xlsx_writing_keeps_the_write_tools_own_rules() {
         .to_string();
     assert!(err.contains("has not been read in this session"), "{err}");
 
-    // And the overwrite accounting still reports the bytes it replaced.
+    // And an overwrite keeps the previous workbook beside it (T64 P0a).
     let out = run(&reg, &mut ctx, "write", json!({"filePath": fp, "content": "b,2\n"})).unwrap();
-    assert!(out.output.starts_with("Overwrote"), "{}", out.output);
-    assert!(out.output.contains("replaced"), "{}", out.output);
+    assert!(out.output.starts_with("Replaced "), "{}", out.output);
+    assert!(out.output.contains("the previous document is at"), "{}", out.output);
 }
 
 #[test]
@@ -3535,3 +3535,209 @@ fn an_edit_with_nothing_to_change_says_to_continue() {
     );
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "x = 1\n");
 }
+
+// --------------------------------------------------------- T64 P0a
+// F9 and F10: edit says why it cannot change a file, and a write over an
+// existing document keeps the previous one beside it.
+
+#[test]
+fn edit_names_the_real_reason_it_cannot_read_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let edit = |ctx: &mut ToolCtx, p: &std::path::Path| {
+        run(&reg, ctx, "edit", json!({"filePath": p.to_str().unwrap(), "oldString": "a", "newString": "b"}))
+            .unwrap_err()
+            .to_string()
+    };
+
+    // Missing is the only case that says File not found.
+    let err = edit(&mut ctx, &dir.path().join("nope.txt"));
+    assert!(err.contains("File not found"), "{err}");
+
+    // Latin-1 text: it exists, and decoded it would even match oldString.
+    let latin1 = dir.path().join("latin1.txt");
+    std::fs::write(&latin1, b"caf\xe9 a\n").unwrap();
+    let err = edit(&mut ctx, &latin1);
+    assert!(err.contains("is not UTF-8 text"), "{err}");
+    assert!(!err.contains("File not found"), "{err}");
+    assert_eq!(std::fs::read(&latin1).unwrap(), b"caf\xe9 a\n");
+
+    // Any other failure reports the io error itself.
+    let sub = dir.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let err = edit(&mut ctx, &sub);
+    assert!(err.contains("Cannot read"), "{err}");
+    assert!(!err.contains("File not found"), "{err}");
+
+    // An edit that read nothing does not arm write's read-first rule.
+    let err = run(&reg, &mut ctx, "write", json!({"filePath": latin1.to_str().unwrap(), "content": "x"}))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("has not been read in this session"), "{err}");
+}
+
+#[test]
+fn edit_on_a_document_says_what_temur_can_do_instead() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let book = dir.path().join("book.xlsx");
+    run(&reg, &mut ctx, "write", json!({"filePath": book.to_str().unwrap(), "content": "a,1\n"})).unwrap();
+    let notes = dir.path().join("notes.docx");
+    std::fs::copy(office_fixture("synth.docx"), &notes).unwrap();
+    // Upper case: write decides by the lowercased extension, so edit does too.
+    let report = dir.path().join("report.PDF");
+    std::fs::copy(office_fixture("synth-plain.pdf"), &report).unwrap();
+
+    for p in [&book, &notes, &report] {
+        let before = std::fs::read(p).unwrap();
+        let err = run(&reg, &mut ctx, "edit", json!({"filePath": p.to_str().unwrap(), "oldString": "a", "newString": "b"}))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("temur cannot edit documents in place; read shows their text; write replaces the whole document with one built from your content"),
+            "{err}"
+        );
+        assert_eq!(std::fs::read(p).unwrap(), before, "{}", p.display());
+    }
+
+    // The refusal read nothing, so it does not arm write's read-first rule.
+    let err = run(&reg, &mut ctx, "write", json!({"filePath": notes.to_str().unwrap(), "content": "# x\n"}))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("has not been read in this session"), "{err}");
+}
+
+#[test]
+fn a_write_over_a_document_keeps_the_previous_one_beside_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    for (name, previous, v1, v2, v3) in [
+        ("book.xlsx", "book.previous.xlsx", "a,1\n", "b,2\n", "c,3\n"),
+        ("notes.docx", "notes.previous.docx", "# One\n", "# Two\n", "# Three\n"),
+        ("report.pdf", "report.previous.pdf", "one\n", "two\n", "three\n"),
+    ] {
+        let p = dir.path().join(name);
+        let fp = p.to_str().unwrap();
+        let prev = dir.path().join(previous);
+
+        // A new document moves nothing aside.
+        let out = run(&reg, &mut ctx, "write", json!({"filePath": fp, "content": v1})).unwrap();
+        assert!(out.output.starts_with("Created "), "{}", out.output);
+        assert!(!prev.exists(), "{name}");
+        let first = std::fs::read(&p).unwrap();
+
+        // Read-first still governs a document in a fresh session, and a
+        // refused write moves nothing.
+        let mut fresh = ctx_in(dir.path());
+        let err = run(&reg, &mut fresh, "write", json!({"filePath": fp, "content": v2}))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("has not been read in this session"), "{err}");
+        assert!(!prev.exists(), "{name}");
+        assert_eq!(std::fs::read(&p).unwrap(), first, "{name}");
+
+        // A read through office::extract arms the write, and the write keeps
+        // the old bytes under the .previous name, byte-identical.
+        run(&reg, &mut fresh, "read", json!({"filePath": fp})).unwrap();
+        let out = run(&reg, &mut fresh, "write", json!({"filePath": fp, "content": v2})).unwrap();
+        assert_eq!(std::fs::read(&prev).unwrap(), first, "{name}");
+        assert!(out.output.starts_with(&format!("Replaced {} (", p.display())), "{}", out.output);
+        assert!(
+            out.output.ends_with(&format!("; the previous document is at {}", prev.display())),
+            "{}",
+            out.output
+        );
+
+        // One generation: a third write replaces the .previous copy.
+        let second = std::fs::read(&p).unwrap();
+        run(&reg, &mut fresh, "write", json!({"filePath": fp, "content": v3})).unwrap();
+        assert_eq!(std::fs::read(&prev).unwrap(), second, "{name}");
+    }
+    let mut names: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["book.previous.xlsx", "book.xlsx", "notes.docx", "notes.previous.docx", "report.pdf", "report.previous.pdf"]
+    );
+}
+
+#[test]
+fn a_document_write_that_fails_puts_the_previous_document_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("wide.xlsx");
+    let fp = p.to_str().unwrap();
+    run(&reg, &mut ctx, "write", json!({"filePath": fp, "content": "a,1\n"})).unwrap();
+    let before = std::fs::read(&p).unwrap();
+    // A stale copy from an earlier write. The move aside replaces it, so
+    // its absence afterwards proves the move happened before the writer
+    // failed; this is also the rollback's stated limit.
+    let prev = dir.path().join("wide.previous.xlsx");
+    std::fs::write(&prev, "stale").unwrap();
+
+    // 16,385 fields: one past Excel's column limit, which the workbook
+    // writer refuses after the existing file has been moved aside.
+    let too_wide = format!("{}\n", ",".repeat(16_384));
+    let err = run(&reg, &mut ctx, "write", json!({"filePath": fp, "content": too_wide}))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("more rows or columns than a worksheet can hold"), "{err}");
+    assert_eq!(std::fs::read(&p).unwrap(), before);
+    assert!(!prev.exists());
+}
+
+#[test]
+fn the_spreadsheet_tool_keeps_the_previous_workbook_beside_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("plot.xlsx");
+    let prev = dir.path().join("plot.previous.xlsx");
+    let book = |label: &str| {
+        json!({"filePath": p.to_str().unwrap(), "sheets": [{"name": "Data", "rows": [["label", label]]}], "charts": []})
+    };
+
+    let out = run(&reg, &mut ctx, "spreadsheet", book("one")).unwrap();
+    assert!(out.output.starts_with("Created "), "{}", out.output);
+    assert!(!prev.exists());
+    let first = std::fs::read(&p).unwrap();
+
+    let out = run(&reg, &mut ctx, "spreadsheet", book("two")).unwrap();
+    assert_eq!(std::fs::read(&prev).unwrap(), first);
+    assert!(out.output.starts_with(&format!("Replaced {} (1 sheet, 0 charts, ", p.display())), "{}", out.output);
+    assert!(
+        out.output.ends_with(&format!("; the previous document is at {}", prev.display())),
+        "{}",
+        out.output
+    );
+}
+
+#[test]
+fn plain_text_over_an_ods_keeps_the_workbook_beside_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    // Upper case: the rule ignores case and the copy keeps the spelling.
+    let p = dir.path().join("sheet.ODS");
+    let prev = dir.path().join("sheet.previous.ODS");
+    std::fs::copy(office_fixture("plain-3x2.ods"), &p).unwrap();
+    let original = std::fs::read(&p).unwrap();
+
+    run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+    let out = run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": "x,y\n"})).unwrap();
+    assert_eq!(std::fs::read(&prev).unwrap(), original);
+    // write has no .ods writer: the new file is the plain text it was given.
+    assert_eq!(std::fs::read(&p).unwrap(), b"x,y\n");
+    assert_eq!(
+        out.output,
+        format!("Replaced {} (4 bytes); the previous document is at {}", p.display(), prev.display())
+    );
+}
+

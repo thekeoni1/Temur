@@ -68,8 +68,21 @@ impl Tool for EditTool {
         let path = resolve_path(ctx, &p.file_path);
         // T18: before the read (an edit both reads and rewrites the file).
         ctx.guard.check(&path)?;
-        let content = std::fs::read_to_string(&path)
-            .map_err(|_| ToolError::failed(format!("File not found: {}", path.display())))?;
+        // T64 P0a (F9): say why the file cannot be edited. "File not found"
+        // is only for a missing path; it used to cover a binary file too,
+        // and the model went looking for a file that was right there.
+        std::fs::metadata(&path).map_err(|e| read_error(&path, e))?;
+        let is_document = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(crate::tools::office::writes_as_document);
+        if is_document {
+            return Err(ToolError::failed(format!(
+                "{}: temur cannot edit documents in place; read shows their text; write replaces the whole document with one built from your content",
+                path.display()
+            )));
+        }
+        let content = std::fs::read_to_string(&path).map_err(|e| read_error(&path, e))?;
         // T19: an edit reads the file (just above), so it arms write's
         // read-first check like the read tool does.
         ctx.record_read(&path);
@@ -207,3 +220,15 @@ impl EditTool {
 }
 
 const NOT_FOUND_MSG: &str = "oldString was not found in the file, even with whitespace-tolerant matching. Re-read the file and copy the text exactly.";
+
+/// The edit tool's answer when it cannot read `path` as text.
+fn read_error(path: &std::path::Path, e: std::io::Error) -> ToolError {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => ToolError::failed(format!("File not found: {}", path.display())),
+        std::io::ErrorKind::InvalidData => ToolError::failed(format!(
+            "{} is not UTF-8 text, so edit cannot change it",
+            path.display()
+        )),
+        _ => ToolError::failed(format!("Cannot read {}: {e}", path.display())),
+    }
+}

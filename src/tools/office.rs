@@ -60,6 +60,46 @@ pub fn is_document(ext: &str) -> bool {
     )
 }
 
+/// The extensions the write tool turns into a real document rather than
+/// plain bytes (T54 P2, T60): a subset of [`is_document`]. Edit refuses
+/// them and write keeps the previous copy aside (T64 P0a).
+pub fn writes_as_document(ext: &str) -> bool {
+    matches!(ext.to_ascii_lowercase().as_str(), "xlsx" | "docx" | "pdf")
+}
+
+/// `<stem>.previous.<ext>` beside `path`, keeping the extension's spelling.
+pub fn previous_copy_path(path: &Path) -> std::path::PathBuf {
+    let mut name = path.file_stem().unwrap_or_default().to_os_string();
+    name.push(".previous.");
+    name.push(path.extension().unwrap_or_default());
+    path.with_file_name(name)
+}
+
+/// T64 P0a (F10, Ruling T64-3): no tool destroys an existing document's
+/// bytes. Read-first cannot guard this, because reading the source
+/// through [`extract`] is exactly what arms the overwrite, so the file
+/// moves aside to `previous` first, replacing any older copy there (one
+/// generation). The caller has already guard-checked `previous`.
+pub fn move_aside(path: &Path, previous: &Path) -> Result<(), ToolError> {
+    std::fs::rename(path, previous).map_err(|e| {
+        ToolError::failed(format!(
+            "{} was not written: moving the existing document aside to {} failed: {e}",
+            path.display(),
+            previous.display()
+        ))
+    })
+}
+
+/// Undoes [`move_aside`] after a failed write, returning `err`. rename
+/// replaces any partial file the writer left behind; when even that
+/// fails, the error says where the previous document is.
+pub fn put_back(path: &Path, previous: &Path, err: ToolError) -> ToolError {
+    match std::fs::rename(previous, path) {
+        Ok(()) => err,
+        Err(_) => ToolError::failed(format!("{err}; the previous document is at {}", previous.display())),
+    }
+}
+
 /// Text of a document, or ONE honest sentence the model can act on.
 ///
 /// The window is the caller's own: `skip_lines` is how many lines it will

@@ -83,16 +83,34 @@ impl Tool for WriteTool {
             .and_then(|e| e.to_str())
             .map(|e| e.to_ascii_lowercase())
             .unwrap_or_default();
-        let as_document = matches!(ext.as_str(), "xlsx" | "docx" | "pdf");
+        let as_document = super::office::writes_as_document(&ext);
+        // T64 P0a (F10, Ruling T64-3): an existing document moves aside to
+        // <stem>.previous.<ext> before it is replaced. The rule keys on every
+        // extension read extracts, not only the three written as documents:
+        // plain text over an .ods is the same loss.
+        let previous = if existed && super::office::is_document(&ext) {
+            let prev = super::office::previous_copy_path(&path);
+            ctx.guard.check(&prev)?;
+            super::office::move_aside(&path, &prev)?;
+            Some(prev)
+        } else {
+            None
+        };
         // How many characters the PDF's WinAnsi encoding could not hold
         // and wrote as `?`. Reported only when nonzero, so the model can
         // tell the user; every other path leaves it at zero.
         let mut outside_winansi: u64 = 0;
-        match ext.as_str() {
-            "xlsx" => super::office::write_csv_as_xlsx(&path, &p.content)?,
-            "docx" => super::office::write_markdown_as_docx(&path, &p.content)?,
-            "pdf" => outside_winansi = super::office::write_markdown_as_pdf(&path, &p.content)?,
-            _ => std::fs::write(&path, &p.content).map_err(|e| ToolError::failed(e.to_string()))?,
+        let written = match ext.as_str() {
+            "xlsx" => super::office::write_csv_as_xlsx(&path, &p.content),
+            "docx" => super::office::write_markdown_as_docx(&path, &p.content),
+            "pdf" => super::office::write_markdown_as_pdf(&path, &p.content).map(|n| outside_winansi = n),
+            _ => std::fs::write(&path, &p.content).map_err(|e| ToolError::failed(e.to_string())),
+        };
+        if let Err(e) = written {
+            return Err(match &previous {
+                Some(prev) => super::office::put_back(&path, prev, e),
+                None => e,
+            });
         }
         // For a plain write those are the same number. For a workbook or a
         // document they are not, and reporting the source's length as the
@@ -116,13 +134,18 @@ impl Tool for WriteTool {
         } else {
             String::new()
         };
-        Ok(ToolOutput {
-            title: p.file_path,
-            output: format!(
+        let output = match &previous {
+            Some(prev) => format!(
+                "Replaced {} ({written_bytes} bytes{unencodable}); the previous document is at {}",
+                path.display(),
+                prev.display()
+            ),
+            None => format!(
                 "{} {} ({written_bytes} bytes{replaced}{unencodable})",
                 if existed { "Overwrote" } else { "Created" },
                 path.display()
             ),
-        })
+        };
+        Ok(ToolOutput { title: p.file_path, output })
     }
 }
