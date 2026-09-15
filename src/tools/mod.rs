@@ -609,9 +609,6 @@ impl Registry {
             .is_some_and(|t| t.approval_site() != ApprovalSite::None)
     }
 
-    /// Execute by name with central key redaction and output truncation.
-    /// Redaction runs FIRST, on success and failure alike, so a key can
-    /// never leak split across the truncation cut or ride an error message.
     /// T64 P1b follow-up (Ruling T64-14): does this tool's result only
     /// acknowledge a change? The result guard must not count those as
     /// repeats: three different edits to one file all come back "Edited
@@ -634,6 +631,9 @@ impl Registry {
                 .is_some_and(|t| t.approval_site() == ApprovalSite::Registry)
     }
 
+    /// Execute by name with central key redaction and output truncation.
+    /// Redaction runs FIRST, on success and failure alike, so a key can
+    /// never leak split across the truncation cut or ride an error message.
     pub fn execute(
         &self,
         name: &str,

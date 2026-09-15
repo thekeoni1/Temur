@@ -1989,8 +1989,11 @@ fn distinct_edits_to_one_file_never_count_as_repeats() {
 fn same_size_rewrites_of_one_file_never_count_as_repeats() {
     // write answers "Overwrote <path> (3 bytes, replaced 3 bytes of prior
     // content)" for every same-size rewrite: identical, and still progress.
+    // Ten writes: the first says "Created", the other nine are identical, so
+    // without the acknowledgement rule the streak counts 7 and the notice
+    // fires at 6. With the rule nothing counts.
     let dir = tempfile::tempdir().unwrap();
-    let mut responses: Vec<ResponseMessage> = (1..=8)
+    let mut responses: Vec<ResponseMessage> = (0..=9)
         .map(|i| {
             msg(
                 vec![tool_use("tu_w", "write", serde_json::json!({"filePath": "w.txt", "content": format!("v{i}\n")}))],
@@ -2002,8 +2005,8 @@ fn same_size_rewrites_of_one_file_never_count_as_repeats() {
     let (mut session, requests) = session_with(dir.path(), responses);
     let events = collect_events(&mut session, "write it");
 
-    assert_eq!(requests.borrow().len(), 9);
-    assert_eq!(std::fs::read_to_string(dir.path().join("w.txt")).unwrap(), "v8\n");
+    assert_eq!(requests.borrow().len(), 11);
+    assert_eq!(std::fs::read_to_string(dir.path().join("w.txt")).unwrap(), "v9\n");
     assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
 }
 
@@ -2036,6 +2039,38 @@ fn a_different_result_restarts_the_streak() {
     let events = collect_events(&mut session, "keep going");
 
     assert_eq!(requests.borrow().len(), 21);
+    assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
+}
+
+#[test]
+fn an_acknowledgement_between_identical_results_resets_the_streak() {
+    // Two identical bash results, then an edit, seven times over. The
+    // acknowledgement RESETS the streak, so it never reaches 3. A rule that
+    // merely skipped acknowledgements would let the bash streak run to 14
+    // and count 12, firing the notice. (Without the rule at all, the edit's
+    // different result also restarts the streak, so the pin that A2 exists
+    // is distinct_edits_to_one_file_never_count_as_repeats, not this one.)
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), "x1 x2 x3 x4 x5 x6 x7\n").unwrap();
+    let mut responses: Vec<ResponseMessage> = Vec::new();
+    for k in 1..=7 {
+        responses.push(bash_call(&format!("echo same #{k}a")));
+        responses.push(bash_call(&format!("echo same #{k}b")));
+        responses.push(msg(
+            vec![tool_use(
+                "tu_e",
+                "edit",
+                serde_json::json!({"filePath": "f.txt", "oldString": format!("x{k}"), "newString": format!("y{k}")}),
+            )],
+            StopReason::ToolUse,
+        ));
+    }
+    responses.push(msg(vec![text("done")], StopReason::EndTurn));
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "keep going");
+
+    assert_eq!(requests.borrow().len(), 22);
+    assert_eq!(std::fs::read_to_string(dir.path().join("f.txt")).unwrap(), "y1 y2 y3 y4 y5 y6 y7\n");
     assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
 }
 
