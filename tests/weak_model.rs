@@ -1948,3 +1948,94 @@ fn a_two_input_alternation_is_stopped_by_the_alternating_pair_guard_first() {
     assert!(stop_notice(&events).is_none(), "{:?}", notices(&events));
 }
 
+// ---------------------------------------------------------------------------
+// T64 P1b follow-up (Ruling T64-14): acknowledgements of a change never count
+// as repeats. bash is NOT excluded: identical_results_under_changing_inputs_
+// notice_at_six_and_stop_at_eighteen drives bash and still notices at 6.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn distinct_edits_to_one_file_never_count_as_repeats() {
+    // Three different single edits to one file, then five more: every result
+    // is "Edited <path> (1 replacement(s))", byte-identical, from new inputs.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), "x1 x2 x3 x4 x5 x6 x7 x8\n").unwrap();
+    let mut responses: Vec<ResponseMessage> = (1..=8)
+        .map(|i| {
+            msg(
+                vec![tool_use(
+                    "tu_e",
+                    "edit",
+                    serde_json::json!({"filePath": "f.txt", "oldString": format!("x{i}"), "newString": format!("y{i}")}),
+                )],
+                StopReason::ToolUse,
+            )
+        })
+        .collect();
+    responses.push(msg(vec![text("done")], StopReason::EndTurn));
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "edit it");
+
+    assert_eq!(requests.borrow().len(), 9);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+        "y1 y2 y3 y4 y5 y6 y7 y8\n",
+        "all eight edits really ran"
+    );
+    assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
+}
+
+#[test]
+fn same_size_rewrites_of_one_file_never_count_as_repeats() {
+    // write answers "Overwrote <path> (3 bytes, replaced 3 bytes of prior
+    // content)" for every same-size rewrite: identical, and still progress.
+    let dir = tempfile::tempdir().unwrap();
+    let mut responses: Vec<ResponseMessage> = (1..=8)
+        .map(|i| {
+            msg(
+                vec![tool_use("tu_w", "write", serde_json::json!({"filePath": "w.txt", "content": format!("v{i}\n")}))],
+                StopReason::ToolUse,
+            )
+        })
+        .collect();
+    responses.push(msg(vec![text("done")], StopReason::EndTurn));
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "write it");
+
+    assert_eq!(requests.borrow().len(), 9);
+    assert_eq!(std::fs::read_to_string(dir.path().join("w.txt")).unwrap(), "v8\n");
+    assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
+}
+
+#[test]
+fn whitespace_only_results_never_count_as_repeats() {
+    // printf of three spaces returns "   ", not "(no output)", so this is the
+    // empty-after-trim branch on its own.
+    let dir = tempfile::tempdir().unwrap();
+    let mut responses: Vec<ResponseMessage> =
+        (1..=20).map(|i| bash_call(&format!("printf '   ' #{i}"))).collect();
+    responses.push(msg(vec![text("done")], StopReason::EndTurn));
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "keep going");
+
+    assert_eq!(requests.borrow().len(), 21);
+    assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
+}
+
+#[test]
+fn a_different_result_restarts_the_streak() {
+    // Pairs of identical results from new inputs: a, a, b, b, c, c, ... The
+    // streak restarts at every change, so it never reaches 3. A streak that
+    // failed to restart would count from the third call.
+    let dir = tempfile::tempdir().unwrap();
+    let mut responses: Vec<ResponseMessage> = (0..20)
+        .map(|i| bash_call(&format!("echo v{} #{i}", i / 2)))
+        .collect();
+    responses.push(msg(vec![text("done")], StopReason::EndTurn));
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "keep going");
+
+    assert_eq!(requests.borrow().len(), 21);
+    assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
+}
+

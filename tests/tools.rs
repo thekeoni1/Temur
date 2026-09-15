@@ -3760,3 +3760,17 @@ fn a_docx_code_block_keeps_its_indentation() {
     );
 }
 
+// --------------------------------------------------- T64 P1b follow-up (A2)
+
+#[test]
+fn the_registry_names_the_tools_whose_results_only_acknowledge_a_change() {
+    let reg = Registry::standard();
+    for name in ["edit", "write", "spreadsheet", "todowrite"] {
+        assert!(reg.acknowledges(name), "{name}");
+    }
+    // bash's output is information; so is every read-only tool's.
+    for name in ["bash", "read", "grep", "glob", "todoread", "skill", "no-such-tool"] {
+        assert!(!reg.acknowledges(name), "{name}");
+    }
+}
+

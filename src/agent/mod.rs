@@ -1927,8 +1927,16 @@ impl Session {
                         // legitimate calls return (mkdir, touch, chmod), so
                         // they neither count nor extend the streak: they
                         // reset it. Exact strings only (Ruling T64-8).
+                        // T64 P1b follow-up (Ruling T64-14): so does an
+                        // acknowledgement of a change (edit, write,
+                        // spreadsheet, todowrite; see
+                        // `Registry::acknowledges`), which is progress rather
+                        // than information re-fetched.
                         let trimmed = output.trim();
-                        if trimmed.is_empty() || trimmed == "(no output)" {
+                        if trimmed.is_empty()
+                            || trimmed == "(no output)"
+                            || self.registry.acknowledges(&name)
+                        {
                             last_result_hash = None;
                             result_streak = 0;
                         } else if last_result_hash == Some(result_hash) {

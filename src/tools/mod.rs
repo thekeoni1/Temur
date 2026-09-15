@@ -612,6 +612,28 @@ impl Registry {
     /// Execute by name with central key redaction and output truncation.
     /// Redaction runs FIRST, on success and failure alike, so a key can
     /// never leak split across the truncation cut or ride an error message.
+    /// T64 P1b follow-up (Ruling T64-14): does this tool's result only
+    /// acknowledge a change? The result guard must not count those as
+    /// repeats: three different edits to one file all come back "Edited
+    /// <path> (1 replacement(s))", and that is progress, not information
+    /// fetched again.
+    ///
+    /// The discriminator is the approval site, not a list of names: every
+    /// tool the REGISTRY asks about (write, edit, spreadsheet) writes a file
+    /// and answers with an acknowledgement, so a future file-writing tool
+    /// inherits the exclusion with no edit here. `todowrite` has no approval
+    /// site to hang on, and its result is an acknowledgement too, so it is
+    /// named. bash (`ApprovalSite::Tool`) is deliberately NOT excluded: its
+    /// output is exactly the information the F11 evasion re-fetches.
+    pub fn acknowledges(&self, name: &str) -> bool {
+        name == "todowrite"
+            || self
+                .tools
+                .iter()
+                .find(|t| t.name() == name)
+                .is_some_and(|t| t.approval_site() == ApprovalSite::Registry)
+    }
+
     pub fn execute(
         &self,
         name: &str,
