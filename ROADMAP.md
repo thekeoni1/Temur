@@ -1706,7 +1706,7 @@ xlsx-only reply in 10, and the missing-converter reply in 1. F12, read's
 `N: ` prefixes copied into written documents, measured 0 in 90 of 90
 model-written documents in the archives, so no fix was proposed.
 
-Two riders from 6R were dropped, not built. `/models` two-ids: never
+Two riders from 6R were dropped. `/models` two-ids: never
 reproduced; T27's regression pin stands; reopen only with terminal,
 width and the id list from a live session. serve.sh SERVER_ARGS:
 deliberately open per this document's own judgment; the eval case it was
@@ -1733,8 +1733,11 @@ written.
   equal-length files or different bash commands failing with the same
   `(exit code 1)`.
 - R6: a resume that drops a dangling prompt can leave an entry's
-  `history_len` past the end of the resumed history. Recorded, not
-  corrected.
+  `history_len` past the end of the resumed history. This is recorded
+  and left uncorrected.
+- P0a: a write over a DANGLING symlink finds no existing document
+  (`path.exists()` is false), so nothing moves aside and the write follows
+  the link. Untested.
 - F7 (doctor passes a model whose parallel-call format llama.cpp's
   parser rejects) and F13 (llama.cpp's template date string; send
   `chat_template_kwargs.date_string` only to a local llama.cpp) are T65.

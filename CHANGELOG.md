@@ -41,16 +41,15 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   futile. An empty result and `(no output)` never count, and neither
   does an acknowledgement from `edit`, `write`, the `spreadsheet` tool or
   `todowrite`, because a change made is not information re-fetched. The
-  two notices
-  now end with how many calls each rule counted, for example `(4 by
-  input, 2 by result)`; the text the model reads is unchanged.
+  two notices now end with how many calls each rule counted, for example
+  `(4 by input, 2 by result)`; the text the model reads is unchanged.
 
 - Writing over an existing document (.xlsx, .xlsm, .xls, .ods, .docx or
   .pdf) no longer destroys it. The old file is first renamed to
   `<name>.previous.<ext>` in the same directory, replacing any older copy,
   and the result line says where it is. The `spreadsheet` tool does the
-  same when it replaces a workbook. A symlink at the target is moved
-  aside like any other file, and the new document is a regular file.
+  same when it replaces a workbook. A symlink to an existing document is
+  moved aside like any other file, and the new document is a regular file.
   `edit` on a .xlsx, .docx or .pdf now
   says temur cannot edit documents in place and points to `read` and
   `write`; on a file that is not UTF-8 it says so, and `File not found`

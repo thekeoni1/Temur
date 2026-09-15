@@ -65,8 +65,8 @@ byte range, so `Solve $ \int 2x \cos(x^2)\,dx $` renders as
   `\geq` ≥, `\neq` ≠, `\approx` ≈, `\to` →, `\infty` ∞, the Greek set and
   the usual relations); `\,` and `\;` become a space; `\cos`, `\sin`,
   `\log` and their family lose the backslash.
-- Spacing and wrappers (T64): `\:`, `\quad`, `\qquad` and `~` also
-  become a space, `\!` renders as nothing, and every run of spaces
+- `\:` also becomes a space, and `\!` renders as nothing. Since T64,
+  `\quad`, `\qquad` and `~` become a space too, and every run of spaces
   inside a span collapses to one. `\text`, `\textbf`, `\textit`,
   `\mathrm` and `\mathbf` with a braced argument unwrap to it: a
   `\text` argument comes out as written, since text mode has no
