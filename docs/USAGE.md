@@ -473,7 +473,7 @@ same unauthenticated GET `init` and `doctor` make. On an answer it
 says so once and writes nothing to disk:
 
 ```
-[!] context window 12288 detected from the server (/props); the context advisory, auto-compaction, and the tool-output cap now use it
+[!] context window 12288 detected from the server (/v1/models); the context advisory, auto-compaction, and the tool-output cap now use it
 ```
 
 If the detected window also puts the selection below the `"auto"`
@@ -2068,7 +2068,7 @@ fails with an error naming both ways out:
 
 ```
 $ temur -p "Create a file called notes.txt containing the single line hello."
-  [!] context window 12288 detected from the server (/props); the context advisory, auto-compaction, and the tool-output cap now use it
+  [!] context window 12288 detected from the server (/v1/models); the context advisory, auto-compaction, and the tool-output cap now use it
   → write
   ✗ write: write
 I cannot create or modify files as requested due to safety restrictions in this non-interactive session. Please let me know if there's another way I can assist!
@@ -2077,7 +2077,7 @@ I cannot create or modify files as requested due to safety restrictions in this 
 $ ls notes.txt
 ls: cannot access 'notes.txt': No such file or directory
 $ temur --allow-mutations -p "Create a file called notes.txt containing the single line hello."
-  [!] context window 12288 detected from the server (/props); the context advisory, auto-compaction, and the tool-output cap now use it
+  [!] context window 12288 detected from the server (/v1/models); the context advisory, auto-compaction, and the tool-output cap now use it
   → write
   ✓ write: /home/dev/demo/notes.txt
 The file `notes.txt` has been successfully created with the content "hello".

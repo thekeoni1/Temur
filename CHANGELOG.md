@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## v0.36.0 - 2026-09-16
+## Unreleased
 
 - `/model <profile> --save` switches to the profile and makes it the
   startup default by writing the `profile` key into config.json. It is
@@ -53,6 +53,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   with how many calls each rule counted, for example `(4 by input, 2 by
   result)`; the text the model reads is unchanged.
 
+## v0.36.0 - 2026-09-16
+
 - Writing over an existing document (.xlsx, .xlsm, .xls, .ods, .docx or
   .pdf) no longer destroys it. The old file is first renamed to
   `<name>.previous.<ext>` in the same directory, replacing any older copy,
@@ -62,7 +64,9 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   `edit` on a .xlsx, .docx or .pdf now
   says temur cannot edit documents in place and points to `read` and
   `write`; on a file that is not UTF-8 it says so, and `File not found`
-  now means the file is missing.
+  now means the file is missing. The original survives the first
+  overwrite; a second overwrite of the same document replaces that copy
+  with the first output, since one generation is kept.
 
 - temur now builds with rustc 1.96.1, pinned in `rust-toolchain.toml` for
   local builds and CI, and the release profile uses fat LTO with one

@@ -1634,8 +1634,8 @@ one-liner gate stays deferred to the visibility flip (RUNBOOK).
 The 6R cycle, on top of v0.35.0 and T63. P0a `1ab23b5` was pushed alone
 and is CI-green (run 34964759353); the v0.36.0 cut anchor moved to it.
 Everything after it is local on `t64-stack` until the laptop reports the
-cut done: P0 `3ed63ea`, P1 `c655282`, the P0 follow-up `46a4591`, P1b
-`cc99a3a`, the P1b follow-up `106f2fc`, the docs commit and the review
+cut done: P0 `4ce99f1`, P1 `f6f1224`, the P0 follow-up `6d89db5`, P1b
+`cf7ceb4`, the P1b follow-up `08181e8`, the docs commit and the review
 follow-up below. Every commit was cold-gated on rustc 1.96.1 in a fresh
 target dir, and from P1 on each gate log records that the target dir was
 absent before launch and the binary's size and sha.
@@ -1695,11 +1695,12 @@ any successful call ends.
 | P1b | 8,310,028 |
 | P1b follow-up | 8,310,284 |
 | P4 + follow-up | 8,311,372 |
+| P4b | 8,311,820 |
 
 P2 measured instead of guessing. The write.txt .pdf misread appeared in
 3 of 10 archived task-12 transcripts, which crossed the spec's "more
 than one", so one reworded sentence went to a pre-registered A/B on
-`cc99a3a`, six task-12 runs per arm, interleaved, classified blind to arm
+`cf7ceb4`, six task-12 runs per arm, interleaved, classified blind to arm
 and result before any results line was read:
 
 | arm | misread | PASS |
@@ -1708,7 +1709,7 @@ and result before any results line was read:
 | candidate (one sentence) | 0/6 | 5/6 |
 
 Disposition (Ruling T64-16): write.txt .pdf misread: measured 3/10 in
-pre-T63 archives; one-sentence A/B on the T64 stack (cc99a3a, 6 per arm)
+pre-T63 archives; one-sentence A/B on the T64 stack (cf7ceb4, 6 per arm)
 found the misread 0/12 and candidate PASS 5/6 vs control 6/6; not
 adopted; re-measure only if a reading on a shipped stack shows the
 misread again. Not to be re-run until liked.
