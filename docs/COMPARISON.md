@@ -258,6 +258,9 @@ Harness-process figures. None of this is llama-server.
 | codex-cli 0.149.0 | 258322048 | static-pie | 0 | 119.2 MiB | 0.23s / 1.34s |
 | opencode 1.18.21 | 184498304 | dynamic | 4 | 842.9 MiB | 2.48s / 5.11s |
 
+The table is the v0.25.0 measurement and is not rewritten; the current
+shipped sizes are in README's size sentence.
+
 Peak RSS is `/usr/bin/time -v` maximum over the process tree during one
 real task against a warm server. Cold start is exec to the harness's
 first request arriving at the server, marked server-side; the server

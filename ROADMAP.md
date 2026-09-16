@@ -1647,7 +1647,7 @@ opt-level 3:
 | strip, thin LTO (before) | 9,872,396 |
 | codegen-units=1 | 8,869,004 |
 | fat LTO | 8,644,172 |
-| fat LTO + codegen-units=1 (shipped) | 8,269,292 |
+| fat LTO + codegen-units=1 (adopted) | 8,269,292 |
 | opt-level=s (not adopted) | 7,998,124 |
 | opt-level=z (not adopted) | 7,867,660 |
 

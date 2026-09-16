@@ -1950,6 +1950,12 @@ do, because they change nothing. The prompt shows what is about to
 happen: the command for bash, `write <path> (<n> bytes)` for a write,
 and `edit <path> (replaces "<first line>"...)` for an edit.
 
+A plain REPL whose stdin or stdout is not a terminal, such as a piped
+run, cannot ask, and in this release it does not refuse either:
+mutating tools run as if `--allow-mutations` were given. For a piped
+run that must refuse, use `-p`. This is fixed in the next release,
+where a piped REPL refuses like `-p`.
+
 This section's transcripts were captured 2026-09-04 against a local
 llama.cpp server (image `server-cuda-b10438`) serving
 Qwen3-4B-Instruct-2507 Q4_K_M with the compact prompt profile and a
@@ -2057,7 +2063,8 @@ are untouched: a run that only reads, globs or greps never meets this.
 
 Every script in this repository that drives temur non-interactively
 passes `--allow-mutations` for this reason. A script of your own that
-mutates needs the flag or the config value.
+mutates needs the flag or the config value. A plain REPL fed by a pipe
+is the exception; see the note under "Approval mode".
 
 ## Bash approval mode (T21)
 

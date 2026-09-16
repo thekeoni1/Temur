@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased
+## v0.36.0 - 2026-09-16
 
 - Writing over an existing document (.xlsx, .xlsm, .xls, .ods, .docx or
   .pdf) no longer destroys it. The old file is first renamed to
@@ -15,9 +15,11 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 - temur now builds with rustc 1.96.1, pinned in `rust-toolchain.toml` for
   local builds and CI, and the release profile uses fat LTO with one
-  codegen unit. On that toolchain the i686 binary drops from 9,872,396 to
-  8,269,292 bytes. The C compiler that builds ring is not pinned, so a
-  build on another machine can still differ by a few thousand bytes.
+  codegen unit. The published i686 binary drops from 9,869,908 bytes
+  (v0.35.0) to 8,290,516 bytes (v0.36.0); most of that is the profile
+  change, measured on its own in ROADMAP. The C compiler that builds ring
+  is not pinned, so a build on another machine can still differ by a few
+  thousand bytes.
 
 - The system prompt now carries today's date in UTC, so a model knows the
   current year. Set `TEMUR_TODAY=YYYY-MM-DD` to override it; any other
