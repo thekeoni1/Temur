@@ -1633,12 +1633,13 @@ one-liner gate stays deferred to the visibility flip (RUNBOOK).
 
 The 6R cycle, on top of v0.35.0 and T63. P0a `1ab23b5` was pushed alone
 and is CI-green (run 34964759353); the v0.36.0 cut anchor moved to it.
-Everything after it is local on `t64-stack` until the laptop reports the
-cut done: P0 `4ce99f1`, P1 `f6f1224`, the P0 follow-up `6d89db5`, P1b
-`cf7ceb4`, the P1b follow-up `08181e8`, the docs commit and the review
-follow-up below. Every commit was cold-gated on rustc 1.96.1 in a fresh
-target dir, and from P1 on each gate log records that the target dir was
-absent before launch and the binary's size and sha.
+Everything after it was held local on `t64-stack` until the cut was done
+(v0.36.0, 2026-09-16), then rebased onto `0c46cb8`: P0 `4ce99f1`, P1
+`f6f1224`, the P0 follow-up `6d89db5`, P1b `cf7ceb4`, the P1b follow-up
+`08181e8`, the docs commit and the review follow-up below. Every commit
+was cold-gated on rustc 1.96.1 in a fresh target dir, and from P1 on each
+gate log records that the target dir was absent before launch and the
+binary's size and sha.
 
 P0a stops two ways of losing a document. `edit` says why it cannot change
 a file: `File not found` only for a missing path, "not UTF-8 text" for a
