@@ -2074,7 +2074,6 @@ fn an_acknowledgement_between_identical_results_resets_the_streak() {
     assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
 }
 
-
 #[test]
 fn a_failed_acknowledgement_does_not_reset_the_streak() {
     // T64 P4 (Amendment 3, F-1). Ten edits in ONE batch, each with a

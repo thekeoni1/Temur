@@ -3780,6 +3780,11 @@ fn a_pretty_printed_docx_does_not_read_back_its_own_xml_indentation() {
     // as Text events. Collecting them made a foreign document's XML layout
     // look like content: R4's trim_end() kept it in front of every Code
     // line, and an ordinary paragraph got it between its runs.
+    //
+    // The stray `&amp;amp;` between the two runs is the entity half of the same
+    // claim: entity references arrive as their own event, so the guard has
+    // to cover GeneralRef as well as Text or an `&amp;` outside any w:t lands
+    // in the paragraph. Without the GeneralRef guard this reads "one& two".
     let dir = tempfile::tempdir().unwrap();
     let reg = Registry::standard();
     let mut ctx = ctx_in(dir.path());
@@ -3802,6 +3807,7 @@ fn a_pretty_printed_docx_does_not_read_back_its_own_xml_indentation() {
             "            <w:r>\n",
             "                <w:t>one</w:t>\n",
             "            </w:r>\n",
+            "            &amp;amp;\n",
             "            <w:r>\n",
             "                <w:t xml:space=\"preserve\"> two</w:t>\n",
             "            </w:r>\n",

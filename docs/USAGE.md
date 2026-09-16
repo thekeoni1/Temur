@@ -249,7 +249,9 @@ device.
 When a turn ends on a provider error, the file also records that error
 under `errors`: the message as the screen showed it (a registered API key
 already replaced with `[redacted]`), the model, and the history length at
-the time. It keeps the most recent 50. `/clear` and `/new` drop them with
+the time. A stored message longer than 1,000 characters is cut there and
+marked `(truncated)`; what the screen showed is never cut. It keeps the
+most recent 50. `/clear` and `/new` drop them with
 the history they describe, and the key is absent from a session that has
 had no errors.
 

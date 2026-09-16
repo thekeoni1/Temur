@@ -109,9 +109,12 @@ pub fn turn_error_notice(e: &AgentError, model: &str) -> String {
 
 /// T64 P0 (R6): the one path both of main's turn-failure arms take. The
 /// notice is built by [`turn_error_notice`], scrubbed of the registered
-/// credential (T18), recorded into the session and returned for the UI,
-/// so the session file and the screen carry the same string. The save
-/// that already follows a failed turn writes it.
+/// credential (T18), recorded into the session and returned for the UI.
+/// T64 P4 (F-3): the stored copy is capped at
+/// [`crate::session_store::MAX_SESSION_ERROR_CHARS`] and the returned one
+/// is not, so for a message longer than that the file and the screen
+/// differ, and the screen is the one that keeps everything. The save that
+/// already follows a failed turn writes it.
 pub fn report_turn_error(session: &mut Session, e: &AgentError, model: &str) -> String {
     let text = session.registry.redact(turn_error_notice(e, model));
     // T64 P4 (Ruling T64-26, F-3): cap the STORED copy. `text` is returned
@@ -1945,15 +1948,24 @@ impl Session {
                         // than information re-fetched.
                         // T64 P4 (Ruling T64-26, F-1): only a call that
                         // SUCCEEDED. A failed edit or write changed nothing,
-                        // so it acknowledges nothing, and treating it as
-                        // progress let one interleaved failure hide the
-                        // repetition this guard exists to catch.
+                        // so it acknowledges nothing. What the clause
+                        // changes is a RUN of identical failures from an
+                        // acknowledging tool: without it each one reset the
+                        // streak and a batch of ten counted nothing. It does
+                        // NOT close the INTERLEAVED case, where one failure
+                        // between two identical results restarts the streak
+                        // through the else branch below, with the clause or
+                        // without it (measured: 33 requests, no notice,
+                        // either way). That one is open, not fixed here.
                         // T64 P4 (Ruling T64-26, F-2): so do the constant
                         // answers of a search that finished and found
                         // nothing. GREP_NO_MATCHES and GLOB_NO_FILES are
                         // what twenty DISTINCT searches over an empty result
                         // set all return, which is the empty-output case in
-                        // different words. Exact strings only (Ruling T64-8).
+                        // different words. Exact strings only (Ruling T64-8),
+                        // and matched on the OUTPUT like the empty case, so
+                        // any tool that answers with exactly one of them
+                        // resets the streak too.
                         let trimmed = output.trim();
                         if trimmed.is_empty()
                             || trimmed == "(no output)"
