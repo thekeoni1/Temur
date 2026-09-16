@@ -10912,3 +10912,199 @@ its line break:
 Task 13 still passes, because its criterion is the sentinel. This is the
 second observation of the P1 residual and the first on a released
 binary. It is queued as T63 P4 item (c).
+
+## v0.36.0 ship record - shipped PUBLIC, the smaller-binary release
+
+2026-09-16. **T63 and T64 P0a shipped at tag `v0.36.0`: a document that
+`write` or `spreadsheet` replaces is kept beside it as
+`<stem>.previous.<ext>`, and the 32-bit binary is 16% smaller.** A MINOR
+bump and the fourth public release, cut from `1ab23b5` on the laptop. It
+is the first cut on the pinned rustc 1.96.1. The operator moved the cut
+ahead of the Sunday launch.
+
+### Sizes
+
+Raw byte counts, read from the staged files and matched byte for byte
+against the public downloads:
+
+| asset | bytes | v0.35.0 | change |
+| --- | --- | --- | --- |
+| i686 | 8,290,516 | 9,869,908 | -1,579,392 (-16.00%) |
+| x86_64 | 9,852,272 | 11,708,656 | -1,856,384 (-15.85%) |
+| aarch64 | 7,962,320 | 9,636,176 | -1,673,856 |
+| armv7 | 7,679,712 | 8,917,512 | -1,237,800 |
+
+Divided by 1,000,000 and rounded to two decimals, the rule the v0.35.0
+record settled, README:37-38 now reads **8.29 MB** on i686 and **9.85
+MB** on x86_64. The i686 binary is **1,709,484 bytes** under the
+10,000,000 STOP (17.09%), up from 130,092 at v0.35.0. `README:31`
+("under 10 MB on 32-bit") was not edited and holds.
+
+The drop comes from the release profile T63 P0 adopted, fat LTO with one
+codegen unit; the ROADMAP table at 1645-1652 measures each step on its
+own. The published i686 is 21,224 bytes larger than that table's
+8,269,292 for the same profile. The CHANGELOG bullet allows "a few
+thousand bytes" between machines, so its wording understates the gap.
+That is left to desktop's docs commit.
+
+| asset | sha256 |
+| --- | --- |
+| `temur-v0.36.0-i686-unknown-linux-musl` | `ee6acb3d5a74f0392a909b9f560ca4e78a88dc65768a478800d6c97e7aa98276` |
+| `temur-v0.36.0-x86_64-unknown-linux-musl` | `38307e7b45e7f5786509178b2b2d1e601f191afbdac29fdeaa241258e5abb2e0` |
+| `temur-v0.36.0-aarch64-unknown-linux-musl` | `34b112021309ae3de74f1078a111df9c7cef2c4593763ea18ae66361e4aef9b2` |
+| `temur-v0.36.0-armv7-unknown-linux-musleabihf` | `6b99b1ef275c0e4a1042894d1b02926f487f7f7f5e2db9ac942442e3990f11f4` |
+| `SHA256SUMS` (428 B) | `724b10e8a4a81665027715e9a4f39cf75732dc12868064b5c78f7280966900fb` |
+
+### Step 0: the code review
+
+Before the cut, the operator had the implementing session run a
+high-effort code review over `8b216da..1ab23b5`. It reported eight
+findings, four medium and four low. Each was checked against the code,
+and the review's text was kept verbatim for desktop in a findings file
+outside the repo. The operator ruled the cut cleared.
+
+The summary given to the operator first said finding 1 needs a third
+write, which was wrong, and the corrected reading went back to the
+operator. `.previous` is one generation deep. For a document that
+existed before the session, a read and two writes leave the model's
+first output in `.previous` and the original is gone.
+`tests/tools.rs:3654` says "a third write" only because the test's first
+write creates the file. The operator ruled finding 1 not a blocker,
+because v0.35.0 overwrote the document on the first write and kept no
+copy. It is a T65 item. Finding 3's claim that a prefix-extending rename
+cannot be finished is refuted: `oldString` `parse(` with `newString`
+`parse_all(` goes through. The other findings stand as recorded in the
+findings file.
+
+### The cut
+
+The version bump is a single commit on the anchor, `1b6f08c`, parent
+`1ab23b5`, 8 files and 35 insertions and 19 deletions. Edited ranges,
+old to new:
+
+- `Cargo.toml` 3, `Cargo.lock` 1475 (the temur line only),
+  `scripts/install.sh` 10.
+- `README.md` 20-22 to 20-24 (the demo sentence now names v0.35.0 and
+  its sha256), 35-36 to 37-38 (size sentence), 183 to 185-186 and 202
+  to 205-206 (pins plus the `export PATH` line), 187 to 190 and 199-200
+  to 202-203 (pins).
+- `CHANGELOG.md` 5 (`## Unreleased` renamed to `## v0.36.0 -
+  2026-09-16`, the rename desktop relay 20 asked for in place of the
+  v0.35.0-style insert) and 18-20 to 18-22 (the published sizes; the
+  sentence about ring is reflowed, same words).
+- `ROADMAP.md` 1650, label only, "(shipped)" to "(adopted)".
+- `docs/USAGE.md` 1953-1958 inserted (a piped REPL runs mutating tools
+  without asking in this release) and 2060 to 2066-2067 (pointer).
+- `docs/COMPARISON.md` 261-263 inserted (the Footprint table is the
+  v0.25.0 measurement).
+
+Three deviations from the kickoff's text were ruled by the operator.
+The COMPARISON line sits after line 260, because the kickoff's "after
+257" is inside the table. The USAGE paragraph carries backticks on
+`--allow-mutations` and `-p`. The tag message is descriptive, as at
+v0.33.0 through v0.35.0, rather than the bare `v0.36.0` the kickoff
+named.
+
+### Three release.sh runs
+
+1. Killed by a WSL crash during `check.sh`. The log lived under `/tmp`
+   and went with it. Nothing was staged.
+2. Exit 101. Gates 1 to 3 were green, then the x86_64, aarch64 and
+   armv7 musl builds failed with E0463, "can't find crate for core".
+   The pinned 1.96.1 toolchain had only the i686 targets, because
+   `rust-toolchain.toml` lists only those and leaves the rest to CI.
+   The operator approved `rustup target add --toolchain 1.96.1
+   x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+   armv7-unknown-linux-musleabihf`. No repo change was made.
+3. Exit 0, 4/4 artifacts gated.
+
+Two procedure deltas follow from these runs. A machine that cuts a
+release on the pinned toolchain needs those three targets added once;
+listing them in `rust-toolchain.toml` is desktop's call after the cut.
+And a wrapper around `release.sh` reports the wrapper's exit status, so
+the second run's background task said 0 while the log said 101. Read
+the `release.sh exit=` line in the log.
+
+### Gates
+
+- `release.sh` GREEN on run 3, over the working tree that became
+  `1b6f08c` unchanged. It was not re-run after tagging. The release
+  title was read back with the script's own two git reads (object type
+  `tag`, then the subject), so the published bytes are the ones gated.
+- `check.sh` in full: "ALL CHECKS PASSED", container legs included.
+- Leak gate clean. The only history hit is `083eb33`, allowlisted as
+  already public, the same entry as at v0.34.0 and v0.35.0.
+- Version skew: `install.sh` and README match 0.36.0 and all targets.
+- Per target: static, class and machine correct, `temur 0.36.0` (x86
+  natively, ARM under qemu).
+- `metadata_drift.sh`: 4 PASS (fable, haiku, opus, sonnet), exit 0.
+- CI run 35121639220 on `1b6f08c`: `release-gate` and `test` both
+  success.
+- Installer test before publication, against the staged directory over
+  `python3 -m http.server`, on x86_64 and under `setarch i686`: checksum
+  verified, `temur 0.36.0`, installed file equal to the staged asset.
+
+### Ruling 4 and the independent check
+
+Every scan returned 0 and every control fired:
+
+- Bump commit, message plus added lines, before the push: 0, control 1.
+- The same extraction run on a throwaway commit carrying a planted
+  pattern: 1.
+- Tag message before the push: 0, control 1; key shapes 0, control 1.
+
+The scan of this record's own commit is in the cut report.
+
+This is the first cut under CLAUDE.md's independent-check rule. A fresh
+agent given only the kickoff, the diff, the draft report and the logs
+answered YES on the diff and PARTLY on the logs and the report's
+numbers. It raised four disagreements, all accepted before the report
+went out:
+
+- A "byte-identical to the dry run" claim held only for the byte count.
+- The first Ruling-4 control proved the pattern set but not the
+  extraction; the planted-commit control above was added.
+- The allowlisted line in the leak gate was not quoted.
+- One log line was cited wrongly.
+
+### Publication and live verification
+
+Pushed `1ab23b5..1b6f08c` to `origin/main`. After CI was green, the
+annotated tag `v0.36.0` was created on `1b6f08c`, tag object
+`0c7a6563a2ab4b358312bf5c69a0141f1f1b4950`, with the message "temur
+v0.36.0 - keeps the previous document on overwrite, and a smaller
+32-bit binary (T63-T64)", and pushed by its explicit ref. The remote tag
+peels to `1b6f08c`.
+
+The release was created public (not a draft, not a prerelease) with the
+four bare binaries and `SHA256SUMS`, titled with the tag message. All
+five assets were then downloaded from the public URLs with `env -i` and
+`curl`, no token. Byte counts and sha256 match the staged files 5 of 5,
+and `sha256sum -c` is 4 of 4 OK.
+
+The README one-liner (README:185) was run verbatim into a fresh empty
+HOME twice, once on x86_64 and once under `setarch i686`. Each run
+fetched `install.sh` from the tag, picked the matching asset, printed
+"checksum verified.", and installed a binary with that asset's sha256
+that prints `temur 0.36.0`. With README:186's `export PATH` line, the
+x86_64 install resolves as `temur`.
+
+### What this release does NOT establish
+
+- ARM remains verified at build level only, per ROADMAP T7.
+- `.previous` keeps one generation, so two writes to a document that
+  existed before the session lose the original (review finding 1, T65).
+  The CHANGELOG headline "no longer destroys it" says more than that
+  for a second write.
+- A plain REPL whose stdin or stdout is not a terminal runs mutating
+  tools without asking. USAGE says so, and the next release refuses.
+- Review findings 4 to 8 are open: the first listed model's context
+  window on a multi-model endpoint, the cost note for LAN hosts named by
+  hostname, the identical-read marker on coarse-mtime filesystems, the
+  repeated continuation line in document grep, and the wasted `/props`
+  request at startup. Finding 3's misleading refusal message is open
+  too.
+- The browser sandbox still runs v0.35.0, and README's demo sentence
+  says so.
+- No eval or soak has run on the v0.36.0 assets yet; that re-run has
+  its own kickoff.
