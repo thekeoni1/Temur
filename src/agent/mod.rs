@@ -1436,6 +1436,14 @@ impl Session {
         let mut futile_by_result: u32 = 0;
         let mut last_result_hash: Option<u64> = None;
         let mut result_streak: u32 = 0;
+        // T64 P4b (Ruling T64-29): the FAILURE chain, beside the result
+        // chain above. Consecutive failed calls whose result equals the
+        // previous failed call's; ANY successful call clears it. It exists
+        // because the result chain passes a differing failure over, which on
+        // its own would mean a run of identical failures could never start a
+        // chain once anything had succeeded.
+        let mut last_error_hash: Option<u64> = None;
+        let mut error_streak: u32 = 0;
         // T40 per-turn auto-compaction state: the crossing waiting to be
         // acted on at the next safe point, and how many compactions this
         // turn has already spent against MAX_AUTO_COMPACTIONS_PER_TURN.
@@ -1951,12 +1959,9 @@ impl Session {
                         // so it acknowledges nothing. What the clause
                         // changes is a RUN of identical failures from an
                         // acknowledging tool: without it each one reset the
-                        // streak and a batch of ten counted nothing. It does
-                        // NOT close the INTERLEAVED case, where one failure
-                        // between two identical results restarts the streak
-                        // through the else branch below, with the clause or
-                        // without it (measured: 33 requests, no notice,
-                        // either way). That one is open, not fixed here.
+                        // streak and a batch of ten counted nothing. The
+                        // INTERLEAVED case is the passed-over branch below
+                        // (T64 P4b), not this clause.
                         // T64 P4 (Ruling T64-26, F-2): so do the constant
                         // answers of a search that finished and found
                         // nothing. GREP_NO_MATCHES and GLOB_NO_FILES are
@@ -1966,6 +1971,20 @@ impl Session {
                         // and matched on the OUTPUT like the empty case, so
                         // any tool that answers with exactly one of them
                         // resets the streak too.
+                        // T64 P4b (Ruling T64-28): a FAILED call whose
+                        // result differs from a live chain is passed over.
+                        // A failure is neither progress nor information, so
+                        // it cannot end a run of re-fetched information;
+                        // only a change made (a successful acknowledgement,
+                        // above) or new information does. The chain is left
+                        // exactly as it was and the call itself is not
+                        // counted by result, so one failing edit between two
+                        // identical bash results no longer hides the loop.
+                        // A failure still STARTS a chain when there is none
+                        // (P4's batch-of-ten pin still counts 8) and still
+                        // EXTENDS one whose result it equals (T36's
+                        // nineteen identical range errors).
+                        let mut passed_over = false;
                         let trimmed = output.trim();
                         if trimmed.is_empty()
                             || trimmed == "(no output)"
@@ -1977,9 +1996,40 @@ impl Session {
                             result_streak = 0;
                         } else if last_result_hash == Some(result_hash) {
                             result_streak += 1;
+                        } else if is_error && last_result_hash.is_some() {
+                            passed_over = true;
                         } else {
                             last_result_hash = Some(result_hash);
                             result_streak = 1;
+                        }
+                        // T64 P4b (Ruling T64-29): the failure chain. ANY
+                        // successful call clears it, excluded or not, which
+                        // is the whole distinction being drawn: a failure
+                        // BETWEEN successful calls is interleaved noise,
+                        // passed over above because it is neither progress
+                        // nor information, while a RUN of identical failures
+                        // is the same fetch failing the same way under new
+                        // inputs, which is the F11 evasion wearing an error
+                        // message. The run counts wherever it sits in the
+                        // turn. T4's batch-level failure cap is separate and
+                        // untouched.
+                        //
+                        // Untested corner: the result chain's exclusions do
+                        // not exempt this one, so three identical failures
+                        // whose output is empty or "(no output)" would count
+                        // here where the same successes count nowhere. No
+                        // tool reaches it today (`is_error` is set only where
+                        // `execute` returns Err, whose output is the error
+                        // text; a non-zero bash exit is an Ok result), so it
+                        // is recorded rather than guarded.
+                        if !is_error {
+                            last_error_hash = None;
+                            error_streak = 0;
+                        } else if last_error_hash == Some(result_hash) {
+                            error_streak += 1;
+                        } else {
+                            last_error_hash = Some(result_hash);
+                            error_streak = 1;
                         }
                         // A call both guards match is counted once, by input.
                         // By result counts only a NEW input: the F11 evasion
@@ -1989,7 +2039,9 @@ impl Session {
                         // counters in changed_results_never_count_as_futile).
                         if by_input {
                             futile_by_input += 1;
-                        } else if result_streak >= 3 && !seen_input {
+                        } else if !seen_input
+                            && ((!passed_over && result_streak >= 3) || error_streak >= 3)
+                        {
                             futile_by_result += 1;
                         }
                         futile_count = futile_by_input + futile_by_result;

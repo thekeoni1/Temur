@@ -2189,3 +2189,230 @@ fn twenty_fruitless_greps_never_count_as_futile() {
         .contains(temur::tools::GREP_NO_MATCHES));
     assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
 }
+
+#[test]
+fn a_failed_call_never_breaks_a_run_of_identical_results() {
+    // T64 P4b (Amendment 5, pin (a)). The shape the code review reported and
+    // P4 could not close: sixteen pairs of a bash call with NEW arguments
+    // and byte-identical output, each followed by an edit whose oldString is
+    // absent (a different one each time, so nothing counts by input).
+    //
+    // The failed edit is PASSED OVER: it neither resets the chain nor
+    // overwrites it, so the bash results stay one run. Counting starts at
+    // the third bash call, the notice fires at the eighth (count 6), and the
+    // sixteen failed edits contribute nothing. Sixteen pairs reach the
+    // notice but not the stop: the count tops out at 14 of the 18 the stop
+    // needs, so the turn runs to its end and the request count is the SAME
+    // 33 it was before the fix. The only difference is the notice, which is
+    // what makes this pin tight.
+    //
+    // With the passed-over branch removed, each edit takes the else branch,
+    // overwrites last_result_hash and restarts the bash chain, which never
+    // reaches 3: 33 requests and NO notice, exactly as P4 measured.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), "content\n").unwrap();
+    let mut responses: Vec<ResponseMessage> = Vec::new();
+    for k in 0..16 {
+        responses.push(bash_call(&format!("echo same #{k}")));
+        responses.push(msg(
+            vec![tool_use(
+                "tu_e",
+                "edit",
+                serde_json::json!({
+                    "filePath": "f.txt",
+                    "oldString": format!("absent{k}"),
+                    "newString": "z",
+                }),
+            )],
+            StopReason::ToolUse,
+        ));
+    }
+    responses.push(msg(vec![text("done")], StopReason::EndTurn));
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "keep going");
+
+    assert_eq!(requests.borrow().len(), 33);
+    let notice = futile_notice(&events).expect("the interleaved failures must not hide the run");
+    assert!(notice.starts_with("6 tool calls"), "{notice}");
+    assert!(notice.contains("(0 by input, 6 by result)"), "{notice}");
+    // The failed edits are passed over, never counted, so the turn is not
+    // stopped: 14 is under the stop threshold of 18.
+    assert!(
+        !notices(&events).iter().any(|n| n.starts_with("stopped:")),
+        "{:?}",
+        notices(&events)
+    );
+    assert_eq!(std::fs::read_to_string(dir.path().join("f.txt")).unwrap(), "content\n");
+}
+
+#[test]
+fn the_interleaved_shape_reaches_the_stop_at_twenty_pairs() {
+    // T64 P4b (Amendment 5, pin (a2), the stop half). The same shape with
+    // twenty pairs: counting runs from the third bash call to the twentieth,
+    // which is 18, so the turn STOPS there. The stop line attributes all 18
+    // to the result rule and none to the input rule, because every bash
+    // command and every oldString is distinct. The stop lands on request 39
+    // (bash call k is request 2k-1), so the four remaining scripted
+    // responses are never asked for.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), "content\n").unwrap();
+    let mut responses: Vec<ResponseMessage> = Vec::new();
+    for k in 0..20 {
+        responses.push(bash_call(&format!("echo same #{k}")));
+        responses.push(msg(
+            vec![tool_use(
+                "tu_e",
+                "edit",
+                serde_json::json!({
+                    "filePath": "f.txt",
+                    "oldString": format!("absent{k}"),
+                    "newString": "z",
+                }),
+            )],
+            StopReason::ToolUse,
+        ));
+    }
+    responses.push(msg(vec![text("done")], StopReason::EndTurn));
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "keep going");
+
+    assert_eq!(requests.borrow().len(), 39);
+    let stop = notices(&events)
+        .into_iter()
+        .find(|n| n.starts_with("stopped:"))
+        .expect("the run must be stopped");
+    assert!(
+        stop.contains("18 tool calls this turn repeated earlier calls with unchanged results"),
+        "{stop}"
+    );
+    assert!(stop.contains("(0 by input, 18 by result)"), "{stop}");
+}
+
+#[test]
+fn twenty_reads_separated_by_failures_never_count() {
+    // T64 P4b (Amendment 5, pin (b)), a control that CAN fail. Twenty
+    // alternations of a read of a DIFFERENT file, distinct content every
+    // time, and an edit that misses. Nothing repeats: each read starts its
+    // own result chain, and each failed edit is passed over by the result
+    // chain and has its failure chain cleared by the read before it. Silent.
+    //
+    // The failed edits all answer with the same NOT_FOUND text and have
+    // distinct oldStrings, so they are exactly the shape the failure chain
+    // counts -- and the ONLY thing keeping them uncounted here is that a
+    // successful call clears that chain. p4b-amend-pinproof.log shows the
+    // scratch mutation: with the clearing removed, this same turn notices.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), "content\n").unwrap();
+    let mut responses: Vec<ResponseMessage> = Vec::new();
+    for k in 0..20 {
+        let name = format!("r{k}.txt");
+        std::fs::write(dir.path().join(&name), format!("contents number {k}\n")).unwrap();
+        responses.push(msg(
+            vec![tool_use("tu_r", "read", serde_json::json!({"filePath": name}))],
+            StopReason::ToolUse,
+        ));
+        responses.push(msg(
+            vec![tool_use(
+                "tu_e",
+                "edit",
+                serde_json::json!({
+                    "filePath": "f.txt",
+                    "oldString": format!("absent{k}"),
+                    "newString": "z",
+                }),
+            )],
+            StopReason::ToolUse,
+        ));
+    }
+    responses.push(msg(vec![text("done")], StopReason::EndTurn));
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "look at each file");
+
+    assert_eq!(requests.borrow().len(), 41);
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ToolEnd { is_error: true, .. })));
+    assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
+}
+
+#[test]
+fn a_run_of_identical_failures_counts_even_after_a_successful_call() {
+    // T64 P4b (Amendment 5, pin (e)). The shape Amendment 4's rule lost and
+    // the failure chain restores: P4's ten distinct failing edits with ONE
+    // successful call in front of them. The success owns the result chain,
+    // so every failed edit differs from it and is passed over there; the
+    // failure chain is what counts them, 1..10, from the third on: 8.
+    //
+    // This is the F11 evasion wearing an error message -- the same fetch
+    // failing the same way under a new input every time -- so it has to
+    // count wherever in the turn it sits. With the failure chain removed
+    // this turn is silent, which is the probe baseline in
+    // p4b-regression-probe.log.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), "content\n").unwrap();
+    let calls: Vec<ContentBlock> = (0..10)
+        .map(|k| {
+            tool_use(
+                &format!("tu_e{k}"),
+                "edit",
+                serde_json::json!({
+                    "filePath": "f.txt",
+                    "oldString": format!("absent{k}"),
+                    "newString": "z",
+                }),
+            )
+        })
+        .collect();
+    let responses = vec![
+        bash_call("echo hello"),
+        msg(calls, StopReason::ToolUse),
+        msg(vec![text("done")], StopReason::EndTurn),
+    ];
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "keep going");
+
+    assert_eq!(requests.borrow().len(), 3);
+    let notice = futile_notice(&events).expect("a run of identical failures must count");
+    assert!(notice.starts_with("8 tool calls"), "{notice}");
+    assert!(notice.contains("(0 by input, 8 by result)"), "{notice}");
+}
+
+#[test]
+fn ten_failures_with_different_messages_never_count() {
+    // T64 P4b (Amendment 5, pin (f)), a control. Ten failing reads in ONE
+    // batch, each naming a different missing file, so every error text
+    // differs ("File not found: <path>"). The failure chain restarts at
+    // every one of them and never reaches 3, and the result chain, opened by
+    // the first failure, passes the other nine over. Ten real failures, no
+    // count, no notice: failing is not the trigger, failing the SAME way is.
+    //
+    // One batch, so T4's five-consecutive-failed-batches cap is not what is
+    // being measured.
+    let dir = tempfile::tempdir().unwrap();
+    let calls: Vec<ContentBlock> = (0..10)
+        .map(|k| {
+            tool_use(
+                &format!("tu_r{k}"),
+                "read",
+                serde_json::json!({"filePath": format!("missing-{k}.txt")}),
+            )
+        })
+        .collect();
+    let responses = vec![
+        msg(calls, StopReason::ToolUse),
+        msg(vec![text("done")], StopReason::EndTurn),
+    ];
+    let (mut session, requests) = session_with(dir.path(), responses);
+    let events = collect_events(&mut session, "read them all");
+
+    assert_eq!(requests.borrow().len(), 2);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::ToolEnd { is_error: true, .. }))
+            .count(),
+        10,
+        "all ten really failed"
+    );
+    assert!(futile_notice(&events).is_none(), "{:?}", notices(&events));
+}

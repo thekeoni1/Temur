@@ -44,8 +44,12 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   which is what a search that finished and found nothing answers. An
   acknowledgement from `edit`, `write`, the `spreadsheet` tool or
   `todowrite` does not count either when the call succeeded, because a
-  change made is not information re-fetched; one that failed changed
-  nothing, so it counts like any other result. The two notices now end
+  change made is not information re-fetched. A failed call never breaks
+  a run of identical results: it extends the run when its result is the
+  same and is otherwise passed over, so one failing edit between two
+  identical searches no longer hides the loop. A run of identical
+  failures counts on its own, however far into the turn it starts, and
+  any successful call ends it. The two notices now end
   with how many calls each rule counted, for example `(4 by input, 2 by
   result)`; the text the model reads is unchanged.
 

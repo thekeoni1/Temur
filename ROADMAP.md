@@ -1680,7 +1680,11 @@ stored provider error is cut to 1,000 characters so `errors` cannot make
 a session unsaveable, `/model <profile> --save` persists only when the
 session is running that profile's model, and docx extraction reads text
 from `w:t` runs only, so a pretty-printed `document.xml` no longer comes
-back with its own indentation.
+back with its own indentation. The first of those five did not on its own
+close the shape the review reported, one failing call between two identical
+results, so a following commit passes a failed call over instead of letting
+it restart the run, and counts a run of identical failures on its own, which
+any successful call ends.
 
 | i686 musl release on 1.96.1 | bytes |
 | --- | --- |
@@ -1690,6 +1694,7 @@ back with its own indentation.
 | P1 + /clear follow-up | 8,309,324 |
 | P1b | 8,310,028 |
 | P1b follow-up | 8,310,284 |
+| P4 + follow-up | 8,311,372 |
 
 P2 measured instead of guessing. The write.txt .pdf misread appeared in
 3 of 10 archived task-12 transcripts, which crossed the spec's "more

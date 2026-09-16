@@ -1884,9 +1884,14 @@ work (`mkdir`, `touch`, `chmod`) returns exactly that, and neither do
 distinct searches that find nothing all return. An acknowledgement from
 `edit`, `write`, the `spreadsheet` tool or `todowrite` never counts
 either when the call succeeded, because a change made is not information
-re-fetched; a failed one changed nothing, so it counts like any other
-result. Both kinds feed the same count, and the brackets at the end of
-each notice say how many came from each rule.
+re-fetched. A failed call never breaks a run of identical results: it
+extends the run when its result is the same and is otherwise passed over,
+because a failure is neither progress nor information. A run of identical
+failures does count on its own, wherever in the turn it starts, because
+that is the same fetch failing the same way under a new input each time;
+any successful call ends the run. Both kinds feed the
+same count, and the brackets at the end of each notice say how many came
+from each rule.
 
 Rereading a file you just wrote is never futile, because the result
 changed. A failing call counts exactly like a succeeding one, since an
