@@ -4002,6 +4002,56 @@ fn a_failed_write_over_temurs_own_document_keeps_the_original() {
     );
 }
 
+/// T65 P4 (item 3, Ruling T64-34 flag 1): a write through a SYMLINK rotates
+/// the LINK, not the file it points at. The link moves aside under the
+/// .previous name and is still a link; the new document is a regular file at
+/// the link's own name; the target keeps its bytes. This is coverage of what
+/// move_aside's rename already does, not a change, so it passes on the parent.
+#[test]
+fn a_write_through_a_symlink_rotates_the_link_not_its_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+
+    // Written through the write tool, so the target is a real .docx rather
+    // than bytes with the right name on them.
+    let target = dir.path().join("target.docx");
+    let mut owner = ctx_in(dir.path());
+    run(&reg, &mut owner, "write", json!({"filePath": target.to_str().unwrap(), "content": "# One\n"})).unwrap();
+    let target_bytes = std::fs::read(&target).unwrap();
+
+    let link = dir.path().join("link.docx");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let prev = dir.path().join("link.previous.docx");
+
+    // A FRESH ctx, which does not own the target (T65 P1 test (4)'s lesson):
+    // an owning ctx writes straight over its own output and rotates nothing,
+    // so the rotation under test would never run. The read arms T19's
+    // read-first rule and shows the link extracts like any other document.
+    let mut other = ctx_in(dir.path());
+    let fp = link.to_str().unwrap();
+    run(&reg, &mut other, "read", json!({"filePath": fp})).unwrap();
+    let out = run(&reg, &mut other, "write", json!({"filePath": fp, "content": "# Two\n"})).unwrap();
+    assert!(
+        out.output.ends_with(&format!("; the previous document is at {}", prev.display())),
+        "{}",
+        out.output
+    );
+
+    // The link moved aside AS A LINK, still naming the target.
+    let moved = std::fs::symlink_metadata(&prev).unwrap();
+    assert!(moved.file_type().is_symlink(), "the rotated copy must still be a symlink");
+    assert_eq!(std::fs::read_link(&prev).unwrap(), target);
+
+    // The new document is a regular file under the link's own name.
+    let written = std::fs::symlink_metadata(&link).unwrap();
+    assert!(written.file_type().is_file(), "the new document must be a regular file, not a link");
+    let back = run(&reg, &mut other, "read", json!({"filePath": fp})).unwrap();
+    assert!(back.output.contains("Two"), "{}", back.output);
+
+    // And nothing reached the file the link pointed at.
+    assert_eq!(std::fs::read(&target).unwrap(), target_bytes);
+}
+
 #[test]
 fn the_spreadsheet_tool_keeps_the_previous_workbook_beside_it() {
     let dir = tempfile::tempdir().unwrap();

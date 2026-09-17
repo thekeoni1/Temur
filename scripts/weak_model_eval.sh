@@ -118,13 +118,23 @@ T13_PAD_PARA='Sailing notes carried forward from the previous review. The north 
 # Pre-registered before launch, and deliberately absent from the prompt, so
 # it can only reach the transcript out of the document.
 T13_SENTINEL='Kestrel-class hull survey'
-# Ruling T62-4: temur's PDF writer emits UNCOMPRESSED content streams, so a
-# PDF it wrote carries its prose as plain bytes and grep searches it as text
-# (grep.rs:113 skips a file only for a NUL in its first 4,096 bytes). Real
-# PDFs are flate-compressed and do carry early NULs, which is why grep skips
-# them. Task 13 measures what a model does when grep skips a document, so the
-# fixture is compressed after the write path produces it. Bytes only; the
+# Ruling T62-4, reason restated in T65 P4: temur's PDF writer emits
+# UNCOMPRESSED content streams, so a PDF it wrote carries its prose as plain
+# bytes. Real PDFs are flate-compressed, so the fixture is compressed after
+# the write path produces it. That gives it a real PDF's shape, and the
+# preflight read-back then exercises the extractor on flate streams rather
+# than on the plain bytes temur wrote. Compression changes bytes only; the
 # read-back is asserted byte-identical below.
+# The skipping this comment used to claim is PRE-T62 P1 history: grep read
+# every file as bytes and skipped one carrying an early NUL, which is the
+# dogfood shape task 13 came from. Since T62 P1 grep's walk sends a document
+# extension down the is_document branch, which extracts the text and searches
+# that; the NUL test sits in the else branch and applies to non-documents
+# only. What task 13 measures today is whether the model reaches a section
+# lying past the first read's cap and quotes it without a shell detour, by
+# paging with read at the cap notice or by following grep's hit on the
+# extracted text. Its failure shape is T64-35 flag 7, a capped read treated
+# as the whole document.
 T13_COMPRESS=tests/fixtures/office/compress_pdf_streams.py
 # Written ONCE by the control arm and then asserted, so every arm reads the
 # same bytes: T13_GENERATE=1 builds it, and any later arm must be given the
@@ -583,13 +593,16 @@ t13_fixture() {
         second=$(sha "$det/c-$(basename "$dest")")
         [ "$first" = "$second" ] || { echo "FAIL: task 13 fixture build is not deterministic ($first vs $second)"; exit 1; }
         rm -rf "$det"
-        # Preflight STOP (i), Ruling T62-4: grep skips a file only when a NUL
-        # byte falls in its first 4,096 bytes (src/tools/grep.rs:113). Without
-        # one, grep searches the PDF as text and finds the sentence in a content
-        # stream, so the task's premise is false and it measures nothing.
+        # Preflight STOP (i), Ruling T62-4, reason restated in T65 P4: the NUL
+        # count is how the build checks that compression actually produced
+        # binary streams. Without one the fixture is still the plain-bytes PDF
+        # temur wrote, it does not have a real PDF's shape, and the read-back
+        # comparison below exercises the extractor on plain bytes. It is not a
+        # statement about grep, which since T62 P1 extracts a document and
+        # searches its text whatever its bytes.
         t13_nul=$(head -c 4096 "$dest" | tr -dc '\0' | wc -c | tr -d ' ')
         [ "$t13_nul" -ge 1 ] || {
-            echo "FAIL: task 13 preflight STOP: no NUL byte in the fixture's first 4096 bytes, so grep (src/tools/grep.rs:113) would search it as text and the task's premise is false"
+            echo "FAIL: task 13 preflight STOP: no NUL byte in the fixture's first 4096 bytes, so compression did not produce binary streams and the fixture does not have a real PDF's shape"
             exit 1
         }
         # Preflight STOP (ii), Ruling T62-4: compression changed the bytes and
@@ -625,7 +638,7 @@ t13_fixture() {
             exit 1
         fi
         echo "task13 fixture: $(wc -c < "$dest") bytes, md sha $got_md, pdf sha $first"
-        echo "task13 preflight: $t13_nul NUL bytes in the first 4096, so grep skips it (grep.rs:113); every page of the read-back byte-identical to the uncompressed PDF, sentinel reached"
+        echo "task13 preflight: $t13_nul NUL bytes in the first 4096, so the fixture carries flate streams and has a real PDF's shape; every page of the read-back byte-identical to the uncompressed PDF, sentinel reached"
         echo "task13 preflight: sentinel NOT in the default read; first read ends: $(grep -o '(Output capped[^)]*)' "$EVAL_TRANSCRIPT_DIR/task13.preflight.txt" | head -1)"
         echo "task13: pass these to every other arm:"
         echo "  T13_PDF=<this run's copy>  T13_PDF_SHA256=$first  T13_MD_SHA256=$got_md"
@@ -945,11 +958,16 @@ echo "T60 (run $RUN): $T60_12_LINE"
 fi
 
 # 13: a named section of a multi-page PDF (T62 P1). The dogfood shape this
-# comes from: the model read a 10-K PDF, then ran grep, which skips any file
-# with a NUL in its first 4 KB and answered "No matches found" without saying
-# it had skipped anything, then reached for python3 and pdftotext, neither
-# present, and only then paged with read. The question is whether grep seeing
-# documents saves that detour.
+# comes from, on a temur PREDATING T62 P1: the model read a 10-K PDF, then ran
+# grep, which at that time read every file as bytes and skipped any file with
+# a NUL in its first 4 KB, and answered "No matches found" without saying it
+# had skipped anything; it then reached for python3 and pdftotext, neither
+# present, and only then paged with read. That skip is gone: grep's walk now
+# extracts a document and searches its text. What this task measures today is
+# whether the model reaches a section lying past the first read's cap and
+# quotes it without a shell detour, by paging with read at the cap notice or
+# by following grep's hit on the extracted text. Its failure shape is T64-35
+# flag 7, a capped read treated as the whole document.
 #
 # Reported OUTSIDE the nine-task denominator, exactly as 10, 11 and 12 are.
 #

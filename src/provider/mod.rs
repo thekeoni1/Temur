@@ -969,6 +969,10 @@ mod locality_and_server_context_tests {
             "http://[fe80::1]/v1",
         ] {
             assert!(is_local_endpoint(local), "{local}");
+            // T65 P4 (item 6, Ruling T65-11 (B)): starts_with("local ") also
+            // accepts "local network ", so on its own it cannot tell the two
+            // local kinds apart. The kind is asserted outright beside it.
+            assert_eq!(endpoint_kind(local), Locality::Local, "{local}");
             assert!(endpoint_locality(local).starts_with("local "), "{local}");
         }
         for hosted in [
@@ -979,6 +983,7 @@ mod locality_and_server_context_tests {
             "http://ex ample.com/v1",
         ] {
             assert!(!is_local_endpoint(hosted), "{hosted}");
+            assert_eq!(endpoint_kind(hosted), Locality::Hosted, "{hosted}");
             assert!(endpoint_locality(hosted).starts_with("hosted "), "{hosted}");
         }
     }

@@ -1739,6 +1739,50 @@ all five would install three extra targets on every machine that opens the
 repo. `install.sh` prints the exact `export PATH` line with the real
 directory.
 
+P4 changes no product code and ships no user-visible change. The eval
+instrument's four stale task-13 claims are rewritten (Ruling T64-35 flag 1).
+Since T62 P1 grep's walk sends a document extension down the `is_document`
+branch, which extracts the text and searches that, while the NUL test sits in
+the else branch and applies to non-documents only, a compressed PDF is
+searched like any other document; the `T13_COMPRESS` header, the preflight
+STOP (i) comment and its FAIL message, the preflight echo and the task-13
+block comment no longer say otherwise, and no line cites a `grep.rs` line
+number. The STOP (i) condition itself is kept, with its true reason: the NUL
+count is how the build checks that compression produced binary streams, so the
+fixture has a real PDF's shape and the read-back comparison exercises the
+extractor on flate streams rather than on the plain bytes temur wrote. What
+task 13 measures today is whether the model reaches a section past the first
+read's cap and quotes it without a shell detour. Comments and printed text
+only, so no eval behaviour moved; the instrument's sha changes and the next
+soak records it. That soak's driver is prepared archive-side as
+`~/temur-eval-archive/tools/run_soak_eval-v0.37.0.sh`, with every v0.36.0
+identity replaced by a placeholder the cut fills, each one asserted so an
+unfilled placeholder stops the run, and the Ruling T64-16 screen widened from
+three literal phrasings to those three plus a generic refusal form (Ruling
+T64-35 flag 4). Two tests close coverage gaps and both pass on the parent: a
+write through a symlink rotates the LINK, so `link.previous.docx` is still a
+symlink naming `target.docx`, the new document is a regular file under the
+link's own name and the target keeps its bytes (Ruling T64-34 flag 1); and
+the locality test now asserts `endpoint_kind` outright on every case, because
+`starts_with("local ")` also accepts `local network ` and so could not tell
+the two local kinds apart (Ruling T65-11 (B)).
+
+Across every archived task-13 transcript, under `t62-2026-09-12/p1-arms`,
+`t62-2026-09-12/p1-smoke`, `t63-2026-09-14/p2`, `t64-2026-09-14/reading`,
+`v0.35.0-soak` and `v0.36.0-soak`, the first read's output carried the
+`Use offset=415 to continue` notice every time and the notice was not followed
+in 10 of the 12 distinct readings, excluding the v0.35.0 misnamed-binary
+attempt whose container never started (Ruling T64-35 flag 7). Counted by file
+rather than by reading, two archive paths hold one byte-identical reading and
+the figure is 10 or 11 of 13 depending on whether an offset past the cap or
+content actually returned past it is what counts as following; the
+per-transcript table, both rules and the reason the readings are not directly
+comparable to each other are in
+`~/temur-eval-archive/t65-p4/cap-notice-count.md`. The F7 arm-B rerun is not
+part of P4, because the laptop's patch (sha `bd031650`, 78 lines,
+`src/agent/mod.rs`) has not been ferried to `/mnt/c/Users/<user>` and there is
+nothing to rerun until it is.
+
 | i686 musl release on 1.96.1 | bytes |
 | --- | --- |
 | T64 (P4b) | 8,311,820 |
@@ -1746,6 +1790,7 @@ directory.
 | P1 | 8,318,540 |
 | P2 | 8,323,276 |
 | P3 | 8,326,124 |
+| P4 | 8,326,124 |
 
 ### T64 as built (2026-09-15)
 
