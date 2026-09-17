@@ -738,13 +738,27 @@ fn repl(
         }
         Box::new(temur::ui::oneshot::OneShotUi::stdio())
     } else {
-        // T21/T46: the plain REPL is interactive only on a real terminal;
-        // piped runs (the mock e2e suites) stay byte-identical.
-        if std::io::stdin().is_terminal()
-            && std::io::stdout().is_terminal()
-            && approve_ask
-        {
-            session.set_approver(temur::ui::repl::stdin_approver());
+        // T21/T46: the plain REPL is interactive only on a real terminal.
+        //
+        // T65 P0: and when it is not, it now REFUSES rather than running
+        // mutating tools as if --allow-mutations had been given. A piped
+        // plain REPL has nobody to ask, which is the same fact -p acts on
+        // one branch above, so it gets the same answer and the same text.
+        // The three arms are decided by a pure function in the lib, where
+        // the whole table is a unit test; the acting is here, because the
+        // approver and the refusal flag are main's to install.
+        match temur::ui::repl::plain_repl_mutation_policy(
+            std::io::stdin().is_terminal(),
+            std::io::stdout().is_terminal(),
+            approve_ask,
+        ) {
+            temur::ui::repl::MutationPolicy::Ask => {
+                session.set_approver(temur::ui::repl::stdin_approver());
+            }
+            temur::ui::repl::MutationPolicy::Refuse => {
+                session.set_refuse_mutations(true);
+            }
+            temur::ui::repl::MutationPolicy::Permit => {}
         }
         Box::new(ReplUi::new())
     };

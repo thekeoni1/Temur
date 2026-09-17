@@ -1244,6 +1244,7 @@ fn approval_pty_no_denies_and_the_session_continues() {
 
 #[test]
 fn approval_piped_noninteractive_still_refuses() {
+    // T65 P0: T21's refusal speaks first here and keeps its precedence, so this test is unchanged.
     let sb = sandbox();
     guarded_mock_config(&sb);
     let mut c = sb.cmd();
@@ -1749,6 +1750,108 @@ fn oneshot_write_without_the_flag_is_refused_at_the_other_site() {
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
     assert!(stderr.contains("✓ read"), "the read is untouched: {stderr}");
     assert!(stderr.contains("✗ write"), "the write is refused: {stderr}");
+    assert_eq!(
+        std::fs::read_to_string(sb.home.join("existing.txt")).unwrap(),
+        "original",
+        "a refused write must not touch the disk"
+    );
+}
+
+// ------------------------- T65 P0: a piped plain REPL refuses like -p
+//
+// The same pair of routes as the -p trio above, driven through the PLAIN
+// REPL with its three streams piped (`run()`), which is the shape that
+// until v0.36.0 could not ask and did not refuse: mutating tools ran as
+// if --allow-mutations had been given. `--plain` is belt and braces here,
+// since piped stdout already selects the plain REPL; it states which UI
+// the test means. The pty tests above are the control on the other side:
+// a real terminal still asks.
+
+#[test]
+fn piped_plain_repl_bash_without_the_flag_refuses_like_oneshot() {
+    let sb = sandbox();
+    // Keyless, for the same reason the -p test is: with no key files there
+    // is no T21 sandbox question to speak first, so the refusal on display
+    // can only be T46's own, reached by T65 P0's route. The wording stays
+    // pinned in tests/approval.rs; the ROUTE is what this test owns.
+    sb.write_config("{}");
+    let mut c = sb.cmd();
+    let fixtures = nudged_mock(&approval_fixtures(), "text_verified.sse");
+    c.args(["--plain", "--mock", &fixtures]);
+    let (code, stdout, stderr) = run(c, "run the command\nexit\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        !stdout.contains("[y/N]"),
+        "a piped REPL must never prompt: {stdout}"
+    );
+    assert!(stdout.contains("✗ bash"), "the call failed: {stdout}");
+    assert!(
+        !sb.home.join("approval-marker.txt").exists(),
+        "a refused command must not run: {stdout}"
+    );
+    assert!(
+        stdout.contains("Hello, world!"),
+        "the session continues after the refusal: {stdout}"
+    );
+}
+
+#[test]
+fn piped_plain_repl_bash_with_the_flag_runs_the_command() {
+    let sb = sandbox();
+    sb.write_config("{}");
+    let mut c = sb.cmd();
+    let fixtures = nudged_mock(&approval_fixtures(), "text_verified.sse");
+    c.args(["--plain", "--allow-mutations", "--mock", &fixtures]);
+    let (code, stdout, stderr) = run(c, "run the command\nexit\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!stdout.contains("✗ bash"), "no refusal: {stdout}");
+    assert_eq!(
+        std::fs::read_to_string(sb.home.join("approval-marker.txt")).unwrap(),
+        "approval-ran\n",
+        "the allowed command runs exactly as it did before T65"
+    );
+}
+
+#[test]
+fn piped_plain_repl_bash_with_the_allow_config_runs_the_command_too() {
+    // The precedence again: either signal permits, and the config one is
+    // honored down this route as well as in -p and interactively.
+    let sb = sandbox();
+    sb.write_config(r#"{"approve_mutations": "allow"}"#);
+    let mut c = sb.cmd();
+    let fixtures = nudged_mock(&approval_fixtures(), "text_verified.sse");
+    c.args(["--plain", "--mock", &fixtures]);
+    let (code, stdout, stderr) = run(c, "run the command\nexit\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(
+        std::fs::read_to_string(sb.home.join("approval-marker.txt")).unwrap(),
+        "approval-ran\n"
+    );
+}
+
+#[test]
+fn piped_plain_repl_write_without_the_flag_is_refused_at_the_other_site() {
+    // The registry-sited route, where write and edit are asked about. What
+    // the model reads must not depend on which side of the layering split
+    // the tool sits on, and the read in the same fixture proves read-only
+    // work is untouched by the refusal.
+    let sb = sandbox();
+    sb.write_config("{}");
+    let mut c = sb.cmd();
+    let fixtures = nudged_mock(
+        &format!(
+            "{},{}",
+            fixture("read_then_write.sse"),
+            fixture("text_simple.sse")
+        ),
+        "text_verified.sse",
+    );
+    std::fs::write(sb.home.join("existing.txt"), "original").unwrap();
+    c.args(["--plain", "--mock", &fixtures]);
+    let (code, stdout, stderr) = run(c, "update the file without the flag\nexit\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains("✓ read"), "the read is untouched: {stdout}");
+    assert!(stdout.contains("✗ write"), "the write is refused: {stdout}");
     assert_eq!(
         std::fs::read_to_string(sb.home.join("existing.txt")).unwrap(),
         "original",

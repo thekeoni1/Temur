@@ -67,9 +67,10 @@ container_suites() { # $1 = deps dir, $2 = label
 }
 
 mock_repl() { # $1 = bin dir, $2 = image, $3 = label
+    # T65 P0: a piped plain REPL refuses mutating tools; this fixture runs bash.
     MOCK_OUT=$(printf 'do the smoke task\n' | podman run --rm -i \
         -v "$1":/app:ro -v "$PROJ":"$PROJ":ro "$2" \
-        /app/temur --mock "$FIXTURES")
+        /app/temur --allow-mutations --mock "$FIXTURES")
     echo "$MOCK_OUT" | grep -q "read the file and list the directory" || { echo "FAIL($3): no streamed text"; echo "$MOCK_OUT"; exit 1; }
     echo "$MOCK_OUT" | grep -q "bash" || { echo "FAIL($3): no tool activity"; echo "$MOCK_OUT"; exit 1; }
     echo "$MOCK_OUT" | grep -q "Hello, world!" || { echo "FAIL($3): no second-round response"; echo "$MOCK_OUT"; exit 1; }
@@ -82,6 +83,7 @@ mock_repl() { # $1 = bin dir, $2 = image, $3 = label
 # end-to-end in the real binary.
 OPENAI_FIXTURES="$PROJ/tests/fixtures/openai/tool_parallel.sse,$PROJ/tests/fixtures/openai/text_simple.sse,$PROJ/tests/fixtures/openai/text_verified.sse"
 mock_repl_openai() { # $1 = bin dir, $2 = image, $3 = label
+    # T65 P0: --allow-mutations below, same reason as the leg above.
     CFG_DIR=$(mktemp -d)
     mkdir -p "$CFG_DIR/temur"
     printf '{"provider":"openai-compat","openai_compat":{"model":"mock-local"}}\n' \
@@ -89,7 +91,7 @@ mock_repl_openai() { # $1 = bin dir, $2 = image, $3 = label
     MOCK_OUT=$(printf 'do the smoke task\n' | podman run --rm -i \
         -v "$1":/app:ro -v "$PROJ":"$PROJ":ro -v "$CFG_DIR":/cfg:ro \
         -e XDG_CONFIG_HOME=/cfg "$2" \
-        /app/temur --mock "$OPENAI_FIXTURES")
+        /app/temur --allow-mutations --mock "$OPENAI_FIXTURES")
     rm -rf "$CFG_DIR"
     # No model banner in mock mode; selection is proven by the fixtures
     # themselves — OpenAI chunk streams only assemble through the compat

@@ -32,12 +32,51 @@ impl Default for ReplUi {
     }
 }
 
+/// T65 P0: what a plain REPL does about mutating tool calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationPolicy {
+    /// Install [`stdin_approver`] and ask the human at the terminal.
+    Ask,
+    /// Refuse like one-shot `-p`, with `mutation_refusal_text`.
+    Refuse,
+    /// Do nothing: mutating calls run, as they do everywhere no approver
+    /// is installed.
+    Permit,
+}
+
+/// T65 P0: decide, from the two terminal tests and the resolved approval
+/// mode, which of the three a plain REPL gets.
+///
+/// Pure, and in the lib rather than in `main.rs`, so the whole table is a
+/// unit test. `approve_ask` is already the resolved answer (the flag and
+/// `"approve_mutations": "allow"` are folded into it in `main.rs`), so
+/// false here means the operator said allow and nothing may tighten past
+/// it, whatever the terminals look like.
+///
+/// The shape this phase changes is the third: before T65 a piped plain
+/// REPL could not ask and did not refuse, so mutating tools ran as if
+/// `--allow-mutations` had been given. A run that cannot ask now denies,
+/// which is the answer one-shot `-p` has given since T46.
+pub fn plain_repl_mutation_policy(
+    stdin_is_terminal: bool,
+    stdout_is_terminal: bool,
+    approve_ask: bool,
+) -> MutationPolicy {
+    if !approve_ask {
+        MutationPolicy::Permit
+    } else if stdin_is_terminal && stdout_is_terminal {
+        MutationPolicy::Ask
+    } else {
+        MutationPolicy::Refuse
+    }
+}
+
 /// The plain REPL's approver (T21, generalized by T46): prompt on the
 /// terminal between tool events, showing what is being approved and why,
 /// and read one answer line. Default is DENY: empty input, an unrecognized
 /// answer, EOF, and read errors all deny. Installed by main ONLY when stdin
 /// and stdout are real terminals, so piped runs (the mock e2e suites) never
-/// see it.
+/// see it and refuse mutating calls instead (T65 P0).
 ///
 /// TWO FORMS, and the difference is the answer set:
 /// - composed (`no_key_sandbox`): the T21 lines BYTE-IDENTICAL, with T46's
@@ -204,6 +243,37 @@ impl Ui for ReplUi {
                     return Some(line.to_string());
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{plain_repl_mutation_policy as policy, MutationPolicy};
+
+    /// T65 P0: all eight combinations of (stdin tty, stdout tty,
+    /// approve_ask), as a table. The four `approve_ask == false` rows are
+    /// the "nothing can tighten past the operator's allow" half; of the
+    /// four that ask, only the both-terminals row can ask, and the other
+    /// three are the shape this phase changed from Permit to Refuse.
+    #[test]
+    fn the_plain_repl_policy_table() {
+        let table = [
+            (false, false, false, MutationPolicy::Permit),
+            (false, true, false, MutationPolicy::Permit),
+            (true, false, false, MutationPolicy::Permit),
+            (true, true, false, MutationPolicy::Permit),
+            (false, false, true, MutationPolicy::Refuse),
+            (false, true, true, MutationPolicy::Refuse),
+            (true, false, true, MutationPolicy::Refuse),
+            (true, true, true, MutationPolicy::Ask),
+        ];
+        for (stdin_tty, stdout_tty, approve_ask, want) in table {
+            assert_eq!(
+                policy(stdin_tty, stdout_tty, approve_ask),
+                want,
+                "stdin_tty={stdin_tty} stdout_tty={stdout_tty} approve_ask={approve_ask}"
+            );
         }
     }
 }

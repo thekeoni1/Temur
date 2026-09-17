@@ -4,6 +4,16 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- A plain REPL whose stdin or stdout is a pipe now refuses mutating tool
+  calls instead of running them. It has nobody to ask, so it answers the
+  way `temur -p` has since the approval default arrived: the first
+  `write`, `edit` or `bash` call fails with the message naming
+  `--allow-mutations` and `"approve_mutations": "allow"`, and the turn
+  continues. A REPL on a real terminal still asks, and read-only piped
+  runs are untouched. Scripts that pipe prompts into `temur --plain` and
+  expect mutations need the flag or the config value; every script in
+  this repository already passes it.
+
 - `/model <profile> --save` switches to the profile and makes it the
   startup default by writing the `profile` key into config.json. It is
   the same careful edit `/model <id> --save` makes: your key order and

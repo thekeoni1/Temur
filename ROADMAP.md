@@ -1629,6 +1629,36 @@ one-liner gate stays deferred to the visibility flip (RUNBOOK).
   `\text \mathrm \textbf \textit \mathbf` unwrap to their argument, `~`
   becomes a space; `\frac` and friends stay honest source by design.
 
+### T65 as built (2026-09-17)
+
+The dogfood round after v0.36.0, on a local `t65-stack` branch from
+`63eba85`. Every commit is cold-gated on rustc 1.96.1 in a fresh target
+dir, with the preflight log new from T64-35 written before the branch is
+cut.
+
+P0 keeps a public promise USAGE made in v0.36.0. A plain REPL whose
+stdin or stdout is not a terminal cannot ask about a mutating tool call,
+and until now it did not refuse either: `write`, `edit` and `bash` ran as
+if `--allow-mutations` had been given. It now refuses, with the same
+`mutation_refusal_text` one-shot `-p` has used since T46, and the turn
+continues from the tool error as it does there. The decision is one pure
+function in `src/ui/repl.rs`, `plain_repl_mutation_policy`, taking the
+two terminal tests and the resolved `approve_ask` and returning Ask,
+Refuse or Permit; `main.rs`'s plain-REPL branch is the only caller and
+does the installing. All eight rows of the table are a unit test. The
+one-shot and TUI branches are untouched, `session_cfg.unattended` is
+untouched (it answers a different question), and no new string was
+added. T21's key-sandbox refusal keeps its precedence where both could
+speak. The two `check.sh` mock REPL legs pipe their prompt into a
+bash-dispatching fixture, so they now pass `--allow-mutations` like
+every other non-interactive driver in the tree; their assertions are
+unchanged.
+
+| i686 musl release on 1.96.1 | bytes |
+| --- | --- |
+| T64 (P4b) | 8,311,820 |
+| P0 | 8,311,820 |
+
 ### T64 as built (2026-09-15)
 
 The 6R cycle, on top of v0.35.0 and T63. P0a `1ab23b5` was pushed alone

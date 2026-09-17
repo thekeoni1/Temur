@@ -1986,10 +1986,12 @@ happen: the command for bash, `write <path> (<n> bytes)` for a write,
 and `edit <path> (replaces "<first line>"...)` for an edit.
 
 A plain REPL whose stdin or stdout is not a terminal, such as a piped
-run, cannot ask, and in this release it does not refuse either:
-mutating tools run as if `--allow-mutations` were given. For a piped
-run that must refuse, use `-p`. This is fixed in the next release,
-where a piped REPL refuses like `-p`.
+run, cannot ask, so it refuses, exactly as `-p` does and with the same
+message: the first mutating call fails naming `--allow-mutations` and
+the config key, and the turn continues from there. A piped run that
+must mutate passes `--allow-mutations` or sets `"approve_mutations":
+"allow"`. In v0.36.0 and earlier such a run neither asked nor refused:
+mutating tools ran as if `--allow-mutations` had been given.
 
 This section's transcripts were captured 2026-09-04 against a local
 llama.cpp server (image `server-cuda-b10438`) serving
@@ -2099,7 +2101,7 @@ are untouched: a run that only reads, globs or greps never meets this.
 Every script in this repository that drives temur non-interactively
 passes `--allow-mutations` for this reason. A script of your own that
 mutates needs the flag or the config value. A plain REPL fed by a pipe
-is the exception; see the note under "Approval mode".
+refuses the same way.
 
 ## Bash approval mode (T21)
 

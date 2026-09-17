@@ -223,8 +223,14 @@ pub struct ToolCtx {
     /// [`ApprovalRequest`]. `None` (the default everywhere) means no UI can
     /// ask: the T21 Ask arm still refuses as it always did, and T46's
     /// mutation question is simply not asked, so every non-interactive
-    /// construction site is untouched and PERMISSIVE exactly as before. The
-    /// ask-by-default flip lives at session construction in `main.rs`, not
+    /// construction site is untouched and PERMISSIVE exactly as before.
+    /// T65 P0 rider: that permissiveness is the DEFAULT, not what a user
+    /// meets. `main.rs` sets `refuse_mutations` instead of an approver for
+    /// both shapes that cannot ask, one-shot `-p` and a plain REPL whose
+    /// stdin or stdout is a pipe, so "no approver" only stays permissive
+    /// for construction sites no user reaches.
+    ///
+    /// The ask-by-default flip lives at session construction in `main.rs`, not
     /// here: moving it into this default would break every MockProvider
     /// test for no safety gain, since the only entry points a user reaches
     /// go through `main`.
