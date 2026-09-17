@@ -1677,11 +1677,36 @@ and `--resume`, like `read_paths`, so a resumed session moves the
 current file aside once. Said in USAGE, which had no `.previous` text
 before this.
 
+P2 renders math written into a document (dogfood finding 10, Ruling
+T65-6). The T45 pass lived in `src/ui/tui/markdown.rs` as a private
+`mod latex` whose only caller was the TUI renderer, so a model writing
+`$\int f$` into a PDF got the source back, and any glyph it did reach
+was a `?`. The module is now `pub(crate)` and has a second entry point,
+`substitute_for_document`, beside `substitute_source`: one walk, one set
+of delimiters, one currency guard and one substitution table, with a
+`Mode` choosing what differs. Both document modes render `\frac`,
+`\dfrac`, `\tfrac` and `\sqrt` as the plain forms a line of text can
+hold, each side rendered in the same mode and parenthesised unless it is
+a single token, innermost first. `DocumentWinAnsi` also asks
+`office::winansi_byte`, the encoder's own table rather than a second
+copy, whether each finished substitution fits the page: a symbol that
+does not fit stays LaTeX source instead of becoming the `?` the encoder
+would write, a lifted run with one character outside the encoding falls
+back whole exactly as an unliftable run does, and the root takes
+`sqrt(x)`. `write_markdown_as_docx` and `write_markdown_as_pdf` call the
+pass at their top; the xlsx writer, `write_workbook`, the `spreadsheet`
+tool and the "outside WinAnsi replaced" count are untouched, and that
+count still measures only the model's own Unicode. The screen is
+byte-identical: `substitute_source` is the same walk in `Mode::Screen`,
+`\frac` stays verbatim there, and every test in `markdown.rs` passes
+unchanged. No new user-visible string.
+
 | i686 musl release on 1.96.1 | bytes |
 | --- | --- |
 | T64 (P4b) | 8,311,820 |
 | P0 | 8,311,820 |
 | P1 | 8,318,540 |
+| P2 | 8,323,276 |
 
 ### T64 as built (2026-09-15)
 

@@ -23,6 +23,7 @@
 //! is measured before calamine is handed the path.
 
 use super::ToolError;
+use crate::ui::tui::markdown::latex;
 use std::io::Read;
 use std::path::Path;
 
@@ -1470,7 +1471,11 @@ fn docx_document_xml(blocks: &[Block]) -> String {
 /// filePath ends in .docx, so no new tool and no new parameter exist.
 pub fn write_markdown_as_docx(path: &Path, content: &str) -> Result<(), ToolError> {
     use std::io::Write;
-    let blocks = markdown_blocks(content);
+    // T65 P2: math reads the way the screen reads it. A .docx carries
+    // Unicode, so the pass substitutes everything the transcript does, plus
+    // the plain forms for fractions and roots.
+    let content = latex::substitute_for_document(content, latex::Mode::DocumentUnicode);
+    let blocks = markdown_blocks(&content);
     let document = docx_document_xml(&blocks);
     let file = std::fs::File::create(path).map_err(|e| ToolError::failed(e.to_string()))?;
     let mut zip = zip::ZipWriter::new(file);
@@ -1498,7 +1503,11 @@ pub fn write_markdown_as_docx(path: &Path, content: &str) -> Result<(), ToolErro
 /// slot for it. 0x20 to 0x7E and 0xA0 to 0xFF are Latin-1; 0x80 to 0x9F
 /// are the Windows-1252 extras (curly quotes, dashes, the euro sign),
 /// which is what makes WinAnsi the right choice for text a model writes.
-fn winansi_byte(c: char) -> Option<u8> {
+///
+/// `pub(crate)` since T65 P2: the LaTeX pass asks this table, and only this
+/// table, whether a substitution fits the page before it makes it. A second
+/// copy of the encoding could drift from the encoder.
+pub(crate) fn winansi_byte(c: char) -> Option<u8> {
     match c {
         '\u{20}'..='\u{7e}' | '\u{a0}'..='\u{ff}' => Some(c as u8),
         '\u{20ac}' => Some(0x80),
@@ -1706,7 +1715,12 @@ pub fn write_markdown_as_pdf(path: &Path, content: &str) -> Result<u64, ToolErro
 
     let failed = |e: lopdf::Error| ToolError::failed(format!("temur could not write this PDF: {e}"));
     let mut replaced = 0u64;
-    let blocks = markdown_blocks(content);
+    // T65 P2: math reads the way the screen reads it, within what the page
+    // can carry. WinAnsi mode substitutes only where the result fits the
+    // encoding below, so nothing this pass produces is ever counted in
+    // `replaced`; that count stays the model's own Unicode.
+    let content = latex::substitute_for_document(content, latex::Mode::DocumentWinAnsi);
+    let blocks = markdown_blocks(&content);
     let lines = pdf_lines(&blocks, &mut replaced);
 
     let mut doc = Document::with_version("1.4");

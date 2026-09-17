@@ -1502,6 +1502,18 @@ session resumed with `--continue` or `--resume` starts without this
 memory, so its first overwrite of a document moves the current file
 aside, replacing the copy.
 
+Math written as LaTeX into a `.docx` or a `.pdf` is rendered the way the
+screen renders a reply.
+The delimiters are `$...$`, `$$...$$`, `\(...\)` and `\[...\]`, read
+under the same guard that keeps "costs $5 and $10" money, and you get
+the same symbols, Greek letters, lifted exponents, spacing commands and
+wrappers. Fractions and roots take a plain form a line of text can hold:
+`\frac{1}{4}` is `1/4`, `\frac{x+1}{2}` is `(x+1)/2`, and `\sqrt{x+1}`
+is `√(x+1)`. A PDF substitutes only what WinAnsi can hold, so `x^2`
+becomes `x²` while `x^4` keeps its source, `\int` stays `\int`
+rather than becoming `?`, and a root reads `sqrt(x)`. Code spans and
+code blocks are never touched.
+
 Charts and multiple sheets need the one new tool, `spreadsheet`,
 because CSV cannot express them. It takes sheets of values and charts
 over A1 ranges (`line`, `column`, `bar`, `scatter`, `pie`); a range

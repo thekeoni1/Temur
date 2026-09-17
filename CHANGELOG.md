@@ -4,6 +4,19 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- Math written into a `.docx` or a `.pdf` is rendered instead of left as
+  LaTeX source. The pass is the one the transcript has used since
+  v0.34.0, so a document reads the way a reply reads: `$...$`,
+  `$$...$$`, `\(...\)` and `\[...\]` under the same money guard,
+  symbols, Greek letters, lifted exponents, spacing commands and
+  wrappers. Fractions and roots, which the screen leaves as source, take
+  a plain form in a document: `\frac{1}{4}` is `1/4`, `\frac{x+1}{2}`
+  is `(x+1)/2`, `\sqrt{x+1}` is `√(x+1)`. A PDF's page is WinAnsi and
+  substitutes only what the encoding can hold, so `x^2` becomes `x²`
+  while `x^4` and `\int` keep their source rather than becoming `?`, and
+  a root reads `sqrt(x)`. Code spans and code blocks are untouched, as
+  they are on screen.
+
 - Writing a document more than once in a session no longer costs you the
   original. The copy beside it, `<stem>.previous.<ext>`, now holds the
   last version temur did not write itself: your document moves aside on

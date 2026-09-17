@@ -2961,6 +2961,87 @@ fn characters_outside_winansi_become_question_marks_and_are_counted() {
     assert!(!out.output.contains("replaced"), "{}", out.output);
 }
 
+// --- T65 P2: math written into a document ----------------------------------
+
+/// The dogfood finding: math written into a document stayed raw LaTeX. The
+/// T45 acceptance example now reads in a .docx the way it reads on screen,
+/// and the two structural commands a line of text can hold get plain forms.
+#[test]
+fn math_written_into_a_docx_renders_as_it_does_on_screen() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("math.docx");
+    let body = "Solve $ \\int 2x \\cos(x^2)\\,dx $ with $\\frac{1}{4}$, $\\frac{x+1}{2}$ and $\\sqrt{x+1}$.\n";
+    run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": body})).unwrap();
+
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+    let lines = doc_lines(&out.output);
+    let line = lines.first().expect("a paragraph");
+    for needle in ["Solve ∫ 2x cos(x²) dx", "1/4", "(x+1)/2", "√(x+1)"] {
+        assert!(line.contains(needle), "{needle:?} missing from {line:?}");
+    }
+    assert!(!line.contains("\\frac"), "no LaTeX source left: {line:?}");
+    assert!(!line.contains('$'), "the delimiters are gone: {line:?}");
+}
+
+/// A PDF's page is WinAnsi. Every substitution that reaches it fits the
+/// encoding, so nothing the pass produces is counted as replaced, and a
+/// command whose glyph has no slot keeps its source rather than becoming the
+/// `?` the encoder would write.
+#[test]
+fn math_written_into_a_pdf_stays_within_winansi() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("math.pdf");
+    let body = "Here $x^2$, $x^4$, $\\frac{a+b}{2}$, $\\int f$ and $\\sqrt{x}$.\n";
+    let out = run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": body})).unwrap();
+    assert!(!out.output.contains("outside WinAnsi"), "nothing became a `?`: {}", out.output);
+
+    let text = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap().output;
+    for needle in ["x²", "x^4", "(a+b)/2", "\\int f", "sqrt(x)"] {
+        assert!(text.contains(needle), "{needle:?} missing from:\n{text}");
+    }
+    assert!(!text.contains("\\frac"), "the fraction took its plain form:\n{text}");
+}
+
+/// The currency guard is the screen's, unchanged: a `$` span with no LaTeX
+/// signal in it is money and is written as the model typed it.
+#[test]
+fn money_in_a_docx_is_not_mistaken_for_math() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("money.docx");
+    run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": "costs $5 and $10\n"})).unwrap();
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+    assert_eq!(doc_lines(&out.output), ["costs $5 and $10"], "{}", out.output);
+}
+
+/// The exclusion contract is the screen's too: a code span and a code block
+/// keep their source bytes while the prose around them is substituted.
+#[test]
+fn code_in_a_written_document_is_never_substituted() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("code.docx");
+    let body = "Math $\\frac{1}{2}$ but `\\frac{a}{b}` stays.\n\n```\n\\frac{a}{b}\n```\n";
+    run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": body})).unwrap();
+
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+    let lines = doc_lines(&out.output);
+    assert!(
+        lines.iter().any(|l| l.contains("\\frac{a}{b} stays.")),
+        "the inline code span is verbatim: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l == "\\frac{a}{b}"),
+        "the code block is verbatim: {lines:?}"
+    );
+}
+
 #[test]
 fn a_guarded_pdf_path_is_refused_before_anything_is_written() {
     let (dir, key, _normal, mut ctx) = guarded_ctx();

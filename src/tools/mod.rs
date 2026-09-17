@@ -5,7 +5,9 @@ mod bash;
 mod coerce;
 mod edit;
 mod glob;
-mod office;
+// `pub(crate)` since T65 P2: the LaTeX pass asks `winansi_byte`
+// whether a substitution fits a PDF's page.
+pub(crate) mod office;
 mod grep;
 pub mod guard;
 mod read;

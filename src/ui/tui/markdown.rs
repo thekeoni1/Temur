@@ -28,7 +28,7 @@ fn dim() -> Style {
 
 /// The parser options, shared by BOTH parses in this file: the render
 /// parse below and the T45 LaTeX pass's offset-iterator parse in
-/// `latex::substitute_source`.
+/// `latex::walk_source`, which every entry point of the pass goes through.
 ///
 /// ONE constant rather than two literals kept in step by hand, because the
 /// LaTeX pass computes its exclusion BYTE RANGES from its own parse: if the
@@ -36,6 +36,16 @@ fn dim() -> Style {
 /// events, the protected ranges no longer describe the text the renderer
 /// sees, and code inside a construct only one parser understands stops
 /// being protected. `tables_and_latex_stay_in_sync` pins it.
+///
+/// Since T65 P2 a THIRD parse consumes this pass's output, and it is NOT
+/// this constant: `office::markdown_blocks` parses a document's Markdown
+/// with `Parser::new`, no extensions. Tables and strikethrough are the only
+/// constructs the options here add, and pulldown closes an inline code span
+/// before it splits a table row, so the protected ranges still describe the
+/// document writer's code regions. That is measured on the cases tried, not
+/// proved; a shared option set would be the guarantee, and enabling tables
+/// in the document writer would change how a table renders in a document,
+/// which is a ruling of its own.
 const MD_OPTIONS: Options = Options::ENABLE_STRIKETHROUGH.union(Options::ENABLE_TABLES);
 
 pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
@@ -469,10 +479,64 @@ fn hard_split(s: &str, budget: usize) -> Vec<String> {
 /// structural degrades honestly: the reader sees the LaTeX source for
 /// what cannot map, backslash included.
 ///
+/// T65 P2 narrows that last sentence, for documents and only there: a
+/// document mode renders `\frac` and `\sqrt` as the one-line plain forms
+/// `a/b` and `√a`, so those two stop degrading to source. Everything else
+/// structural still does, in every mode, and two-dimensional layout is
+/// still out of the question everywhere.
+///
 /// Monochrome contract (view.rs:7 and this file's header) is untouched:
 /// text in, text out, no styling and no color.
-mod latex {
+///
+/// Text in, text out is also why the pass is SHARED (T65 P2): the document
+/// writers in `tools::office` run it over the Markdown they are handed, so
+/// math written into a .docx or a .pdf reads the way the screen reads it.
+pub(crate) mod latex {
     use super::{Event, Parser, Tag};
+
+    /// Which reader a substitution is for (T65 P2).
+    ///
+    /// `Screen` is the transcript, and is what T45 always did: structural
+    /// commands stay honest LaTeX source, and every glyph the table holds is
+    /// available. The two document modes add the plain forms a line of text
+    /// can carry for fractions and roots, and differ in the charset the page
+    /// has: a .docx is Unicode, a .pdf is WinAnsi.
+    ///
+    /// ONE enum rather than two flags, because only these three combinations
+    /// exist: a screen is never WinAnsi, so a two-field struct would spell a
+    /// fourth state no caller can reach and every reader would have to work
+    /// out that it is unreachable.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(crate) enum Mode {
+        Screen,
+        DocumentUnicode,
+        DocumentWinAnsi,
+    }
+
+    impl Mode {
+        /// Do `\frac` and `\sqrt` render as `a/b` and `√a`? Only in a
+        /// document. On screen they stay source, which
+        /// `structural_commands_stay_verbatim_inside_the_span` pins.
+        fn plain_forms(self) -> bool {
+            !matches!(self, Mode::Screen)
+        }
+
+        /// Can the page carry every character of a finished substitution?
+        ///
+        /// A PDF encodes WinAnsi, where a glyph with no slot becomes `?` and
+        /// is counted as lost. Raw `\int` tells a reader more than `?` does,
+        /// so a substitution that would not fit does not happen and the
+        /// source stays. The test is `office::winansi_byte` itself rather
+        /// than a second copy of the table, so the two cannot drift.
+        fn fits(self, s: &str) -> bool {
+            match self {
+                Mode::Screen | Mode::DocumentUnicode => true,
+                Mode::DocumentWinAnsi => s
+                    .chars()
+                    .all(|c| crate::tools::office::winansi_byte(c).is_some()),
+            }
+        }
+    }
 
     /// Does a `$...$` interior read as math rather than money?
     ///
@@ -535,7 +599,8 @@ mod latex {
         caret && first.is_whitespace() && last.is_whitespace()
     }
 
-    /// Entry point: substitute over the SOURCE, with code regions cut out.
+    /// Entry point for the SCREEN: substitute over the SOURCE, with code
+    /// regions cut out.
     ///
     /// WHY NOT ON `Event::Text`, which is where a substitution pass
     /// obviously belongs. CommonMark backslash escaping runs first and
@@ -560,6 +625,19 @@ mod latex {
     /// from a first parsing pass: inline code spans, fenced and indented
     /// code blocks, and HTML keep their source bytes exactly.
     pub fn substitute_source(text: &str) -> String {
+        walk_source(text, Mode::Screen)
+    }
+
+    /// Entry point for the DOCUMENT writers (T65 P2). The same walk, the same
+    /// delimiters, the same currency guard and the same substitutions as the
+    /// screen; the mode chooses the plain forms and the charset.
+    pub(crate) fn substitute_for_document(text: &str, mode: Mode) -> String {
+        walk_source(text, mode)
+    }
+
+    /// The walk both entry points share: protected regions keep their source
+    /// bytes, and everything between them is substituted in `mode`.
+    fn walk_source(text: &str, mode: Mode) -> String {
         if !has_delimiter(text) {
             return text.to_string();
         }
@@ -580,12 +658,12 @@ mod latex {
         let mut at = 0usize;
         for r in protected {
             if r.start >= at {
-                out.push_str(&substitute(&text[at..r.start]));
+                out.push_str(&substitute(&text[at..r.start], mode));
                 out.push_str(&text[r.start..r.end.min(text.len())]);
                 at = r.end.min(text.len());
             }
         }
-        out.push_str(&substitute(&text[at..]));
+        out.push_str(&substitute(&text[at..], mode));
         out
     }
 
@@ -597,7 +675,7 @@ mod latex {
     /// closer landed in another markdown event passes through literally:
     /// honest degradation on a cheap rule, and the alternative is
     /// stitching state across events for a case nobody reported.
-    fn substitute(text: &str) -> String {
+    fn substitute(text: &str, mode: Mode) -> String {
         if !has_delimiter(text) {
             return text.to_string();
         }
@@ -609,25 +687,25 @@ mod latex {
             // double-dollar is not a currency form.
             if let Some(inner) = between(rest, "$$", "$$") {
                 if !inner.trim().is_empty() {
-                    out.push_str(&render_span(inner));
+                    out.push_str(&render_span(inner, mode));
                     i += 4 + inner.len();
                     continue;
                 }
             } else if let Some(inner) = between(rest, "\\(", "\\)") {
                 if !inner.trim().is_empty() {
-                    out.push_str(&render_span(inner));
+                    out.push_str(&render_span(inner, mode));
                     i += 4 + inner.len();
                     continue;
                 }
             } else if let Some(inner) = between(rest, "\\[", "\\]") {
                 if !inner.trim().is_empty() {
-                    out.push_str(&render_span(inner));
+                    out.push_str(&render_span(inner, mode));
                     i += 4 + inner.len();
                     continue;
                 }
             } else if let Some(inner) = between(rest, "$", "$") {
                 if is_math(inner) {
-                    out.push_str(&render_span(inner));
+                    out.push_str(&render_span(inner, mode));
                     i += 2 + inner.len();
                     continue;
                 }
@@ -650,8 +728,8 @@ mod latex {
     /// A span as it reads in prose: rendered, trimmed at both ends, and
     /// every run of spaces inside it collapsed to one (T64 P0, R3). Math
     /// ignores source spacing, so a reader loses nothing.
-    fn render_span(inner: &str) -> String {
-        let rendered = render(inner);
+    fn render_span(inner: &str, mode: Mode) -> String {
+        let rendered = render(inner, mode);
         let mut out = String::with_capacity(rendered.len());
         for c in rendered.trim().chars() {
             if c == ' ' && out.ends_with(' ') {
@@ -663,7 +741,7 @@ mod latex {
     }
 
     /// One recognized span's interior, with the delimiters already gone.
-    fn render(src: &str) -> String {
+    fn render(src: &str, mode: Mode) -> String {
         let mut out = String::with_capacity(src.len());
         let mut i = 0usize;
         while i < src.len() {
@@ -692,24 +770,50 @@ mod latex {
                                 if name.starts_with("text") {
                                     out.push_str(arg);
                                 } else {
-                                    out.push_str(&render(arg));
+                                    out.push_str(&render(arg, mode));
                                 }
                                 i += 1 + name_len + raw;
                                 continue;
                             }
                         }
-                        if let Some(sym) = symbol(name) {
-                            out.push_str(sym);
-                        } else if is_text_operator(name) {
-                            // `\cos` reads as `cos`: the backslash is
-                            // markup, the word is the operator.
-                            out.push_str(name);
-                        } else {
-                            // Structural or unknown (\frac, \lim, \begin):
-                            // VERBATIM, backslash included. The reader sees
-                            // honest LaTeX for what cannot map.
-                            out.push('\\');
-                            out.push_str(name);
+                        // T65 P2: a document gets a plain form for the two
+                        // structural commands one line of text can hold.
+                        // Tried before the table, because `\sqrt` is in it.
+                        if mode.plain_forms() {
+                            if matches!(name, "frac" | "dfrac" | "tfrac") {
+                                if let Some((num, den, raw)) = two_braced(&after[name_len..]) {
+                                    out.push_str(&side(num, mode));
+                                    out.push('/');
+                                    out.push_str(&side(den, mode));
+                                    i += 1 + name_len + raw;
+                                    continue;
+                                }
+                            }
+                            if name == "sqrt" {
+                                if let Some((arg, raw)) = braced(&after[name_len..]) {
+                                    out.push_str(&root(arg, mode));
+                                    i += 1 + name_len + raw;
+                                    continue;
+                                }
+                            }
+                        }
+                        match symbol(name).filter(|sym| mode.fits(sym)) {
+                            // Mapped, and this page can carry the glyph.
+                            Some(sym) => out.push_str(sym),
+                            None if is_text_operator(name) => {
+                                // `\cos` reads as `cos`: the backslash is
+                                // markup, the word is the operator.
+                                out.push_str(name);
+                            }
+                            None => {
+                                // Structural, unknown, or a glyph this page
+                                // has no slot for (`\frac` on screen, `\lim`,
+                                // `\begin`, `\int` in a PDF): VERBATIM,
+                                // backslash included. The reader sees honest
+                                // LaTeX for what cannot map.
+                                out.push('\\');
+                                out.push_str(name);
+                            }
                         }
                         i += 1 + name_len;
                     } else {
@@ -741,10 +845,13 @@ mod latex {
                     let after = &rest[1..];
                     match take_run(after) {
                         Some((run, raw)) => {
-                            match lift(run, c == '^') {
+                            match lift(run, c == '^').filter(|s| mode.fits(s)) {
                                 Some(s) => out.push_str(&s),
                                 // NEVER half a run: the whole thing falls
-                                // back to its literal source form.
+                                // back to its literal source form. Since T65
+                                // P2 that covers a run the page cannot carry
+                                // as well as an unliftable one, so a PDF
+                                // keeps `x^4` instead of lifting it to a `?`.
                                 None => {
                                     out.push(c);
                                     out.push_str(&after[..raw]);
@@ -797,6 +904,53 @@ mod latex {
             }
         }
         None
+    }
+
+    /// `{a}{b}` at the start of `s`: both interiors and the bytes the two
+    /// groups occupy together. None unless BOTH are there, which is what
+    /// leaves a `\frac` without two braced arguments as verbatim source.
+    fn two_braced(s: &str) -> Option<(&str, &str, usize)> {
+        let (num, raw_num) = braced(s)?;
+        let (den, raw_den) = braced(&s[raw_num..])?;
+        Some((num, den, raw_num + raw_den))
+    }
+
+    /// One side of a plain-form fraction: rendered in the same mode, and
+    /// parenthesised unless it is a single token, so `\frac{dy}{dx}` reads
+    /// `dy/dx` while `\frac{x+1}{2}` reads `(x+1)/2`. Each side goes back
+    /// through `render`, so nesting resolves innermost first and
+    /// `\frac{\frac{1}{2}}{3}` reads `(1/2)/3`.
+    fn side(src: &str, mode: Mode) -> String {
+        let rendered = render(src, mode);
+        if is_token(&rendered) {
+            rendered
+        } else {
+            format!("({rendered})")
+        }
+    }
+
+    /// A plain-form root. Unicode carries the radical and parenthesises only
+    /// a compound argument; WinAnsi has no slot for `√`, so the root takes
+    /// the ASCII form a reader still reads as a root rather than losing the
+    /// sign to a `?`.
+    fn root(arg: &str, mode: Mode) -> String {
+        let rendered = render(arg, mode);
+        if !mode.fits("√") {
+            return format!("sqrt({rendered})");
+        }
+        if is_token(&rendered) {
+            format!("√{rendered}")
+        } else {
+            format!("√({rendered})")
+        }
+    }
+
+    /// One token: every character alphanumeric by Rust's rule, which admits
+    /// the lifted super/subscript digits and letters and Greek, or `.` for a
+    /// decimal. Empty is not a token, so an empty argument keeps its
+    /// parentheses and stays visible rather than vanishing into the slash.
+    fn is_token(s: &str) -> bool {
+        !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '.')
     }
 
     /// Lift a whole run, or nothing. The Unicode super/subscript alphabets
@@ -1097,6 +1251,50 @@ mod tests {
             plain(&render(r"$a\,b\;c$", 60)),
             vec!["   a b c"],
             "thin and medium spaces become one space each"
+        );
+    }
+
+    // ------------------------------------ T65 P2: the document modes
+
+    /// The plain forms a document gets and the screen does not. A fraction
+    /// is a slash, a root is a radical, and a side of more than one token
+    /// takes parentheses so the slash cannot be misread. The screen's
+    /// verbatim `\frac` is unchanged and is pinned by
+    /// `structural_commands_stay_verbatim_inside_the_span` above.
+    #[test]
+    fn a_document_renders_plain_fractions_and_roots() {
+        let doc = |src: &str| latex::substitute_for_document(src, latex::Mode::DocumentUnicode);
+        assert_eq!(doc(r"$\frac{1}{4}$"), "1/4");
+        assert_eq!(doc(r"$\frac{x+1}{2}$"), "(x+1)/2");
+        assert_eq!(doc(r"$\frac{dy}{dx}$"), "dy/dx");
+        assert_eq!(doc(r"$\frac{1}{x^2}$"), "1/x²", "a lifted run is still one token");
+        assert_eq!(doc(r"$\frac{\frac{1}{2}}{3}$"), "(1/2)/3", "innermost first");
+        assert_eq!(doc(r"$\dfrac{a}{b}$ and $\tfrac{a}{b}$"), "a/b and a/b");
+        assert_eq!(doc(r"$\sqrt{2}$"), "√2");
+        assert_eq!(doc(r"$\sqrt{x+1}$"), "√(x+1)");
+        assert_eq!(
+            doc(r"$\frac 1 2$"),
+            r"\frac 1 2",
+            "without two braced arguments the command stays source"
+        );
+    }
+
+    /// A PDF's page is WinAnsi, so the substitution happens only where the
+    /// result fits it. What does not fit stays LaTeX source: raw `\int`
+    /// tells a reader more than the `?` the encoder would write.
+    #[test]
+    fn a_winansi_document_substitutes_only_what_the_page_can_carry() {
+        let pdf = |src: &str| latex::substitute_for_document(src, latex::Mode::DocumentWinAnsi);
+        assert_eq!(pdf(r"$\int f$"), r"\int f", "no WinAnsi slot for the integral");
+        assert_eq!(pdf(r"$x^2$"), "x²", "the squared sign is Latin-1");
+        assert_eq!(pdf(r"$x^4$"), "x^4", "U+2074 is not, so the whole run falls back");
+        assert_eq!(pdf(r"$x_1$"), "x_1", "nor is any subscript digit");
+        assert_eq!(pdf(r"$\sqrt{x}$"), "sqrt(x)", "the radical has no slot either");
+        assert_eq!(pdf(r"$\frac{a+b}{2}$"), "(a+b)/2", "the plain form is ASCII");
+        assert_eq!(
+            pdf(r"$a \times b \leq c$"),
+            r"a × b \leq c",
+            "the cross is Latin-1, the inequality is not"
         );
     }
 
