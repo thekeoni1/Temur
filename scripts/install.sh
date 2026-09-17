@@ -62,9 +62,16 @@ mkdir -p "$DIR"
 install -m 755 "$TMP/$ART" "$DIR/temur"
 echo "installed: $DIR/temur"
 
+# T65 P3: the note used to state the problem and leave the user to work out
+# the fix. It now prints the line to run, with the real directory and a
+# literal $PATH, and says how to make it stick.
 case ":$PATH:" in
     *":$DIR:"*) ;;
-    *) echo "note: $DIR is not on your PATH." ;;
+    *)
+        echo "note: $DIR is not on your PATH. Add it for this shell with:"
+        echo "  export PATH=\"$DIR:\$PATH\""
+        echo "and put that line in your shell's startup file to keep it."
+        ;;
 esac
 
 "$DIR/temur" --version

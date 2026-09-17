@@ -337,9 +337,13 @@ fn context_check(
     let probed = if !no_network && p.provider == "openai-compat" && p.api_key_file.is_none() {
         *props.entry(p.base_url.clone()).or_insert_with(|| {
             // T63 P4 (D25, Ruling T63-7): the same probe startup uses, so the
-            // two never disagree about served.
+            // two never disagree about served. doctor always wants served,
+            // so it asks for both halves and keeps the /props fallback
+            // (T65 P3, review finding 8).
             crate::provider::probe_server_context(
                 &p.base_url,
+                &p.model,
+                crate::provider::Wanted::ServedAndTrained,
                 std::time::Duration::from_secs(crate::provider::KEYLESS_LISTING_TIMEOUT_SECS),
             )
             .served

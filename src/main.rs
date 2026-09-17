@@ -379,8 +379,18 @@ fn repl(
     let mut window_probed = false;
     if temur::config::wants_startup_context_probe(&resolved, mock.is_some()) {
         let fills_window = resolved.context_window.is_none();
+        // T65 P3 (review finding 8): case 2 already has its window and only
+        // wants the trained size for the notice's wording, so it asks for
+        // one request and never /props, which can only supply served.
+        let want = if fills_window {
+            temur::provider::Wanted::ServedAndTrained
+        } else {
+            temur::provider::Wanted::TrainedOnly
+        };
         let server = temur::provider::probe_server_context(
             &resolved.base_url,
+            &resolved.model,
+            want,
             std::time::Duration::from_secs(temur::provider::KEYLESS_LISTING_TIMEOUT_SECS),
         );
         probed_trained = server.trained;

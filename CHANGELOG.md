@@ -4,6 +4,44 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- A refused `replaceAll` now says how to finish the rename. When some
+  match sites already carry newString and some do not, the refusal adds
+  the way out: widen oldString with the text around it, for example the
+  character that follows it, so it no longer occurs inside newString.
+  Nothing is applied, as before.
+
+- A model listing with more than one entry is read at the model you
+  configured, not at whichever entry came first. A server that lists one
+  model is read as before, whatever that entry calls itself, which is the
+  llama.cpp case; when several are listed and none matches, temur reports
+  no window rather than another model's.
+
+- `/status` has a third endpoint form, `local network gpu-box:8080`, for a
+  machine on your own network reached by name. It used to read `hosted`,
+  which is the wording for somewhere requests cost money. A LAN endpoint
+  does not get doctor's hosted cost NOTE.
+
+- The "identical to your previous read" marker now compares the text as
+  well as the length and the modification time. An edit that kept the
+  file's length and had its timestamp put back, which is what a build step
+  or a checkout can leave, used to read as unchanged.
+
+- A grep hit that carries the rest of a wrapped sentence no longer reports
+  that sentence twice. The carried line is consumed, so a pattern matching
+  on both sides of the wrap gives one hit, counted once.
+
+- A session that already has a `context_window` makes one startup request
+  instead of two. It only needs the model's trained size to word the
+  compact notice, and the second request could only supply a served size
+  it would discard.
+
+- LaTeX nested past 32 levels stays source instead of exhausting the
+  stack. Nothing shallower renders differently.
+
+- `install.sh` prints the exact line to run when the install directory is
+  not on your PATH, with the real directory, and says to put it in your
+  shell's startup file.
+
 - Math written into a `.docx` or a `.pdf` is rendered instead of left as
   LaTeX source. The pass is the one the transcript has used since
   v0.34.0, so a document reads the way a reply reads: `$...$`,

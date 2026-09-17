@@ -322,8 +322,11 @@ impl ToolCtx {
 
     /// T63 P2b: record this file read and say whether it repeats the
     /// previous read of the same file exactly: same window, same length,
-    /// same modification time. A read with no known mtime is never called
-    /// identical, since nothing would show the file had changed.
+    /// same modification time and, since T65 P3, the same rendered body. A
+    /// read with no known mtime is never called identical, since nothing
+    /// would show the file had changed. The body test is what catches a
+    /// same-length edit whose mtime was put back (review finding 6); the
+    /// other three are unchanged, so an identical re-read still says so.
     pub fn note_read(&mut self, path: &std::path::Path, key: ReadKey) -> bool {
         let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         self.last_reads
@@ -761,14 +764,26 @@ fn resolve_path(ctx: &ToolCtx, p: &str) -> PathBuf {
 }
 
 /// T63 P2b: what makes two reads of a file identical: the same window
-/// (`offset`, `limit`) over the same bytes, judged by length and
-/// modification time.
+/// (`offset`, `limit`) over the same bytes, judged by length, modification
+/// time and, since T65 P3, the rendered body itself.
+///
+/// Why the body too (review finding 6). Length and mtime are metadata, and
+/// an edit that keeps the length while a tool restores the mtime (a build
+/// step, a checkout, `touch -r`) passes both tests while the content
+/// differs, so the marker told the model the file was unchanged when it was
+/// not. The hash closes that without a new dependency or a second read: it
+/// is taken over the text the read is about to return.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadKey {
     pub offset: u64,
     pub limit: u64,
     pub len: u64,
     pub mtime: Option<std::time::SystemTime>,
+    /// `DefaultHasher` over the rendered body, as built and before the
+    /// marker line is inserted. Deterministic within a run, which is all
+    /// this needs: the map it keys lives in one session's `ToolCtx` and is
+    /// never persisted or compared across processes.
+    pub hash: u64,
 }
 
 /// T65 P1: what identifies a document as temur's last write left it: its

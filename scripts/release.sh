@@ -150,6 +150,17 @@ echo "OK: install.sh + README match version $VERSION and all targets"
 
 mkdir -p "$STAGE"
 
+# T65 P3 (Ruling T64-32): the v0.36.0 cut stopped here, on a machine whose
+# rustup had only the i686 targets, because the build below needs all four.
+# rust-toolchain.toml deliberately lists the i686 pair alone (T63-4: every
+# dev machine that opens the repo installs what the pin lists, and three
+# extra targets on every machine is a cost the release box alone should
+# pay), so the cut installs the rest itself. Run from the repo, so the pin's
+# 1.96.1 is the toolchain these are added to. Idempotent: an already
+# installed target prints "up to date" and rc stays 0.
+echo "== rustup: release targets under the pinned toolchain =="
+rustup target add $TARGETS
+
 echo "== build: all release targets =="
 # One invocation, one job graph: cargo overlaps the targets' long serial
 # tails (final-crate codegen + link) instead of running four builds end to end.

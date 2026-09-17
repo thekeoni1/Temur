@@ -743,42 +743,87 @@ mod endpoint_label_tests {
     }
 }
 
-/// T63 P4 (D26): whether a base URL points at this machine or its private
-/// network. Loopback, RFC 1918 private IPv4, link-local, `localhost` and
-/// `.local` names are local. Everything else is hosted, including a URL
-/// [`endpoint_label`] cannot name, since hosted is the side that can cost
-/// money and the safer thing to say when unsure.
-pub fn is_local_endpoint(base_url: &str) -> bool {
+/// Where an openai-compat base URL points (T63 P4 D26, widened by T65 P3,
+/// review finding 5).
+///
+/// THREE kinds, not two. `Local` is this machine or an address only this
+/// machine's network stack can reach. `LocalNetwork` is a box on the user's
+/// own LAN reached by a name rather than an address, `gpu-box` or
+/// `nas.home`, which T63 P4 had to call hosted for want of a third answer:
+/// it costs nothing and it is not this machine. `Hosted` is everything else,
+/// and stays the answer whenever the endpoint cannot be named at all, since
+/// hosted is the side that can cost money and the safer thing to say when
+/// unsure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Locality {
+    Local,
+    LocalNetwork,
+    Hosted,
+}
+
+/// The [`Locality`] of a base URL.
+///
+/// Order matters. The unnameable URL is rejected FIRST, exactly as
+/// [`is_local_endpoint`] did before this, so a URL with an embedded slash or
+/// no host cannot fall through to the bare-name rule below and be called
+/// local network. Then today's `Local` set, unchanged to the character.
+/// Then the LAN rule: a host with no `.` in it that is not an IP literal
+/// (`gpu-box`), or one of the four suffixes a home or office network hands
+/// out. Anything with a dot that is not one of those is hosted, which keeps
+/// `b.test`, `api.openai.com` and a bare `8.8.8.8` where they were.
+pub fn endpoint_kind(base_url: &str) -> Locality {
     let label = endpoint_label(base_url);
     if label == ENDPOINT_FALLBACK {
-        return false;
+        return Locality::Hosted;
     }
     let host = host_part(&label);
     let bare = host.trim_start_matches('[').trim_end_matches(']');
     let lower = bare.to_ascii_lowercase();
     if lower == "localhost" || lower.ends_with(".local") {
-        return true;
+        return Locality::Local;
     }
     if let Ok(ip) = bare.parse::<std::net::Ipv4Addr>() {
-        return ip.is_loopback() || ip.is_private() || ip.is_link_local();
+        return if ip.is_loopback() || ip.is_private() || ip.is_link_local() {
+            Locality::Local
+        } else {
+            Locality::Hosted
+        };
     }
     if let Ok(ip) = bare.parse::<std::net::Ipv6Addr>() {
-        return ip.is_loopback() || (ip.segments()[0] & 0xffc0) == 0xfe80;
+        return if ip.is_loopback() || (ip.segments()[0] & 0xffc0) == 0xfe80 {
+            Locality::Local
+        } else {
+            Locality::Hosted
+        };
     }
-    false
+    let lan_suffix = [".lan", ".home", ".internal", ".home.arpa"]
+        .iter()
+        .any(|s| lower.ends_with(s));
+    if lan_suffix || !lower.contains('.') {
+        return Locality::LocalNetwork;
+    }
+    Locality::Hosted
 }
 
-/// The locality label an openai-compat selection shows (T63 P4, D26):
-/// `local host:port` or `hosted host`. Built on [`endpoint_label`], so it
-/// never carries userinfo, a path or a query.
+/// Whether a base URL costs nothing to call: this machine OR the user's own
+/// network. Since T65 P3 that is two of the three [`Locality`] kinds, which
+/// is why doctor.rs's hosted cost NOTE is not printed for a LAN box and why
+/// that site did not have to change.
+pub fn is_local_endpoint(base_url: &str) -> bool {
+    matches!(endpoint_kind(base_url), Locality::Local | Locality::LocalNetwork)
+}
+
+/// The locality label an openai-compat selection shows (T63 P4 D26, a third
+/// form since T65 P3): `local host:port`, `local network host:port` or
+/// `hosted host`. Built on [`endpoint_label`], so it never carries userinfo,
+/// a path or a query. The `local` and `hosted` forms are unchanged.
 pub fn endpoint_locality(base_url: &str) -> String {
     let label = endpoint_label(base_url);
-    if is_local_endpoint(base_url) {
-        format!("local {label}")
-    } else if label == ENDPOINT_FALLBACK {
-        "hosted endpoint".to_string()
-    } else {
-        format!("hosted {}", host_part(&label))
+    match endpoint_kind(base_url) {
+        Locality::Local => format!("local {label}"),
+        Locality::LocalNetwork => format!("local network {label}"),
+        Locality::Hosted if label == ENDPOINT_FALLBACK => "hosted endpoint".to_string(),
+        Locality::Hosted => format!("hosted {}", host_part(&label)),
     }
 }
 
@@ -794,14 +839,36 @@ fn host_part(host_port: &str) -> &str {
 }
 
 /// T63 P4 (D25, Ruling T63-7): what a llama.cpp listing says about context
-/// in its first model's `meta` block, as `(served, trained)` from `n_ctx`
-/// and `n_ctx_train`. Each is `None` when absent, zero or unparseable.
-/// Pure, unit-tested against canned JSON.
-pub fn parse_models_context(body: &str) -> (Option<u64>, Option<u64>) {
+/// in the CONFIGURED model's `meta` block, as `(served, trained)` from
+/// `n_ctx` and `n_ctx_train`. Each is `None` when absent, zero or
+/// unparseable. Pure, unit-tested against canned JSON.
+///
+/// Which entry (T65 P3, review finding 4). Reading `data[0]` was wrong the
+/// moment a server listed more than one model: a multi-model proxy would
+/// report the first model's window for whatever the user had configured.
+/// The rule now:
+///
+/// - exactly one entry: that entry, whatever its `id`. A single-model server
+///   serves the model it was started with, and llama.cpp lists its gguf PATH
+///   rather than the configured name, so matching on `id` here would break
+///   the common case. This keeps the primary path byte-identical.
+/// - several entries: the one whose `id` equals `model` exactly.
+/// - several entries and none matches: `(None, None)`, so served falls to
+///   `/props` as before and trained stays unknown. Guessing an entry would
+///   be worse than not answering.
+pub fn parse_models_context(body: &str, model: &str) -> (Option<u64>, Option<u64>) {
     let Ok(v) = serde_json::from_str::<Value>(body) else {
         return (None, None);
     };
-    let meta = v.get("data").and_then(|d| d.get(0)).and_then(|m| m.get("meta"));
+    let data = v.get("data").and_then(Value::as_array);
+    let entry = match data {
+        Some(list) if list.len() == 1 => list.first(),
+        Some(list) => list
+            .iter()
+            .find(|e| e.get("id").and_then(Value::as_str) == Some(model)),
+        None => None,
+    };
+    let meta = entry.and_then(|m| m.get("meta"));
     let field = |k: &str| meta.and_then(|m| m.get(k)).and_then(Value::as_u64).filter(|&n| n > 0);
     (field("n_ctx"), field("n_ctx_train"))
 }
@@ -817,14 +884,43 @@ pub struct ServerContext {
     pub served_from: &'static str,
 }
 
+/// What a caller needs from [`probe_server_context`] (T65 P3, review
+/// finding 8).
+///
+/// An enum with named variants rather than a bool, for P2's reason: at the
+/// call site `ServedAndTrained` says what is wanted, where `true` would say
+/// nothing and the reader would have to find the parameter's name. The two
+/// cases are not symmetric either, so neither polarity of a bool reads
+/// correctly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wanted {
+    /// The caller has no configured window and will adopt the served size,
+    /// so a missing served size is worth a second request. Today's
+    /// behaviour, `/props` fallback included.
+    ServedAndTrained,
+    /// The caller already has a window and only needs the trained size, for
+    /// the wording of a notice. ONE request, never `/props`: the fallback
+    /// can only supply served, which this caller would discard.
+    TrainedOnly,
+}
+
 /// T63 P4 (D25, Ruling T63-7): ONE bounded keyless GET of `{base}/models`
-/// reads served and trained from the first model's `meta`. When that yields
-/// no served size (an older llama.cpp, a server with no `meta`, or any
-/// failure), [`probe_props_context`] supplies served alone and trained stays
-/// `None`, so a server sees at most two requests. Same base-URL-only
-/// signature as the other keyless probes, so it cannot attach auth, and the
-/// same "None on any problem" contract.
-pub fn probe_server_context(base_url: &str, timeout: std::time::Duration) -> ServerContext {
+/// reads served and trained from the configured model's `meta`. When `want`
+/// is [`Wanted::ServedAndTrained`] and that yields no served size (an older
+/// llama.cpp, a server with no `meta`, or any failure),
+/// [`probe_props_context`] supplies served alone and trained stays `None`,
+/// so a server sees at most two requests. When `want` is
+/// [`Wanted::TrainedOnly`] there is exactly one request and `served_from` is
+/// `/v1/models` whatever the listing said, because nothing will read served
+/// (T65 P3, review finding 8). Same base-URL-only signature as the other
+/// keyless probes, so it cannot attach auth, and the same "None on any
+/// problem" contract.
+pub fn probe_server_context(
+    base_url: &str,
+    model: &str,
+    want: Wanted,
+    timeout: std::time::Duration,
+) -> ServerContext {
     use std::io::Read;
     rustls::crypto::ring::default_provider().install_default().ok();
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -841,11 +937,11 @@ pub fn probe_server_context(base_url: &str, timeout: std::time::Duration) -> Ser
                 .into_reader()
                 .take(64 * 1024)
                 .read_to_string(&mut body);
-            parse_models_context(&body)
+            parse_models_context(&body, model)
         }
         _ => (None, None),
     };
-    if served.is_some() {
+    if served.is_some() || want == Wanted::TrainedOnly {
         return ServerContext { served, trained, served_from: "/v1/models" };
     }
     ServerContext {
@@ -902,22 +998,83 @@ mod locality_and_server_context_tests {
 
     #[test]
     fn models_meta_gives_served_and_trained() {
+        // T65 P3: the model argument is new; every assertion below is the one
+        // T63 P4 pinned. "configured-model" names no entry in any of these,
+        // which is deliberate: each single-entry listing is read whatever its
+        // id says, so these cases pass with any model at all.
+        let m = "configured-model";
         let both = r#"{"object":"list","data":[{"id":"/model.gguf","meta":{"n_ctx":12288,"n_ctx_train":262144,"n_vocab":151936}}]}"#;
-        assert_eq!(parse_models_context(both), (Some(12288), Some(262144)));
+        assert_eq!(parse_models_context(both, m), (Some(12288), Some(262144)));
         let served_only = r#"{"data":[{"id":"m","meta":{"n_ctx":8192}}]}"#;
-        assert_eq!(parse_models_context(served_only), (Some(8192), None));
+        assert_eq!(parse_models_context(served_only, m), (Some(8192), None));
         let no_meta = r#"{"data":[{"id":"served-a"},{"id":"served-b"}]}"#;
-        assert_eq!(parse_models_context(no_meta), (None, None));
+        assert_eq!(parse_models_context(no_meta, m), (None, None));
         let zero = r#"{"data":[{"id":"m","meta":{"n_ctx":0,"n_ctx_train":0}}]}"#;
-        assert_eq!(parse_models_context(zero), (None, None));
-        assert_eq!(parse_models_context("not json"), (None, None));
-        assert_eq!(parse_models_context(r#"{"data":[]}"#), (None, None));
+        assert_eq!(parse_models_context(zero, m), (None, None));
+        assert_eq!(parse_models_context("not json", m), (None, None));
+        assert_eq!(parse_models_context(r#"{"data":[]}"#, m), (None, None));
+    }
+
+    /// T65 P3 (review finding 4): which entry of a multi-model listing is
+    /// read. The single-entry path is the one llama.cpp takes and must not
+    /// depend on the id at all; a real multi-model proxy is matched by id;
+    /// no match is no answer rather than a guess.
+    #[test]
+    fn a_listing_is_read_at_the_configured_model() {
+        let two = r#"{"object":"list","data":[
+            {"id":"small","meta":{"n_ctx":4096,"n_ctx_train":32768}},
+            {"id":"big","meta":{"n_ctx":12288,"n_ctx_train":262144}}]}"#;
+        assert_eq!(parse_models_context(two, "big"), (Some(12288), Some(262144)));
+        assert_eq!(parse_models_context(two, "small"), (Some(4096), Some(32768)));
+        assert_eq!(
+            parse_models_context(two, "neither"),
+            (None, None),
+            "no match is (None, None), so served falls to /props and trained stays unknown"
+        );
+        // The primary path: llama.cpp lists the gguf PATH, never the name the
+        // user configured, so a single entry is read whatever its id says.
+        let one = r#"{"data":[{"id":"/models/Qwen3-4B.gguf","meta":{"n_ctx":8192,"n_ctx_train":262144}}]}"#;
+        assert_eq!(parse_models_context(one, "qwen3-4b"), (Some(8192), Some(262144)));
+    }
+
+    /// T65 P3 (review finding 5): a box on the user's own LAN, named rather
+    /// than addressed, is neither this machine nor a hosted provider.
+    #[test]
+    fn a_lan_box_is_local_network_and_costs_nothing() {
+        assert!(is_local_endpoint("http://gpu-box:8080/v1"));
+        assert_eq!(endpoint_kind("http://gpu-box:8080/v1"), Locality::LocalNetwork);
+        assert_eq!(endpoint_locality("http://gpu-box:8080/v1"), "local network gpu-box:8080");
+        for lan in [
+            "http://gpu-box.lan:8080/v1",
+            "http://nas.home/v1",
+            "http://llm.internal:8000/v1",
+            "http://box.home.arpa/v1",
+        ] {
+            assert_eq!(endpoint_kind(lan), Locality::LocalNetwork, "{lan}");
+            assert!(is_local_endpoint(lan), "{lan}");
+        }
+        for hosted in ["http://b.test/v1", "https://api.openai.com/v1", "http://8.8.8.8/v1"] {
+            assert_eq!(endpoint_kind(hosted), Locality::Hosted, "{hosted}");
+            assert!(!is_local_endpoint(hosted), "{hosted}");
+        }
+        // `.local` is mDNS, this machine's own network stack, and stays Local
+        // with the label it has always had.
+        assert_eq!(endpoint_kind("http://gpu-box.local:8080/v1"), Locality::Local);
+        assert_eq!(
+            endpoint_locality("http://gpu-box.local:8080/v1"),
+            "local gpu-box.local:8080"
+        );
     }
 
     #[test]
     fn an_unreachable_server_gives_nothing_and_says_where_it_looked_last() {
         // Nothing listens on port 1: both GETs fail inside the bound.
-        let ctx = probe_server_context("http://127.0.0.1:1/v1", std::time::Duration::from_secs(2));
+        let ctx = probe_server_context(
+            "http://127.0.0.1:1/v1",
+            "m",
+            Wanted::ServedAndTrained,
+            std::time::Duration::from_secs(2),
+        );
         assert_eq!(ctx, ServerContext { served: None, trained: None, served_from: "/props" });
     }
 }

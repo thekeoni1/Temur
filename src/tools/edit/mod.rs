@@ -110,6 +110,19 @@ impl Tool for EditTool {
                 msg.push_str(&format!(
                     " With replaceAll, {applied} of {matches} match sites already carry newString, so nothing was changed."
                 ));
+                // T65 P3 (review finding 3): a mixed replaceAll is a rename
+                // half done, and the count alone left the model to invent a
+                // way out. The way out is a wider oldString, which the
+                // review measured: "parse(" to "parse_all(" finishes the
+                // rename the bare "parse" could not. Only the message
+                // changes; the guard still refuses and still applies
+                // nothing.
+                if applied < matches {
+                    msg.push_str(&format!(
+                        " To change the other {}, widen oldString with the text around it (for example the character that follows it) so it no longer occurs inside newString.",
+                        matches - applied
+                    ));
+                }
             }
             return Err(ToolError::failed(msg));
         }
@@ -134,6 +147,9 @@ impl Tool for EditTool {
 /// time). A `new` that contains `old` but is not yet in the file (a wrap
 /// edit) has no such match, so it goes through. A `new` that contains `old`
 /// more than once counts each of its matches.
+///
+/// Since T65 P3 the `replaceAll` refusal this drives also tells the model how
+/// to finish a half-done rename, rather than only how far along it is.
 fn applied_sites(content: &str, old: &str, new: &str) -> usize {
     let offsets: Vec<usize> = new.match_indices(old).map(|(k, _)| k).collect();
     if offsets.is_empty() {

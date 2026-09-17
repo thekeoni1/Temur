@@ -183,10 +183,19 @@ impl Tool for GrepTool {
                         // document line that does not end a sentence carries
                         // the next extracted line, once. The line number stays
                         // the hit's own, so read's offset still agrees.
+                        //
+                        // T65 P3 (review finding 7): the carried line is also
+                        // CONSUMED. It has already been shown, so leaving it in
+                        // the iterator let a pattern occurring in both halves
+                        // report the same sentence twice, once whole and once
+                        // as its tail, and counted it twice in `total`. Taking
+                        // it here means it is neither searched again nor shown
+                        // again. Heading joins are left as they are (relay 23).
                         let joined;
                         let hit = match lines.peek() {
                             Some((_, next)) if is_prose && !ends_a_sentence(line) => {
                                 joined = format!("{} {}", line.trim_end(), next.trim_start());
+                                lines.next();
                                 joined.as_str()
                             }
                             _ => line,

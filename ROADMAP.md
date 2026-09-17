@@ -1701,12 +1701,51 @@ byte-identical: `substitute_source` is the same walk in `Mode::Screen`,
 `\frac` stays verbatim there, and every test in `markdown.rs` passes
 unchanged. No new user-visible string.
 
+P3 clears review findings 3 to 8, Ruling T65-8's finding 9, and the two
+cut stops the v0.36.0 release hit (Ruling T65-10). A refused `replaceAll`
+that is a half-done rename now names the way out, a wider `oldString`,
+which is the fix the review itself measured; the guard's semantics are
+untouched and still apply nothing. `parse_models_context` takes the
+configured model and reads that entry: the only entry when a listing has
+one, whatever its id, which keeps the llama.cpp path byte-identical since
+it lists a gguf path rather than a name; the matching id when several are
+listed; `(None, None)` when several are listed and none matches, so served
+falls to `/props` rather than reporting another model's window. A third
+`Locality`, `LocalNetwork`, covers a box on the user's own network reached
+by name (`gpu-box`, `nas.home`, `.lan`, `.internal`, `.home.arpa`); the
+unnameable URL is still rejected first, so nothing that was hosted became
+local, `is_local_endpoint` is now the two cheap kinds and doctor's hosted
+cost NOTE needed no change at its own site. `ReadKey` carries a
+`DefaultHasher` hash of the rendered body, taken where the body is complete
+and before the marker is inserted, so a same-length edit whose mtime was
+put back is no longer called unchanged; no new dependency and no second
+read. Grep consumes the line it carries into a hit, so a pattern on both
+sides of the writer's wrap is one hit counted once. `probe_server_context`
+takes a `Wanted`, and a session that already has a window asks
+`TrainedOnly`: one request, never `/props`, which could only supply a
+served size that case discards. `latex::render` carries a depth counter
+and stops recursing at `MAX_RENDER_DEPTH` 32, far above real math and far
+below the measured floor (nested `\frac` survives 2,000 on a 2 MiB stack
+and overflows at the next rung probed, probes.log);
+past it the command stays source, in every mode, and nothing below the cap
+renders differently. The T65-8 (A)(1) control pins what probes.log
+measured: a table row whose code span holds an unescaped pipe keeps its
+bytes through a document write, so the LaTeX pass's `MD_OPTIONS` parse and
+`markdown_blocks`' extensionless one still agree about code.
+`scripts/release.sh` runs `rustup target add` for all four targets from
+inside the repo, so the pin's 1.96.1 is what they attach to; T63-4 stands
+and `rust-toolchain.toml` still lists the i686 pair alone, because listing
+all five would install three extra targets on every machine that opens the
+repo. `install.sh` prints the exact `export PATH` line with the real
+directory.
+
 | i686 musl release on 1.96.1 | bytes |
 | --- | --- |
 | T64 (P4b) | 8,311,820 |
 | P0 | 8,311,820 |
 | P1 | 8,318,540 |
 | P2 | 8,323,276 |
+| P3 | 8,326,124 |
 
 ### T64 as built (2026-09-15)
 

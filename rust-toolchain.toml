@@ -1,8 +1,9 @@
 # The rustc the release is cut on, so every machine builds temur with the
 # same Rust compiler as the shipped binary. The host C compiler that builds
 # ring is not pinned and can still move the binary size by a few thousand
-# bytes between machines. Only the i686 targets are listed; CI adds the
-# other release targets itself.
+# bytes between machines. Only the i686 targets are listed, so opening the
+# repo on a dev machine installs two targets and not five (T63-4); CI and
+# scripts/release.sh each add the other three themselves.
 [toolchain]
 channel = "1.96.1"
 profile = "minimal"

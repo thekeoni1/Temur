@@ -53,6 +53,10 @@ case "$CASE" in
         [ "$RC" -eq 0 ] || { echo "FAIL($LABEL/$CASE): rc=$RC"; echo "$OUT"; exit 1; }
         echo "$OUT" | grep -q "checksum verified" \
             || { echo "FAIL($LABEL/$CASE): no verify line"; echo "$OUT"; exit 1; }
+        # T65 P3: HOME here is a temp dir, so $DIR is never on PATH and the
+        # note always prints. Pin the line the user is told to run.
+        echo "$OUT" | grep -q 'export PATH="' \
+            || { echo "FAIL($LABEL/$CASE): no export PATH line"; echo "$OUT"; exit 1; }
         V=$("$BIN" --version) || { echo "FAIL($LABEL/$CASE): installed binary won't run"; exit 1; }
         [ "$V" = "temur $VER" ] \
             || { echo "FAIL($LABEL/$CASE): version '$V', want 'temur $VER'"; exit 1; }

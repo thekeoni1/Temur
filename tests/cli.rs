@@ -1633,6 +1633,36 @@ fn a_configured_compact_window_is_never_replaced_but_learns_the_trained_size() {
     assert!(heads[1].starts_with("post /v1/chat/completions "), "{}", heads[1]);
 }
 
+/// T65 P3 (review finding 8): case 2 already has its window and wants only
+/// the trained size, so it asks the listing once and never falls to /props,
+/// which can supply nothing it would keep. The listing here carries no meta,
+/// which is exactly where the parent made its second request.
+#[test]
+fn a_configured_window_asks_the_listing_once_and_never_props() {
+    let sse = std::fs::read_to_string(fixture("text_simple.sse")).unwrap();
+    let (base, rx) = sequential_server(vec![
+        ("application/json", r#"{"object":"list","data":[{"id":"local-gguf"}]}"#.into()),
+        ("text/event-stream", sse),
+    ]);
+    let sb = sandbox();
+    sb.write_config(&format!(
+        r#"{{"provider":"openai-compat","openai_compat":{{"base_url":"{base}","model":"local-gguf","context_window":8192}}}}"#
+    ));
+    let mut c = sb.cmd();
+    c.args(["-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!stderr.contains("detected from the server"), "the window was replaced: {stderr}");
+    // No trained size was learned, so the notice takes its trained-less words.
+    assert!(stderr.contains("context_window 8192 is below"), "{stderr}");
+
+    let heads = heads_seen(&rx, 2);
+    assert_eq!(heads.len(), 2, "one listing, one completion, no /props: {heads:?}");
+    assert!(heads[0].starts_with("get /v1/models "), "{}", heads[0]);
+    assert_no_credential_header(&heads[0]);
+    assert!(heads[1].starts_with("post /v1/chat/completions "), "{}", heads[1]);
+}
+
 /// An explicit prompt_profile with a configured window is never probed:
 /// nothing the probe could learn would change what is printed (T63-8). The
 /// FIRST request the server sees is the completion.

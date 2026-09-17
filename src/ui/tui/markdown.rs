@@ -494,6 +494,22 @@ fn hard_split(s: &str, budget: usize) -> Vec<String> {
 pub(crate) mod latex {
     use super::{Event, Parser, Tag};
 
+    /// How deep `render` will recurse before a command stops being rendered
+    /// and stays source (T65 P3, review finding 9, Ruling T65-8 (B)).
+    ///
+    /// `render` recurses through `\mathrm`/`\mathbf` (T64 P0) and, since T65
+    /// P2, through the two sides of `\frac` and the argument of `\sqrt`.
+    /// Measured on the P2 tree and archived in probes.log, on a Rust test
+    /// thread's 2 MiB stack: nested `\frac` survives 2,000 and overflows at
+    /// the next rung probed; the older `\mathrm` path survives 2,500 and
+    /// overflows at the next. The log prints the surviving rungs and then an
+    /// unlabelled abort, so the floor is bracketed rather than pinned to a
+    /// number. The input is a model's own text, so the depth is not ours to
+    /// trust. 32 is far above anything real math nests and far below the
+    /// measured floor, and hitting it degrades the way the rest of this
+    /// module degrades: the reader sees the LaTeX source.
+    const MAX_RENDER_DEPTH: usize = 32;
+
     /// Which reader a substitution is for (T65 P2).
     ///
     /// `Screen` is the transcript, and is what T45 always did: structural
@@ -729,7 +745,7 @@ pub(crate) mod latex {
     /// every run of spaces inside it collapsed to one (T64 P0, R3). Math
     /// ignores source spacing, so a reader loses nothing.
     fn render_span(inner: &str, mode: Mode) -> String {
-        let rendered = render(inner, mode);
+        let rendered = render(inner, mode, 0);
         let mut out = String::with_capacity(rendered.len());
         for c in rendered.trim().chars() {
             if c == ' ' && out.ends_with(' ') {
@@ -741,7 +757,11 @@ pub(crate) mod latex {
     }
 
     /// One recognized span's interior, with the delimiters already gone.
-    fn render(src: &str, mode: Mode) -> String {
+    ///
+    /// `depth` counts how many recursive renders are already on the stack;
+    /// at [`MAX_RENDER_DEPTH`] the commands that would recurse stay source
+    /// instead. Nothing below the cap renders differently.
+    fn render(src: &str, mode: Mode, depth: usize) -> String {
         let mut out = String::with_capacity(src.len());
         let mut i = 0usize;
         while i < src.len() {
@@ -768,9 +788,13 @@ pub(crate) mod latex {
                         if matches!(name, "text" | "textbf" | "textit" | "mathrm" | "mathbf") {
                             if let Some((arg, raw)) = braced(&after[name_len..]) {
                                 if name.starts_with("text") {
+                                    // No recursion: a text argument is emitted
+                                    // as written, so the cap does not apply.
                                     out.push_str(arg);
+                                } else if depth >= MAX_RENDER_DEPTH {
+                                    verbatim(&mut out, name, &after[name_len..name_len + raw]);
                                 } else {
-                                    out.push_str(&render(arg, mode));
+                                    out.push_str(&render(arg, mode, depth + 1));
                                 }
                                 i += 1 + name_len + raw;
                                 continue;
@@ -782,16 +806,24 @@ pub(crate) mod latex {
                         if mode.plain_forms() {
                             if matches!(name, "frac" | "dfrac" | "tfrac") {
                                 if let Some((num, den, raw)) = two_braced(&after[name_len..]) {
-                                    out.push_str(&side(num, mode));
-                                    out.push('/');
-                                    out.push_str(&side(den, mode));
+                                    if depth >= MAX_RENDER_DEPTH {
+                                        verbatim(&mut out, name, &after[name_len..name_len + raw]);
+                                    } else {
+                                        out.push_str(&side(num, mode, depth + 1));
+                                        out.push('/');
+                                        out.push_str(&side(den, mode, depth + 1));
+                                    }
                                     i += 1 + name_len + raw;
                                     continue;
                                 }
                             }
                             if name == "sqrt" {
                                 if let Some((arg, raw)) = braced(&after[name_len..]) {
-                                    out.push_str(&root(arg, mode));
+                                    if depth >= MAX_RENDER_DEPTH {
+                                        verbatim(&mut out, name, &after[name_len..name_len + raw]);
+                                    } else {
+                                        out.push_str(&root(arg, mode, depth + 1));
+                                    }
                                     i += 1 + name_len + raw;
                                     continue;
                                 }
@@ -920,8 +952,8 @@ pub(crate) mod latex {
     /// `dy/dx` while `\frac{x+1}{2}` reads `(x+1)/2`. Each side goes back
     /// through `render`, so nesting resolves innermost first and
     /// `\frac{\frac{1}{2}}{3}` reads `(1/2)/3`.
-    fn side(src: &str, mode: Mode) -> String {
-        let rendered = render(src, mode);
+    fn side(src: &str, mode: Mode, depth: usize) -> String {
+        let rendered = render(src, mode, depth);
         if is_token(&rendered) {
             rendered
         } else {
@@ -933,8 +965,8 @@ pub(crate) mod latex {
     /// a compound argument; WinAnsi has no slot for `√`, so the root takes
     /// the ASCII form a reader still reads as a root rather than losing the
     /// sign to a `?`.
-    fn root(arg: &str, mode: Mode) -> String {
-        let rendered = render(arg, mode);
+    fn root(arg: &str, mode: Mode, depth: usize) -> String {
+        let rendered = render(arg, mode, depth);
         if !mode.fits("√") {
             return format!("sqrt({rendered})");
         }
@@ -943,6 +975,16 @@ pub(crate) mod latex {
         } else {
             format!("√({rendered})")
         }
+    }
+
+    /// A command written back out as source: the backslash, the name, and the
+    /// braced group exactly as it arrived. What the depth cap emits, and the
+    /// same shape the unknown-command arm has always produced, with the
+    /// argument kept so nothing the model wrote is dropped.
+    fn verbatim(out: &mut String, name: &str, raw_arg: &str) {
+        out.push('\\');
+        out.push_str(name);
+        out.push_str(raw_arg);
     }
 
     /// One token: every character alphanumeric by Rust's rule, which admits
@@ -1296,6 +1338,42 @@ mod tests {
             r"a × b \leq c",
             "the cross is Latin-1, the inequality is not"
         );
+    }
+
+    /// T65 P3 (review finding 9): the depth cap. Past 32 the commands that
+    /// would recurse stay source, so a pathological nesting returns a string
+    /// instead of overflowing the stack; ten deep is far below the cap and
+    /// renders as it always did.
+    #[test]
+    fn deep_nesting_stops_rendering_instead_of_overflowing() {
+        let nest = |n: usize, open: &str, close: &str| {
+            let mut s = String::from("$");
+            for _ in 0..n {
+                s.push_str(open);
+            }
+            s.push('1');
+            for _ in 0..n {
+                s.push_str(close);
+            }
+            s.push('$');
+            s
+        };
+
+        let deep_frac = nest(40, r"\frac{", "}{2}");
+        let out = latex::substitute_for_document(&deep_frac, latex::Mode::DocumentUnicode);
+        assert!(out.contains(r"\frac"), "past the cap the command stays source: {out}");
+
+        let deep_mathrm = nest(40, r"\mathrm{", "}");
+        let out = latex::substitute_source(&deep_mathrm);
+        assert!(out.contains(r"\mathrm"), "the screen is capped too: {out}");
+
+        // Ten deep is below the cap and renders all the way down.
+        let shallow_frac = nest(10, r"\frac{", "}{2}");
+        let out = latex::substitute_for_document(&shallow_frac, latex::Mode::DocumentUnicode);
+        assert!(!out.contains('\\'), "nothing below the cap stays source: {out}");
+        let shallow_mathrm = nest(10, r"\mathrm{", "}");
+        let out = latex::substitute_source(&shallow_mathrm);
+        assert!(!out.contains('\\'), "nothing below the cap stays source: {out}");
     }
 
     /// An opener with no closer in the same unprotected stretch stays

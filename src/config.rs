@@ -216,9 +216,12 @@ pub fn auto_compact_notice(context_window: u64) -> String {
 ///    window stays authoritative and is never replaced or compared at
 ///    startup (doctor already warns when the two disagree, which is the
 ///    right place for that conversation). This is `temur init`'s local
-///    template (8192). It costs one bounded 3-second keyless GET at startup
-///    where there was none before, two in the fallback case. An explicit
-///    `prompt_profile` means no probe, because nothing printed could change.
+///    template (8192). It costs ONE bounded 3-second keyless GET at startup
+///    where there was none before, and never two: since T65 P3 (review
+///    finding 8) this case asks with [`crate::provider::Wanted::TrainedOnly`],
+///    and the `/props` fallback is skipped because it can only supply a
+///    served size this case would discard. An explicit `prompt_profile`
+///    means no probe, because nothing printed could change.
 pub fn wants_startup_context_probe(p: &ResolvedProfile, is_mock: bool) -> bool {
     !is_mock
         && p.provider == "openai-compat"

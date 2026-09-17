@@ -134,7 +134,8 @@ message starting with `/` cannot be sent):
 
 - `/help` - list commands
 - `/status` - profile, provider, model, the endpoint of an openai-compat
-  profile (`local 127.0.0.1:8080` or `hosted api.example.com`), thinking,
+  profile (`local 127.0.0.1:8080`, `local network gpu-box:8080` or
+  `hosted api.example.com`), thinking,
   prompt profile, context use, an estimated session cost when the active
   profile is
   keyed and priced (see "Cost estimate"), session file
@@ -468,9 +469,17 @@ Non-llama.cpp servers answer nothing useful at `/props` and stay
 silent, and doctor NOTEs any profile with no `context_window` at all.
 
 The startup probe runs only for an `openai-compat` selection with no
-key file and no configured window, never under `--mock`, and is the
-same unauthenticated GET `init` and `doctor` make. On an answer it
-says so once and writes nothing to disk:
+key file, never under `--mock`, and is the same unauthenticated GET
+`init` and `doctor` make. It has two cases. With no configured window
+it asks for the served size and the trained size, falling back to
+`/props` if the listing gives no served size, so the server sees at
+most two requests; on an answer it fills the window, says so once and
+writes nothing to disk. With a configured window below the `"auto"`
+compaction threshold, on the `"auto"` prompt profile, it asks for the
+trained size alone, which only
+words the compact notice: exactly one request, never `/props`, and the
+configured window is never replaced. An explicit `prompt_profile` means
+no probe at all.
 
 ```
 [!] context window 12288 detected from the server (/v1/models); the context advisory, auto-compaction, and the tool-output cap now use it

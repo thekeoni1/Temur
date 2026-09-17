@@ -72,14 +72,13 @@ impl Tool for ReadTool {
         if meta.is_dir() {
             return read_dir(&path, offset, limit, title);
         }
-        // T63 P2b: this read's identity, for the repeat marker below. Taken
-        // from the metadata already in hand, before the file is opened.
-        let read_key = super::ReadKey {
-            offset,
-            limit,
-            len: meta.len(),
-            mtime: meta.modified().ok(),
-        };
+        // T63 P2b: the metadata half of this read's identity, for the repeat
+        // marker below. Taken from the metadata already in hand, before the
+        // file is opened, exactly as it always was. Since T65 P3 the key also
+        // carries a hash of the rendered body, which does not exist yet, so
+        // the key itself is assembled at the marker site below.
+        let key_len = meta.len();
+        let key_mtime = meta.modified().ok();
         // T54 (D20): a PDF or office document becomes text HERE, before the
         // binary refusal that used to be the whole answer. The guard has
         // already run above, so this opens nothing the guard denies.
@@ -192,6 +191,23 @@ impl Tool for ReadTool {
         output.push_str("</content>");
         // T63 P2b: an identical read of an unchanged file says so on its first
         // line, and still returns the content in full.
+        //
+        // T65 P3 (review finding 6): the key is completed HERE, where `output`
+        // is the finished body and before the marker is inserted into it, so
+        // the hash describes what the model is about to be shown. The window
+        // and the metadata are the ones taken before the file was opened.
+        let read_key = super::ReadKey {
+            offset,
+            limit,
+            len: key_len,
+            mtime: key_mtime,
+            hash: {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                output.hash(&mut h);
+                h.finish()
+            },
+        };
         if ctx.note_read(&path, read_key) {
             output.insert_str(0, "[unchanged: identical to your previous read of this file]\n");
         }

@@ -3042,6 +3042,121 @@ fn code_in_a_written_document_is_never_substituted() {
     );
 }
 
+// --- T65 P3: review findings 3, 6, 7 and the T65-8 (A)(1) control ---------
+
+/// T65 P3 (review finding 3): a half-done rename is refused, and the refusal
+/// now says how to finish it. The review's own measurement is the second
+/// half of this test: widening oldString by the character that follows it
+/// takes the same edit through.
+#[test]
+fn a_mixed_replace_all_says_how_to_finish_the_rename() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("m.py");
+    let before = "def parse_all(x):\n    return parse(x)\n\nparse(a)\nparse(b)\n";
+    std::fs::write(&p, before).unwrap();
+    run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+
+    let refused = run(
+        &reg,
+        &mut ctx,
+        "edit",
+        json!({"filePath": p.to_str().unwrap(), "oldString": "parse", "newString": "parse_all", "replaceAll": true}),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(refused.contains("1 of 4 match sites already carry newString"), "{refused}");
+    assert!(refused.contains("widen oldString"), "the way out is named: {refused}");
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), before, "nothing was applied");
+
+    // The widened oldString finishes it, which is what the hint asks for.
+    let out = run(
+        &reg,
+        &mut ctx,
+        "edit",
+        json!({"filePath": p.to_str().unwrap(), "oldString": "parse(", "newString": "parse_all(", "replaceAll": true}),
+    )
+    .unwrap();
+    assert!(out.output.contains("3 replacement(s)"), "{}", out.output);
+    assert_eq!(
+        std::fs::read_to_string(&p).unwrap(),
+        "def parse_all(x):\n    return parse_all(x)\n\nparse_all(a)\nparse_all(b)\n"
+    );
+}
+
+/// T65 P3 (review finding 6): the repeat marker used to trust length and
+/// modification time alone, so an edit that kept the length and had its
+/// mtime put back read as unchanged. The body decides now.
+#[test]
+fn a_same_length_edit_with_the_mtime_put_back_is_not_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("t.txt");
+    std::fs::write(&p, "one\ntwo\nthree\n").unwrap();
+    let first = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+    assert!(!first.output.contains("[unchanged"), "the first read marks nothing");
+    let when = std::fs::metadata(&p).unwrap().modified().unwrap();
+
+    // Same length, different bytes, and the modification time restored: the
+    // shape a build step or a checkout leaves behind.
+    std::fs::write(&p, "one\ntwo\nthrew\n").unwrap();
+    std::fs::File::options().write(true).open(&p).unwrap().set_modified(when).unwrap();
+    assert_eq!(std::fs::metadata(&p).unwrap().modified().unwrap(), when);
+
+    let again = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+    assert!(!again.output.contains("[unchanged"), "the file changed: {}", again.output);
+    assert!(again.output.contains("3: threw"), "{}", again.output);
+}
+
+/// T65 P3 (review finding 7): a pattern on both sides of the writer's wrap
+/// point used to report the sentence twice, once whole and once as its tail.
+/// The carried line is consumed, so it is neither searched nor shown again.
+#[test]
+fn a_carried_continuation_line_is_not_a_second_hit() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    // "Kestrel" falls before AND after the 90-character wrap, and the first
+    // extracted line ends "spring", which is not the end of a sentence.
+    let sentence = "The Kestrel refit slipped because the Kestrel yard could not berth her before the spring tide, and the Kestrel crew stood down for a week while the dock was cleared.";
+    let pdf = dir.path().join("refit.pdf");
+    run(&reg, &mut ctx, "write", json!({"filePath": pdf.to_str().unwrap(), "content": sentence})).unwrap();
+
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "Kestrel"})).unwrap();
+    let hits: Vec<&str> = out.output.lines().filter(|l| l.contains("refit.pdf:")).collect();
+    assert_eq!(hits.len(), 1, "one sentence, one hit: {}", out.output);
+    assert!(hits[0].contains("Kestrel refit slipped"), "{}", hits[0]);
+    assert!(hits[0].contains("Kestrel crew stood down"), "the continuation is carried: {}", hits[0]);
+    assert!(out.output.contains("Found 1 matches"), "the tail is not counted again: {}", out.output);
+}
+
+/// T65-8 (A)(1): the LaTeX pass parses with MD_OPTIONS and the document
+/// writer with none, so their agreement about what is code is a measurement
+/// rather than a guarantee. probes.log measured it; this pins it. A table
+/// row whose code span holds an unescaped pipe keeps its bytes.
+#[test]
+fn a_code_span_in_a_table_row_keeps_its_bytes_in_a_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("tbl.docx");
+    let body = "| `$\\frac{a}{b}$|z` | w |\n| --- | --- |\n| c | d |\n";
+    run(&reg, &mut ctx, "write", json!({"filePath": p.to_str().unwrap(), "content": body})).unwrap();
+
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+    let lines = doc_lines(&out.output);
+    assert!(
+        lines.iter().any(|l| l.contains("$\\frac{a}{b}$|z")),
+        "the code span is verbatim: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("a/b")),
+        "and was never substituted: {lines:?}"
+    );
+}
+
 #[test]
 fn a_guarded_pdf_path_is_refused_before_anything_is_written() {
     let (dir, key, _normal, mut ctx) = guarded_ctx();
