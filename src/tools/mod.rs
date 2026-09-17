@@ -273,6 +273,16 @@ pub struct ToolCtx {
     /// read ([`ReadKey`]), so an identical read of an unchanged file can say
     /// so. Starts empty, like `read_paths`, and for the same reason.
     last_reads: std::collections::HashMap<PathBuf, ReadKey>,
+    /// T65 P1 (review finding 1, Ruling T65-4): per canonical path, the file
+    /// as temur's last successful document write left it. It answers one
+    /// question, [`ToolCtx::is_own_document_write`]: are the bytes on disk
+    /// temur's own output, or a version somebody else wrote? A document
+    /// moves aside to its `.previous` copy only for the second, so the copy
+    /// holds the last version temur did not write itself and a session of
+    /// iterating on a document cannot rotate the user's original away.
+    /// Starts empty, like `read_paths`, and for the same reason: after
+    /// `--continue` nothing on disk is known to be temur's.
+    own_document_writes: std::collections::HashMap<PathBuf, DocumentStamp>,
 }
 
 impl ToolCtx {
@@ -290,6 +300,7 @@ impl ToolCtx {
             walk_limits: None,
             read_paths: std::collections::HashSet::new(),
             last_reads: std::collections::HashMap::new(),
+            own_document_writes: std::collections::HashMap::new(),
         }
     }
 
@@ -316,6 +327,42 @@ impl ToolCtx {
         self.last_reads
             .insert(canon, key)
             .is_some_and(|prev| prev == key && key.mtime.is_some())
+    }
+
+    /// T65 P1: remember the document temur has just written at `path` as its
+    /// own, from the file's metadata as it now stands. Called after every
+    /// successful document write, and after a FAILED write over temur's own
+    /// output, where what is on disk is a partial document temur itself
+    /// produced and the retry should replace it directly. A path whose
+    /// metadata cannot be read is forgotten rather than remembered wrongly.
+    pub fn record_document_write(&mut self, path: &std::path::Path) {
+        let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        match std::fs::metadata(&canon) {
+            Ok(m) => {
+                let stamp = DocumentStamp { len: m.len(), mtime: m.modified().ok() };
+                self.own_document_writes.insert(canon, stamp);
+            }
+            Err(_) => {
+                self.own_document_writes.remove(&canon);
+            }
+        }
+    }
+
+    /// T65 P1: whether the file at `path` is exactly what temur's last
+    /// document write left there, so replacing it destroys nothing but
+    /// temur's own output. False for a file this session never wrote, for
+    /// one whose length or modification time has changed since (a save from
+    /// Excel or Word is the case that matters), and for one with no
+    /// modification time at all, where nothing would show that it had
+    /// changed. Those all move aside as they did before T65 P1.
+    pub fn is_own_document_write(&self, path: &std::path::Path) -> bool {
+        let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let Some(stamp) = self.own_document_writes.get(&canon) else {
+            return false;
+        };
+        stamp.mtime.is_some()
+            && std::fs::metadata(&canon)
+                .is_ok_and(|m| m.len() == stamp.len && m.modified().ok() == stamp.mtime)
     }
 }
 
@@ -720,4 +767,35 @@ pub struct ReadKey {
     pub limit: u64,
     pub len: u64,
     pub mtime: Option<std::time::SystemTime>,
+}
+
+/// T65 P1: what identifies a document as temur's last write left it: its
+/// length and its modification time. Its own struct rather than a
+/// [`ReadKey`] with a zero offset and limit, because a write has no window
+/// and two dead fields would have to be explained at every use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DocumentStamp {
+    len: u64,
+    mtime: Option<std::time::SystemTime>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// T65 P1 (7): the ownership stamp itself. A file this session never
+    /// wrote is not temur's own; the file as recorded is; the same file
+    /// after anything else changes its length is not.
+    #[test]
+    fn own_document_write_follows_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("book.xlsx");
+        std::fs::write(&p, "one").unwrap();
+        let mut ctx = ToolCtx::new(dir.path().to_path_buf());
+        assert!(!ctx.is_own_document_write(&p));
+        ctx.record_document_write(&p);
+        assert!(ctx.is_own_document_write(&p));
+        std::fs::write(&p, "one and more").unwrap();
+        assert!(!ctx.is_own_document_write(&p));
+    }
 }

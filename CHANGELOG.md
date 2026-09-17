@@ -4,6 +4,19 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 
 ## Unreleased
 
+- Writing a document more than once in a session no longer costs you the
+  original. The copy beside it, `<stem>.previous.<ext>`, now holds the
+  last version temur did not write itself: your document moves aside on
+  the first write, and temur's later writes replace only their own
+  output, with the result line saying the original is still there. In
+  v0.36.0 every overwrite rotated the copy, so a second write left
+  temur's own first draft there and nothing of yours. A file changed
+  outside temur since its last write, a save from Excel or Word, still
+  moves aside as your newest version, and a session resumed with
+  `--continue` or `--resume` moves the current file aside once more. The
+  `spreadsheet` tool follows the same rule on the same path. Delete the
+  copy when you are done; temur's own writes never recreate it.
+
 - A plain REPL whose stdin or stdout is a pipe now refuses mutating tool
   calls instead of running them. It has nobody to ask, so it answers the
   way `temur -p` has since the approval default arrived: the first

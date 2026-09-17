@@ -2739,8 +2739,12 @@ fn xlsx_writing_keeps_the_write_tools_own_rules() {
         .to_string();
     assert!(err.contains("has not been read in this session"), "{err}");
 
-    // And an overwrite keeps the previous workbook beside it (T64 P0a).
-    let out = run(&reg, &mut ctx, "write", json!({"filePath": fp, "content": "b,2\n"})).unwrap();
+    // And an overwrite keeps the previous workbook beside it (T64 P0a),
+    // which since T65 P1 is the rule for a document this session did not
+    // write itself: the fresh session, once it has read the file, is that
+    // shape. The session that wrote the workbook replaces its own output.
+    run(&reg, &mut fresh, "read", json!({"filePath": fp})).unwrap();
+    let out = run(&reg, &mut fresh, "write", json!({"filePath": fp, "content": "b,2\n"})).unwrap();
     assert!(out.output.starts_with("Replaced "), "{}", out.output);
     assert!(out.output.contains("the previous document is at"), "{}", out.output);
 }
@@ -3651,10 +3655,16 @@ fn a_write_over_a_document_keeps_the_previous_one_beside_it() {
             out.output
         );
 
-        // One generation: a third write replaces the .previous copy.
-        let second = std::fs::read(&p).unwrap();
-        run(&reg, &mut fresh, "write", json!({"filePath": fp, "content": v3})).unwrap();
-        assert_eq!(std::fs::read(&prev).unwrap(), second, "{name}");
+        // T65 P1: the third write is over temur's own output, so nothing
+        // rotates: the copy still holds the version temur did not write,
+        // and the result line says the original is still there.
+        let out = run(&reg, &mut fresh, "write", json!({"filePath": fp, "content": v3})).unwrap();
+        assert_eq!(std::fs::read(&prev).unwrap(), first, "{name}");
+        assert!(
+            out.output.ends_with(&format!("; the original is still at {}", prev.display())),
+            "{}",
+            out.output
+        );
     }
     let mut names: Vec<String> = std::fs::read_dir(dir.path())
         .unwrap()
@@ -3685,12 +3695,115 @@ fn a_document_write_that_fails_puts_the_previous_document_back() {
     // 16,385 fields: one past Excel's column limit, which the workbook
     // writer refuses after the existing file has been moved aside.
     let too_wide = format!("{}\n", ",".repeat(16_384));
-    let err = run(&reg, &mut ctx, "write", json!({"filePath": fp, "content": too_wide}))
+    // T65 P1: move aside, and so put_back, is the path for a document that
+    // is NOT temur's own last write. A fresh session that has read the file
+    // is that shape, and is what a user meets after `--continue`.
+    let mut fresh = ctx_in(dir.path());
+    run(&reg, &mut fresh, "read", json!({"filePath": fp})).unwrap();
+    let err = run(&reg, &mut fresh, "write", json!({"filePath": fp, "content": too_wide}))
         .unwrap_err()
         .to_string();
     assert!(err.contains("more rows or columns than a worksheet can hold"), "{err}");
     assert_eq!(std::fs::read(&p).unwrap(), before);
     assert!(!prev.exists());
+}
+
+/// T65 P1 (2), CONTROL: temur's own last write is the only thing it
+/// writes over directly. Anything else changed the file, so the file is
+/// the user's newest version and moves aside as it always did.
+#[test]
+fn a_document_changed_outside_temur_moves_aside_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("notes.docx");
+    let fp = p.to_str().unwrap();
+    let prev = dir.path().join("notes.previous.docx");
+
+    run(&reg, &mut ctx, "write", json!({"filePath": fp, "content": "# One\n"})).unwrap();
+    let original = std::fs::read(&p).unwrap();
+
+    let mut fresh = ctx_in(dir.path());
+    run(&reg, &mut fresh, "read", json!({"filePath": fp})).unwrap();
+    run(&reg, &mut fresh, "write", json!({"filePath": fp, "content": "# Two\n"})).unwrap();
+    assert_eq!(std::fs::read(&prev).unwrap(), original);
+
+    // Somebody else saves over the document. A DIFFERENT length, so the
+    // stamp differs whatever the filesystem's mtime granularity is.
+    let outside = b"saved from Word, and a different length entirely".to_vec();
+    std::fs::write(&p, &outside).unwrap();
+
+    let out = run(&reg, &mut fresh, "write", json!({"filePath": fp, "content": "# Three\n"})).unwrap();
+    assert_eq!(std::fs::read(&prev).unwrap(), outside);
+    assert!(
+        out.output.ends_with(&format!("; the previous document is at {}", prev.display())),
+        "{}",
+        out.output
+    );
+}
+
+/// T65 P1 (3): the copy is the user's to delete. temur's own writes never
+/// put it back, and the result line then has no tail at all.
+#[test]
+fn a_deleted_previous_copy_is_not_recreated() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("report.pdf");
+    let fp = p.to_str().unwrap();
+    let prev = dir.path().join("report.previous.pdf");
+
+    run(&reg, &mut ctx, "write", json!({"filePath": fp, "content": "one\n"})).unwrap();
+    let mut fresh = ctx_in(dir.path());
+    run(&reg, &mut fresh, "read", json!({"filePath": fp})).unwrap();
+    run(&reg, &mut fresh, "write", json!({"filePath": fp, "content": "two\n"})).unwrap();
+    assert!(prev.exists());
+    std::fs::remove_file(&prev).unwrap();
+
+    let out = run(&reg, &mut fresh, "write", json!({"filePath": fp, "content": "three\n"})).unwrap();
+    assert!(!prev.exists());
+    let n = std::fs::metadata(&p).unwrap().len();
+    assert_eq!(out.output, format!("Replaced {} ({n} bytes)", p.display()));
+}
+
+/// T65 P1 (5): a failed write over temur's own output rotates nothing, so
+/// the user's document is still beside it and the retry lands directly on
+/// whatever the failed writer left.
+#[test]
+fn a_failed_write_over_temurs_own_document_keeps_the_original() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let p = dir.path().join("wide.xlsx");
+    let fp = p.to_str().unwrap();
+    let prev = dir.path().join("wide.previous.xlsx");
+
+    run(&reg, &mut ctx, "write", json!({"filePath": fp, "content": "a,1\n"})).unwrap();
+    let original = std::fs::read(&p).unwrap();
+
+    let mut fresh = ctx_in(dir.path());
+    run(&reg, &mut fresh, "read", json!({"filePath": fp})).unwrap();
+    run(&reg, &mut fresh, "write", json!({"filePath": fp, "content": "b,2\n"})).unwrap();
+    assert_eq!(std::fs::read(&prev).unwrap(), original);
+
+    // 16,385 fields: one past Excel's column limit, the same failure the
+    // put_back test uses.
+    let too_wide = format!("{}\n", ",".repeat(16_384));
+    let err = run(&reg, &mut fresh, "write", json!({"filePath": fp, "content": too_wide}))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("more rows or columns than a worksheet can hold"), "{err}");
+    // Before T65 P1 the failed write had already rotated the original away
+    // and put_back left nothing here.
+    assert_eq!(std::fs::read(&prev).unwrap(), original);
+
+    let out = run(&reg, &mut fresh, "write", json!({"filePath": fp, "content": "c,3\n"})).unwrap();
+    assert_eq!(std::fs::read(&prev).unwrap(), original);
+    assert!(
+        out.output.ends_with(&format!("; the original is still at {}", prev.display())),
+        "{}",
+        out.output
+    );
 }
 
 #[test]
@@ -3709,11 +3822,25 @@ fn the_spreadsheet_tool_keeps_the_previous_workbook_beside_it() {
     assert!(!prev.exists());
     let first = std::fs::read(&p).unwrap();
 
-    let out = run(&reg, &mut ctx, "spreadsheet", book("two")).unwrap();
+    // T65 P1: the workbook a later session finds is not that session's own
+    // write, so it moves aside exactly as it did under T64 P0a.
+    let mut fresh = ctx_in(dir.path());
+    run(&reg, &mut fresh, "read", json!({"filePath": p.to_str().unwrap()})).unwrap();
+    let out = run(&reg, &mut fresh, "spreadsheet", book("two")).unwrap();
     assert_eq!(std::fs::read(&prev).unwrap(), first);
     assert!(out.output.starts_with(&format!("Replaced {} (1 sheet, 0 charts, ", p.display())), "{}", out.output);
     assert!(
         out.output.ends_with(&format!("; the previous document is at {}", prev.display())),
+        "{}",
+        out.output
+    );
+
+    // T65 P1: a third call is over temur's own workbook, so the copy still
+    // holds the first one and the result line says so.
+    let out = run(&reg, &mut fresh, "spreadsheet", book("three")).unwrap();
+    assert_eq!(std::fs::read(&prev).unwrap(), first);
+    assert!(
+        out.output.ends_with(&format!("; the original is still at {}", prev.display())),
         "{}",
         out.output
     );

@@ -1488,6 +1488,20 @@ is written as `?` and the tool's result says how many were replaced,
 so the model can tell you; bold and italic are flattened to plain in
 a PDF.
 
+An existing document is never destroyed by a write. The rule covers the
+six extensions `read` extracts, and the file is first renamed to
+`<stem>.previous.<ext>` beside it, with the result line naming the copy.
+The copy holds the last version temur did not write itself: iterating on
+a document in one session moves your original aside once, and temur's
+later writes replace only their own output, with the result line then
+saying the original is still there. A file changed outside temur since
+its last write, a save from Excel or Word, is your newest version and
+moves aside in its turn, replacing the older copy. One copy is kept.
+Delete it when you are done; temur's own writes never recreate it. A
+session resumed with `--continue` or `--resume` starts without this
+memory, so its first overwrite of a document moves the current file
+aside, replacing the copy.
+
 Charts and multiple sheets need the one new tool, `spreadsheet`,
 because CSV cannot express them. It takes sheets of values and charts
 over A1 ranges (`line`, `column`, `bar`, `scatter`, `pie`); a range

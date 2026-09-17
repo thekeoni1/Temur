@@ -84,11 +84,19 @@ impl Tool for WriteTool {
             .map(|e| e.to_ascii_lowercase())
             .unwrap_or_default();
         let as_document = super::office::writes_as_document(&ext);
-        // T64 P0a (F10, Ruling T64-3): an existing document moves aside to
-        // <stem>.previous.<ext> before it is replaced. The rule keys on every
-        // extension read extracts, not only the three written as documents:
-        // plain text over an .ods is the same loss.
-        let previous = if existed && super::office::is_document(&ext) {
+        // T64 P0a (F10, Ruling T64-3), as sharpened by T65 P1 (review
+        // finding 1, Ruling T65-4): an existing document moves aside to
+        // <stem>.previous.<ext> before it is replaced, UNLESS it is temur's
+        // own last write of that path in this session, which temur writes
+        // over directly. The copy therefore holds the last version temur
+        // did not write itself: the user's original survives a session of
+        // iterating, and a file saved from Excel or Word since temur's
+        // write is that user version and moves aside as before. The rule
+        // keys on every extension read extracts, not only the three written
+        // as documents: plain text over an .ods is the same loss.
+        let is_document = super::office::is_document(&ext);
+        let own = existed && is_document && ctx.is_own_document_write(&path);
+        let previous = if existed && is_document && !own {
             let prev = super::office::previous_copy_path(&path);
             ctx.guard.check(&prev)?;
             super::office::move_aside(&path, &prev)?;
@@ -107,6 +115,15 @@ impl Tool for WriteTool {
             _ => std::fs::write(&path, &p.content).map_err(|e| ToolError::failed(e.to_string())),
         };
         if let Err(e) = written {
+            // T65 P1: the write went straight over temur's own output, so
+            // whatever is there now is temur's own too, whether the writer
+            // left a partial document (the .docx writer streams into the
+            // file) or never touched it. Re-recording it means the retry
+            // replaces that partial directly instead of rotating the user's
+            // copy away. There is nothing to put back: nothing moved.
+            if own {
+                ctx.record_document_write(&path);
+            }
             return Err(match &previous {
                 Some(prev) => super::office::put_back(&path, prev, e),
                 None => e,
@@ -124,6 +141,12 @@ impl Tool for WriteTool {
         // A successful write knows the file's content: overwrites of its own
         // output (e.g. iterating on a generated file) need no re-read.
         ctx.record_read(&path);
+        // T65 P1: a document is remembered more precisely than that, by the
+        // bytes it was left holding, so the next write over the same path
+        // can tell temur's own output from the user's document.
+        if is_document {
+            ctx.record_document_write(&path);
+        }
         let replaced = if prior_bytes > 0 {
             format!(", replaced {prior_bytes} bytes of prior content")
         } else {
@@ -134,17 +157,32 @@ impl Tool for WriteTool {
         } else {
             String::new()
         };
-        let output = match &previous {
-            Some(prev) => format!(
+        let output = if let Some(prev) = &previous {
+            format!(
                 "Replaced {} ({written_bytes} bytes{unencodable}); the previous document is at {}",
                 path.display(),
                 prev.display()
-            ),
-            None => format!(
+            )
+        } else if own {
+            // T65 P1: nothing moved aside, and the copy beside the document
+            // still holds the user's version unless the user deleted it.
+            // temur's own writes never recreate it.
+            let prev = super::office::previous_copy_path(&path);
+            if prev.exists() {
+                format!(
+                    "Replaced {} ({written_bytes} bytes{unencodable}); the original is still at {}",
+                    path.display(),
+                    prev.display()
+                )
+            } else {
+                format!("Replaced {} ({written_bytes} bytes{unencodable})", path.display())
+            }
+        } else {
+            format!(
                 "{} {} ({written_bytes} bytes{replaced}{unencodable})",
                 if existed { "Overwrote" } else { "Created" },
                 path.display()
-            ),
+            )
         };
         Ok(ToolOutput { title: p.file_path, output })
     }

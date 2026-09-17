@@ -1654,10 +1654,34 @@ bash-dispatching fixture, so they now pass `--allow-mutations` like
 every other non-interactive driver in the tree; their assertions are
 unchanged.
 
+P1 keeps the user's original across repeated document writes (review
+finding 1, Ruling T65-4). Since T64 P0a every overwrite of a document
+renamed the existing file to `<stem>.previous.<ext>`, so a second write
+in one session rotated the user's original away and left temur's own
+first output in the copy. The copy now holds the last version temur did
+not write itself. `ToolCtx` carries one private map from canonical path
+to the length and modification time temur's last document write left,
+with `record_document_write` and `is_own_document_write` beside
+`note_read`; `write` and `spreadsheet` stamp the same map, so the two
+tools on one path are one lineage. A file that is temur's own last write
+is replaced directly and nothing rotates, and the result line says the
+original is still at the copy, or says nothing more when the user has
+deleted it: temur's own writes never recreate it. A file with no
+modification time, or one whose length or modification time changed
+since (a save from Excel or Word), is not temur's own and moves aside as
+before, replacing the older copy. After a failed write over its own
+output the stamp is re-recorded from the file as it stands, so the retry
+replaces the partial document directly; the move-aside and put_back path
+is untouched for everything else. The map starts empty on `--continue`
+and `--resume`, like `read_paths`, so a resumed session moves the
+current file aside once. Said in USAGE, which had no `.previous` text
+before this.
+
 | i686 musl release on 1.96.1 | bytes |
 | --- | --- |
 | T64 (P4b) | 8,311,820 |
 | P0 | 8,311,820 |
+| P1 | 8,318,540 |
 
 ### T64 as built (2026-09-15)
 

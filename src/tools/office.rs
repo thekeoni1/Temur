@@ -79,7 +79,10 @@ pub fn previous_copy_path(path: &Path) -> std::path::PathBuf {
 /// bytes. Read-first cannot guard this, because reading the source
 /// through [`extract`] is exactly what arms the overwrite, so the file
 /// moves aside to `previous` first, replacing any older copy there (one
-/// generation). The caller has already guard-checked `previous`.
+/// generation). The caller has already guard-checked `previous`. Since
+/// T65 P1 it is called only for a file that is NOT temur's own last write
+/// of that path (`ToolCtx::is_own_document_write`): over its own output a
+/// tool writes directly, so the copy keeps the user's version.
 pub fn move_aside(path: &Path, previous: &Path) -> Result<(), ToolError> {
     std::fs::rename(path, previous).map_err(|e| {
         ToolError::failed(format!(

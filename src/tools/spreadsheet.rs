@@ -201,8 +201,14 @@ impl Tool for SpreadsheetTool {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| ToolError::failed(e.to_string()))?;
         }
-        // T64 P0a: the existing workbook moves aside first, as in write.
-        let previous = if existed {
+        // T64 P0a, as sharpened by T65 P1: the existing workbook moves
+        // aside first, as in write, UNLESS it is temur's own last write of
+        // that path in this session, which temur replaces directly. Both
+        // tools stamp the same map, so a write and a spreadsheet call on
+        // one path are one lineage and the copy keeps the workbook temur
+        // did not write itself.
+        let own = existed && ctx.is_own_document_write(&path);
+        let previous = if existed && !own {
             let prev = office::previous_copy_path(&path);
             ctx.guard.check(&prev)?;
             office::move_aside(&path, &prev)?;
@@ -211,12 +217,19 @@ impl Tool for SpreadsheetTool {
             None
         };
         if let Err(e) = office::write_workbook(&path, &sheets, &charts) {
+            // T65 P1: nothing moved aside, and what is on disk is temur's
+            // own, so the retry replaces it directly. (This writer builds
+            // in memory and saves last, so the file is usually untouched.)
+            if own {
+                ctx.record_document_write(&path);
+            }
             return Err(match &previous {
                 Some(prev) => office::put_back(&path, prev, e),
                 None => e,
             });
         }
         ctx.record_read(&path);
+        ctx.record_document_write(&path);
 
         let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let sheet_count = sheets.len();
@@ -226,13 +239,27 @@ impl Tool for SpreadsheetTool {
             if sheet_count == 1 { "" } else { "s" },
             if chart_count == 1 { "" } else { "s" }
         );
-        let output = match &previous {
-            Some(prev) => format!(
+        let output = if let Some(prev) = &previous {
+            format!(
                 "Replaced {} {counts}; the previous document is at {}",
                 path.display(),
                 prev.display()
-            ),
-            None => format!("Created {} {counts}", path.display()),
+            )
+        } else if own {
+            // T65 P1: the copy still holds the user's workbook unless the
+            // user deleted it, and temur's own writes never recreate it.
+            let prev = office::previous_copy_path(&path);
+            if prev.exists() {
+                format!(
+                    "Replaced {} {counts}; the original is still at {}",
+                    path.display(),
+                    prev.display()
+                )
+            } else {
+                format!("Replaced {} {counts}", path.display())
+            }
+        } else {
+            format!("Created {} {counts}", path.display())
         };
         Ok(ToolOutput { title: p.file_path, output })
     }
