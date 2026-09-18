@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased
+## v0.37.0 - 2026-09-18
 
 - A refused `replaceAll` now says how to finish the rename. When some
   match sites already carry newString and some do not, the refusal adds
