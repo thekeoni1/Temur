@@ -8119,7 +8119,7 @@ Residuals carried into this ship:
 
 ## Desktop experiment 3 acceptance - Qwen3-8B on the GPU box (recorded 2026-08-29)
 
-The third matrix on DESKTOP-6O763EN, and the second one whose numbers
+The third matrix on the desktop, and the second one whose numbers
 are published. It changes exactly one variable against the run already
 on `docs/COMPARISON.md`: the model, Qwen3-4B-Instruct-2507 to Qwen3-8B
 with thinking held off. Same box, same `server-cuda-b10438` image and
@@ -8887,7 +8887,7 @@ and not fixed here.
 
 ## Desktop experiment 4 acceptance - Qwen3-Coder-30B-A3B on the GPU box (recorded 2026-08-30)
 
-The fourth matrix on DESKTOP-6O763EN, and the third one whose numbers
+The fourth matrix on the desktop, and the third one whose numbers
 are published. It changes the model again, Qwen3-8B to
 Qwen3-Coder-30B-A3B-Instruct, and with it two things the model forced:
 a WSL memory cap raised from 15 to 22 GiB and a partial MoE offload

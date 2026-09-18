@@ -17,8 +17,8 @@ the model serves from a capable machine on the same LAN or the same
 host.
 
 Try it in your browser at https://play.temur.live before you download
-anything. The demo page runs a released 32-bit binary (temur v0.35.0;
-the page names its sha256 so you can check it against the GitHub
+anything. The demo page runs a released 32-bit binary (the page names the
+version it runs and its sha256, so you can check both against the GitHub
 release) inside an emulated Linux, offline with no key or with a key
 you supply, and you can hand it a PDF or spreadsheet of your own to
 read.
@@ -185,6 +185,12 @@ One-liner (detects your arch, downloads, verifies the checksum, installs to
 curl -fsSL https://raw.githubusercontent.com/thekeoni1/Temur/v0.36.0/scripts/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 ```
+
+The one-liner picks the binary from `uname -m`, which reports the kernel's
+architecture, not the userland's: on a 64-bit kernel it installs the
+`x86_64` binary even under a 32-bit userland, and that binary runs there.
+For the 32-bit binary on such a box, run the one-liner under `setarch
+i686`, or use the manual install below.
 
 Piping to `sh` is a trust decision: [read the script
 first](https://github.com/thekeoni1/Temur/blob/v0.36.0/scripts/install.sh) if

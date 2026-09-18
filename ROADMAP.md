@@ -1783,6 +1783,42 @@ part of P4, because the laptop's patch (sha `bd031650`, 78 lines,
 `src/agent/mod.rs`) has not been ferried to `/mnt/c/Users/<user>` and there is
 nothing to rerun until it is.
 
+P5 is documentation, the eval instrument and CI pins; no product code and
+nothing user-visible. USAGE's five 0.5.0 transcripts are primaries and stay as
+recorded, with one sentence before them saying the banner prints the installed
+version. The `--continue -p` transcript predates the unattended nudge, so a
+sentence says the same turn would show the `[!] unattended:` line today, which
+is checked against the firing condition in `src/agent/mod.rs`: `-p` sets
+`unattended`, `bash` is a mutating tool, and the turn ended in prose with no
+tool call. README gains a paragraph saying the install one-liner picks its
+binary from `uname -m`, the kernel's architecture rather than the userland's,
+so a 32-bit userland on a 64-bit kernel gets the `x86_64` binary unless the
+one-liner is run under `setarch i686`. The demo-page sentence stops naming a
+version and says the page names the version and sha256 it runs, verified
+against the live `app.js`. One vague USAGE cross-reference now names the
+paragraph it means; the other eight and both anchors resolve and are unchanged.
+The `latex` module doc said the pass runs on `Event::Text` outside code blocks,
+which has been false since T45 itself: it runs on the markdown SOURCE, with
+code spans, code blocks and HTML cut out by byte range from a first parsing
+pass. The machine hostname leaves the docs, becoming "the desktop" in
+`COMPARISON.md` and twice in `RUNBOOK.md`, and a shape pattern for it joins the
+uncommitted leak-pattern file. The instrument's NUL preflight stops claiming a
+NUL count proves flate streams and says it is consistent with them. CI moves to
+`actions/checkout@v7`, `actions/cache@v6` and `actions/upload-artifact@v7`,
+each input the workflow uses confirmed present in that tag's README first.
+
+The ledger, since this is where the round's scanning is recorded. P4's first
+form was amended before it was pushed, to remove a token that did not belong in
+a public file; the per-phase scan copy that should have caught it had lacked
+`-i` since T64, and its lowercase live control passed without ever exercising
+the flag. The P0 to P3 push scans are therefore case-sensitive scans
+retrospectively cleared with `-i`, not clean scans in their own right: both
+retrospectives score 0 over the pushed range, over every tracked file, and over
+all 39 tag trees. `scripts/release.sh`, the tracked ship gate, has always
+scanned case-insensitively and was never affected. The fixed copy, whose
+control is derived from the pattern file at run time and must score one hit
+with `-i` and none without, is standing from P5 on.
+
 | i686 musl release on 1.96.1 | bytes |
 | --- | --- |
 | T64 (P4b) | 8,311,820 |
@@ -1791,6 +1827,7 @@ nothing to rerun until it is.
 | P2 | 8,323,276 |
 | P3 | 8,326,124 |
 | P4 | 8,326,124 |
+| P5 | 8,326,124 |
 
 ### T64 as built (2026-09-15)
 

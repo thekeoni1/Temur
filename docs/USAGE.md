@@ -1205,13 +1205,13 @@ WARN: model "qwen3-bogus" is not in the server listing at http://127.0.0.1:8080/
 doctor: 5 pass, 1 warn, 0 fail
 ```
 
-The same check now covers KEYED endpoints (see "doctor" above), which is
-where this misconfiguration actually costs you: an id your key cannot
-use passes `temur init`, because init is bring-your-own and makes no
-authenticated call, and it used to reach you for the first time as the
-provider's raw 404 on your first message. Three things now point at the
-fix. Doctor asks the endpoint. `/models` says when the id you are
-running is not in the listing it just printed:
+The same check now covers KEYED endpoints (the `temur doctor` paragraph
+above), which is where this misconfiguration actually costs you: an id
+your key cannot use passes `temur init`, because init is bring-your-own
+and makes no authenticated call, and it used to reach you for the first
+time as the provider's raw 404 on your first message. Three things now
+point at the fix. Doctor asks the endpoint. `/models` says when the id
+you are running is not in the listing it just printed:
 
 ```
 note: the active model "luna" is not in this listing; the provider may still serve it under an alias
@@ -1230,7 +1230,8 @@ that sentence; every other status reaches you exactly as before.
 And a raw-id `/model` switch can persist itself: `--save` writes the
 model into config.json after the switch succeeded (a surgical edit;
 your key order and any unknown fields survive), so the next start picks
-it up:
+it up. The transcripts here and in the next section were recorded on
+v0.5.0; the banner line prints the installed version:
 
 ```
 temur 0.5.0 (model=/model.gguf, thinking=false)
@@ -1376,7 +1377,10 @@ $ echo $?
 ```
 
 (Everything except the line `The script printed: "Hello, dev!".` is
-stderr.) `--resume <key> -p` works the same way against any saved
+stderr.) This run predates the unattended nudge; today the same turn,
+which ran `bash` and ended in prose, would also show the
+`[!] unattended:` line and one more turn (see "The unattended nudge"
+below). `--resume <key> -p` works the same way against any saved
 session. `-p` is mutually exclusive with `--tui` and with the `init`
 and `doctor` subcommands. `--allow-mutations` combines with `-p` and
 with interactive runs, and is rejected on a subcommand, which runs no

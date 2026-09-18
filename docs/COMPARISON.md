@@ -447,7 +447,7 @@ this model. Wall clock does; no cause is attributed.
 
 ### Conditions
 
-Run 2026-08-27 on DESKTOP-6O763EN: GTX 1070 Ti 8 GB, driver 580.97
+Run 2026-08-27 on the desktop: GTX 1070 Ti 8 GB, driver 580.97
 (CUDA 13.0), WSL2 Ubuntu 26.04. Model
 `Qwen3-4B-Instruct-2507-Q4_K_M.gguf`, sha256 `3605803b...`, served by
 `ghcr.io/ggml-org/llama.cpp:server-cuda-b10438`, image digest

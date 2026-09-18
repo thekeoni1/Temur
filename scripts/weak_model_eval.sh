@@ -595,8 +595,8 @@ t13_fixture() {
         rm -rf "$det"
         # Preflight STOP (i), Ruling T62-4, reason restated in T65 P4: the NUL
         # count is how the build checks that compression actually produced
-        # binary streams. Without one the fixture is still the plain-bytes PDF
-        # temur wrote, it does not have a real PDF's shape, and the read-back
+        # binary streams. Without one, nothing binary reached the first 4 KB,
+        # which is not what a compressed PDF looks like, and the read-back
         # comparison below exercises the extractor on plain bytes. It is not a
         # statement about grep, which since T62 P1 extracts a document and
         # searches its text whatever its bytes.
@@ -638,7 +638,7 @@ t13_fixture() {
             exit 1
         fi
         echo "task13 fixture: $(wc -c < "$dest") bytes, md sha $got_md, pdf sha $first"
-        echo "task13 preflight: $t13_nul NUL bytes in the first 4096, so the fixture carries flate streams and has a real PDF's shape; every page of the read-back byte-identical to the uncompressed PDF, sentinel reached"
+        echo "task13 preflight: $t13_nul NUL bytes in the first 4096, consistent with flate streams, a real PDF's shape; every page of the read-back byte-identical to the uncompressed PDF, sentinel reached"
         echo "task13 preflight: sentinel NOT in the default read; first read ends: $(grep -o '(Output capped[^)]*)' "$EVAL_TRANSCRIPT_DIR/task13.preflight.txt" | head -1)"
         echo "task13: pass these to every other arm:"
         echo "  T13_PDF=<this run's copy>  T13_PDF_SHA256=$first  T13_MD_SHA256=$got_md"

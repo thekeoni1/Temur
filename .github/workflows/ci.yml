@@ -22,7 +22,7 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install 32-bit build and run packages
         run: |
@@ -35,7 +35,7 @@ jobs:
           rustup show
           rustup target add i686-unknown-linux-gnu
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -69,7 +69,7 @@ jobs:
   release-gate:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The leak gate greps commit messages across all history; a shallow
           # clone would silently make that scan vacuous.
@@ -93,7 +93,7 @@ jobs:
           rustup target add i686-unknown-linux-musl x86_64-unknown-linux-musl \
             aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -128,7 +128,7 @@ jobs:
           STAGE_ROOT="$RUNNER_TEMP/dist"
           scripts/release.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-stage
           path: ${{ runner.temp }}/dist/v*

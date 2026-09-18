@@ -467,9 +467,10 @@ fn hard_split(s: &str, budget: usize) -> Vec<String> {
 /// Math is NOT CommonMark. pulldown-cmark does not tag `$...$`, `$$...$$`,
 /// `\(...\)` or `\[...\]`, so every delimiter, backslash command and `^`
 /// reaches the renderer as ordinary text. This module is a pure text
-/// transform applied to `Event::Text` OUTSIDE code blocks (and never to
-/// `Event::Code`, which is a different event), so it is a substitution
-/// pass rather than a parser change.
+/// transform applied to the markdown SOURCE before it is parsed, with code
+/// spans, code blocks and HTML cut out by byte range from a first parsing
+/// pass (`substitute_source` says why not `Event::Text`), so it is a
+/// substitution pass rather than a parser change.
 ///
 /// Scope, decided in the ROADMAP entry this implements: real LaTeX layout
 /// is out of the question on a line-based renderer, because fractions,
