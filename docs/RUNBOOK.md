@@ -11264,3 +11264,296 @@ of them transcripts, nothing excluded, with the control firing on all
 four patterns. Zero hits.
 
 Archive: `~/temur-eval-archive/v0.36.0-soak/`.
+
+## v0.37.0 ship record
+
+2026-09-18. **T65 and the tail of T64 shipped at tag `v0.37.0`: the copy
+beside a document temur overwrites now holds the last version temur did
+not write itself, math written into a `.docx` or `.pdf` is rendered
+instead of left as LaTeX source, and a piped plain REPL refuses mutating
+tools instead of running them unasked.** A MINOR bump and the fifth
+public release, cut from `7a7ed46` on the laptop, the second cut on the
+pinned rustc 1.96.1.
+
+Eighteen CHANGELOG items, and they are NOT all T65. Eleven are, added by
+T65 P0 to P3; the other seven were written by `1761d36` ("T64 docs:
+after the v0.36.0 cut") and cover T64 work that landed on main after the
+`v0.36.0` tag, so they ship publicly for the first time here: `/model
+<profile> --save`, the Gemini `models/<id>` prefix, math in TUI replies,
+`.docx` code-block indentation, provider errors recorded in the session
+file, `"unattended_nudge": false`, and the futile-call guard. Counted
+with `git log --oneline 1b6f08c..7a7ed46 -- CHANGELOG.md` and the item
+count at each commit: 0 at `1b6f08c`, 7 at `1761d36`, 18 at `a518f54`.
+The first draft of this record said all eighteen were T65; the
+independent check caught it.
+
+### Sizes
+
+Raw byte counts, read from the staged files and matched byte for byte
+against the public downloads:
+
+| asset | bytes | v0.36.0 | change |
+| --- | --- | --- | --- |
+| i686 | 8,323,828 | 8,290,516 | +33,312 (+0.40%) |
+| x86_64 | 9,889,200 | 9,852,272 | +36,928 (+0.37%) |
+| aarch64 | 7,993,872 | 7,962,320 | +31,552 |
+| armv7 | 7,710,784 | 7,679,712 | +31,072 |
+
+Divided by 1,000,000 and rounded to two decimals, the rule the v0.35.0
+record settled, README:37-38 now reads **8.32 MB** on i686 and **9.89
+MB** on x86_64. The i686 binary is **1,676,172 bytes** under the
+10,000,000 STOP (16.76%), down from 1,709,484 at v0.36.0. `README:31`
+("under 10 MB on 32-bit") was not edited and holds.
+
+The growth splits across both rounds, and ROADMAP's two cold-gate tables
+measure it on the desktop. The T64 table at 1890-1899 runs from `P0a`
+8,292,940, which is the source v0.36.0 was cut from, to `P4b` 8,311,820:
+**+18,880** for the T64 phases that landed after the tag. The T65 table
+at 1822-1830 runs from that same 8,311,820 to `P5` 8,326,124: **+14,304**
+for T65, of which P0 is flat, P1 +6,720, P2 +4,736, P3 +2,848, and P4
+and P5 flat. Together +33,184 on the desktop against +33,312 published
+here, the 128-byte difference being the laptop-to-desktop gap narrowing
+from 2,424 to 2,296. A first draft of this record credited the whole
++33,312 to T65 alone.
+
+The published i686 is 2,296 bytes SMALLER than the T65 table's 8,326,124
+for the same source, the same direction and about the same size as the
+2,424-byte gap at v0.36.0; the table is desktop's cold gate and this is
+the laptop's host C compiler.
+
+### The cut
+
+The version bump is a single commit on the anchor, parent `7a7ed46`,
+5 files, 11 insertions and 11 deletions. Edited ranges:
+
+- `Cargo.toml` 3, `Cargo.lock` 1475 (the temur entry only),
+  `scripts/install.sh` 10.
+- `CHANGELOG.md` 5, the `## Unreleased` heading becoming the v0.37.0
+  heading and nothing else in the file: the 18 items ship as written and
+  no size sentence was added. (Checked by hashing lines 6-129 before and
+  after; identical.)
+- `README.md` 37-38 (the size sentence, from this cut's own build), 185
+  (install raw URL), 196 (install blob URL), 208 (release-download URL
+  and asset name, two on the line), 209 (SHA256SUMS URL), 211 (asset
+  name).
+
+Not edited: README 19-24, which has named no version since T65 P5;
+`docs/USAGE.md`, whose piped-REPL paragraph at 2027-2033 was written in
+the past tense ("In v0.36.0 and earlier") and is true after this cut;
+`ROADMAP.md`; `docs/COMPARISON.md`.
+
+### Two release.sh runs
+
+Both exit 0, read from each log's own `release.sh exit=` line rather
+than a wrapper's, the v0.36.0 lesson.
+
+Run 1 produced the byte counts the README sentence is set from, so by
+the cut's own ordering it gated a tree whose size sentence still said
+v0.36.0. Run 2 ran over the clean tree at the bump commit, so the gate
+covers what was tagged, which is what the publish preflight above asks
+for. The two runs staged byte-identical artifacts, all five sha256s and
+all five byte counts equal, so no number here depends on which run is
+read and the README edit changed no binary. Where that rests: the byte
+counts are in both logs' staged tables, which are identical, but neither
+log ever prints a sha256, and the staged directory holds run 2's output
+only. The sha256 half rests on fingerprint files the cut session took of
+the staged directory after each run, and on nothing in these logs.
+
+A procedure delta for the next cut: neither log records the sha or tree
+state it ran over, so "this run gated that commit" rests on timestamps.
+Tee `git rev-parse HEAD` and `git status --porcelain` into the log.
+
+### Gates
+
+- `check.sh` in full: "ALL CHECKS PASSED", both paths, container legs
+  and the bare busybox check included.
+- Leak gate clean over tracked files and all commit-message history,
+  with the operator pattern set enlarged to 5 for this cut. The only
+  history hit is `083eb33`, allowlisted as already public, the same
+  entry as at v0.34.0, v0.35.0 and v0.36.0. `release.sh` prints no
+  pattern count, so the size of the set is evidenced by the file, not
+  by the log. The gate's own control is the pattern added for this cut,
+  checked before it was appended: 0 file hits at `7a7ed46`, 2 at
+  `c8a4b23` (the two docs T65 P5 cleaned), 0 in commit-message history.
+  A pattern scoring 0 on that known positive would have meant a gate
+  that proves nothing.
+- Version skew: `install.sh` and README match 0.37.0 and all targets.
+- Per target: 4/4 gated and staged, `temur 0.37.0` on every runnable
+  binary (x86 natively, ARM under qemu). The staticness, ELF
+  class/machine and armv7 VFP gates are fail-closed and silent on
+  success, so they are evidenced by the absence of any `FAIL(<target>)`.
+- `metadata_drift.sh`: 4 PASS (fable, haiku, opus, sonnet), exit 0, no
+  DRIFT. Run under tee, after a first run whose outcome the independent
+  check correctly refused to accept without a log.
+- The `rustup target add` step release.sh gained in T65 P3 was a NO-OP
+  here: all four release targets already present, "up to date", nothing
+  installed.
+- Installer test before publication, against the staged directory over
+  `python3 -m http.server`, on x86_64 and under `setarch i686`:
+  "checksum verified.", `temur 0.37.0`, and the installed file's sha256
+  equal to the staged asset's on both legs. This one was run without a
+  saved log, so it is recorded on the cut session's word; the closing
+  gate below, which supersedes it against the published bytes, has one.
+
+### What this release does NOT establish
+
+Re-derived from the v0.37.0 CHANGELOG items and ROADMAP's "### T65 as
+built (2026-09-17)", not carried over from the v0.36.0 record. The first
+draft derived it from the T65 half of the CHANGELOG only, because it
+believed all eighteen items were T65; the last three entries below cover
+the seven T64-origin items and were added after the independent check
+pointed out they had never been in scope.
+
+- ARM remains verified at build level only, per ROADMAP T7. No ARM
+  hardware smoke has run.
+- Math in a document is rendered, not typeset. Fractions and roots take
+  a plain form (`1/4`, `(x+1)/2`, `sqrt` or the root sign), and a PDF
+  page is WinAnsi, so a symbol the encoding cannot hold stays LaTeX
+  source rather than becoming `?`. `x^2` becomes a superscript, `x^4`
+  and `\int` do not.
+- The `.previous` copy is still one file. It holds the last version
+  temur did not write itself, which is what review finding 1 asked for,
+  but a session resumed with `--continue` or `--resume` moves the
+  current file aside once more, and a document the user has changed
+  outside temur moves aside as their newest version and replaces the
+  older copy.
+- The piped-plain-REPL gap the v0.36.0 record listed is CLOSED by T65
+  P0: a plain REPL whose stdin or stdout is a pipe now refuses mutating
+  tool calls the way `-p` has since T46. Scripts in this repository all
+  pass `--allow-mutations`; scripts outside it that piped prompts and
+  expected mutations need the flag or the config value.
+- Review findings 3 to 8 and Ruling T65-8's finding 9, all open at
+  v0.36.0, are closed by T65 P3. Nothing here measures them against a
+  model; they are closed as code with tests.
+- No eval or soak has run on the v0.37.0 assets. T65 P4 changed the
+  eval instrument without changing product behaviour, so the
+  instrument's sha moved and the next soak is what records it; its
+  driver is staged archive-side with placeholders this cut's identities
+  fill.
+- The F7 arm-B rerun is still queued. The laptop's patch has not been
+  ferried, so nothing in this release speaks to it.
+- The browser sandbox still runs v0.35.0. README's demo sentence names
+  no version, so it does not go stale, but the page is a release behind
+  until its own refresh.
+- Math on screen is unchanged in the part that matters least and most:
+  `\quad`, `\text` and friends now render in the TUI, but `\frac` and
+  similar still show as source there. Only a document gets the plain
+  form.
+- The session file's new provider-error record is bounded, not a
+  transcript: the most recent 50 entries, each stored message cut to
+  1,000 characters. What the screen showed can exceed what is on disk.
+- The futile-call guard now catches a model that varies its input
+  slightly and gets the same result back, which is what dogfood finding
+  F11 described, but only from the THIRD identical result in a row: the
+  first two variations still pass. The guard is also the only one of the
+  three loop guards this release changes.
+- Nothing here is a live-model acceptance run. No gate called a hosted
+  model API; the cut reached the network only for `rustup`, the crates
+  it already had, and `metadata_drift.sh`'s models.dev fetch.
+
+### Ruling 4 and the independent check
+
+Every scan returned 0 and every control fired:
+
+- Bump commit, message plus added lines, before the push: 0, control 1.
+- Two further controls on the same command: the newly added 5th pattern
+  planted, 1; the same plant lowercased, 1, so `-i` is live on it. This
+  matters because ROADMAP's T65 ledger records a per-phase scan copy
+  that had lacked `-i` since T64 and whose lowercase control passed
+  without exercising the flag.
+- Tag message before the push: 0, control 1.
+- This record's own commit: in the cut report.
+
+The independent check, a fresh agent given only the kickoff, the diff,
+the draft report and the logs, answered YES on the diff and PARTLY on
+the logs and the report's numbers. It raised twelve disagreements. The
+substantive ones, all accepted before the report went out:
+
+- The draft called the tag message's two items the two largest CHANGELOG
+  items. They are not; the futile-call guard is longer.
+- `metadata_drift.sh`'s outcome was quoted with no log behind it. Re-run
+  under tee.
+- Three claims were logged as facts that the logs cannot carry: the size
+  of the pattern set, the toolchain name at the rustup step, and which
+  tree each release.sh run covered. Each is now attributed to what does
+  evidence it.
+- The byte-identical claim across the two runs rested on fingerprint
+  files rather than on the gate logs, which carry no sha256s. Said so.
+
+A second independent check ran on THIS record before it was pushed, a
+fresh agent given the kickoff, this record's diff, the publication facts
+and the logs, and never the conversation. It answered PARTLY on all
+three questions and it was right to. Two findings it marked as blocking,
+both fixed above:
+
+- The record claimed all eighteen CHANGELOG items were T65. Seven are
+  T64's, written by `1761d36` after the v0.36.0 tag. The claim is
+  corrected, and so is its consequence: the "does NOT establish" list
+  had been derived from the T65 half alone, and three entries covering
+  the T64-origin items were added.
+- The sha256 half of the byte-identical claim was asserted bare in the
+  body while the disagreement list above said it had been attributed.
+  Now attributed in both places.
+
+Chasing the first finding turned up one the check did not make: the
+Sizes section credited the whole +33,312 to T65, when ROADMAP's two
+cold-gate tables split it +18,880 T64 and +14,304 T65. Corrected.
+
+Also fixed from that check: a gate result with no log (the closing gate
+now has one), two line ranges inherited wrong from the kickoff
+(`docs/USAGE.md` 2027-2033 and README 19-24, not 2026-2034 and 19-22),
+the leak gate reported without a control of its own, and an "every gate
+is offline" claim that glossed `metadata_drift.sh` reaching models.dev.
+One of the three list entries added for the T64 items was itself wrong
+on first writing, saying the futile-call guard still misses a
+one-character variation when that is precisely what the item closes;
+what it actually leaves is the two variations before the third identical
+result.
+
+### Publication and live verification
+
+Pushed `7a7ed46..da8ba34` to `origin/main` as a plain fast-forward, with
+`origin/main` re-confirmed at `7a7ed46` immediately before. CI run
+**35370757843** on the bump commit: `test` and `release-gate` both
+success, and the only run on that sha. No tag was made until it was
+green.
+
+After CI, the annotated tag `v0.37.0` was created on the bump commit,
+tag object `30bfcecc32f494d52ff2e76bd4054ae00f8ceb50`, with the message
+"temur v0.37.0 - keeps your original document, not temur's draft, and
+math in written documents (T65)", and pushed by its explicit ref. The
+remote tag peels to the bump commit. The remote went from 39 tags to 40.
+Nothing was moved or recreated.
+
+The release was created public, not a draft and not a prerelease, with
+the four bare binaries and `SHA256SUMS`, titled with the tag message.
+The title was not typed: it was read back from the annotated tag with
+the two git reads `release.sh` itself uses, gating on object type `tag`,
+which is the check that catches a lightweight tag. Release notes are the
+CHANGELOG's v0.37.0 section, all 18 items.
+
+All five assets were then downloaded from the public URLs with `env -i`
+and `curl`, no token and no `gh`. Byte counts and sha256 match the
+staged files **5 of 5**, and `sha256sum -c` on the downloaded set is 4
+of 4 OK.
+
+The README one-liner (README:185) was run verbatim into a fresh empty
+HOME twice, once on x86_64 and once under `setarch i686`. Each run
+fetched `install.sh` from the v0.37.0 tag, picked the matching asset,
+printed "checksum verified.", and installed a binary whose sha256 equals
+the published asset's and which prints `temur 0.37.0`. README:196's blob
+URL returns 200. Both runs also exercised T65 P3's new PATH notice,
+which printed the real install directory and told the reader to put the
+line in a startup file.
+
+The closing gate has its own log, both legs in one run with the
+published `SHA256SUMS` fetched tokenlessly at the end so the expected
+and installed digests sit in one file. The first pass of it, and the
+pre-publication installer test, were run without one; the independent
+check refused a gate result with no primary, which was the right call
+and is the second time in this cut it made that same catch.
+
+### Ruling 4 on this record
+
+The scan of this record's own commit is in the cut report, with its
+control.
