@@ -120,6 +120,10 @@ pub struct App {
     draft: String,
     // Turn state.
     pub busy: bool,
+    /// T66 P4: what the busy row says instead of the turn verb, while a
+    /// provider-calling command runs (see [`App::begin_command_work`]).
+    /// `None` for a turn, and cleared wherever `busy` clears.
+    pub busy_label: Option<&'static str>,
     /// T48/P1: how many lines have been submitted here. Monotonic, and the
     /// only thing `prompt_open_after` compares against; see there for why a
     /// count rather than a clock.
@@ -188,6 +192,7 @@ impl App {
             hist_pos: None,
             draft: String::new(),
             busy: false,
+            busy_label: None,
             submits: 0,
             armed_at_ms: None,
             interrupting: false,
@@ -315,6 +320,7 @@ impl App {
                 }
                 self.cells.push(Cell::Notice(notice.clone()));
                 self.busy = false;
+                self.busy_label = None;
             }
             // T8 chrome/state signals; the confirmation Notice arrives
             // separately, so these fold silently into chrome. A provider
@@ -344,6 +350,7 @@ impl App {
             } => {
                 self.session_usage = *session_usage;
                 self.busy = false;
+                self.busy_label = None;
                 self.armed_at_ms = None;
                 self.interrupting = false;
                 self.cells.push(Cell::TurnTail {
@@ -367,6 +374,7 @@ impl App {
         self.input.clear();
         self.cursor = 0;
         self.busy = true;
+        self.busy_label = None;
         self.submits += 1;
         self.armed_at_ms = None;
         self.turn_started_ms = self.now_ms;
@@ -376,6 +384,12 @@ impl App {
     /// Record a submitted COMMAND line (T8): echoed dim in the transcript
     /// and recallable via ↑ like any input, but never a prompt — no title
     /// claim, no User cell, no busy state (commands execute between turns).
+    ///
+    /// T66 P4: it still counts in `submits`. The agent counts every line it
+    /// reads, commands included, and `prompt_open_after` is exact only when
+    /// the two counts agree; before this a command put `submits` behind for
+    /// the rest of the session, and a stale idle signal could again clear a
+    /// later turn's busy state (the T48 wedge).
     pub fn submit_command(&mut self, line: &str) {
         self.cells.push(Cell::Command(line.to_string()));
         self.history.push(line.to_string());
@@ -383,7 +397,21 @@ impl App {
         self.draft.clear();
         self.input.clear();
         self.cursor = 0;
+        self.submits += 1;
         self.stick_bottom = true;
+    }
+
+    /// T66 P4: a command that calls the provider takes as long as a turn, so
+    /// the app shows it is working: busy, with `label` on the busy row, and
+    /// Esc interrupts it. Still no User cell, no title and no TurnTail. The
+    /// command's line was already counted by [`App::submit_command`], so the
+    /// `PromptOpen` sent before the agent read it is stale and ignored, and
+    /// the one it sends after the command ran clears this state.
+    pub fn begin_command_work(&mut self, label: &'static str) {
+        self.busy = true;
+        self.busy_label = Some(label);
+        self.armed_at_ms = None;
+        self.turn_started_ms = self.now_ms;
     }
 
     /// T48/P1: the ordered idle signal, and the only one the render loop
@@ -411,6 +439,7 @@ impl App {
     /// The agent is back at the prompt (authoritative idle signal).
     pub fn prompt_open(&mut self) {
         self.busy = false;
+        self.busy_label = None;
         self.armed_at_ms = None;
         self.interrupting = false;
     }

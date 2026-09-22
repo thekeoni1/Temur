@@ -1714,6 +1714,23 @@ window it writes, so the cap never exceeds it, and prints a notice after
 the "Server reports" line. Every other id renders the recipe's bytes.
 The default did not change.
 
+P4 makes `/compact` look like the model call it is. The TUI ran it as
+an instant command: no busy row, Esc ignored while idle, so a long
+summary call looked like a hang and could not be stopped.
+`commands::calls_the_provider` names the commands that call the model
+(`/compact` only). For those, the render thread's Submit arm clears the
+cancel token, as it does for a prompt, and `App::begin_command_work`
+sets busy with the label `commands::COMPACTING`, which the busy row
+shows in place of the turn verb. The notices still end it: no User
+cell, no title, no TurnTail. The plain REPL prints the label on stdout,
+with the notices, before the call, except in replay mode where
+`/compact` makes none. `App::submit_command` now counts the command
+line in `submits`, because the agent counts it in `lines_read` and
+`prompt_open_after` is exact only when the two agree. Before, any
+command left `submits` one behind for the rest of the session, so a
+stale PromptOpen could clear a later turn's busy state and disable Esc:
+the T48 wedge, latent since T48 P1 dated the signal. A test pins it.
+
 The round is the dogfood round after v0.37.0, on a local `t66-stack`
 branch from `b8ff7c2`, and ships as v0.38.0. Every commit is cold-gated
 on rustc 1.96.1 in a fresh target dir.
@@ -1726,6 +1743,7 @@ on rustc 1.96.1 in a fresh target dir.
 | P1 | 8,333,036 |
 | P2 | 8,335,084 |
 | P3 | 8,338,700 |
+| P4 | 8,339,340 |
 
 ### Queued from dogfood 2026-09-19 (T66 plan, 2026-09-21)
 

@@ -50,6 +50,18 @@ pub enum Command {
     Unknown(String),
 }
 
+/// The busy label a UI shows while a provider-calling command runs (T66
+/// P4). The ellipsis is U+2026, the one the TUI's thinking line uses.
+pub const COMPACTING: &str = "compacting\u{2026}";
+
+/// Does this command make a provider call, and so take long enough that the
+/// UI must show it is working (T66 P4)? The list to extend when another
+/// command starts calling the model: today only `/compact` does. (`/models`
+/// lists over the network but is a quick GET, not a model call.)
+pub fn calls_the_provider(cmd: &Command) -> bool {
+    matches!(cmd, Command::Compact)
+}
+
 /// Parse one command line (the caller guarantees the leading `/`).
 /// Exact lowercase command words, whitespace-tolerant.
 pub fn parse(line: &str) -> Command {
@@ -1337,5 +1349,19 @@ mod tests {
         // No profiles and no cached ids/keys: no argument candidates.
         assert!(complete("/model ", &[], &[], &[]).is_empty());
         assert!(complete("/resume ", &[], &[], &[]).is_empty());
+    }
+
+    // ------------------------------------ T66 P4: provider-calling commands
+
+    #[test]
+    fn calls_the_provider_is_compact_only() {
+        assert!(calls_the_provider(&parse("/compact")));
+        for line in [
+            "/help", "/status", "/clear", "/thinking", "/thinking on", "/model",
+            "/model local", "/model --save", "/models", "/sessions", "/resume k",
+            "/new n", "/compact now", "/nope",
+        ] {
+            assert!(!calls_the_provider(&parse(line)), "{line} makes no provider call");
+        }
     }
 }

@@ -53,6 +53,14 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   smaller `max_tokens` than that, or a window under 32768. Every other
   model id gets the same config and output as before.
 
+- `/compact` shows that it is working. Its summary call can take as long
+  as a turn, and the TUI used to sit at an idle prompt meanwhile. The
+  busy row now reads `compacting` until the notice arrives, and Esc
+  cancels the call as it cancels a turn; the plain REPL prints a
+  `compacting` line before the call. The same change fixes a latent
+  hang where, after any command, a later turn could drop its busy row
+  early and stop answering Esc.
+
 ## v0.37.0 - 2026-09-18
 
 - A refused `replaceAll` now says how to finish the rename. When some

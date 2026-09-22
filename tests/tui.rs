@@ -3218,3 +3218,342 @@ fn a_model_switch_carries_the_host_into_the_header() {
     let header = render(&mut a, 80, 12)[0].clone();
     assert!(!header.contains("local"), "{header:?}");
 }
+
+// ------------------------------------------ T66 P4: /compact shows it works
+//
+// These tests reach the new behaviour only through the headless runtime and
+// the App API that predates it, so the file still compiles with the P4 src
+// change reverted and the /status control can pass there.
+
+/// A session config for the P4 tests: the headless defaults above.
+fn p4_cfg(dir: &std::path::Path) -> SessionConfig {
+    SessionConfig {
+        model: "claude-sonnet-5".into(),
+        max_tokens: 32_000,
+        system: Some("test system".into()),
+        thinking: false,
+        cwd: dir.to_path_buf(),
+        max_iterations: 50,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+        max_tokens_source: None,
+        prose_tool_calls: true,
+        cost_rates: None,
+        cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
+        unattended: false,
+        unattended_nudge: true,
+    }
+}
+
+fn p4_info(dir: &std::path::Path) -> SessionInfo {
+    SessionInfo {
+        host: None,
+        model: "claude-sonnet-5".into(),
+        thinking: false,
+        cwd: dir.display().to_string(),
+        version: "test".into(),
+        profiles: vec![],
+        provider: "anthropic".into(),
+    }
+}
+
+/// Answers every call with text. The SECOND call is the one `/compact`
+/// makes after the setup turn; with `block_compact` it waits for the
+/// cancel token, giving up after `COMPACT_WAIT` so a build without the P4
+/// change (Esc ignored while idle) fails on its assertion, not on the
+/// seam watchdog.
+struct P4Provider {
+    calls: std::sync::atomic::AtomicUsize,
+    block_compact: bool,
+}
+
+const COMPACT_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+impl Provider for P4Provider {
+    fn stream(
+        &self,
+        _req: &ChatRequest,
+        on_event: &mut dyn FnMut(StreamEvent),
+        cancel: &CancelToken,
+    ) -> Result<ResponseMessage, ProviderError> {
+        let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let text = if n == 1 {
+            if self.block_compact {
+                let deadline = std::time::Instant::now() + COMPACT_WAIT;
+                while !cancel.is_set() && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+            "the summary of earlier".to_string()
+        } else {
+            format!("answer number {n}")
+        };
+        on_event(StreamEvent::TextDelta(text.clone()));
+        let value = serde_json::json!({
+            "id": "msg_p4",
+            "model": "claude-sonnet-5",
+            "role": "assistant",
+            "content": [],
+            "usage": {}
+        });
+        let mut m: ResponseMessage = serde_json::from_value(value).unwrap();
+        m.content = vec![temur::provider::ContentBlock::Text { text }];
+        Ok(m)
+    }
+}
+
+/// A session whose history already holds one exchange (call 0), so the
+/// next `/compact` makes a real summary call (call 1).
+fn p4_session_with_history(dir: &std::path::Path, block_compact: bool) -> Session {
+    let provider = P4Provider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        block_compact,
+    };
+    let mut session = Session::new(Box::new(provider), Registry::standard(), p4_cfg(dir));
+    session.turn("hello", &mut |_| {}).unwrap();
+    session
+}
+
+/// The driver loop, as main.rs runs it: a `/`-line goes to
+/// `commands::run`, anything else is a turn; events fold back through the
+/// seam. Ends when the script's "exit" makes read_input return None.
+fn p4_drive(session: &mut Session, ui: &mut TuiUi) {
+    let profiles = std::collections::BTreeMap::new();
+    let mut active: Option<String> = None;
+    let mut provider_name = "anthropic".to_string();
+    let mut model = "claude-sonnet-5".to_string();
+    let mut prompt_profile = temur::tools::PromptProfile::Full;
+    let mut persist_path: Option<std::path::PathBuf> = None;
+    let mut session_name: Option<String> = None;
+    let rebuild = |_: temur::tools::PromptProfile| -> String { "test system".into() };
+    let mut active_resolved = temur::config::ResolvedProfile {
+        provider: "anthropic".into(),
+        model: "claude-sonnet-5".into(),
+        base_url: "https://mock.invalid".into(),
+        api_key_file: None,
+        max_tokens: 32_000,
+        context_window: None,
+        prompt_profile: temur::tools::PromptProfile::Full,
+        prompt_profile_source: Default::default(),
+        price_input_per_mtok: None,
+        price_output_per_mtok: None,
+        max_tokens_parameter: Default::default(),
+    };
+    let list = |_: &temur::config::ResolvedProfile| -> Result<
+        Vec<temur::provider::ModelEntry>,
+        temur::error::Error,
+    > { unreachable!("no /models in these scripts") };
+    let build = |_: &temur::config::ResolvedProfile| -> Result<
+        Box<dyn Provider>,
+        temur::error::Error,
+    > { unreachable!("no switch in these scripts") };
+    let mut cached_models: Vec<temur::provider::ModelEntry> = Vec::new();
+    while let Some(line) = mark("ui.read_input", || ui.read_input()) {
+        if !line.starts_with('/') {
+            mark("session.turn", || session.turn(&line, &mut |ev| ui.event(&ev))).unwrap();
+            continue;
+        }
+        let mut ctx = temur::commands::CommandCtx {
+            session: &mut *session,
+            profiles: &profiles,
+            active_profile: &mut active,
+            provider_name: &mut provider_name,
+            model: &mut model,
+            persist_path: &mut persist_path,
+            persist_off_reason: None,
+            session_max_bytes: temur::config::DEFAULT_SESSION_MAX_BYTES,
+            sessions_dir: std::path::Path::new("/nonexistent/temur-test-sessions"),
+            cwd: std::path::Path::new("/test"),
+            cwd_display: "/test",
+            project_instructions: None,
+            session_name: &mut session_name,
+            replay_mode: false,
+            now: std::time::SystemTime::now(),
+            prompt_profile: &mut prompt_profile,
+            active_resolved: &mut active_resolved,
+            config_path: std::path::Path::new("/nonexistent/temur-test-config.json"),
+            cached_models: &mut cached_models,
+            build_provider: &build,
+            list_models: &list,
+            rebuild_system: &rebuild,
+        };
+        let events = mark("commands::run", || {
+            temur::commands::run(temur::commands::parse(&line), &mut ctx)
+        });
+        for ev in events {
+            ui.event(&ev);
+        }
+    }
+}
+
+fn line_steps(lines: &[&str]) -> Vec<temur::ui::tui::ScriptStep> {
+    lines
+        .iter()
+        .map(|l| temur::ui::tui::ScriptStep::Line(l.to_string()))
+        .collect()
+}
+
+/// (a) From the moment it is submitted, `/compact` shows it is working:
+/// busy, with the COMPACTING label on the busy row. Then, run to the end on an
+/// empty conversation: the PromptOpen after the command clears the busy
+/// state (the script's "exit" is only delivered once idle), the notice is
+/// in the transcript, and a command still claims no title, no User cell
+/// and no TurnTail.
+#[test]
+fn compact_command_shows_busy_until_prompt_open() {
+    seam("compact_command_shows_busy_until_prompt_open", compact_command_shows_busy_until_prompt_open_body);
+}
+
+fn compact_command_shows_busy_until_prompt_open_body() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Part 1: the frame drawn after submission, before the command runs.
+    let session = Session::new(Box::new(BlockUntilCancelled), Registry::standard(), p4_cfg(dir.path()));
+    let mut script: Vec<Event> = "/compact"
+        .chars()
+        .map(|c| Event::Key(key(KeyCode::Char(c))))
+        .collect();
+    script.push(Event::Key(key(KeyCode::Enter)));
+    let (mut ui, snapshot) = TuiUi::headless(p4_info(dir.path()), 100, 30, script, session.cancel_token());
+    let line = mark("ui.read_input", || ui.read_input()).expect("scripted submit reaches read_input");
+    assert_eq!(line, "/compact");
+    drop(ui); // the command never runs: this frame is the submitted state
+    let rows = snapshot.lock().unwrap().clone();
+    let body = rows.join("\n");
+    let busy_row = rows
+        .iter()
+        .find(|r| r.contains("esc interrupt"))
+        .unwrap_or_else(|| panic!("a busy row after submitting /compact:\n{body}"));
+    assert!(busy_row.contains("compacting\u{2026}"), "the row names the work:\n{body}");
+    assert!(!busy_row.contains("working\u{2026}"), "not the turn verb:\n{body}");
+
+    // Part 2: run to the end. Empty history, so no provider call.
+    let mut session = Session::new(Box::new(BlockUntilCancelled), Registry::standard(), p4_cfg(dir.path()));
+    let (mut ui, snapshot) = TuiUi::headless_steps(
+        p4_info(dir.path()),
+        100,
+        30,
+        line_steps(&["/compact", "exit"]),
+        session.cancel_token(),
+    );
+    p4_drive(&mut session, &mut ui);
+    drop(ui);
+    let rows = snapshot.lock().unwrap().clone();
+    let body = rows.join("\n");
+    assert!(body.contains("nothing to compact"), "the notice lands:\n{body}");
+    assert!(!body.contains("compacting\u{2026}"), "busy row gone:\n{body}");
+    assert!(!body.contains("esc interrupt"), "idle again:\n{body}");
+    assert!(rows[0].contains("new session"), "no title from a command:\n{body}");
+    assert!(!body.contains("\u{258c} /compact"), "never a User cell:\n{body}");
+    assert!(!body.contains("\u{25a3}"), "no TurnTail for a command:\n{body}");
+}
+
+/// (b) Control: a command that makes no provider call stays instant. It
+/// never sets busy, in the App or in a frame drawn right after submission.
+#[test]
+fn status_command_stays_instant() {
+    seam("status_command_stays_instant", status_command_stays_instant_body);
+}
+
+fn status_command_stays_instant_body() {
+    let mut a = app();
+    a.submit_command("/status");
+    assert!(!a.busy, "/status never spins");
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = Session::new(Box::new(BlockUntilCancelled), Registry::standard(), p4_cfg(dir.path()));
+    let mut script: Vec<Event> = "/status"
+        .chars()
+        .map(|c| Event::Key(key(KeyCode::Char(c))))
+        .collect();
+    script.push(Event::Key(key(KeyCode::Enter)));
+    let (mut ui, snapshot) = TuiUi::headless(p4_info(dir.path()), 100, 30, script, session.cancel_token());
+    let line = mark("ui.read_input", || ui.read_input()).expect("scripted submit reaches read_input");
+    assert_eq!(line, "/status");
+    drop(ui);
+    let rows = snapshot.lock().unwrap().clone();
+    let body = rows.join("\n");
+    assert!(!body.contains("esc interrupt"), "no busy row for /status:\n{body}");
+    assert!(!body.contains("compacting"), "{body}");
+}
+
+/// Ruling A: the render loop counts a command line in `submits`, as the
+/// agent counts it in `lines_read`. After /status (line 1) the agent opens
+/// the prompt with PromptOpen(1); if a prompt (line 2) overtakes that
+/// message, it is stale and must not clear the turn's busy state. Only the
+/// turn's own PromptOpen(2) does. Before P4 a command left `submits` one
+/// behind, the stale signal was honoured, and the turn ran with idle chrome
+/// and Esc disabled: the T48 wedge, re-opened by any earlier command.
+#[test]
+fn command_then_prompt_stale_prompt_open_is_not_honoured() {
+    let mut a = app();
+    a.submit_command("/status");
+    a.prompt_open_after(1); // current: the command ran, the prompt is open
+    assert!(!a.busy);
+    a.submit("a prompt");
+    assert!(a.busy, "the prompt starts a turn");
+    a.prompt_open_after(1); // stale: sent before the agent read line 2
+    assert!(a.busy, "a stale PromptOpen must not end the turn's busy state");
+    a.prompt_open_after(2); // the turn's own
+    assert!(!a.busy);
+}
+
+/// (c) Esc while `/compact` is busy cancels it: the cancelled notice lands,
+/// history is unchanged, the busy state clears and the next prompt runs.
+#[test]
+fn esc_during_compact_cancels_it() {
+    seam("esc_during_compact_cancels_it", esc_during_compact_cancels_it_body);
+}
+
+fn esc_during_compact_cancels_it_body() {
+    use temur::ui::tui::ScriptStep;
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = p4_session_with_history(dir.path(), true);
+    let steps = vec![
+        ScriptStep::Line("/compact".into()),
+        ScriptStep::Raw(Event::Key(key(KeyCode::Esc))),
+        ScriptStep::Line("after".into()),
+        ScriptStep::Line("exit".into()),
+    ];
+    let (mut ui, snapshot) =
+        TuiUi::headless_steps(p4_info(dir.path()), 100, 30, steps, session.cancel_token());
+    p4_drive(&mut session, &mut ui);
+    drop(ui);
+    let rows = snapshot.lock().unwrap().clone();
+    let body = rows.join("\n");
+    assert!(body.contains("compact cancelled; history unchanged"), "Esc cancels:\n{body}");
+    assert!(!body.contains("compacted:"), "{body}");
+    assert!(body.contains("answer number 2"), "the next prompt runs:\n{body}");
+    assert!(!body.contains("compacting\u{2026}"), "busy row gone:\n{body}");
+}
+
+/// (d) A stale Esc does not cancel `/compact`. The token set after the
+/// previous turn ended (an Esc that landed late) is cleared when /compact
+/// is submitted, as for a prompt (F7), and an Esc pressed while idle does
+/// nothing; the compaction completes.
+#[test]
+fn stale_esc_does_not_cancel_compact() {
+    seam("stale_esc_does_not_cancel_compact", stale_esc_does_not_cancel_compact_body);
+}
+
+fn stale_esc_does_not_cancel_compact_body() {
+    use temur::ui::tui::ScriptStep;
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = p4_session_with_history(dir.path(), false);
+    session.cancel_token().set(); // the stale Esc
+    let steps = vec![
+        ScriptStep::Raw(Event::Key(key(KeyCode::Esc))), // idle: a no-op
+        ScriptStep::Line("/compact".into()),
+        ScriptStep::Line("exit".into()),
+    ];
+    let (mut ui, snapshot) =
+        TuiUi::headless_steps(p4_info(dir.path()), 100, 30, steps, session.cancel_token());
+    p4_drive(&mut session, &mut ui);
+    drop(ui);
+    let rows = snapshot.lock().unwrap().clone();
+    let body = rows.join("\n");
+    assert!(body.contains("compacted:"), "the compaction completes:\n{body}");
+    assert!(!body.contains("compact cancelled"), "{body}");
+}

@@ -920,6 +920,14 @@ fn repl(
         // T8: any `/`-line is command-space — it never reaches the model or
         // the history. Commands run here, between turns, by construction.
         if line.starts_with('/') {
+            let cmd = temur::commands::parse(&line);
+            // T66 P4: a provider-calling command can take as long as a turn;
+            // the plain REPL says so first, on stdout like its notices. (The
+            // TUI shows a busy row instead, set on its render thread.) Not
+            // in replay/capture mode, where /compact makes no call at all.
+            if !use_tui && !replay_mode && temur::commands::calls_the_provider(&cmd) {
+                println!("  {}", temur::commands::COMPACTING);
+            }
             let events = {
                 let mut cctx = temur::commands::CommandCtx {
                     session: &mut session,
@@ -945,7 +953,7 @@ fn repl(
                     list_models: &list_models,
                     rebuild_system: &rebuild_system,
                 };
-                temur::commands::run(temur::commands::parse(&line), &mut cctx)
+                temur::commands::run(cmd, &mut cctx)
             };
             // T18: a switch that built a provider re-registers that build's
             // key (the LAST build wins, which is the one now active; the

@@ -383,9 +383,12 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
         };
         vec![Span::styled(hint, Style::default().fg(Color::Yellow))]
     } else if app.busy {
+        // T66 P4: a provider-calling command names its work (the
+        // `commands::COMPACTING` label) where a turn says "working".
+        let verb = app.busy_label.unwrap_or("working\u{2026}");
         if app.force_quit_armed() {
             vec![
-                Span::raw(format!("  {} working… ", app.spinner())),
+                Span::raw(format!("  {} {verb} ", app.spinner())),
                 Span::styled(
                     "ctrl+c again to force-quit",
                     Style::default().fg(Color::Yellow),
@@ -393,12 +396,12 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
             ]
         } else if app.interrupting {
             vec![
-                Span::raw(format!("  {} working… ", app.spinner())),
+                Span::raw(format!("  {} {verb} ", app.spinner())),
                 Span::styled("interrupting…", Style::default().fg(Color::Yellow)),
             ]
         } else {
             vec![
-                Span::raw(format!("  {} working… ", app.spinner())),
+                Span::raw(format!("  {} {verb} ", app.spinner())),
                 Span::styled("esc interrupt · (enter disabled during turn)", dim()),
             ]
         }

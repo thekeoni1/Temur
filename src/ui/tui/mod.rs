@@ -625,10 +625,19 @@ fn render_loop<B: Backend>(
                     } else if App::is_command_line(&line) {
                         // T8 command line: recorded + echoed dim and
                         // recallable, but NOT a prompt — no App::submit (no
-                        // User cell, no title, no busy spinner) and no
-                        // cancel-token clear (no turn starts). The main
-                        // loop executes it and events fold back as usual.
+                        // User cell, no title) and, unless it calls the
+                        // provider (T66 P4, below), no busy spinner and no
+                        // cancel-token clear. The main loop executes it and
+                        // events fold back as usual.
                         app.submit_command(&line);
+                        // T66 P4: a command that calls the provider runs as
+                        // long as a turn. Show it working, and give it the
+                        // F7 treatment: a stale Esc must not cancel it, a
+                        // fresh one does.
+                        if crate::commands::calls_the_provider(&crate::commands::parse(&line)) {
+                            cancel.clear();
+                            app.begin_command_work(crate::commands::COMPACTING);
+                        }
                         let _ = tx_input.send(Some(line));
                     } else {
                         // F7: clear the cancel token at SUBMISSION, on the

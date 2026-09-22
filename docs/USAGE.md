@@ -172,7 +172,9 @@ message starting with `/` cannot be sent):
   session continues from that summary plus the last user-initiated
   exchange kept verbatim (fail-closed: any error, interrupt, or empty
   summary leaves history untouched; the compacted state is persisted
-  immediately, like `/clear`)
+  immediately, like `/clear`); the call can take as long as a turn, so
+  the TUI shows `compacting` on its busy row, where Esc cancels it, and
+  the plain REPL prints a `compacting` line before the call
 - `/sessions` - list every saved session, all projects: name (or
   `(default)`), the directory it was recorded in, message count, file
   name, and a title derived from its first prompt; the active session

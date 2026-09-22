@@ -2451,3 +2451,25 @@ fn saved_session_keeps_the_reasoning_as_a_thinking_block() {
         ]
     );
 }
+
+// ----------------------------------- T66 P4: the plain REPL says it compacts
+
+/// (f) A piped plain REPL prints the COMPACTING label on its own line before
+/// `/compact` makes its provider call, on stdout with the notices, so it
+/// comes before the outcome.
+#[test]
+fn plain_repl_prints_compacting_before_the_compacted_notice() {
+    let sb = session_sandbox();
+    let mut c = sb.cmd();
+    c.arg("--plain");
+    let (code, stdout, stderr) = run(c, "hello\n/compact\n");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    let working = stdout
+        .find("  compacting\u{2026}\n")
+        .unwrap_or_else(|| panic!("no compacting line on stdout:\n{stdout}\nstderr: {stderr}"));
+    let done = stdout
+        .find("compacted:")
+        .unwrap_or_else(|| panic!("no compacted notice on stdout:\n{stdout}\nstderr: {stderr}"));
+    assert!(working < done, "compacting comes first:\n{stdout}");
+    assert_eq!(stdout.matches("compacting\u{2026}").count(), 1, "{stdout}");
+}
