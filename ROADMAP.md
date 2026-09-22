@@ -1629,6 +1629,74 @@ one-liner gate stays deferred to the visibility flip (RUNBOOK).
   `\text \mathrm \textbf \textit \mathbf` unwrap to their argument, `~`
   becomes a space; `\frac` and friends stay honest source by design.
 
+### T66 as built (2026-09-21)
+
+P0 stops `/clear` from destroying the conversation it clears. Until now
+it emptied the history and saved the EMPTY file back over the session
+file, so a `/clear` typed by reflex took the transcript with it: quitting
+and `--continue` resumed nothing, and `/sessions` listed a 0-message
+entry where the work had been. `/clear` now writes the current history to
+its own session file first, named by the UTC time of the clear
+(`YYYYMMDD-HHMMSS`, or `<name>-<stamp>` for a named session), and only
+then clears and saves the empty file at the original path. The notice
+says the key and how to get the conversation back, `/sessions` lists the
+archive with a title derived from its first prompt, and `/resume <stamp>`
+loads it. The archive is written before anything is cleared and a failed
+write aborts the clear with the history still on screen; a name already
+taken gets `-2` through `-9`. Clearing at a fresh prompt archives
+nothing, so an empty session leaves no litter. `--continue`, `/new`,
+`/resume` and the replay-mode guard are untouched, the file format is
+unchanged, and `session_store::archive_stamp` computes the stamp from
+`SystemTime` with the civil-from-days arithmetic `prompt::utc_date`
+already uses, so no date crate joined the tree.
+
+The round is the dogfood round after v0.37.0, on a local `t66-stack`
+branch from `b8ff7c2`, and ships as v0.38.0. Every commit is cold-gated
+on rustc 1.96.1 in a fresh target dir.
+
+| i686 musl release on 1.96.1 | bytes |
+| --- | --- |
+| T65 (P5) | 8,326,124 |
+| P0 | 8,329,964 |
+
+### Queued from dogfood 2026-09-19 (T66 plan, 2026-09-21)
+
+A local Thinking model (Qwen3-4B-Thinking-2507) on a fresh `temur init`
+profile spends its whole budget reasoning and the user sees nothing. Three
+things meet: `init` writes `max_tokens` 4096 for every model, a thinking
+model's reasoning counts against that same budget inside
+`completion_tokens`, and temur drops the `reasoning_content` the
+openai-compat wire carries it in. The turn ends on `max_tokens` with no
+visible text, so the screen says only "response truncated". Restarting and
+clearing change nothing, which is the first-run path for a large share of
+the local-model audience.
+
+- P0 /clear archives instead of wiping.
+- P1 reasoning_content becomes a Thinking block on the openai-compat wire.
+- P2 the truncation notice tells the truth, and /status shows the cap.
+- P3 doctor and init know a thinking model when they see one.
+- P4 /compact shows a busy indicator.
+- P5 docs + CHANGELOG + ROADMAP row + eval tooling only.
+
+Held for evidence, both from the same dogfood round: the same answer
+returned twice (needs the session file and the llama-server log of that
+turn), and ctrl-c or "exit" ignored while idle after `/compact` (if it
+reproduces it joins P4 as a busy flag left set).
+
+Seeds queued with T66: display-math blocks (`\frac`, `\bar`, `\boxed`;
+T45 is inline-only); vision input on providers that take image blocks,
+which is the same gap as the playground's gemini note; `/rename`; effort
+levels; DeepSeek and xAI as config-only endpoint tests, both
+openai-compat, so `reasoning_content` lands with P1; playground
+full-screen (laptop); an "explain, do not code" sentence in the prompt,
+A/B on the eval before it ships; doom-loop refinement counting only when
+the previous result was an error or identical text; and `<think>` tag
+parsing for servers run with `--reasoning-format none`.
+
+The playground's one refresh is spent on v0.37.0 and README 19-24 has
+been version-agnostic since T65 P5, so the launch announcement is held
+for v0.38.0 rather than spent now.
+
 ### T65 as built (2026-09-17)
 
 The dogfood round after v0.36.0, on a local `t65-stack` branch from

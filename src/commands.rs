@@ -124,6 +124,11 @@ pub struct CommandCtx<'a> {
     /// `--mock` / `--capture-sse`: state-mutating commands are disabled to
     /// keep fixture determinism.
     pub replay_mode: bool,
+    /// Wall-clock reading for this command (T66 P0), taken once by the
+    /// driver loop. Only `/clear` reads it, to name the archive it writes;
+    /// it is a FIELD rather than a `SystemTime::now()` inside `clear`
+    /// because the collision test has to pin the name it collides with.
+    pub now: std::time::SystemTime,
     /// The ACTIVE prompt profile (T9). A main-loop local like `model`:
     /// updated here on a switch so `/status` and the next switch's
     /// differs-check read what is actually live.
@@ -222,7 +227,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "list profiles · switch to a profile or a raw model id (--save persists it)",
     ),
     ("/models", "", "list model ids from the active provider"),
-    ("/clear", "", "wipe this session's history and start fresh"),
+    ("/clear", "", "archive this session and start fresh (/sessions lists it)"),
     (
         "/compact",
         "",
@@ -393,12 +398,89 @@ fn status(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
     out
 }
 
+/// How many names one second's archive may try: the stamp itself, then
+/// `-2` through `-9`. Two `/clear`s inside one second is already unusual;
+/// nine is a caller that is not a person, and the ninth failure reports
+/// rather than overwriting a file that holds a conversation.
+const ARCHIVE_NAME_TRIES: u32 = 9;
+
+/// Write the CURRENT history to its own file beside the session (T66 P0)
+/// and return the archive's session name, which is also its `/resume` key:
+/// the UTC stamp for the default session, `<name>-<stamp>` for a named one.
+/// A name already on disk gets `-2`, `-3`, ... ([`ARCHIVE_NAME_TRIES`]).
+///
+/// Nothing here mutates the live session: the caller clears only after this
+/// returns `Ok`, because a `/clear` that loses the conversation is the bug
+/// T66 P0 exists to fix.
+fn archive_current(ctx: &mut CommandCtx) -> Result<String, String> {
+    let stamp = session_store::archive_stamp(ctx.now);
+    let base = match ctx.session_name.as_deref() {
+        Some(name) => format!("{name}-{stamp}"),
+        None => stamp,
+    };
+    let snap = ctx.session.snapshot();
+    for attempt in 1..=ARCHIVE_NAME_TRIES {
+        let archive = if attempt == 1 {
+            base.clone()
+        } else {
+            format!("{base}-{attempt}")
+        };
+        let path = ctx
+            .sessions_dir
+            .join(session_store::named_session_file_name(ctx.cwd, &archive));
+        if path.exists() {
+            continue;
+        }
+        let file = session_store::SessionFileRef {
+            version: session_store::FORMAT_VERSION,
+            provider: ctx.provider_name,
+            model: ctx.model,
+            cwd: ctx.cwd_display,
+            history: snap.history,
+            session_usage: snap.session_usage,
+            todos: snap.todos,
+            last_context_used: snap.last_context_used,
+            name: Some(&archive),
+            errors: snap.errors,
+        };
+        return match session_store::save(&path, &file, ctx.session_max_bytes, &mut |_| {}) {
+            Ok(()) => Ok(archive),
+            Err(e) => Err(e.to_string()),
+        };
+    }
+    Err(format!(
+        "{ARCHIVE_NAME_TRIES} archive names starting {base} are already taken"
+    ))
+}
+
 fn clear(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
     if ctx.replay_mode {
         return vec![notice("/clear is unavailable in replay/capture mode")];
     }
+    // T66 P0: the pre-clear conversation is ARCHIVED, not dropped. The
+    // archive is written BEFORE anything is cleared, and a failed write
+    // aborts the clear entirely: history the user can still see beats a
+    // clean prompt. An empty history archives nothing, so /clear at a fresh
+    // prompt leaves no litter behind.
+    let mut archived: Option<String> = None;
+    if ctx.persist_path.is_some() && !ctx.session.history().is_empty() {
+        match archive_current(ctx) {
+            Ok(name) => archived = Some(name),
+            Err(e) => {
+                return vec![notice(format!(
+                    "could not archive the session: {e}; nothing cleared"
+                ))]
+            }
+        }
+    }
     ctx.session.clear_history();
-    let mut out = vec![AgentEvent::SessionCleared, notice("session cleared")];
+    let cleared = match &archived {
+        Some(archive) => format!(
+            "session archived as {archive} (/resume {archive} brings it back); session cleared"
+        ),
+        None => "session cleared".to_string(),
+    };
+    let mut out = vec![AgentEvent::SessionCleared, notice(cleared)];
     // Persist the emptied session NOW: quit-then---continue must resume
     // empty, never resurrect the pre-clear file.
     if let Some(path) = ctx.persist_path.as_deref() {

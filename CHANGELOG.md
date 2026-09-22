@@ -2,6 +2,17 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
+## Unreleased
+
+- `/clear` keeps the conversation instead of destroying it. The history is
+  saved to its own session file first, named by the UTC time of the clear
+  (`20260921-160000`, or `<name>-<stamp>` when the session has a name),
+  and the notice prints the key: `/resume <key>` brings it back and
+  `/sessions` lists it. The session itself is emptied and persisted
+  immediately as before, so `--continue` still resumes empty. Clearing at
+  a fresh prompt archives nothing, and a failed archive leaves the
+  conversation alone rather than clearing it.
+
 ## v0.37.0 - 2026-09-18
 
 - A refused `replaceAll` now says how to finish the rename. When some

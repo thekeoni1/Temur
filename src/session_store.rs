@@ -12,10 +12,13 @@
 //! - **Power-cut friendly.** Every save writes a sibling temp file, fsyncs it,
 //!   and `rename(2)`s it over the target. A crash at any instant leaves either
 //!   the previous complete file or the new complete file — never a partial one.
-//! - **Clock-less.** There are no timestamps in the format or in filenames.
-//!   Constrained devices boot with no RTC and no network time; a format that
-//!   depended on a clock would be a format that lies on exactly the hardware
-//!   this project targets.
+//! - **Clock-less.** There are no timestamps in the format, and none in the
+//!   name of a live session file. Constrained devices boot with no RTC and no
+//!   network time; a format that depended on a clock would be a format that
+//!   lies on exactly the hardware this project targets. The one name that
+//!   does carry a clock reading is the ARCHIVE `/clear` writes (T66 P0,
+//!   [`archive_stamp`]), where the stamp is a label on a file the user reads
+//!   and resumes by; a wrong clock there makes an odd name, not a bad file.
 //! - **32-bit discipline.** All byte math is `u64`.
 //!
 //! State, not config: sessions live under `$XDG_STATE_HOME/temur/sessions/`
@@ -279,6 +282,36 @@ pub fn session_file_name(cwd: &Path) -> String {
 /// commands layer owns rejecting bad names; this function just formats.
 pub fn named_session_file_name(cwd: &Path, name: &str) -> String {
     format!("{}-{name}.json", session_stem(cwd))
+}
+
+/// The UTC timestamp an ARCHIVED session is named by (T66 P0), as
+/// `YYYYMMDD-HHMMSS`. `/clear` archives the conversation under this name
+/// instead of dropping it, and the name is also the `/resume` key.
+///
+/// Pure: the clock is the caller's, so the name is testable without one.
+/// The date is Howard Hinnant's civil-from-days algorithm in `i64`, the
+/// same one [`crate::prompt::utc_date`] uses, so no date crate is needed
+/// and nothing narrows to 32 bits. A clock set before `UNIX_EPOCH` (a
+/// device with no RTC) stamps as the epoch rather than failing: the name
+/// only has to be legible and unique, and the caller's collision suffix
+/// covers the rest.
+pub fn archive_stamp(now: std::time::SystemTime) -> String {
+    let secs = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let tod = secs % 86_400;
+    let (hh, mm, ss) = (tod / 3_600, (tod % 3_600) / 60, tod % 60);
+    let z = (secs / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}{m:02}{d:02}-{hh:02}{mm:02}{ss:02}")
 }
 
 /// Sanitize a user-supplied session name (T10): keep the same character set
@@ -833,6 +866,30 @@ mod tests {
         assert_eq!(
             sessions_dir_from(Some(""), None, Some(Path::new("/h"))),
             PathBuf::from("/h/.local/state/temur/sessions")
+        );
+    }
+
+    /// T66 P0: the pins the archive name rests on. The epoch one fixes the
+    /// zero point and the format; the others are dates the civil-from-days
+    /// arithmetic has to get right well past February, which is where an
+    /// off-by-one in that algorithm shows up.
+    ///
+    /// The design named the pair `1_758_470_400` and `"20260921-160000"`.
+    /// They are not the same instant: that number is 2025-09-21T16:00:00Z
+    /// and the 2026 date is `1_790_006_400`. Both readings are pinned here
+    /// rather than one of them being dropped, so whichever the design meant
+    /// is locked.
+    #[test]
+    fn archive_stamp_pins() {
+        use std::time::{Duration, UNIX_EPOCH};
+        assert_eq!(archive_stamp(UNIX_EPOCH), "19700101-000000");
+        assert_eq!(
+            archive_stamp(UNIX_EPOCH + Duration::from_secs(1_758_470_400)),
+            "20250921-160000"
+        );
+        assert_eq!(
+            archive_stamp(UNIX_EPOCH + Duration::from_secs(1_790_006_400)),
+            "20260921-160000"
         );
     }
 

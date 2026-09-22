@@ -163,8 +163,9 @@ message starting with `/` cannot be sent):
   made only when the switch succeeds)
 - `/models` - list model ids from the active provider (live GET; ids
   feed `/model` Tab completion in the TUI)
-- `/clear` - wipe the session; the empty state is persisted immediately,
-  so quitting and `--continue` resumes empty
+- `/clear` - archive the conversation under a timestamped key and start
+  fresh; the empty state is persisted immediately, so quitting and
+  `--continue` resumes empty, and `/resume <key>` brings the archive back
 - `/compact` - one model call summarizes the conversation, then the
   session continues from that summary plus the last user-initiated
   exchange kept verbatim (fail-closed: any error, interrupt, or empty
@@ -202,10 +203,13 @@ Every live run saves the conversation after each turn (the "Sessions"
 section below has the full model). Three commands manage it; pick by
 what you want to keep:
 
-- `/clear` wipes the current session's history in place and persists
-  the empty state immediately. Use it when the current thread is done
-  or has gone off the rails and you will not want it back. When the
-  context advisory starts firing but the thread IS worth keeping,
+- `/clear` archives the current history to its own session file, then
+  empties the session in place and persists the empty state immediately.
+  The archive's key is the UTC time of the clear, `YYYYMMDD-HHMMSS` (a
+  named session archives under `<name>-<stamp>`), and the notice prints
+  it: `/resume <key>` brings the conversation back, and `/sessions` lists
+  it. Clearing at a fresh prompt archives nothing. When the context
+  advisory starts firing but you want to keep working in the same thread,
   `/compact` (next section) preserves a summary instead.
 - `/new <name>` leaves the current transcript on disk and starts a
   fresh named session for this project. Use it when switching to a
@@ -253,8 +257,8 @@ already replaced with `[redacted]`), the model, and the history length at
 the time. A stored message longer than 1,000 characters is cut there and
 marked `(truncated)`; what the screen showed is never cut. It keeps the
 most recent 50. `/clear` and `/new` drop them with
-the history they describe, and the key is absent from a session that has
-had no errors.
+the history they describe (the archive `/clear` writes keeps both), and
+the key is absent from a session that has had no errors.
 
 The save happens *within* a turn as well as at the end of one. An
 agentic turn can run for many minutes across many tool calls, so the

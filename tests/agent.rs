@@ -2076,6 +2076,9 @@ struct CmdHarness {
     /// Mirrors main's session_name local (T10).
     session_name: Option<String>,
     replay: bool,
+    /// Mirrors main's per-command clock reading (T66 P0). Real by default;
+    /// the archive tests set it so the name they assert on is known.
+    now: std::time::SystemTime,
     prompt_profile: PromptProfile,
     /// Mirrors main's rebuild_system closure; tests swap it to model the
     /// config-override rule (a constant string regardless of profile).
@@ -2153,6 +2156,7 @@ impl CmdHarness {
             cwd_display: "/test".into(),
             session_name: None,
             replay: false,
+            now: std::time::SystemTime::now(),
             prompt_profile: PromptProfile::Full,
             rebuild: Box::new(test_system_for),
             active_resolved: base_resolved(),
@@ -2183,6 +2187,7 @@ impl CmdHarness {
             project_instructions: None,
             session_name: &mut self.session_name,
             replay_mode: self.replay,
+            now: self.now,
             prompt_profile: &mut self.prompt_profile,
             active_resolved: &mut self.active_resolved,
             config_path: &self.config_path,
@@ -2349,9 +2354,201 @@ fn unknown_profile_unknown_command_and_bare_slash_touch_nothing() {
     assert_eq!(h.active, None);
 }
 
+/// T66 P0: a fixed clock for the archive tests, so the name `/clear`
+/// writes is known rather than matched by shape. Same instant as the last
+/// `archive_stamp` unit pin, which is 2026-09-21T16:00:00Z.
+const FIXED_NOW_SECS: u64 = 1_790_006_400;
+const FIXED_STAMP: &str = "20260921-160000";
+
+fn fixed_now() -> std::time::SystemTime {
+    std::time::UNIX_EPOCH + std::time::Duration::from_secs(FIXED_NOW_SECS)
+}
+
+/// Harness wired for the T66 P0 archive tests: the sessions dir is real,
+/// the session file is the DEFAULT one for the harness cwd (so its name is
+/// the one `/clear` derives the archive name from), and the clock is fixed.
+fn archive_harness(sdir: &std::path::Path) -> CmdHarness {
+    let mut h = CmdHarness::new();
+    h.sessions_dir = sdir.to_path_buf();
+    h.persist = Some(temur::session_store::session_path(
+        sdir,
+        std::path::Path::new("/test"),
+    ));
+    h.now = fixed_now();
+    h
+}
+
+/// The files in a sessions dir, names only, sorted.
+fn session_files(dir: &std::path::Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    v.sort();
+    v
+}
+
+/// T66 P0 (a): the round trip. Two turns, `/clear`, and the conversation
+/// is on disk under the stamp while the session file itself is empty.
+#[test]
+fn clear_archives_then_empties() {
+    let dir = tempfile::tempdir().unwrap();
+    let sdir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![
+            msg(vec![text("first answer")], StopReason::EndTurn),
+            msg(vec![text("second answer")], StopReason::EndTurn),
+        ],
+    );
+    collect_events(&mut session, "first question");
+    collect_events(&mut session, "second question");
+    assert_eq!(session.history().len(), 4);
+
+    let mut h = archive_harness(sdir.path());
+    let persist = h.persist.clone().unwrap();
+    let events = commands::run(commands::parse("/clear"), &mut h.ctx(&mut session, &no_build));
+    assert!(events.contains(&AgentEvent::SessionCleared));
+    assert_eq!(
+        notices(&events)[0],
+        format!(
+            "session archived as {FIXED_STAMP} (/resume {FIXED_STAMP} brings it back); session cleared"
+        )
+    );
+
+    // Two files: the archive and the (now empty) default session.
+    let archive_name = temur::session_store::named_session_file_name(
+        std::path::Path::new("/test"),
+        FIXED_STAMP,
+    );
+    assert_eq!(
+        session_files(sdir.path()),
+        {
+            let mut v = vec![archive_name.clone(), persist.file_name().unwrap().to_string_lossy().into_owned()];
+            v.sort();
+            v
+        }
+    );
+
+    let archived = temur::session_store::load(&sdir.path().join(&archive_name)).unwrap();
+    assert_eq!(archived.history.len(), 4, "the whole pre-clear conversation");
+    assert_eq!(archived.name.as_deref(), Some(FIXED_STAMP));
+    assert!(temur::session_store::load(&persist).unwrap().history.is_empty());
+
+    // The listing shows both, and the stamp resolves to the archive.
+    let entries = temur::session_store::list_sessions(sdir.path());
+    assert_eq!(entries.len(), 2);
+    let hit = temur::session_store::resolve_session_key(&entries, "/test", FIXED_STAMP).unwrap();
+    assert_eq!(hit.file_name, archive_name);
+    assert_eq!(hit.messages, 4);
+}
+
+/// T66 P0 (b): nothing to archive leaves no litter. This one is the
+/// control for the pin-proof: it passes with and without the change.
+#[test]
+fn clear_on_empty_history_archives_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let sdir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = archive_harness(sdir.path());
+    let persist = h.persist.clone().unwrap();
+    let events = commands::run(commands::parse("/clear"), &mut h.ctx(&mut session, &no_build));
+    assert!(notices(&events).iter().any(|n| n == "session cleared"));
+    assert_eq!(
+        session_files(sdir.path()),
+        vec![persist.file_name().unwrap().to_string_lossy().into_owned()]
+    );
+    assert!(temur::session_store::load(&persist).unwrap().history.is_empty());
+}
+
+/// T66 P0 (c): a named session archives under `<name>-<stamp>` and keeps
+/// its own path and name.
+#[test]
+fn clear_named_session_archives_under_name_stamp() {
+    let dir = tempfile::tempdir().unwrap();
+    let sdir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![msg(vec![text("answer")], StopReason::EndTurn)],
+    );
+    let mut h = archive_harness(sdir.path());
+    let events = commands::run(commands::parse("/new foo"), &mut h.ctx(&mut session, &no_build));
+    assert!(events.contains(&AgentEvent::SessionCleared));
+    collect_events(&mut session, "question");
+
+    let named = sdir.path().join(temur::session_store::named_session_file_name(
+        std::path::Path::new("/test"),
+        "foo",
+    ));
+    assert_eq!(h.persist.as_deref(), Some(named.as_path()));
+    let events = commands::run(commands::parse("/clear"), &mut h.ctx(&mut session, &no_build));
+    let expected = format!("foo-{FIXED_STAMP}");
+    assert!(
+        notices(&events)[0].contains(&format!("session archived as {expected} ")),
+        "{:?}",
+        notices(&events)
+    );
+    let archive = sdir.path().join(temur::session_store::named_session_file_name(
+        std::path::Path::new("/test"),
+        &expected,
+    ));
+    assert_eq!(
+        temur::session_store::load(&archive).unwrap().history.len(),
+        2
+    );
+    // The live session is unmoved and unrenamed, and now empty.
+    assert_eq!(h.persist.as_deref(), Some(named.as_path()));
+    assert_eq!(h.session_name.as_deref(), Some("foo"));
+    let live = temur::session_store::load(&named).unwrap();
+    assert!(live.history.is_empty());
+    assert_eq!(live.name.as_deref(), Some("foo"));
+}
+
+/// T66 P0 (d): two clears in the same second do not overwrite each other.
+#[test]
+fn clear_archive_collision_suffix() {
+    let dir = tempfile::tempdir().unwrap();
+    let sdir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![msg(vec![text("answer")], StopReason::EndTurn)],
+    );
+    collect_events(&mut session, "question");
+    let mut h = archive_harness(sdir.path());
+
+    // The stamp's own name is taken before the clear runs.
+    let taken = temur::session_store::named_session_file_name(
+        std::path::Path::new("/test"),
+        FIXED_STAMP,
+    );
+    write_session(sdir.path(), &taken, "/test", Some(FIXED_STAMP), vec![user_msg("older")]);
+
+    let events = commands::run(commands::parse("/clear"), &mut h.ctx(&mut session, &no_build));
+    let expected = format!("{FIXED_STAMP}-2");
+    assert!(
+        notices(&events)[0].contains(&format!("session archived as {expected} ")),
+        "{:?}",
+        notices(&events)
+    );
+    let second = sdir.path().join(temur::session_store::named_session_file_name(
+        std::path::Path::new("/test"),
+        &expected,
+    ));
+    assert_eq!(temur::session_store::load(&second).unwrap().history.len(), 2);
+    // The file that was already there is untouched.
+    let first = temur::session_store::load(&sdir.path().join(&taken)).unwrap();
+    assert_eq!(first.history.len(), 1);
+}
+
+/// T66 P0 (f), rewritten from T64's `clear_persists_the_empty_session_
+/// immediately`: the empty file is still persisted the instant `/clear`
+/// runs, AND the pre-clear history (with its R6 error record) is on disk
+/// under the archive name.
 #[test]
 fn clear_persists_the_empty_session_immediately() {
     let dir = tempfile::tempdir().unwrap();
+    let sdir = tempfile::tempdir().unwrap();
     let (mut session, _) = session_with(
         dir.path(),
         vec![msg(vec![text("answer")], StopReason::EndTurn)],
@@ -2361,7 +2558,8 @@ fn clear_persists_the_empty_session_immediately() {
     let err = temur::agent::AgentError::Provider(ProviderError::Network("reset".into()));
     temur::agent::report_turn_error(&mut session, &err, "claude-sonnet-5");
 
-    let path = dir.path().join("session.json");
+    let mut h = archive_harness(sdir.path());
+    let path = h.persist.clone().unwrap();
     // Mimic the driver-loop save that would have happened after the turn.
     let snap = session.snapshot();
     let file = temur::session_store::SessionFileRef {
@@ -2381,14 +2579,9 @@ fn clear_persists_the_empty_session_immediately() {
     assert!(!temur::session_store::load(&path).unwrap().history.is_empty());
     assert_eq!(temur::session_store::load(&path).unwrap().errors.len(), 1);
 
-    let mut h = CmdHarness::new();
-    h.persist = Some(path.clone());
-    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
-        unreachable!("clear builds nothing")
-    };
-    let events = commands::run(commands::parse("/clear"), &mut h.ctx(&mut session, &build));
+    let events = commands::run(commands::parse("/clear"), &mut h.ctx(&mut session, &no_build));
     assert!(events.contains(&AgentEvent::SessionCleared));
-    assert!(notices(&events).iter().any(|n| n == "session cleared"));
+    assert!(notices(&events).iter().any(|n| n.contains("session cleared")));
     assert!(session.history().is_empty());
 
     // The file on disk is already empty — quit + --continue resumes empty.
@@ -2398,6 +2591,15 @@ fn clear_persists_the_empty_session_immediately() {
     assert!(loaded.errors.is_empty(), "/clear empties the errors too");
     let (seed, _) = temur::session_store::prepare_seed(loaded);
     assert!(seed.history.is_empty());
+
+    // T66 P0: and what was cleared is not gone. It is under the stamp,
+    // with the error record it came with.
+    let archived = temur::session_store::load(&sdir.path().join(
+        temur::session_store::named_session_file_name(std::path::Path::new("/test"), FIXED_STAMP),
+    ))
+    .unwrap();
+    assert_eq!(archived.history.len(), 2);
+    assert_eq!(archived.errors.len(), 1, "the archive keeps the error record");
 }
 
 // ------------------------------------------------------------ T20: /compact

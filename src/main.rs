@@ -894,6 +894,7 @@ fn repl(
                     project_instructions: project.summary.as_deref(),
                     session_name: &mut session_name,
                     replay_mode,
+                    now: std::time::SystemTime::now(),
                     prompt_profile: &mut current_prompt_profile,
                     active_resolved: &mut active_resolved,
                     config_path: &cfg_path,
