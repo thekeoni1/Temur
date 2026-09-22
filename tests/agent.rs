@@ -2079,6 +2079,9 @@ struct CmdHarness {
     /// Mirrors main's per-command clock reading (T66 P0). Real by default;
     /// the archive tests set it so the name they assert on is known.
     now: std::time::SystemTime,
+    /// Mirrors main's session_max_bytes (T66 P0b): the default cap unless
+    /// a trim test shrinks it.
+    session_max_bytes: u64,
     prompt_profile: PromptProfile,
     /// Mirrors main's rebuild_system closure; tests swap it to model the
     /// config-override rule (a constant string regardless of profile).
@@ -2157,6 +2160,7 @@ impl CmdHarness {
             session_name: None,
             replay: false,
             now: std::time::SystemTime::now(),
+            session_max_bytes: temur::config::DEFAULT_SESSION_MAX_BYTES,
             prompt_profile: PromptProfile::Full,
             rebuild: Box::new(test_system_for),
             active_resolved: base_resolved(),
@@ -2180,7 +2184,8 @@ impl CmdHarness {
             provider_name: &mut self.provider_name,
             model: &mut self.model,
             persist_path: &mut self.persist,
-            session_max_bytes: temur::config::DEFAULT_SESSION_MAX_BYTES,
+            persist_off_reason: None,
+            session_max_bytes: self.session_max_bytes,
             sessions_dir: &self.sessions_dir,
             cwd: &self.cwd,
             cwd_display: &self.cwd_display,
@@ -2539,6 +2544,69 @@ fn clear_archive_collision_suffix() {
     // The file that was already there is untouched.
     let first = temur::session_store::load(&sdir.path().join(&taken)).unwrap();
     assert_eq!(first.history.len(), 1);
+}
+
+/// T66 P0b (k): an archive that had to be cut to the session size cap
+/// says so, right after the notice that names it, and it really is shorter
+/// than the conversation it came from.
+#[test]
+fn clear_archive_over_the_cap_says_it_was_trimmed() {
+    let dir = tempfile::tempdir().unwrap();
+    let sdir = tempfile::tempdir().unwrap();
+    let long = "x".repeat(2_000);
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![
+            msg(vec![text(&long)], StopReason::EndTurn),
+            msg(vec![text(&long)], StopReason::EndTurn),
+            msg(vec![text(&long)], StopReason::EndTurn),
+        ],
+    );
+    for q in ["one", "two", "three"] {
+        collect_events(&mut session, q);
+    }
+    assert_eq!(session.history().len(), 6);
+
+    let mut h = archive_harness(sdir.path());
+    // Room for the envelope and about two exchanges of ~2 KB, not three.
+    h.session_max_bytes = 5_000;
+    let events = commands::run(commands::parse("/clear"), &mut h.ctx(&mut session, &no_build));
+    let ns = notices(&events);
+    assert_eq!(
+        ns[0],
+        format!("session archived as {FIXED_STAMP} (/resume {FIXED_STAMP} brings it back); session cleared")
+    );
+    assert_eq!(
+        ns.get(1).map(String::as_str),
+        Some(format!("archive {FIXED_STAMP} trimmed to the session size cap; oldest exchanges dropped").as_str()),
+        "the trim notice follows the archive notice"
+    );
+    let archived = temur::session_store::load(&sdir.path().join(
+        temur::session_store::named_session_file_name(std::path::Path::new("/test"), FIXED_STAMP),
+    ))
+    .unwrap();
+    assert!(
+        !archived.history.is_empty() && archived.history.len() < 6,
+        "fewer messages than the source: {}",
+        archived.history.len()
+    );
+}
+
+/// T66 P0b (k) control: under the cap, the archive notice stands alone.
+#[test]
+fn clear_archive_under_the_cap_has_no_trim_notice() {
+    let dir = tempfile::tempdir().unwrap();
+    let sdir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(
+        dir.path(),
+        vec![msg(vec![text("short answer")], StopReason::EndTurn)],
+    );
+    collect_events(&mut session, "question");
+    let mut h = archive_harness(sdir.path());
+    let events = commands::run(commands::parse("/clear"), &mut h.ctx(&mut session, &no_build));
+    let ns = notices(&events);
+    assert!(ns[0].starts_with("session archived as "), "{ns:?}");
+    assert!(!ns.iter().any(|n| n.contains("trimmed")), "{ns:?}");
 }
 
 /// T66 P0 (f), rewritten from T64's `clear_persists_the_empty_session_

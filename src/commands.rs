@@ -107,6 +107,10 @@ pub struct CommandCtx<'a> {
     /// `/resume` and `/new` REDIRECT where the driver loop saves — the
     /// pointer they update is the same local the loop reads next turn.
     pub persist_path: &'a mut Option<std::path::PathBuf>,
+    /// Why `persist_path` is `None` when the reason is not `--mock` (T66
+    /// P0b): a plain start that could not archive the previous session
+    /// runs unsaved, and `/status` says so instead of blaming `--mock`.
+    pub persist_off_reason: Option<&'static str>,
     pub session_max_bytes: u64,
     /// The sessions directory (T10), resolved once at startup.
     pub sessions_dir: &'a Path,
@@ -393,64 +397,51 @@ fn status(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
             p.display(),
             ctx.session_name.as_deref().unwrap_or("(default)")
         ),
-        None => "session file: persistence disabled (--mock)".into(),
+        None => match ctx.persist_off_reason {
+            Some(reason) => format!("session file: persistence disabled ({reason})"),
+            None => "session file: persistence disabled (--mock)".into(),
+        },
     }));
     out
 }
 
-/// How many names one second's archive may try: the stamp itself, then
-/// `-2` through `-9`. Two `/clear`s inside one second is already unusual;
-/// nine is a caller that is not a person, and the ninth failure reports
-/// rather than overwriting a file that holds a conversation.
-const ARCHIVE_NAME_TRIES: u32 = 9;
-
 /// Write the CURRENT history to its own file beside the session (T66 P0)
 /// and return the archive's session name, which is also its `/resume` key:
 /// the UTC stamp for the default session, `<name>-<stamp>` for a named one.
-/// A name already on disk gets `-2`, `-3`, ... ([`ARCHIVE_NAME_TRIES`]).
+/// Naming, the collision suffix and the save are
+/// [`session_store::write_archive`], shared with the plain-start archive
+/// (T66 P0b). The second value is true when the archive had to be trimmed
+/// to `session_max_bytes` (T66 P0b, Design 10), which the caller reports.
 ///
 /// Nothing here mutates the live session: the caller clears only after this
 /// returns `Ok`, because a `/clear` that loses the conversation is the bug
 /// T66 P0 exists to fix.
-fn archive_current(ctx: &mut CommandCtx) -> Result<String, String> {
-    let stamp = session_store::archive_stamp(ctx.now);
-    let base = match ctx.session_name.as_deref() {
-        Some(name) => format!("{name}-{stamp}"),
-        None => stamp,
-    };
+fn archive_current(ctx: &mut CommandCtx) -> Result<(String, bool), String> {
+    let base = session_store::archive_base(ctx.session_name.as_deref(), ctx.now);
     let snap = ctx.session.snapshot();
-    for attempt in 1..=ARCHIVE_NAME_TRIES {
-        let archive = if attempt == 1 {
-            base.clone()
-        } else {
-            format!("{base}-{attempt}")
-        };
-        let path = ctx
-            .sessions_dir
-            .join(session_store::named_session_file_name(ctx.cwd, &archive));
-        if path.exists() {
-            continue;
-        }
-        let file = session_store::SessionFileRef {
-            version: session_store::FORMAT_VERSION,
-            provider: ctx.provider_name,
-            model: ctx.model,
-            cwd: ctx.cwd_display,
-            history: snap.history,
-            session_usage: snap.session_usage,
-            todos: snap.todos,
-            last_context_used: snap.last_context_used,
-            name: Some(&archive),
-            errors: snap.errors,
-        };
-        return match session_store::save(&path, &file, ctx.session_max_bytes, &mut |_| {}) {
-            Ok(()) => Ok(archive),
-            Err(e) => Err(e.to_string()),
-        };
-    }
-    Err(format!(
-        "{ARCHIVE_NAME_TRIES} archive names starting {base} are already taken"
-    ))
+    let file = session_store::SessionFileRef {
+        version: session_store::FORMAT_VERSION,
+        provider: ctx.provider_name,
+        model: ctx.model,
+        cwd: ctx.cwd_display,
+        history: snap.history,
+        session_usage: snap.session_usage,
+        todos: snap.todos,
+        last_context_used: snap.last_context_used,
+        name: None,
+        errors: snap.errors,
+    };
+    let mut trimmed = false;
+    session_store::write_archive(
+        ctx.sessions_dir,
+        ctx.cwd,
+        &base,
+        &file,
+        ctx.session_max_bytes,
+        &mut |_| trimmed = true,
+    )
+    .map(|archive| (archive, trimmed))
+    .map_err(|e| e.to_string())
 }
 
 fn clear(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
@@ -462,10 +453,10 @@ fn clear(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
     // aborts the clear entirely: history the user can still see beats a
     // clean prompt. An empty history archives nothing, so /clear at a fresh
     // prompt leaves no litter behind.
-    let mut archived: Option<String> = None;
+    let mut archived: Option<(String, bool)> = None;
     if ctx.persist_path.is_some() && !ctx.session.history().is_empty() {
         match archive_current(ctx) {
-            Ok(name) => archived = Some(name),
+            Ok(done) => archived = Some(done),
             Err(e) => {
                 return vec![notice(format!(
                     "could not archive the session: {e}; nothing cleared"
@@ -475,12 +466,20 @@ fn clear(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
     }
     ctx.session.clear_history();
     let cleared = match &archived {
-        Some(archive) => format!(
+        Some((archive, _)) => format!(
             "session archived as {archive} (/resume {archive} brings it back); session cleared"
         ),
         None => "session cleared".to_string(),
     };
     let mut out = vec![AgentEvent::SessionCleared, notice(cleared)];
+    // T66 P0b (Design 10): an archive cut to the size cap says so, right
+    // after the notice that names it. Silent trimming would make the key
+    // look like it brings back everything.
+    if let Some((archive, true)) = &archived {
+        out.push(notice(format!(
+            "archive {archive} trimmed to the session size cap; oldest exchanges dropped"
+        )));
+    }
     // Persist the emptied session NOW: quit-then---continue must resume
     // empty, never resurrect the pre-clear file.
     if let Some(path) = ctx.persist_path.as_deref() {

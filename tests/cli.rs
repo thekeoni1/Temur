@@ -2180,3 +2180,224 @@ fn status_repeats_the_line_mid_session() {
         "startup line plus /status line expected:\n{all}"
     );
 }
+
+// ------------------------------------ T66 P0b: a plain start archives first
+
+/// A canned openai-compat server that answers by METHOD for the life of the
+/// test process: every GET is a one-model listing (the startup probe, which
+/// may also ask /props; the listing body answers that harmlessly), every
+/// POST is the same plain text reply. The session tests below care about
+/// the files a run leaves, not about the order of the probe requests.
+fn routed_server() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://127.0.0.1:{}/v1", listener.local_addr().unwrap().port());
+    let sse = std::fs::read_to_string(fixture("openai/text_simple.sse")).unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            use std::io::Read;
+            let Ok(mut stream) = stream else { return };
+            let mut req = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).unwrap_or(0);
+                req.extend_from_slice(&buf[..n]);
+                if n == 0 || req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let (ctype, body) = if req.starts_with(b"POST") {
+                ("text/event-stream", sse.clone())
+            } else {
+                ("application/json", r#"{"object":"list","data":[{"id":"local-gguf"}]}"#.to_string())
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    base
+}
+
+/// A sandbox configured for keyless openai-compat against `routed_server`,
+/// with a window set so the run is the plain local shape.
+fn session_sandbox() -> Sandbox {
+    let base = routed_server();
+    let sb = sandbox();
+    sb.write_config(&format!(
+        r#"{{"provider":"openai-compat","openai_compat":{{"base_url":"{base}","model":"local-gguf","context_window":32768}}}}"#
+    ));
+    sb
+}
+
+impl Sandbox {
+    fn sessions_dir(&self) -> PathBuf {
+        self.state_home.join("temur").join("sessions")
+    }
+
+    /// The directory's DEFAULT session file (the sandbox runs in `home`).
+    fn default_session(&self) -> PathBuf {
+        self.sessions_dir()
+            .join(temur::session_store::session_file_name(&self.home))
+    }
+
+    /// Every session file, loaded, keyed by file name, sorted.
+    fn sessions(&self) -> Vec<(String, temur::session_store::SessionFile)> {
+        let mut v: Vec<_> = std::fs::read_dir(self.sessions_dir())
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
+            .map(|p| {
+                (
+                    p.file_name().unwrap().to_string_lossy().into_owned(),
+                    temur::session_store::load(&p).unwrap(),
+                )
+            })
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+
+    /// One plain-REPL turn: the prompt on stdin, then EOF.
+    fn plain_turn(&self, extra: &[&str], prompt: &str) -> (i32, String, String) {
+        let mut c = self.cmd();
+        c.arg("--plain").args(extra);
+        run(c, &format!("{prompt}\n"))
+    }
+}
+
+/// The first user prompt a saved history carries.
+fn first_prompt(f: &temur::session_store::SessionFile) -> String {
+    serde_json::to_string(&f.history[0]).unwrap()
+}
+
+/// T66 P0b (g): the second plain start archives the first run's session
+/// before its own first turn saves over the default file.
+#[test]
+fn plain_start_archives_the_previous_default_session() {
+    let sb = session_sandbox();
+    let (code, out, err) = sb.plain_turn(&[], "first question");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert_eq!(sb.sessions().len(), 1, "one run, one default file");
+
+    let (code, out, err) = sb.plain_turn(&[], "second question");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert!(
+        out.contains("previous session archived as ") && out.contains("; starting fresh"),
+        "the archive notice: {out}"
+    );
+
+    let files = sb.sessions();
+    assert_eq!(files.len(), 2, "the archive and the default: {:?}", files.iter().map(|f| &f.0).collect::<Vec<_>>());
+    let default_name = sb.default_session().file_name().unwrap().to_string_lossy().into_owned();
+    let (_, default) = files.iter().find(|f| f.0 == default_name).expect("the default file");
+    let (_, archive) = files.iter().find(|f| f.0 != default_name).expect("the archive");
+    assert_eq!(default.history.len(), 2, "only the second turn");
+    assert!(first_prompt(default).contains("second question"));
+    assert_eq!(archive.history.len(), 2, "the first run's turn");
+    assert!(first_prompt(archive).contains("first question"));
+    let key = archive.name.clone().expect("an archive records its key");
+    assert!(
+        out.contains(&format!(
+            "previous session archived as {key} (/resume {key} brings it back); starting fresh"
+        )),
+        "the exact notice (Ruling T66-2): {out}"
+    );
+    assert!(!out.contains("temur --continue"), "no --continue promise: {out}");
+}
+
+/// T66 P0b (h), a control: --continue resumes the default file, so there is
+/// nothing to archive and one file carries both turns.
+#[test]
+fn continue_does_not_archive() {
+    let sb = session_sandbox();
+    let (code, out, err) = sb.plain_turn(&[], "first question");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    let (code, out, err) = sb.plain_turn(&["--continue"], "second question");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert!(!out.contains("archived"), "{out}");
+    let files = sb.sessions();
+    assert_eq!(files.len(), 1, "no archive");
+    assert_eq!(files[0].1.history.len(), 4, "both turns in the one file");
+}
+
+/// T66 P0b (i), a control and the documented exception: one-shot -p is
+/// scripted, so it overwrites the default file as it always has.
+#[test]
+fn oneshot_p_does_not_archive() {
+    let sb = session_sandbox();
+    let (code, out, err) = sb.plain_turn(&[], "first question");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    let mut c = sb.cmd();
+    c.args(["-p", "second question"]);
+    let (code, out, err) = run(c, "");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert!(!err.contains("archived") && !out.contains("archived"), "{out}\n{err}");
+    let files = sb.sessions();
+    assert_eq!(files.len(), 1, "no archive");
+    assert_eq!(files[0].1.history.len(), 2, "overwritten by the -p turn");
+    assert!(first_prompt(&files[0].1).contains("second question"));
+}
+
+/// T66 P0b (j): a default file that has bytes but does not load is left
+/// byte-for-byte alone, the run says why, and it goes unsaved.
+#[test]
+fn unreadable_nonempty_default_is_not_overwritten() {
+    let sb = session_sandbox();
+    let path = sb.default_session();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let junk = b"{\"version\":1, this is not a session file";
+    std::fs::write(&path, junk).unwrap();
+
+    let (code, out, err) = sb.plain_turn(&[], "a question");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert!(
+        out.contains("could not archive the previous session: ")
+            && out.contains("this run is not saved, so that file is left as it is"),
+        "the notice: {out}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), junk, "byte-identical afterwards");
+    let names: Vec<String> = std::fs::read_dir(sb.sessions_dir())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names.len(), 1, "nothing else written: {names:?}");
+}
+
+/// T66 P0b (l): after the (j) failure the run is unsaved, and `/status`
+/// gives that reason rather than blaming `--mock`.
+#[test]
+fn status_after_a_failed_archive_names_the_reason() {
+    let sb = session_sandbox();
+    let path = sb.default_session();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"{\"version\":1, this is not a session file").unwrap();
+
+    let mut c = sb.cmd();
+    c.arg("--plain");
+    let (code, out, err) = run(c, "/status\n");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert!(
+        out.contains(
+            "session file: persistence disabled (the previous session file could not be \
+             archived; see the startup notice)"
+        ),
+        "the reason line: {out}"
+    );
+    assert!(!out.contains("(--mock)"), "{out}");
+}
+
+/// T66 P0b (l), the control: under `--mock` `/status` still says `--mock`.
+#[test]
+fn status_under_mock_still_says_mock() {
+    let sb = sandbox();
+    let mut c = sb.cmd();
+    c.args(["--mock", &fixture("text_simple.sse"), "--plain"]);
+    let (code, out, err) = run(c, "/status\n");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert!(out.contains("session file: persistence disabled (--mock)"), "{out}");
+    assert!(!out.contains("could not be archived"), "{out}");
+}

@@ -62,6 +62,9 @@ pub enum StoreError {
     UnitTooLarge { cap: u64 },
     #[error("could not serialize the session: {0}")]
     Serialize(String),
+    /// T66 P0b: every archive name for this second is already on disk.
+    #[error("{tries} archive names starting {base} are already taken")]
+    ArchiveNamesTaken { base: String, tries: u32 },
 }
 
 impl From<StoreError> for crate::error::Error {
@@ -312,6 +315,104 @@ pub fn archive_stamp(now: std::time::SystemTime) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
     format!("{y:04}{m:02}{d:02}-{hh:02}{mm:02}{ss:02}")
+}
+
+/// How many names one second's archive may try (T66 P0b): the base name,
+/// then `-2` through `-9`. Past that the archive fails rather than
+/// overwriting a file that holds a conversation.
+pub const ARCHIVE_NAME_TRIES: u32 = 9;
+
+/// The archive's base name (T66 P0b): the UTC stamp for the default session,
+/// `<name>-<stamp>` for a named one.
+pub fn archive_base(name: Option<&str>, now: std::time::SystemTime) -> String {
+    let stamp = archive_stamp(now);
+    match name {
+        Some(name) => format!("{name}-{stamp}"),
+        None => stamp,
+    }
+}
+
+/// Write `file` as an ARCHIVE beside the live sessions (T66 P0b): the
+/// first free name of `base`, `base-2`, ... ([`ARCHIVE_NAME_TRIES`]) in
+/// `dir`, saved with that name recorded, which is also the `/resume` key.
+/// `/clear` hands it the in-memory history and [`archive_existing`] hands it
+/// a file read back from disk; both name, collide and save through here.
+/// `notify` receives [`save`]'s trim notice when the archive had to be cut
+/// to `max_bytes`.
+pub fn write_archive(
+    dir: &Path,
+    cwd: &Path,
+    base: &str,
+    file: &SessionFileRef,
+    max_bytes: u64,
+    notify: &mut dyn FnMut(String),
+) -> Result<String, StoreError> {
+    for attempt in 1..=ARCHIVE_NAME_TRIES {
+        let archive = if attempt == 1 {
+            base.to_string()
+        } else {
+            format!("{base}-{attempt}")
+        };
+        let path = dir.join(named_session_file_name(cwd, &archive));
+        if path.exists() {
+            continue;
+        }
+        let named = SessionFileRef {
+            name: Some(&archive),
+            ..*file
+        };
+        save(&path, &named, max_bytes, notify)?;
+        return Ok(archive);
+    }
+    Err(StoreError::ArchiveNamesTaken {
+        base: base.to_string(),
+        tries: ARCHIVE_NAME_TRIES,
+    })
+}
+
+/// Archive the session file at `current_path` before something overwrites
+/// it (T66 P0b): a plain start is about to save a fresh session over the
+/// directory's default file.
+///
+/// `Ok(Some(key))` when the file held at least one message and is now also
+/// saved as an archive in `dir`. `Ok(None)` when there was nothing to keep:
+/// no file, a zero-byte file, or a file that loads with an empty history.
+/// A file that has bytes but does not load (corrupt, a future format, a
+/// read error) is an `Err`: the caller must not write over it, because it
+/// may be the only copy of something this build cannot read.
+///
+/// The copy is never trimmed: the file was written within whatever size cap
+/// applied at the time, and an archive exists to keep all of it.
+pub fn archive_existing(
+    dir: &Path,
+    cwd: &Path,
+    current_path: &Path,
+    now: std::time::SystemTime,
+) -> Result<Option<String>, StoreError> {
+    match std::fs::metadata(current_path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io_err(current_path, e)),
+        Ok(m) if m.len() == 0 => return Ok(None),
+        Ok(_) => {}
+    }
+    let f = load(current_path)?;
+    if f.history.is_empty() {
+        return Ok(None);
+    }
+    let file = SessionFileRef {
+        version: f.version,
+        provider: &f.provider,
+        model: &f.model,
+        cwd: &f.cwd,
+        history: &f.history,
+        session_usage: f.session_usage,
+        todos: &f.todos,
+        last_context_used: f.last_context_used,
+        name: None,
+        errors: &f.errors,
+    };
+    let base = archive_base(f.name.as_deref(), now);
+    write_archive(dir, cwd, &base, &file, u64::MAX, &mut |_| {}).map(Some)
 }
 
 /// Sanitize a user-supplied session name (T10): keep the same character set

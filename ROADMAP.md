@@ -1650,6 +1650,21 @@ unchanged, and `session_store::archive_stamp` computes the stamp from
 `SystemTime` with the civil-from-days arithmetic `prompt::utc_date`
 already uses, so no date crate joined the tree.
 
+P0b covers the other overwrite, which is the one that lost a weekend of
+laptop sessions: every plain start in a directory saved its first turn
+over that directory's default file, and USAGE said so ("last complete
+writer wins"). Before a plain start's first turn, main.rs now calls
+`session_store::archive_existing` on the default file: a file holding at
+least one message is copied to a stamped archive and the first notice
+names it. A missing, zero-byte or empty file archives nothing. A file
+with bytes that does not load is an error, and that run goes unsaved
+rather than overwrite it. `--continue`, `--resume`, `--mock` and one-shot
+`-p` are unchanged; `-p` is scripted and would litter. `/clear` and the
+plain start name, collide and save through one helper,
+`session_store::write_archive`: `/clear` archives the history in memory,
+the start archives the file on disk. A `/clear` archive cut to the size
+cap now says so instead of trimming silently.
+
 The round is the dogfood round after v0.37.0, on a local `t66-stack`
 branch from `b8ff7c2`, and ships as v0.38.0. Every commit is cold-gated
 on rustc 1.96.1 in a fresh target dir.
@@ -1658,6 +1673,7 @@ on rustc 1.96.1 in a fresh target dir.
 | --- | --- |
 | T65 (P5) | 8,326,124 |
 | P0 | 8,329,964 |
+| P0b | 8,333,676 |
 
 ### Queued from dogfood 2026-09-19 (T66 plan, 2026-09-21)
 
@@ -1691,7 +1707,9 @@ openai-compat, so `reasoning_content` lands with P1; playground
 full-screen (laptop); an "explain, do not code" sentence in the prompt,
 A/B on the eval before it ships; doom-loop refinement counting only when
 the previous result was an error or identical text; and `<think>` tag
-parsing for servers run with `--reasoning-format none`.
+parsing for servers run with `--reasoning-format none`; and an archive
+prune policy (by count or age), since T66 P0 and P0b archives accumulate
+until the user deletes them.
 
 The playground's one refresh is spent on v0.37.0 and README 19-24 has
 been version-agnostic since T65 P5, so the launch announcement is held

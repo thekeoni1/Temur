@@ -231,7 +231,8 @@ directory because transcripts carry tool output and grow to megabytes.
 Each working directory has a
 **default session**, plus any number of **named sessions** created with
 `/new <name>` (names keep `[A-Za-z0-9._-]` and cap at 32 chars). A plain
-start uses the default session; `temur --continue` resumes it.
+start begins a fresh default session; `temur --continue` resumes the
+saved one instead.
 
 `/sessions` lists everything saved, across all projects, newest first.
 `/resume <key>`, or `temur --resume <key>` at startup, switches to a
@@ -275,8 +276,22 @@ the size cap the
 file drops its oldest exchanges, always cutting at a message boundary
 that keeps the remainder replayable; the in-memory conversation is
 never trimmed. Two processes in one directory don't corrupt anything:
-last complete writer wins. To start over, `/new` a fresh name or delete
-the file from the sessions dir.
+last complete writer wins.
+
+A saved conversation is not overwritten by starting over. Before a plain
+start (no `--continue` or `--resume`) writes its first turn over the
+directory's default file, it copies that file to an archive named by the
+UTC time, `YYYYMMDD-HHMMSS`, and says so: "previous session archived as
+<key>". `/clear` does the same for the session it clears, and a named
+session archives as `<name>-<stamp>`. `/resume <key>` brings an archive
+back and `/sessions` lists them. An empty session archives nothing. A
+`/clear` archive larger than the session size cap is trimmed like any
+save and says so. A default file that
+exists but cannot be read is never overwritten: that run goes unsaved
+and says why. One-shot `temur -p` is the exception: it is scripted, so
+it saves over the default file as before, and `temur --continue -p`
+chains onto it. Use `/new <name>` for a separate named file. Archives
+accumulate in the sessions dir until you delete them.
 
 ## Context lifecycle
 

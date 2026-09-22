@@ -13,6 +13,14 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   a fresh prompt archives nothing, and a failed archive leaves the
   conversation alone rather than clearing it.
 
+- Starting `temur` again in the same directory keeps the last
+  conversation. A plain start used to save its first turn straight over
+  the directory's session file; it now copies that file to a timestamped
+  archive first and prints the key, so `/resume <key>` brings it back.
+  A session file that exists but cannot be read is left untouched and
+  that run goes unsaved. `--continue`, `--resume` and one-shot `-p` behave
+  as before. A `/clear` archive cut to the session size cap now says so.
+
 ## v0.37.0 - 2026-09-18
 
 - A refused `replaceAll` now says how to finish the rename. When some

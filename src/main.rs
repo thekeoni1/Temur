@@ -308,6 +308,9 @@ fn repl(
     } else {
         None
     };
+    // Why `persist_path` is None when it is not `--mock` (T66 P0b): set
+    // only when a plain start could not archive the previous session.
+    let mut persist_off_reason: Option<&'static str> = None;
     // The live session's name (None = default), recorded by every save.
     let mut session_name: Option<String> = None;
 
@@ -504,6 +507,44 @@ fn repl(
         });
         Some(seed)
     } else {
+        // T66 P0b: a plain start saves a fresh session over the directory's
+        // default file on its first turn, which used to destroy whatever was
+        // there. Archive it first. Not for one-shot -p: it is scripted, and
+        // archiving on every call would litter (USAGE says so). --mock has
+        // no persist_path. A file that exists but cannot be read is left
+        // alone: this run goes unsaved rather than overwrite it.
+        if oneshot.is_none() {
+            if let Some(path) = persist_path.clone() {
+                match temur::session_store::archive_existing(
+                    &sessions_dir,
+                    &cwd,
+                    &path,
+                    std::time::SystemTime::now(),
+                ) {
+                    Ok(Some(a)) => pending_notices.insert(
+                        0,
+                        format!(
+                            "previous session archived as {a} (/resume {a} brings it back); \
+                             starting fresh"
+                        ),
+                    ),
+                    Ok(None) => {}
+                    Err(e) => {
+                        pending_notices.insert(
+                            0,
+                            format!(
+                                "could not archive the previous session: {e}; this run is not \
+                                 saved, so that file is left as it is"
+                            ),
+                        );
+                        persist_path = None;
+                        persist_off_reason = Some(
+                            "the previous session file could not be archived; see the startup notice",
+                        );
+                    }
+                }
+            }
+        }
         None
     };
 
@@ -887,6 +928,7 @@ fn repl(
                     provider_name: &mut provider_name,
                     model: &mut current_model,
                     persist_path: &mut persist_path,
+                    persist_off_reason,
                     session_max_bytes,
                     sessions_dir: &sessions_dir,
                     cwd: &cwd,
