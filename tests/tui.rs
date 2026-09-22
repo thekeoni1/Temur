@@ -3269,7 +3269,9 @@ struct P4Provider {
     block_compact: bool,
 }
 
-const COMPACT_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+/// Ten seconds (T66 P5, up from 3): far past any Esc delay on a loaded
+/// box, and still well inside the 30s seam watchdog.
+const COMPACT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Provider for P4Provider {
     fn stream(
@@ -3556,4 +3558,29 @@ fn stale_esc_does_not_cancel_compact_body() {
     let body = rows.join("\n");
     assert!(body.contains("compacted:"), "the compaction completes:\n{body}");
     assert!(!body.contains("compact cancelled"), "{body}");
+}
+
+/// (h) T66 P5: while /compact runs, the busy row's hint says what Enter is
+/// waiting for; a turn keeps "during turn".
+#[test]
+fn hint_says_compacting_while_compacting() {
+    seam("hint_says_compacting_while_compacting", hint_says_compacting_while_compacting_body);
+}
+
+fn hint_says_compacting_while_compacting_body() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = Session::new(Box::new(BlockUntilCancelled), Registry::standard(), p4_cfg(dir.path()));
+    let mut script: Vec<Event> = "/compact"
+        .chars()
+        .map(|c| Event::Key(key(KeyCode::Char(c))))
+        .collect();
+    script.push(Event::Key(key(KeyCode::Enter)));
+    let (mut ui, snapshot) = TuiUi::headless(p4_info(dir.path()), 100, 30, script, session.cancel_token());
+    let line = mark("ui.read_input", || ui.read_input()).expect("scripted submit reaches read_input");
+    assert_eq!(line, "/compact");
+    drop(ui); // the command never runs: this frame is the submitted state
+    let rows = snapshot.lock().unwrap().clone();
+    let body = rows.join("\n");
+    assert!(body.contains("(enter disabled while compacting)"), "the hint names the work:\n{body}");
+    assert!(!body.contains("during turn"), "{body}");
 }

@@ -548,8 +548,9 @@ so recent work stays byte-exact and a tool call is never split from its
 result. The summary rides INSIDE the tail's first user message as a
 leading `[conversation summary (compacted)]` block, and the compacted
 state is saved immediately, like `/clear`. It is fail-closed: a
-provider error, Ctrl+C (works like interrupting a turn), or an empty
-summary leaves the history exactly as it was and says so.
+provider error, an interrupt (Esc in the TUI, Ctrl+C in the plain REPL,
+as for a turn), or an empty summary leaves the history exactly as it
+was and says so.
 
 Two costs. First, the request after a `/compact` re-processes its
 now-short prompt from scratch, because the provider's cached prefix
@@ -1279,13 +1280,15 @@ the thinking indicator (dots in the plain REPL, a dim "thinking" line in
 the TUI) and does not print the text. The reasoning is kept in the session
 file and is not sent back to the server. It counts against `max_tokens`
 like the answer, so a reply cut off at `max_tokens` can be all reasoning
-and no answer: give a thinking model a `max_tokens` of 16384 or more.
+and no answer: give a reasoning model a `max_tokens` of half its context
+window, between 4096 and 16384, the figure `temur init` writes and
+`temur doctor` checks (below).
 `/status` shows the cap and where it came from (`max_tokens: 16384 (from
 profile "local")`). When the cap runs out before any answer, the notice
 says so:
 
 ```
-response truncated: max_tokens (4096, from config) reached while the model was still thinking (~4096 tokens of reasoning, no answer yet); raise max_tokens in config.json, 16384 or more for a thinking model
+response truncated: max_tokens (4096, from config) reached while the model was still thinking (~4096 tokens of reasoning, no answer yet); raise max_tokens in config.json (a reasoning model wants half the context window, 4096 to 16384; doctor says the figure)
 ```
 
 A reply that ends with reasoning and no answer gets its own notice:
@@ -1302,10 +1305,11 @@ temur recognises a reasoning model by its id (names containing
 model on the local template, `temur init` writes `max_tokens` as half the
 context window, between 4096 and 16384, instead of the usual 4096, and
 says so. Under a 32768-token window it also suggests restarting
-`llama-server` with `-c 32768`. `temur doctor` warns when a reasoning
-model's `max_tokens` is below that figure or its window is under 32768,
-and passes the profile otherwise. Other ids get the same 4096 and no
-extra lines.
+`llama-server` with `-c 32768`. On an OpenAI-compatible profile,
+`temur doctor` warns when a reasoning model's `max_tokens` is below that
+figure or its window is under 32768, and passes the profile otherwise.
+It adds nothing for an Anthropic profile, whose thinking has its own
+budget. Other ids get the same 4096 and no extra lines.
 
 ## Switching providers by model id (the T16 hop)
 

@@ -765,6 +765,9 @@ fn repl(
             // T6: the render thread holds the session's cancel token so
             // Esc can interrupt a running turn.
             session.cancel_token(),
+            // T66 P5: the same test as `replay_mode` below; a replay run's
+            // /compact makes no call, so the TUI does not show it working.
+            mock.is_some() || capture.is_some(),
         )?;
         // T21/T46: the TUI is interactive by construction, so it can ask.
         // T46 flips the DEFAULT here rather than in ToolCtx: an interactive

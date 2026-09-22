@@ -1731,6 +1731,20 @@ command left `submits` one behind for the rest of the session, so a
 stale PromptOpen could clear a later turn's busy state and disable Esc:
 the T48 wedge, latent since T48 P1 dated the signal. A test pins it.
 
+P5 closes the round. The reasoning-only truncation notice now ends
+"(a reasoning model wants half the context window, 4096 to 16384;
+doctor says the figure)". The flat 16384 it named before could exceed a
+small window, which is exactly what T42's doctor WARN flags, and it
+disagreed with the figure P3 derives. USAGE states the same rule, scopes
+doctor's reasoning lines to OpenAI-compatible profiles, and says what
+interrupts `/compact`: Esc in the TUI, Ctrl+C in the plain REPL (TUI
+Ctrl+C arms force-quit). The nits from P4's check are fixed. While
+compacting, the busy row's hint reads "(enter disabled while
+compacting)". Under `--mock` or `--capture-sse` the TUI no longer shows
+a compacting state for a command that makes no call: `TuiUi::new` takes
+the replay flag from its one caller. The Esc test's provider waits 10s
+instead of 3. README was checked against the tree and needed no change.
+
 The round is the dogfood round after v0.37.0, on a local `t66-stack`
 branch from `b8ff7c2`, and ships as v0.38.0. Every commit is cold-gated
 on rustc 1.96.1 in a fresh target dir.
@@ -1744,6 +1758,7 @@ on rustc 1.96.1 in a fresh target dir.
 | P2 | 8,335,084 |
 | P3 | 8,338,700 |
 | P4 | 8,339,340 |
+| P5 | 8,339,788 |
 
 ### Queued from dogfood 2026-09-19 (T66 plan, 2026-09-21)
 
@@ -1764,10 +1779,20 @@ the local-model audience.
 - P4 /compact shows a busy indicator.
 - P5 docs + CHANGELOG + ROADMAP row + eval tooling only.
 
+What T66 closed, by phase:
+
+- The Thinking model's empty turn (root cause A): P1 through P3.
+- `/clear` wiping the conversation, and a plain start overwriting it:
+  P0 and P0b.
+- `/compact` with no busy indicator: P4.
+- The `/usage` ask, the cap and its source in `/status`: P2.
+- P1b, displaying the reasoning text: operator decision pending.
+
 Held for evidence, both from the same dogfood round: the same answer
 returned twice (needs the session file and the llama-server log of that
 turn), and ctrl-c or "exit" ignored while idle after `/compact` (if it
-reproduces it joins P4 as a busy flag left set).
+reproduces it joins P4 as a busy flag left set). Both stay open after
+T66.
 
 Seeds queued with T66: display-math blocks (`\frac`, `\bar`, `\boxed`;
 T45 is inline-only); vision input on providers that take image blocks,

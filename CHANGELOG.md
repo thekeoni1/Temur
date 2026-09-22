@@ -37,7 +37,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 - The notices say when reasoning used up the reply. A reply cut off by
   `max_tokens` before the model wrote any answer now reads "reached while
   the model was still thinking (~N tokens of reasoning, no answer yet)"
-  and suggests 16384 or more for a thinking model; N is the server's
+  and says a reasoning model wants half the context window, 4096 to
+  16384 (next bullet); N is the server's
   output count, or the reasoning's length over four when the server
   reports none. A reply that finished with reasoning and no answer gets
   one notice saying so. The other truncation notices are unchanged.

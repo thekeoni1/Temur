@@ -124,6 +124,10 @@ pub struct App {
     /// provider-calling command runs (see [`App::begin_command_work`]).
     /// `None` for a turn, and cleared wherever `busy` clears.
     pub busy_label: Option<&'static str>,
+    /// T66 P5: the session runs under `--mock`/`--capture-sse`, where a
+    /// provider-calling command answers "unavailable" without a call, so
+    /// the render loop does not show it working. Set once at startup.
+    pub replay_mode: bool,
     /// T48/P1: how many lines have been submitted here. Monotonic, and the
     /// only thing `prompt_open_after` compares against; see there for why a
     /// count rather than a clock.
@@ -193,6 +197,7 @@ impl App {
             draft: String::new(),
             busy: false,
             busy_label: None,
+            replay_mode: false,
             submits: 0,
             armed_at_ms: None,
             interrupting: false,

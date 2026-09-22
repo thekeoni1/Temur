@@ -402,7 +402,14 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
         } else {
             vec![
                 Span::raw(format!("  {} {verb} ", app.spinner())),
-                Span::styled("esc interrupt · (enter disabled during turn)", dim()),
+                Span::styled(
+                    format!(
+                        "esc interrupt \u{b7} (enter disabled {})",
+                        // T66 P5: a provider-calling command is not a turn.
+                        if app.busy_label.is_some() { "while compacting" } else { "during turn" }
+                    ),
+                    dim(),
+                ),
             ]
         }
     } else if App::is_command_line(&app.input) {

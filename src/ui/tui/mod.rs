@@ -332,7 +332,10 @@ impl TuiUi {
     ///
     /// `cancel` is the session's cancel token (T6): the render thread holds
     /// this clone — never a `Session` reference — and sets it on Esc.
-    pub fn new(info: SessionInfo, cancel: CancelToken) -> std::io::Result<TuiUi> {
+    ///
+    /// `replay_mode` (T66 P5) is true under `--mock`/`--capture-sse`; see
+    /// [`App::replay_mode`].
+    pub fn new(info: SessionInfo, cancel: CancelToken, replay_mode: bool) -> std::io::Result<TuiUi> {
         // Fail fast on a broken tty from the calling thread, so the error
         // surfaces before the agent starts (raw-mode state is global).
         ratatui::crossterm::terminal::enable_raw_mode()?;
@@ -370,6 +373,7 @@ impl TuiUi {
                 app.host = info.host;
                 app.profiles = info.profiles;
                 app.provider = info.provider;
+                app.replay_mode = replay_mode;
                 let (_, end) =
                     render_loop(terminal, app, rx, tx_input, &mut CrosstermEvents, cancel);
                 set_bracketed_paste(false);
@@ -633,8 +637,11 @@ fn render_loop<B: Backend>(
                         // T66 P4: a command that calls the provider runs as
                         // long as a turn. Show it working, and give it the
                         // F7 treatment: a stale Esc must not cancel it, a
-                        // fresh one does.
-                        if crate::commands::calls_the_provider(&crate::commands::parse(&line)) {
+                        // fresh one does. Not in replay mode (T66 P5), where
+                        // the command makes no call.
+                        if !app.replay_mode
+                            && crate::commands::calls_the_provider(&crate::commands::parse(&line))
+                        {
                             cancel.clear();
                             app.begin_command_work(crate::commands::COMPACTING);
                         }
