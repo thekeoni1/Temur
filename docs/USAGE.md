@@ -103,7 +103,7 @@ through it and delete from it, but there is no cursor movement between
 lines and no editing of a block as a block.
 
 Interrupting drops whatever was queued behind it. Esc during a turn
-interrupts it, and Ctrl+C during a turn does too. If input was still
+interrupts it; in the plain REPL, Ctrl+C does too. If input was still
 arriving when you interrupt (a long paste still draining, say), that
 input is DISCARDED: it does not reach the input line and it does not
 start another turn once the interrupted one ends. Delivering it would
@@ -282,20 +282,21 @@ that keeps the remainder replayable; the in-memory conversation is
 never trimmed. Two processes in one directory don't corrupt anything:
 last complete writer wins.
 
-A saved conversation is not overwritten by starting over. Before a plain
-start (no `--continue` or `--resume`) writes its first turn over the
-directory's default file, it copies that file to an archive named by the
-UTC time, `YYYYMMDD-HHMMSS`, and says so: "previous session archived as
-<key>". `/clear` does the same for the session it clears, and a named
-session archives as `<name>-<stamp>`. `/resume <key>` brings an archive
-back and `/sessions` lists them. An empty session archives nothing. A
-`/clear` archive larger than the session size cap is trimmed like any
-save and says so. A default file that
-exists but cannot be read is never overwritten: that run goes unsaved
-and says why. One-shot `temur -p` is the exception: it is scripted, so
-it saves over the default file as before, and `temur --continue -p`
-chains onto it. Use `/new <name>` for a separate named file. Archives
-accumulate in the sessions dir until you delete them.
+A saved conversation is not overwritten by starting over. At startup, a
+plain start (no `--continue` or `--resume`) copies the directory's
+default file to an archive named by the UTC time, `YYYYMMDD-HHMMSS`,
+empties the default file, and says so: "previous session archived as
+<key>". A start that runs no turn therefore leaves one archive, not one
+per start, and `--continue` after it resumes empty. `/clear` does the
+same for the session it clears, and a named session archives as
+`<name>-<stamp>`. `/resume <key>` brings an archive back and `/sessions`
+lists them. An empty session archives nothing. A `/clear` archive larger
+than the session size cap is trimmed like any save and says so. A
+default file that exists but cannot be read is never overwritten: that
+run goes unsaved and says why. Use `/new <name>` for a separate named
+file. One-shot `temur -p` is the exception: it is scripted, so it saves
+over the default file as before, and `temur --continue -p` chains onto
+it. Archives accumulate in the sessions dir until you delete them.
 
 ## Context lifecycle
 
@@ -1288,7 +1289,7 @@ profile "local")`). When the cap runs out before any answer, the notice
 says so:
 
 ```
-response truncated: max_tokens (4096, from config) reached while the model was still thinking (~4096 tokens of reasoning, no answer yet); raise max_tokens in config.json (a reasoning model wants half the context window, 4096 to 16384; doctor says the figure)
+response truncated: max_tokens (4096, from config) reached while the model was still thinking (~4096 tokens of reasoning, no answer yet); raise max_tokens in config.json (on an OpenAI-compatible server a reasoning model wants half the context window, 4096 to 16384; doctor says the figure)
 ```
 
 A reply that ends with reasoning and no answer gets its own notice:

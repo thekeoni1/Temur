@@ -902,7 +902,7 @@ fn max_tokens_with_reasoning_only_names_the_thinking() {
     let events = collect_events(&mut session, "hi");
     assert_eq!(
         notices(&events),
-        vec!["response truncated: max_tokens (800, from config) reached while the model was still thinking (~4096 tokens of reasoning, no answer yet); raise max_tokens in config.json (a reasoning model wants half the context window, 4096 to 16384; doctor says the figure)".to_string()],
+        vec!["response truncated: max_tokens (800, from config) reached while the model was still thinking (~4096 tokens of reasoning, no answer yet); raise max_tokens in config.json (on an OpenAI-compatible server a reasoning model wants half the context window, 4096 to 16384; doctor says the figure)".to_string()],
         "{events:?}"
     );
 }
@@ -1022,7 +1022,7 @@ fn reasoning_estimate_falls_back_to_chars() {
     let events = collect_events(&mut session, "hi");
     assert_eq!(
         notices(&events),
-        vec![format!("{REASONING_ONLY_NOTICE_PREFIX} (~100 tokens of reasoning, no answer yet); raise max_tokens in config.json (a reasoning model wants half the context window, 4096 to 16384; doctor says the figure)")],
+        vec![format!("{REASONING_ONLY_NOTICE_PREFIX} (~100 tokens of reasoning, no answer yet); raise max_tokens in config.json (on an OpenAI-compatible server a reasoning model wants half the context window, 4096 to 16384; doctor says the figure)")],
         "{events:?}"
     );
 }
@@ -1052,7 +1052,7 @@ fn reasoning_only_truncation_with_tool_calls_is_reported_before_the_tools() {
         800,
     );
     let events = collect_events(&mut session, "hi");
-    let expected = format!("{REASONING_ONLY_NOTICE_PREFIX} (~700 tokens of reasoning, no answer yet); raise max_tokens in config.json (a reasoning model wants half the context window, 4096 to 16384; doctor says the figure)");
+    let expected = format!("{REASONING_ONLY_NOTICE_PREFIX} (~700 tokens of reasoning, no answer yet); raise max_tokens in config.json (on an OpenAI-compatible server a reasoning model wants half the context window, 4096 to 16384; doctor says the figure)");
     let notice_at = events
         .iter()
         .position(|e| matches!(e, AgentEvent::Notice(n) if *n == expected))

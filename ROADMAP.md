@@ -1745,6 +1745,18 @@ a compacting state for a command that makes no call: `TuiUi::new` takes
 the replay flag from its one caller. The Esc test's provider waits 10s
 instead of 3. README was checked against the tree and needed no change.
 
+P5b fixes a P0b defect P5's check found. The startup archive copied the
+default file and left it in place until the first turn saved over it, so
+a start that ran no turn left the same conversation to be archived again
+by the next start, one duplicate per start. After a successful archive,
+main.rs now saves the empty session to the default path, as `/clear`
+does. A failure there is a notice and nothing more, since the archive is
+already written. `--continue` after a turn-less start resumes empty. The
+notice's tail now says the figure applies on an OpenAI-compatible
+server, because doctor prints it only there and the notice fires on
+every provider. USAGE's Ctrl+C line is corrected for the TUI, where
+Ctrl+C arms force-quit and only Esc interrupts.
+
 The round is the dogfood round after v0.37.0, on a local `t66-stack`
 branch from `b8ff7c2`, and ships as v0.38.0. Every commit is cold-gated
 on rustc 1.96.1 in a fresh target dir.
@@ -1759,6 +1771,7 @@ on rustc 1.96.1 in a fresh target dir.
 | P3 | 8,338,700 |
 | P4 | 8,339,340 |
 | P5 | 8,339,788 |
+| P5b | 8,340,428 |
 
 ### Queued from dogfood 2026-09-19 (T66 plan, 2026-09-21)
 
@@ -1777,7 +1790,8 @@ the local-model audience.
 - P2 the truncation notice tells the truth, and /status shows the cap.
 - P3 doctor and init know a thinking model when they see one.
 - P4 /compact shows a busy indicator.
-- P5 docs + CHANGELOG + ROADMAP row + eval tooling only.
+- P5 docs close-out, one notice string, /compact nits; P5b the startup
+  archive empties its source.
 
 What T66 closed, by phase:
 

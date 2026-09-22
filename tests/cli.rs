@@ -2473,3 +2473,62 @@ fn plain_repl_prints_compacting_before_the_compacted_notice() {
     assert!(working < done, "compacting comes first:\n{stdout}");
     assert_eq!(stdout.matches("compacting\u{2026}").count(), 1, "{stdout}");
 }
+
+// ------------------------------- T66 P5b: a start that runs no turn archives once
+
+impl Sandbox {
+    /// A plain start that runs no turn: stdin is empty, so the REPL reads
+    /// EOF and quits.
+    fn turnless_start(&self) -> (i32, String, String) {
+        let mut c = self.cmd();
+        c.arg("--plain");
+        run(c, "")
+    }
+}
+
+/// (m) The startup archive empties the file it copied, so a second start
+/// that runs no turn finds nothing to archive: one archive, not two.
+#[test]
+fn two_turnless_starts_leave_one_archive() {
+    let sb = session_sandbox();
+    let (code, out, err) = sb.plain_turn(&[], "first question");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+
+    let (code, out, err) = sb.turnless_start();
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert!(out.contains("previous session archived as "), "the first start archives: {out}");
+    let (code, out, err) = sb.turnless_start();
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert!(!out.contains("archived"), "the second finds nothing to archive: {out}");
+
+    let files = sb.sessions();
+    let names: Vec<&String> = files.iter().map(|f| &f.0).collect();
+    assert_eq!(files.len(), 2, "one archive and the default: {names:?}");
+    let default_name = sb.default_session().file_name().unwrap().to_string_lossy().into_owned();
+    let (_, default) = files.iter().find(|f| f.0 == default_name).expect("the default file");
+    let (_, archive) = files.iter().find(|f| f.0 != default_name).expect("the archive");
+    assert!(default.history.is_empty(), "the default was emptied");
+    assert_eq!(archive.history.len(), 2, "the archive holds the first run's turn");
+    assert!(first_prompt(archive).contains("first question"));
+}
+
+/// (n) --continue after a start that ran no turn resumes the emptied
+/// default, not the conversation that start archived.
+#[test]
+fn continue_after_a_turnless_start_is_empty() {
+    let sb = session_sandbox();
+    let (code, out, err) = sb.plain_turn(&[], "first question");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    let (code, out, err) = sb.turnless_start();
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+
+    let (code, out, err) = sb.plain_turn(&["--continue"], "second question");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    let (_, default) = sb
+        .sessions()
+        .into_iter()
+        .find(|f| f.0 == sb.default_session().file_name().unwrap().to_string_lossy())
+        .expect("the default file");
+    assert_eq!(default.history.len(), 2, "only the second turn: the first was archived");
+    assert!(first_prompt(&default).contains("second question"));
+}

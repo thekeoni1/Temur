@@ -521,13 +521,44 @@ fn repl(
                     &path,
                     std::time::SystemTime::now(),
                 ) {
-                    Ok(Some(a)) => pending_notices.insert(
-                        0,
-                        format!(
-                            "previous session archived as {a} (/resume {a} brings it back); \
-                             starting fresh"
-                        ),
-                    ),
+                    Ok(Some(a)) => {
+                        // T66 P5b: empty the file just copied, the way /clear
+                        // saves its emptied session, so a start that runs no
+                        // turn does not leave it to be archived again by the
+                        // next one. On failure the archive is already safe:
+                        // say so and go on, and the first turn's save
+                        // overwrites the file as before.
+                        let empty = temur::session_store::SessionFileRef {
+                            version: temur::session_store::FORMAT_VERSION,
+                            provider: &resolved.provider,
+                            model: &model,
+                            cwd: &cwd_display,
+                            history: &[],
+                            session_usage: Default::default(),
+                            todos: &[],
+                            last_context_used: None,
+                            name: None,
+                            errors: &[],
+                        };
+                        if let Err(e) =
+                            temur::session_store::save(&path, &empty, session_max_bytes, &mut |_| {})
+                        {
+                            pending_notices.insert(
+                                0,
+                                format!(
+                                    "could not empty the archived session file: {e}; its \
+                                     contents stay there until this run's first turn saves"
+                                ),
+                            );
+                        }
+                        pending_notices.insert(
+                            0,
+                            format!(
+                                "previous session archived as {a} (/resume {a} brings it back); \
+                                 starting fresh"
+                            ),
+                        );
+                    }
                     Ok(None) => {}
                     Err(e) => {
                         pending_notices.insert(

@@ -17,6 +17,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   conversation. A plain start used to save its first turn straight over
   the directory's session file; it now copies that file to a timestamped
   archive first and prints the key, so `/resume <key>` brings it back.
+  The archived file is emptied at the same time, so a start that runs no
+  turn does not archive it again.
   A session file that exists but cannot be read is left untouched and
   that run goes unsaved. `--continue`, `--resume` and one-shot `-p` behave
   as before. A `/clear` archive cut to the session size cap now says so.
@@ -37,8 +39,8 @@ Newest first. Dates are release dates; "Unreleased" ships next.
 - The notices say when reasoning used up the reply. A reply cut off by
   `max_tokens` before the model wrote any answer now reads "reached while
   the model was still thinking (~N tokens of reasoning, no answer yet)"
-  and says a reasoning model wants half the context window, 4096 to
-  16384 (next bullet); N is the server's
+  and says that on an OpenAI-compatible server a reasoning model wants
+  half the context window, 4096 to 16384 (next bullet); N is the server's
   output count, or the reasoning's length over four when the server
   reports none. A reply that finished with reasoning and no answer gets
   one notice saying so. The other truncation notices are unchanged.

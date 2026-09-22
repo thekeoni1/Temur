@@ -1336,7 +1336,7 @@ impl Session {
             )
         } else if let Some(t) = reasoning_only_tokens(content, output_tokens) {
             format!(
-                "response truncated: max_tokens ({}, {}) reached while the model was still thinking (~{t} tokens of reasoning, no answer yet); raise max_tokens in config.json (a reasoning model wants half the context window, 4096 to 16384; doctor says the figure)",
+                "response truncated: max_tokens ({}, {}) reached while the model was still thinking (~{t} tokens of reasoning, no answer yet); raise max_tokens in config.json (on an OpenAI-compatible server a reasoning model wants half the context window, 4096 to 16384; doctor says the figure)",
                 self.cfg.max_tokens,
                 self.max_tokens_source_label()
             )
