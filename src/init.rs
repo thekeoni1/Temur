@@ -152,6 +152,18 @@ const ANTHROPIC_DEFAULT_PROFILE: &str = "sonnet";
 /// value, matching serve.sh's default CTX.
 const LOCAL_BAKED_CONTEXT_WINDOW: u64 = 8192;
 
+/// The local template's `max_tokens` for `model` in a `window`-token context
+/// (T66 P3): the recipe's 4096, or for a reasoning model enough room to
+/// think and still answer. `window` is the one being written, so the cap
+/// never exceeds it.
+fn local_max_tokens(model: &str, window: u64) -> u32 {
+    if crate::config::looks_like_reasoning_model(model) {
+        crate::config::reasoning_max_tokens(Some(window))
+    } else {
+        4096
+    }
+}
+
 const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 const XAI_BASE_URL: &str = "https://api.x.ai/v1";
@@ -261,15 +273,16 @@ fn render_config(
     match template.name {
         "local" => {
             let w = detected_window.unwrap_or(LOCAL_BAKED_CONTEXT_WINDOW);
+            let mt = local_max_tokens(model, w);
             match base_url {
                 Some(b) if b != crate::config::DEFAULT_OPENAI_COMPAT_BASE_URL => {
                     let b = serde_json::to_string(b).expect("string serializes");
                     format!(
-                        "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{ \"base_url\": {b},\n                     \"model\": {m}, \"context_window\": {w} }}\n}}\n"
+                        "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": {mt},\n  \"openai_compat\": {{ \"base_url\": {b},\n                     \"model\": {m}, \"context_window\": {w} }}\n}}\n"
                     )
                 }
                 _ => format!(
-                    "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": {{ \"model\": {m}, \"context_window\": {w} }}\n}}\n"
+                    "{{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": {mt},\n  \"openai_compat\": {{ \"model\": {m}, \"context_window\": {w} }}\n}}\n"
                 ),
             }
         }
@@ -454,6 +467,21 @@ fn ask_local_base_and_model(
         writeln!(
             out,
             "Server reports {n} tokens of context (/props n_ctx); writing \"context_window\": {n}."
+        )?;
+    }
+    // T66 P3: a reasoning model's thinking counts against max_tokens, so
+    // init writes a larger cap for one, and says so; other ids print nothing.
+    if crate::config::looks_like_reasoning_model(&picked) {
+        let w = detected.unwrap_or(LOCAL_BAKED_CONTEXT_WINDOW);
+        let want = local_max_tokens(&picked, w);
+        let room = if w < 32768 {
+            "; for room to think, start llama-server with -c 32768 and run temur init again"
+        } else {
+            ""
+        };
+        writeln!(
+            out,
+            "{picked} looks like a reasoning model; writing \"max_tokens\": {want} (its thinking counts against the cap){room}"
         )?;
     }
     Ok((base, picked, detected, server_up))
@@ -1062,6 +1090,8 @@ pub fn run_add(
         "local" => {
             let (base, model, detected, _up) =
                 ask_local_base_and_model(template, input, out, list_models, probe_context)?;
+            let window = detected.unwrap_or(LOCAL_BAKED_CONTEXT_WINDOW);
+            let max_tokens = local_max_tokens(&model, window);
             let mut p = serde_json::Map::new();
             p.insert("provider".to_string(), "openai-compat".into());
             p.insert("model".to_string(), model.into());
@@ -1072,12 +1102,10 @@ pub fn run_add(
             // the profile so switching to it behaves like a fresh local
             // config (a profile's absent max_tokens would inherit the
             // global value instead). context_window: the /props answer
-            // when the probe got one (T22), the baked value otherwise.
-            p.insert("max_tokens".to_string(), 4096.into());
-            p.insert(
-                "context_window".to_string(),
-                detected.unwrap_or(LOCAL_BAKED_CONTEXT_WINDOW).into(),
-            );
+            // when the probe got one (T22), the baked value otherwise;
+            // max_tokens: larger for a reasoning model (T66 P3).
+            p.insert("max_tokens".to_string(), max_tokens.into());
+            p.insert("context_window".to_string(), window.into());
             new_profiles.push((template.name.to_string(), p.into()));
         }
         "anthropic" => {
@@ -1449,6 +1477,49 @@ mod tests {
         );
         assert!(out.contains("/props"), "source named: {out}");
         assert!(out.contains("\"context_window\": 16384"), "{out}");
+    }
+
+    // ------------------------------------ T66 P3: a reasoning model by its id
+
+    #[test]
+    fn local_wizard_writes_a_reasoning_cap_and_says_so() {
+        // (f) A reasoning id in a 32768 window: 16384 written, one notice.
+        let list = |_: &str| Ok(ids(&["Qwen3-4B-Thinking-2507-Q4_K_M.gguf"]));
+        let (cfg, out) = run_wizard_probed("\n\n\n", &list, &|_| Some(32768)).unwrap();
+        assert_eq!(
+            cfg,
+            "{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 16384,\n  \"openai_compat\": { \"model\": \"Qwen3-4B-Thinking-2507-Q4_K_M.gguf\", \"context_window\": 32768 }\n}\n"
+        );
+        assert!(
+            out.contains("Server reports 32768 tokens of context (/props n_ctx); writing \"context_window\": 32768.\nQwen3-4B-Thinking-2507-Q4_K_M.gguf looks like a reasoning model; writing \"max_tokens\": 16384 (its thinking counts against the cap)\n"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn local_wizard_instruct_id_is_unchanged() {
+        // (f) control: an Instruct id renders today's bytes and prints no
+        // reasoning notice.
+        let list = |_: &str| Ok(ids(&["Qwen3-4B-Instruct-2507"]));
+        let (cfg, out) = run_wizard_probed("\n\n\n", &list, &|_| Some(32768)).unwrap();
+        assert_eq!(
+            cfg,
+            "{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": { \"model\": \"Qwen3-4B-Instruct-2507\", \"context_window\": 32768 }\n}\n"
+        );
+        assert!(!out.contains("reasoning model"), "{out}");
+    }
+
+    #[test]
+    fn local_wizard_reasoning_notice_in_a_small_window_names_the_c_flag() {
+        // (g) window 8192: the cap stays 4096 (half the window) and the
+        // notice says how to get room to think.
+        let list = |_: &str| Ok(ids(&["deepseek-r1:8b"]));
+        let (cfg, out) = run_wizard_probed("\n\n\n", &list, &|_| Some(8192)).unwrap();
+        assert!(cfg.contains("\"max_tokens\": 4096"), "{cfg}");
+        assert!(
+            out.contains("deepseek-r1:8b looks like a reasoning model; writing \"max_tokens\": 4096 (its thinking counts against the cap); for room to think, start llama-server with -c 32768 and run temur init again\n"),
+            "{out}"
+        );
     }
 
     #[test]

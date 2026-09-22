@@ -1700,6 +1700,20 @@ does not count it. Both are worked out before the history takes the
 content. `/status` prints the source beside `max_tokens`, from the same
 `max_tokens_source_label()` the notice uses.
 
+P3 lets doctor and init recognise a reasoning model. Doctor makes no
+model call, so the id is the only evidence:
+`config::looks_like_reasoning_model` matches an explicit substring list
+case-insensitively, and `config::reasoning_max_tokens` is half the
+window clamped to 4096..16384 (16384 when the window is unknown).
+Doctor's `max_tokens_check`, for openai-compat only, warns when the cap
+is below that figure and when the window is under 32768 (naming
+`llama-server -c`). It prints a PASS line when neither fires. Anthropic
+stays silent, since its thinking has its own budget. On the local
+template, init writes the figure for a reasoning id, computed from the
+window it writes, so the cap never exceeds it, and prints a notice after
+the "Server reports" line. Every other id renders the recipe's bytes.
+The default did not change.
+
 The round is the dogfood round after v0.37.0, on a local `t66-stack`
 branch from `b8ff7c2`, and ships as v0.38.0. Every commit is cold-gated
 on rustc 1.96.1 in a fresh target dir.
@@ -1711,6 +1725,7 @@ on rustc 1.96.1 in a fresh target dir.
 | P0b | 8,333,676 |
 | P1 | 8,333,036 |
 | P2 | 8,335,084 |
+| P3 | 8,338,700 |
 
 ### Queued from dogfood 2026-09-19 (T66 plan, 2026-09-21)
 

@@ -44,6 +44,15 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   `/status` shows where `max_tokens` came from, as in
   `max_tokens: 1024 (from config)`.
 
+- `temur init` and `temur doctor` recognise a reasoning model by its id
+  (Qwen3 Thinking, DeepSeek-R1, QwQ, the o-series, `gpt-5`). On the local
+  template, init writes `max_tokens` as half the context window, between
+  4096 and 16384, and prints a line saying why; below a 32768-token
+  window it suggests restarting `llama-server` with `-c 32768`. Doctor
+  warns when a reasoning model on an OpenAI-compatible server has a
+  smaller `max_tokens` than that, or a window under 32768. Every other
+  model id gets the same config and output as before.
+
 ## v0.37.0 - 2026-09-18
 
 - A refused `replaceAll` now says how to finish the rename. When some

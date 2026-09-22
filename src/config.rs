@@ -508,6 +508,41 @@ fn is_max_completion_tokens_model(model: &str) -> bool {
     c.next() == Some('o') && c.next().is_some_and(|d| d.is_ascii_digit())
 }
 
+/// Id fragments that mark a reasoning ("thinking") model (T66 P3). Doctor
+/// makes no model call, so the id is all there is to go on; the list is
+/// explicit so a new family is one line here, not a pattern to decode.
+const REASONING_MODEL_MARKERS: &[&str] = &[
+    "thinking",
+    "reason",
+    "-r1",
+    "qwq",
+    "deepseek-r1",
+    "/o1",
+    "/o3",
+    "o1-",
+    "o3-",
+    "o4-mini",
+    "gpt-5",
+];
+
+/// Does this model id look like a reasoning model (T66 P3)? Case-insensitive
+/// substring match against [`REASONING_MODEL_MARKERS`]. Its thinking counts
+/// against `max_tokens`, which is what doctor and init warn about.
+pub fn looks_like_reasoning_model(id: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+    REASONING_MODEL_MARKERS.iter().any(|m| id.contains(m))
+}
+
+/// The `max_tokens` a reasoning model needs to think and still answer (T66
+/// P3): half the context window, at least 4096 and at most 16384; 16384
+/// when the window is unknown.
+pub fn reasoning_max_tokens(window: Option<u64>) -> u32 {
+    match window {
+        Some(w) => (w / 2).clamp(4096, 16384) as u32,
+        None => 16384,
+    }
+}
+
 /// The host of a base URL, without pulling in a URL parser for one field:
 /// strip the scheme, then everything from the first `/`, `:` (port) or `@`
 /// (userinfo, which precedes the host and so disqualifies a bare match).
@@ -2082,5 +2117,42 @@ mod tests {
             ..swapped
         };
         assert_eq!(back.effective_max_tokens_parameter(), MaxTokens);
+    }
+
+    // ------------------------------------------- T66 P3: reasoning model ids
+
+    #[test]
+    fn looks_like_reasoning_model_table() {
+        for id in [
+            "Qwen3-4B-Thinking-2507-Q4_K_M.gguf",
+            "deepseek-r1:8b",
+            "DeepSeek-R1-Distill-Qwen-7B",
+            "QwQ-32B",
+            "o3-mini",
+            "openai/o1",
+            "gpt-5-mini",
+            "Phi-4-reasoning-plus",
+        ] {
+            assert!(looks_like_reasoning_model(id), "{id} should look like a reasoning model");
+        }
+        for id in [
+            "Qwen3-4B-Instruct-2507",
+            "llama-3.1-8b",
+            "claude-sonnet-5",
+            "gemini-2.5-flash",
+            "gpt-4o",
+            "phi-4",
+        ] {
+            assert!(!looks_like_reasoning_model(id), "{id} should not look like a reasoning model");
+        }
+    }
+
+    #[test]
+    fn reasoning_max_tokens_pins() {
+        assert_eq!(reasoning_max_tokens(Some(8192)), 4096);
+        assert_eq!(reasoning_max_tokens(Some(16384)), 8192);
+        assert_eq!(reasoning_max_tokens(Some(32768)), 16384);
+        assert_eq!(reasoning_max_tokens(Some(131072)), 16384);
+        assert_eq!(reasoning_max_tokens(None), 16384);
     }
 }

@@ -406,21 +406,49 @@ fn context_check(
 /// things that are broken. Silent when the two are consistent, and silent
 /// when no window is configured, since there is then nothing to compare
 /// against (the context check above already says so in that case).
+///
+/// T66 P3: then, for an openai-compat selection whose model id looks like a
+/// reasoning model, whether the cap leaves room to think
+/// ([`crate::config::reasoning_max_tokens`]) and whether the window is big
+/// enough to raise it. Anthropic and the rest stay silent: their thinking
+/// has its own budget.
 fn max_tokens_check(
     r: &mut Report<'_>,
     prefix: &str,
     p: &crate::config::ResolvedProfile,
 ) -> std::io::Result<()> {
-    let Some(window) = p.context_window else {
-        return Ok(());
-    };
-    if u64::from(p.max_tokens) <= window {
+    if let Some(window) = p.context_window {
+        if u64::from(p.max_tokens) > window {
+            r.warn(&format!(
+                "{prefix}max_tokens {} is larger than context_window {window}: the context advisory fires from the first response of every session, and every request reserves more output than the window can hold; lower max_tokens below {window} or raise context_window",
+                p.max_tokens
+            ))?;
+        }
+    }
+    if p.provider != "openai-compat" || !crate::config::looks_like_reasoning_model(&p.model) {
         return Ok(());
     }
-    r.warn(&format!(
-        "{prefix}max_tokens {} is larger than context_window {window}: the context advisory fires from the first response of every session, and every request reserves more output than the window can hold; lower max_tokens below {window} or raise context_window",
-        p.max_tokens
-    ))
+    let (m, n) = (&p.model, p.max_tokens);
+    let want = crate::config::reasoning_max_tokens(p.context_window);
+    let mut warned = false;
+    if n < want {
+        r.warn(&format!(
+            "{prefix}model {m} looks like a reasoning model and max_tokens is {n}: its thinking counts against that cap; set \"max_tokens\": {want} in config.json"
+        ))?;
+        warned = true;
+    }
+    if let Some(w) = p.context_window.filter(|w| *w < 32768) {
+        r.warn(&format!(
+            "{prefix}model {m} looks like a reasoning model and the context window is {w}: start llama-server with -c 32768 or more, then set \"context_window\" and \"max_tokens\" to match"
+        ))?;
+        warned = true;
+    }
+    if !warned {
+        r.pass(&format!(
+            "{prefix}model {m} looks like a reasoning model; max_tokens {n} covers its thinking"
+        ))?;
+    }
+    Ok(())
 }
 
 /// The tool definitions a real session would send, for the tools-drop
@@ -1993,6 +2021,64 @@ mod tests {
         );
         let (_, out) = doctor_over(&cfg, false);
         assert!(!out.contains("is larger than context_window"), "{out}");
+    }
+
+    // ---------------------------------- T66 P3: a reasoning model by its id
+
+    /// An offline openai-compat config for the reasoning checks.
+    fn reasoning_config(model: &str, max_tokens: u32, window: u64) -> String {
+        format!(
+            r#"{{"provider":"openai-compat","max_tokens":{max_tokens},"openai_compat":{{"base_url":"http://127.0.0.1:1/v1","model":"{model}","context_window":{window}}}}}"#
+        )
+    }
+
+    #[test]
+    fn reasoning_model_with_a_4096_cap_warns_to_raise_it() {
+        let (healthy, out) =
+            doctor_over(&reasoning_config("Qwen3-4B-Thinking-2507-Q4_K_M.gguf", 4096, 32768), true);
+        assert!(healthy, "WARN must never affect the exit code: {out}");
+        assert!(
+            out.contains("WARN: model Qwen3-4B-Thinking-2507-Q4_K_M.gguf looks like a reasoning model and max_tokens is 4096: its thinking counts against that cap; set \"max_tokens\": 16384 in config.json\n"),
+            "{out}"
+        );
+        assert!(!out.contains("the context window is"), "{out}");
+        assert!(!out.contains("covers its thinking"), "{out}");
+    }
+
+    #[test]
+    fn reasoning_model_in_an_8192_window_warns_about_the_window_and_not_the_cap() {
+        // want = reasoning_max_tokens(8192) = 4096, which the cap already
+        // meets, so only the window WARN fires.
+        let (healthy, out) = doctor_over(&reasoning_config("deepseek-r1:8b", 4096, 8192), true);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains("WARN: model deepseek-r1:8b looks like a reasoning model and the context window is 8192: start llama-server with -c 32768 or more, then set \"context_window\" and \"max_tokens\" to match\n"),
+            "{out}"
+        );
+        assert!(!out.contains("its thinking counts against that cap"), "{out}");
+        assert!(!out.contains("covers its thinking"), "{out}");
+    }
+
+    #[test]
+    fn reasoning_model_with_room_to_think_passes() {
+        let (healthy, out) = doctor_over(&reasoning_config("QwQ-32B", 16384, 32768), true);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains("PASS: model QwQ-32B looks like a reasoning model; max_tokens 16384 covers its thinking\n"),
+            "{out}"
+        );
+        assert!(!out.contains("looks like a reasoning model and"), "{out}");
+    }
+
+    #[test]
+    fn an_anthropic_id_that_says_thinking_stays_silent() {
+        // (e) control: an anthropic id with "thinking" in it says nothing;
+        // its thinking has its own budget. The cap over the window makes
+        // the T42 rule speak, which shows the check ran for this profile.
+        let cfg = r#"{"profiles":{"hosted":{"provider":"anthropic","model":"claude-thinking-test","max_tokens":16000,"context_window":8192,"api_key_file":"/nonexistent/temur-test-key"}},"profile":"hosted"}"#;
+        let (_, out) = doctor_over(cfg, true);
+        assert!(out.contains("max_tokens 16000 is larger than context_window 8192"), "{out}");
+        assert!(!out.contains("looks like a reasoning model"), "{out}");
     }
 
     /// T63 P4 (D25, Ruling T63-7): served comes from the listing's meta when

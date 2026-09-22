@@ -1295,6 +1295,16 @@ the model produced reasoning only and no answer (~512 tokens); ask again, or rai
 The token count is what the server reported, or the reasoning's length
 over four when it reports none.
 
+temur recognises a reasoning model by its id (names containing
+`thinking`, `reason`, `-r1`, `qwq`, the o-series or `gpt-5`). For such a
+model on the local template, `temur init` writes `max_tokens` as half the
+context window, between 4096 and 16384, instead of the usual 4096, and
+says so. Under a 32768-token window it also suggests restarting
+`llama-server` with `-c 32768`. `temur doctor` warns when a reasoning
+model's `max_tokens` is below that figure or its window is under 32768,
+and passes the profile otherwise. Other ids get the same 4096 and no
+extra lines.
+
 ## Switching providers by model id (the T16 hop)
 
 When an anthropic profile is configured (the Anthropic init template
