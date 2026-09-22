@@ -452,7 +452,19 @@ impl From<&neutral::RequestMessage> for RequestMessage {
     fn from(m: &neutral::RequestMessage) -> Self {
         RequestMessage {
             role: m.role.into(),
-            content: m.content.iter().map(Into::into).collect(),
+            // An unsigned Thinking block came from another wire (T66 P1:
+            // an openai-compat server's reasoning_content). The API verifies
+            // thinking by its signature, so the block is skipped here, the
+            // way openai-compat skips every Thinking block. A session that
+            // reasoned on a local model can then switch to an Anthropic one.
+            content: m
+                .content
+                .iter()
+                .filter(|b| {
+                    !matches!(b, neutral::ContentBlock::Thinking { signature: None, .. })
+                })
+                .map(Into::into)
+                .collect(),
         }
     }
 }

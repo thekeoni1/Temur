@@ -242,6 +242,18 @@ pub struct Delta {
     pub refusal: Option<String>,
     #[serde(default)]
     pub tool_calls: Vec<ToolCallDelta>,
+    /// The model's reasoning, streamed ahead of the answer (T66 P1).
+    /// llama.cpp sends it by default (`--reasoning-format deepseek`), as
+    /// do vLLM, DeepSeek and xAI.
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
+    /// The same thing under the name some proxies use, read only when
+    /// `reasoning_content` is absent. A separate field rather than a serde
+    /// alias: with an alias, a delta carrying both names fails to parse
+    /// as a duplicate field, and a chunk that fails to parse ends the
+    /// stream.
+    #[serde(default)]
+    pub reasoning: Option<String>,
 }
 
 /// A tool-call fragment. OpenAI addresses fragments by `index` and sends
@@ -469,6 +481,10 @@ pub struct ChunkAccumulator {
     id: Option<String>,
     model: Option<String>,
     text: String,
+    /// Reasoning deltas (T66 P1), assembled into a leading Thinking block:
+    /// `reasoning_content`, or `reasoning` when a delta has no
+    /// `reasoning_content`.
+    reasoning: String,
     refusal: String,
     calls: Vec<PendingCall>,
     finish_reason: Option<String>,
@@ -496,6 +512,15 @@ impl ChunkAccumulator {
         let Some(choice) = chunk.choices.first() else {
             return; // usage-only final chunk has an empty choices array
         };
+        // T66 P1: reasoning before content, so a chunk carrying both emits
+        // its events in the order the model produced them.
+        let delta = &choice.delta;
+        if let Some(r) = delta.reasoning_content.as_ref().or(delta.reasoning.as_ref()) {
+            if !r.is_empty() {
+                self.reasoning.push_str(r);
+                on_event(StreamEvent::ThinkingDelta(r.clone()));
+            }
+        }
         if let Some(text) = &choice.delta.content {
             if !text.is_empty() {
                 self.text.push_str(text);
@@ -571,6 +596,15 @@ impl ChunkAccumulator {
             return None;
         }
         let mut content = vec![];
+        // T66 P1: Thinking first, then text, then tool uses, the order the
+        // Anthropic path produces. No signature: this wire has none, and
+        // convert_history never sends the block back.
+        if !self.reasoning.is_empty() {
+            content.push(neutral::ContentBlock::Thinking {
+                thinking: self.reasoning,
+                signature: None,
+            });
+        }
         if !self.text.is_empty() {
             content.push(neutral::ContentBlock::Text { text: self.text });
         }

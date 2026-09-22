@@ -1,0 +1,14 @@
+data: {"id":"chatcmpl-t66p1b","object":"chat.completion.chunk","created":1790000000,"model":"qwen3-4b-thinking-2507","system_fingerprint":"b10438-t66p1","choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-t66p1b","object":"chat.completion.chunk","created":1790000000,"model":"qwen3-4b-thinking-2507","system_fingerprint":"b10438-t66p1","choices":[{"index":0,"delta":{"reasoning_content":"Let me think about"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-t66p1b","object":"chat.completion.chunk","created":1790000000,"model":"qwen3-4b-thinking-2507","system_fingerprint":"b10438-t66p1","choices":[{"index":0,"delta":{"reasoning_content":" this carefully, step"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-t66p1b","object":"chat.completion.chunk","created":1790000000,"model":"qwen3-4b-thinking-2507","system_fingerprint":"b10438-t66p1","choices":[{"index":0,"delta":{"reasoning_content":" by step, and then"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-t66p1b","object":"chat.completion.chunk","created":1790000000,"model":"qwen3-4b-thinking-2507","system_fingerprint":"b10438-t66p1","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}
+
+data: {"id":"chatcmpl-t66p1b","object":"chat.completion.chunk","created":1790000000,"model":"qwen3-4b-thinking-2507","system_fingerprint":"b10438-t66p1","choices":[],"usage":{"prompt_tokens":31,"completion_tokens":64,"total_tokens":95}}
+
+data: [DONE]
+

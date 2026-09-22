@@ -206,9 +206,11 @@ fn golden_pause_resume() {
                 ContentBlock::Text {
                     text: "part one...".into(),
                 },
+                // Signed, as every Anthropic thinking block is: an unsigned
+                // one came from another wire and is not sent (T66 P1 amend).
                 ContentBlock::Thinking {
                     thinking: "continuing".into(),
-                    signature: None,
+                    signature: Some("EqQBCgIYAhIkSig=".into()),
                 },
             ],
         },
@@ -468,4 +470,128 @@ fn two_turns_send_a_byte_identical_system_prefix() {
         .as_str()
         .unwrap()
         .contains("CHANGED UNDERNEATH"));
+}
+
+// ------------- T66 P1 amend: unsigned Thinking stays off the Anthropic wire
+
+/// The assistant history an openai-compat reasoning turn leaves behind,
+/// with the Thinking block's signature as given.
+fn reasoned_history(signature: Option<&str>) -> Vec<RequestMessage> {
+    vec![
+        user_text("hello"),
+        RequestMessage {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "local reasoning".into(),
+                    signature: signature.map(Into::into),
+                },
+                ContentBlock::Text { text: "Hi.".into() },
+            ],
+        },
+        user_text("again"),
+    ]
+}
+
+/// T66 P1 amend (h): an unsigned Thinking block came from another wire, so
+/// the Anthropic request carries the Text alone.
+#[test]
+fn unsigned_thinking_is_not_sent_to_anthropic() {
+    let mut req = base_request();
+    req.tools = vec![];
+    req.messages = reasoned_history(None);
+    let body = body_for(&req);
+    assert!(!body.contains("local reasoning"), "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let content = v["messages"][1]["content"].as_array().unwrap();
+    assert_eq!(content.len(), 1, "{body}");
+    assert_eq!(content[0]["type"], "text");
+    assert_eq!(content[0]["text"], "Hi.");
+}
+
+/// T66 P1 amend (h), the control: a signed Thinking block is Anthropic's
+/// own and still goes back verbatim.
+#[test]
+fn signed_thinking_is_still_sent_to_anthropic() {
+    let mut req = base_request();
+    req.tools = vec![];
+    req.messages = reasoned_history(Some("EqQBCgIYAhIkSig="));
+    let v: serde_json::Value = serde_json::from_str(&body_for(&req)).unwrap();
+    let content = v["messages"][1]["content"].as_array().unwrap();
+    assert_eq!(content.len(), 2);
+    assert_eq!(content[0]["type"], "thinking");
+    assert_eq!(content[0]["thinking"], "local reasoning");
+    assert_eq!(content[0]["signature"], "EqQBCgIYAhIkSig=");
+}
+
+/// T66 P1 amend (j): an assistant reply that was only unsigned Thinking
+/// leaves nothing to send, so it is omitted, and the user messages on
+/// either side become one, blocks in order. No empty assistant message and
+/// no two user messages in a row.
+#[test]
+fn a_thinking_only_reply_is_omitted_and_its_neighbours_merge() {
+    let mut req = base_request();
+    req.tools = vec![];
+    req.messages = vec![
+        RequestMessage {
+            role: Role::User,
+            content: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "toolu_01".into(),
+                    content: "result one".into(),
+                    is_error: false,
+                },
+                ContentBlock::Text { text: "first question".into() },
+            ],
+        },
+        RequestMessage {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Thinking {
+                thinking: "thought, and nothing else".into(),
+                signature: None,
+            }],
+        },
+        user_text("second question"),
+    ];
+    let body = body_for(&req);
+    assert!(!body.contains("thought, and nothing else"), "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let msgs = v["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 1, "{body}");
+    assert_eq!(msgs[0]["role"], "user");
+    let blocks: Vec<(&str, &str)> = msgs[0]["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| {
+            let t = b["type"].as_str().unwrap();
+            let s = b["text"].as_str().or(b["content"].as_str()).unwrap_or("");
+            (t, s)
+        })
+        .collect();
+    assert_eq!(
+        blocks,
+        vec![
+            ("tool_result", "result one"),
+            ("text", "first question"),
+            ("text", "second question"),
+        ]
+    );
+}
+
+/// T66 P1 amend (j), the control: a reply that keeps its Text is sent, so
+/// nothing is omitted and nothing merges.
+#[test]
+fn a_reply_with_text_is_neither_omitted_nor_merged() {
+    let mut req = base_request();
+    req.tools = vec![];
+    req.messages = reasoned_history(None);
+    let v: serde_json::Value = serde_json::from_str(&body_for(&req)).unwrap();
+    let roles: Vec<&str> = v["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(roles, vec!["user", "assistant", "user"]);
 }

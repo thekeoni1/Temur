@@ -1665,6 +1665,22 @@ plain start name, collide and save through one helper,
 the start archives the file on disk. A `/clear` archive cut to the size
 cap now says so instead of trimming silently.
 
+P1 reads a thinking model's reasoning on the openai-compat wire.
+llama.cpp streams it as `delta.reasoning_content` by default
+(`--reasoning-format deepseek`), as do vLLM, DeepSeek and xAI; some
+proxies call it `reasoning`. `ChunkAccumulator` collects it, emits
+`ThinkingDelta` as it arrives, and puts a neutral `Thinking` block with
+no signature ahead of the text and tool uses, the order the Anthropic
+path produces. The two names are separate fields rather than the serde
+alias the plan named: with an alias, a delta carrying both fails to
+parse as a duplicate field, and a chunk that fails to parse ends the
+stream. `convert_history` already dropped Thinking and RedactedThinking
+on this wire; a test now pins it for the unsigned block this wire
+produces. Rendering is unchanged (one thinking cell in the TUI, dots in
+the REPL), no wire displays the reasoning text, and the session file
+keeps the block. The provider has no non-stream path, so there was
+nothing to map there.
+
 The round is the dogfood round after v0.37.0, on a local `t66-stack`
 branch from `b8ff7c2`, and ships as v0.38.0. Every commit is cold-gated
 on rustc 1.96.1 in a fresh target dir.
@@ -1674,6 +1690,7 @@ on rustc 1.96.1 in a fresh target dir.
 | T65 (P5) | 8,326,124 |
 | P0 | 8,329,964 |
 | P0b | 8,333,676 |
+| P1 | 8,333,036 |
 
 ### Queued from dogfood 2026-09-19 (T66 plan, 2026-09-21)
 

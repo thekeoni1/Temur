@@ -1,0 +1,12 @@
+data: {"id":"chatcmpl-t66p1c","object":"chat.completion.chunk","created":1790000000,"model":"qwen3-4b-thinking-2507","system_fingerprint":"b10438-t66p1","choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-t66p1c","object":"chat.completion.chunk","created":1790000000,"model":"qwen3-4b-thinking-2507","system_fingerprint":"b10438-t66p1","choices":[{"index":0,"delta":{"reasoning_content":"Nothing to add;"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-t66p1c","object":"chat.completion.chunk","created":1790000000,"model":"qwen3-4b-thinking-2507","system_fingerprint":"b10438-t66p1","choices":[{"index":0,"delta":{"reasoning_content":" the answer is already given."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-t66p1c","object":"chat.completion.chunk","created":1790000000,"model":"qwen3-4b-thinking-2507","system_fingerprint":"b10438-t66p1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-t66p1c","object":"chat.completion.chunk","created":1790000000,"model":"qwen3-4b-thinking-2507","system_fingerprint":"b10438-t66p1","choices":[],"usage":{"prompt_tokens":31,"completion_tokens":12,"total_tokens":43}}
+
+data: [DONE]
+

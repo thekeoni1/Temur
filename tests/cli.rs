@@ -2186,12 +2186,12 @@ fn status_repeats_the_line_mid_session() {
 /// A canned openai-compat server that answers by METHOD for the life of the
 /// test process: every GET is a one-model listing (the startup probe, which
 /// may also ask /props; the listing body answers that harmlessly), every
-/// POST is the same plain text reply. The session tests below care about
-/// the files a run leaves, not about the order of the probe requests.
-fn routed_server() -> String {
+/// POST is the same reply, the `sse` fixture. The session tests below care
+/// about the files a run leaves, not about the order of the probe requests.
+fn routed_server(sse: &str) -> String {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://127.0.0.1:{}/v1", listener.local_addr().unwrap().port());
-    let sse = std::fs::read_to_string(fixture("openai/text_simple.sse")).unwrap();
+    let sse = std::fs::read_to_string(fixture(sse)).unwrap();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             use std::io::Read;
@@ -2223,7 +2223,12 @@ fn routed_server() -> String {
 /// A sandbox configured for keyless openai-compat against `routed_server`,
 /// with a window set so the run is the plain local shape.
 fn session_sandbox() -> Sandbox {
-    let base = routed_server();
+    session_sandbox_serving("openai/text_simple.sse")
+}
+
+/// The same, with the server answering every POST with `sse` (T66 P1).
+fn session_sandbox_serving(sse: &str) -> Sandbox {
+    let base = routed_server(sse);
     let sb = sandbox();
     sb.write_config(&format!(
         r#"{{"provider":"openai-compat","openai_compat":{{"base_url":"{base}","model":"local-gguf","context_window":32768}}}}"#
@@ -2400,4 +2405,49 @@ fn status_under_mock_still_says_mock() {
     assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
     assert!(out.contains("session file: persistence disabled (--mock)"), "{out}");
     assert!(!out.contains("could not be archived"), "{out}");
+}
+
+// ------------------------------------ T66 P1: reasoning_content on the wire
+
+/// T66 P1 (d): a one-shot answer from a thinking model. stdout is the
+/// answer alone; the reasoning reaches neither stream as text (stderr gets
+/// the passive "." indicator, as for any thinking delta).
+#[test]
+fn oneshot_prints_the_answer_and_not_the_reasoning() {
+    let sb = sandbox();
+    sb.write_config(r#"{"provider":"openai-compat","openai_compat":{"model":"mock-local"}}"#);
+    let mut c = sb.cmd();
+    c.args(["--mock", &fixture("openai/reasoning_then_text.sse"), "-p", "say hello"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(stdout, "Hi there, friend!\n", "stdout: {stdout:?}");
+    for reasoning in ["The user", "wants a greeting", "Keep it short"] {
+        assert!(!stderr.contains(reasoning), "{reasoning} on stderr: {stderr}");
+    }
+}
+
+/// T66 P1 (e): the saved session keeps the reasoning, as a Thinking block
+/// ahead of the answer in the assistant message.
+#[test]
+fn saved_session_keeps_the_reasoning_as_a_thinking_block() {
+    let sb = session_sandbox_serving("openai/reasoning_then_text.sse");
+    let (code, out, err) = sb.plain_turn(&[], "say hello");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    let files = sb.sessions();
+    assert_eq!(files.len(), 1, "one default session file");
+    let history = &files[0].1.history;
+    let assistant = history
+        .iter()
+        .find(|m| m.role == temur::provider::Role::Assistant)
+        .expect("an assistant message");
+    assert_eq!(
+        assistant.content,
+        vec![
+            temur::provider::ContentBlock::Thinking {
+                thinking: "The user wants a greeting. Keep it short.".into(),
+                signature: None,
+            },
+            temur::provider::ContentBlock::Text { text: "Hi there, friend!".into() },
+        ]
+    );
 }

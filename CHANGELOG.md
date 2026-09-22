@@ -21,6 +21,19 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   that run goes unsaved. `--continue`, `--resume` and one-shot `-p` behave
   as before. A `/clear` archive cut to the session size cap now says so.
 
+- A thinking model's reasoning on an OpenAI-compatible server is no
+  longer dropped. llama.cpp (by default), vLLM, DeepSeek and xAI stream
+  it as `reasoning_content`, and some proxies as `reasoning`. It shows as
+  the thinking indicator, as on the anthropic provider, and is kept in
+  the session file. A reply cut off by `max_tokens` mid-thought used to
+  come back empty and now keeps what the model thought. The reasoning is
+  never sent back to the server, and it is left out of requests to an
+  Anthropic model too, which verifies thinking by a signature this
+  reasoning does not have. A session that reasoned on a local model can
+  therefore switch to an Anthropic model; a reply that was only
+  reasoning is dropped from that request, and the prompts on either side
+  of it are sent as one message.
+
 ## v0.37.0 - 2026-09-18
 
 - A refused `replaceAll` now says how to finish the rename. When some

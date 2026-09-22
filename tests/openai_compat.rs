@@ -1768,3 +1768,207 @@ fn d19_a_value_error_naming_the_same_field_does_not_retry() {
         other => panic!("expected Api error, got {other:?}"),
     }
 }
+
+// ------------------------------- T66 P1: reasoning_content as a Thinking block
+//
+// llama.cpp (--reasoning-format deepseek, its default), vLLM, DeepSeek and
+// xAI stream a thinking model's reasoning in `delta.reasoning_content`,
+// ahead of the answer. These drive the accumulator directly, one fixture
+// chunk at a time, the way `drive` does.
+
+/// Every event and the assembled message for a list of `data:` payloads.
+fn accumulate_chunks(chunks: &[String]) -> (Vec<StreamEvent>, ResponseMessage) {
+    use temur::provider::openai_compat::types::{Chunk, ChunkAccumulator};
+    let mut acc = ChunkAccumulator::new();
+    let mut events = vec![];
+    for data in chunks {
+        let chunk: Chunk = serde_json::from_str(data).unwrap_or_else(|e| panic!("{e}: {data}"));
+        acc.push(&chunk, &mut |e| events.push(e));
+    }
+    (events, acc.into_message("fallback-model").expect("a message"))
+}
+
+/// The same for a fixture file under tests/fixtures/openai/.
+fn accumulate(fixture: &str) -> (Vec<StreamEvent>, ResponseMessage) {
+    use temur::provider::sse::SseFrames;
+    let path = format!("{}/tests/fixtures/openai/{fixture}.sse", env!("CARGO_MANIFEST_DIR"));
+    let file = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+    let chunks: Vec<String> = SseFrames::new(file)
+        .map(|f| f.unwrap())
+        .take_while(|d| d.trim() != "[DONE]")
+        .collect();
+    accumulate_chunks(&chunks)
+}
+
+/// T66 P1 (a): three reasoning deltas, then two content deltas. The events
+/// arrive in wire order and the content leads with the Thinking block.
+#[test]
+fn reasoning_then_text_leads_with_a_thinking_block() {
+    let (events, msg) = accumulate("reasoning_then_text");
+    assert_eq!(
+        events,
+        vec![
+            StreamEvent::ThinkingDelta("The user".into()),
+            StreamEvent::ThinkingDelta(" wants a greeting.".into()),
+            StreamEvent::ThinkingDelta(" Keep it short.".into()),
+            StreamEvent::TextDelta("Hi there".into()),
+            StreamEvent::TextDelta(", friend!".into()),
+        ]
+    );
+    assert_eq!(
+        msg.content,
+        vec![
+            ContentBlock::Thinking {
+                thinking: "The user wants a greeting. Keep it short.".into(),
+                signature: None,
+            },
+            ContentBlock::Text { text: "Hi there, friend!".into() },
+        ]
+    );
+    assert_eq!(msg.stop_reason, Some(StopReason::EndTurn));
+    assert_eq!(msg.usage.output_tokens, Some(17));
+}
+
+/// T66 P1 (b): the model ran out of tokens while still thinking. The
+/// reasoning survives as the only block, and the stop says max_tokens.
+#[test]
+fn reasoning_only_length_is_a_lone_thinking_block() {
+    let (events, msg) = accumulate("reasoning_only_length");
+    assert_eq!(events.len(), 3, "{events:?}");
+    assert!(events.iter().all(|e| matches!(e, StreamEvent::ThinkingDelta(_))), "{events:?}");
+    assert_eq!(
+        msg.content,
+        vec![ContentBlock::Thinking {
+            thinking: "Let me think about this carefully, step by step, and then".into(),
+            signature: None,
+        }]
+    );
+    assert_eq!(msg.stop_reason, Some(StopReason::MaxTokens));
+}
+
+/// T66 P1 (c): `reasoning` alone reads like `reasoning_content`, and a
+/// delta carrying both names still parses, with `reasoning_content` winning
+/// (Ruling on Design 1: two fields, not a serde alias).
+#[test]
+fn reasoning_under_either_name() {
+    let chunk = |delta: &str| {
+        format!(r#"{{"id":"c1","model":"m","choices":[{{"index":0,"delta":{delta}}}]}}"#)
+    };
+    let finish = r#"{"id":"c1","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#;
+
+    let (events, msg) = accumulate_chunks(&[
+        chunk(r#"{"reasoning":"think"}"#),
+        chunk(r#"{"content":"answer"}"#),
+        finish.to_string(),
+    ]);
+    assert_eq!(
+        events,
+        vec![
+            StreamEvent::ThinkingDelta("think".into()),
+            StreamEvent::TextDelta("answer".into()),
+        ]
+    );
+    assert_eq!(
+        msg.content,
+        vec![
+            ContentBlock::Thinking { thinking: "think".into(), signature: None },
+            ContentBlock::Text { text: "answer".into() },
+        ]
+    );
+
+    let (events, msg) = accumulate_chunks(&[
+        chunk(r#"{"reasoning_content":"primary","reasoning":"secondary"}"#),
+        finish.to_string(),
+    ]);
+    assert_eq!(events, vec![StreamEvent::ThinkingDelta("primary".into())]);
+    assert_eq!(
+        msg.content,
+        vec![ContentBlock::Thinking { thinking: "primary".into(), signature: None }]
+    );
+}
+
+/// T66 P1 (f): the send side never puts reasoning back on this wire. A
+/// Thinking block without a signature (what this wire produces), one with
+/// a signature, and a RedactedThinking are all dropped, without a panic,
+/// and a Thinking-only assistant message becomes an empty one.
+#[test]
+fn thinking_never_goes_back_on_this_wire() {
+    let (_, answered) = accumulate("reasoning_then_text");
+    let wire = temur::provider::openai_compat::types::convert_history(&[
+        RequestMessage {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: "hello".into() }],
+        },
+        RequestMessage {
+            role: Role::Assistant,
+            content: answered.content,
+        },
+        RequestMessage {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: "and again".into() }],
+        },
+        RequestMessage {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "signed reasoning".into(),
+                    signature: Some("sig".into()),
+                },
+                ContentBlock::RedactedThinking { data: "opaque".into() },
+            ],
+        },
+    ]);
+    let body = serde_json::to_string(&wire).unwrap();
+    for leaked in ["wants a greeting", "signed reasoning", "opaque", "reasoning_content", "thinking"] {
+        assert!(!body.contains(leaked), "{leaked} leaked: {body}");
+    }
+    let roles: Vec<&str> = wire.iter().map(|m| m.role).collect();
+    assert_eq!(roles, vec!["user", "assistant", "user", "assistant"]);
+    assert_eq!(wire[1].content.as_deref(), Some("Hi there, friend!"));
+    assert_eq!(wire[3].content.as_deref(), Some(""), "thinking-only stays wire-legal");
+}
+
+/// T66 P1 (g), the controls: fixtures with no reasoning assemble exactly as
+/// before, with no Thinking block and no ThinkingDelta.
+#[test]
+fn fixtures_without_reasoning_are_unchanged() {
+    let (events, msg) = accumulate("text_simple");
+    assert!(!events.iter().any(|e| matches!(e, StreamEvent::ThinkingDelta(_))));
+    assert_eq!(msg.content, vec![ContentBlock::Text { text: "Hello, world!".into() }]);
+    assert_eq!(msg.stop_reason, Some(StopReason::EndTurn));
+
+    let (events, msg) = accumulate("length_stop");
+    assert!(!events.iter().any(|e| matches!(e, StreamEvent::ThinkingDelta(_))));
+    assert_eq!(
+        msg.content,
+        vec![ContentBlock::Text { text: "This answer was going to be very lo".into() }]
+    );
+    assert_eq!(msg.stop_reason, Some(StopReason::MaxTokens));
+
+    let (events, msg) = accumulate("gemini_thinking_gap");
+    assert!(!events.iter().any(|e| matches!(e, StreamEvent::ThinkingDelta(_))));
+    assert_eq!(msg.content, vec![ContentBlock::Text { text: "ok".into() }]);
+    assert_eq!(msg.usage.output_tokens, Some(28));
+}
+
+/// T66 P1 amend (i): a reasoning-only stream that ends "stop" is a lone
+/// Thinking block and an EndTurn.
+#[test]
+fn reasoning_only_stop_is_a_thinking_block_and_end_turn() {
+    let (events, msg) = accumulate("reasoning_only_stop");
+    assert_eq!(
+        events,
+        vec![
+            StreamEvent::ThinkingDelta("Nothing to add;".into()),
+            StreamEvent::ThinkingDelta(" the answer is already given.".into()),
+        ]
+    );
+    assert_eq!(
+        msg.content,
+        vec![ContentBlock::Thinking {
+            thinking: "Nothing to add; the answer is already given.".into(),
+            signature: None,
+        }]
+    );
+    assert_eq!(msg.stop_reason, Some(StopReason::EndTurn));
+}

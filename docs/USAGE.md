@@ -77,8 +77,10 @@ What each kind of line means:
   stops such as `[!] stopped: two tool calls alternated 3 times in a
   row` (the doom-loop guard; both examples are from real runs).
 - A row of dots (`.`) is streamed thinking activity, shown as a
-  passive indicator. Only the anthropic provider uses thinking, and it
-  is off by default (`/thinking on` flips it for the session).
+  passive indicator. On the anthropic provider thinking is off by
+  default (`/thinking on` flips it for the session). A reasoning model
+  on an OpenAI-compatible server thinks whenever its server lets it; see
+  "Picking and keeping a model".
 
 To leave: `exit`, `quit`, or Ctrl+D (EOF); temur prints `bye`. Ctrl+C
 during a turn interrupts the turn and leaves the program running
@@ -1268,6 +1270,15 @@ temur 0.5.0 (model=qwen3-1.7b, thinking=false)
 `/model --save` (no id) persists whatever is currently active. `--save`
 with a profile name is a clean error: the startup profile is the
 `profile` key in config.json, which stays a hand edit.
+
+A reasoning model (Qwen3 Thinking, DeepSeek-R1 and the like) served by
+llama.cpp streams its reasoning ahead of the answer. temur shows it as
+the thinking indicator (dots in the plain REPL, a dim "thinking" line in
+the TUI) and does not print the text. The reasoning is kept in the session
+file and is not sent back to the server. It counts against `max_tokens`
+like the answer, so a reply cut off at `max_tokens` can be all reasoning
+and no answer: give a thinking model a larger `max_tokens` than you
+would a plain one.
 
 ## Switching providers by model id (the T16 hop)
 

@@ -38,7 +38,7 @@ impl AnthropicProvider {
         // boundary only. Today the JSON they produce is identical to what the
         // shared types produced pre-T1 (the request_golden suite pins that);
         // the conversion is the point, not the output.
-        let messages: Vec<types::RequestMessage> = req.messages.iter().map(Into::into).collect();
+        let messages = wire_messages(&req.messages);
         let mut body = serde_json::json!({
             "model": req.model,
             "max_tokens": req.max_tokens,
@@ -173,6 +173,31 @@ impl AnthropicProvider {
         // also attaches input_raw for tool arguments that failed to parse.
         acc.into_neutral_message().ok_or(ProviderError::Incomplete)
     }
+}
+
+/// Neutral history to Anthropic wire messages (T66 P1 amend). A message
+/// whose every block the converter skipped (an assistant reply that was
+/// only unsigned Thinking, from a local reasoning model) is omitted rather
+/// than sent with empty content. Omitting it would leave the user messages
+/// on either side adjacent, which this wire rejects, so the one after it
+/// joins the one before it, blocks in order. Nothing is merged unless a
+/// message was omitted, so every other request is byte-identical.
+fn wire_messages(history: &[crate::provider::RequestMessage]) -> Vec<types::RequestMessage> {
+    let mut out: Vec<types::RequestMessage> = Vec::with_capacity(history.len());
+    let mut omitted = false;
+    for m in history {
+        let wire = types::RequestMessage::from(m);
+        if wire.content.is_empty() && !m.content.is_empty() {
+            omitted = true;
+            continue;
+        }
+        match out.last_mut() {
+            Some(prev) if omitted && prev.role == wire.role => prev.content.extend(wire.content),
+            _ => out.push(wire),
+        }
+        omitted = false;
+    }
+    out
 }
 
 impl Provider for AnthropicProvider {
