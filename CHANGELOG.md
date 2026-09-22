@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased
+## v0.38.0 - 2026-09-23
 
 - `/clear` keeps the conversation instead of destroying it. The history is
   saved to its own session file first, named by the UTC time of the clear
