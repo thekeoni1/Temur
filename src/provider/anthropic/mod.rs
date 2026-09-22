@@ -180,8 +180,10 @@ impl AnthropicProvider {
 /// only unsigned Thinking, from a local reasoning model) is omitted rather
 /// than sent with empty content. Omitting it would leave the user messages
 /// on either side adjacent, which this wire rejects, so the one after it
-/// joins the one before it, blocks in order. Nothing is merged unless a
-/// message was omitted, so every other request is byte-identical.
+/// joins the one before it, blocks in order. The merge takes any two
+/// same-role messages that end up adjacent, which only happens after an
+/// omission, so it changes nothing unless a message was omitted. The
+/// unsigned-Thinking filter itself applies to every request.
 fn wire_messages(history: &[crate::provider::RequestMessage]) -> Vec<types::RequestMessage> {
     let mut out: Vec<types::RequestMessage> = Vec::with_capacity(history.len());
     let mut omitted = false;

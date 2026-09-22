@@ -1316,8 +1316,10 @@ impl Session {
     /// hit the limit: there the neutral stop reason is ToolUse (the calls
     /// must still run) and the truncation arrives in `stop_details`, so the
     /// user hears about it either way. Wording is identical in both, and
-    /// identical to the pre-T13 strings.
-    fn truncation_notice(&self) -> String {
+    /// identical to the pre-T13 strings. A reply that is all reasoning and
+    /// no answer (T66 P2) gets its own shape, so a thinking model's user
+    /// learns the reasoning ate the budget; the other two are unchanged.
+    fn truncation_notice(&self, content: &[ContentBlock], output_tokens: Option<u64>) -> String {
         // Near the configured window, max_tokens is the symptom, overflow
         // the likely cause. Providers stay faithful wire mappers; this
         // heuristic lives here. Without a window (or without usage) the
@@ -1332,17 +1334,29 @@ impl Session {
             format!(
                 "response truncated: max_tokens reached near the context window (~{used} of {window} tokens) — likely context overflow; consider starting a new session"
             )
+        } else if let Some(t) = reasoning_only_tokens(content, output_tokens) {
+            format!(
+                "response truncated: max_tokens ({}, {}) reached while the model was still thinking (~{t} tokens of reasoning, no answer yet); raise max_tokens in config.json, 16384 or more for a thinking model",
+                self.cfg.max_tokens,
+                self.max_tokens_source_label()
+            )
         } else {
             // T16: name the limit and where it came from, so the fix is
             // findable without guessing which config knob applied.
-            let source = match &self.cfg.max_tokens_source {
-                Some(p) => format!("from profile {p:?}"),
-                None => "from config".into(),
-            };
             format!(
-                "response truncated: max_tokens ({}, {source}) reached; raise max_tokens in config.json",
-                self.cfg.max_tokens
+                "response truncated: max_tokens ({}, {}) reached; raise max_tokens in config.json",
+                self.cfg.max_tokens,
+                self.max_tokens_source_label()
             )
+        }
+    }
+
+    /// Where `max_tokens` came from, as the truncation notice and `/status`
+    /// both say it (T66 P2): `from profile "p"` or `from config`.
+    pub fn max_tokens_source_label(&self) -> String {
+        match &self.cfg.max_tokens_source {
+            Some(p) => format!("from profile {p:?}"),
+            None => "from config".into(),
         }
     }
 
@@ -1657,6 +1671,9 @@ impl Session {
                 break;
             }
             let msg = result?;
+            // T66 P2: the reasoning-only notices quote it after `msg` is
+            // consumed below.
+            let output_tokens = msg.usage.output_tokens;
 
             turn_usage.add(&msg.usage);
             self.accrue_usage(&msg.usage);
@@ -1789,7 +1806,7 @@ impl Session {
                     // BEFORE the tools, so the notice reads in the order the
                     // events happened.
                     if stop_details.as_ref().is_some_and(|d| d.kind == "max_tokens") {
-                        ui(AgentEvent::Notice(self.truncation_notice()));
+                        ui(AgentEvent::Notice(self.truncation_notice(&content, output_tokens)));
                     }
                     self.history.push(RequestMessage {
                         role: Role::Assistant,
@@ -2250,6 +2267,17 @@ impl Session {
                             && !self.unattended_nudge_sent
                             && (any_mutating_dispatched || text.trim_end().ends_with('?'));
                     }
+                    // T66 P2: both notices below read `content`, which the
+                    // history takes next, so they are worked out first.
+                    let truncation = matches!(other, Some(StopReason::MaxTokens))
+                        .then(|| self.truncation_notice(&content, output_tokens));
+                    let reasoning_only_end = if matches!(other, Some(StopReason::EndTurn))
+                        && !content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+                    {
+                        reasoning_only_tokens(&content, output_tokens)
+                    } else {
+                        None
+                    };
                     self.history.push(RequestMessage {
                         role: Role::Assistant,
                         content,
@@ -2486,7 +2514,20 @@ impl Session {
                     }
                     match other {
                         Some(StopReason::MaxTokens) => {
-                            ui(AgentEvent::Notice(self.truncation_notice()));
+                            if let Some(notice) = truncation {
+                                ui(AgentEvent::Notice(notice));
+                            }
+                        }
+                        // T66 P2: a reply that is only reasoning ends the turn
+                        // with nothing to read. Said once, here, after every
+                        // nudge has had its chance; the empty-response guard
+                        // above does not count it.
+                        Some(StopReason::EndTurn) => {
+                            if let Some(t) = reasoning_only_end {
+                                ui(AgentEvent::Notice(format!(
+                                    "the model produced reasoning only and no answer (~{t} tokens); ask again, or raise max_tokens in config.json if this repeats"
+                                )));
+                            }
                         }
                         Some(StopReason::ModelContextWindowExceeded) => ui(AgentEvent::Notice(
                             "context window exceeded; consider starting a new session".into(),
@@ -2925,6 +2966,28 @@ fn auto_compacted_history(
     });
     out.extend(history[tail_start..].iter().cloned());
     out
+}
+
+/// T66 P2: `Some(t)` when a reply is reasoning and no answer: every Text
+/// block is blank and some Thinking block is not. `t` is the reported
+/// output tokens, else the Thinking characters over four.
+fn reasoning_only_tokens(content: &[ContentBlock], output_tokens: Option<u64>) -> Option<u64> {
+    let mut thinking_chars: u64 = 0;
+    let mut thought = false;
+    for b in content {
+        match b {
+            ContentBlock::Text { text } if !text.trim().is_empty() => return None,
+            ContentBlock::Thinking { thinking, .. } => {
+                thought |= !thinking.trim().is_empty();
+                thinking_chars += thinking.chars().count() as u64;
+            }
+            _ => {}
+        }
+    }
+    if !thought {
+        return None;
+    }
+    Some(output_tokens.unwrap_or(thinking_chars / 4))
 }
 
 /// T20 merge: the new history after a successful compact. Alternation-safe

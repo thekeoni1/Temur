@@ -1679,7 +1679,26 @@ on this wire; a test now pins it for the unsigned block this wire
 produces. Rendering is unchanged (one thinking cell in the TUI, dots in
 the REPL), no wire displays the reasoning text, and the session file
 keeps the block. The provider has no non-stream path, so there was
-nothing to map there.
+nothing to map there. On the Anthropic wire an unsigned Thinking block
+is filtered out of every request, since that API verifies thinking by
+its signature. An assistant message left empty by the filter is omitted,
+and the messages on either side of it are merged, so a session that
+reasoned on a local model can switch to an Anthropic one. The
+`pause_resume` request golden now signs its Thinking block, as real
+Anthropic thinking always is.
+
+P2 makes the notices say when reasoning used up the reply.
+`truncation_notice` takes the reply's content and the output tokens
+captured before the message is consumed. A reply whose text is blank
+and whose Thinking is not gets a third shape: "reached while the model
+was still thinking (~N tokens of reasoning, no answer yet)", with 16384
+or more suggested for a thinking model. N is the reported output
+tokens, or the Thinking characters over four. The near-window and plain
+shapes are byte-identical. A reasoning-only EndTurn gets one notice of
+its own after the nudge decisions, and the empty-response counter still
+does not count it. Both are worked out before the history takes the
+content. `/status` prints the source beside `max_tokens`, from the same
+`max_tokens_source_label()` the notice uses.
 
 The round is the dogfood round after v0.37.0, on a local `t66-stack`
 branch from `b8ff7c2`, and ships as v0.38.0. Every commit is cold-gated
@@ -1691,6 +1710,7 @@ on rustc 1.96.1 in a fresh target dir.
 | P0 | 8,329,964 |
 | P0b | 8,333,676 |
 | P1 | 8,333,036 |
+| P2 | 8,335,084 |
 
 ### Queued from dogfood 2026-09-19 (T66 plan, 2026-09-21)
 

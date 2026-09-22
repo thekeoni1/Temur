@@ -30,9 +30,19 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   never sent back to the server, and it is left out of requests to an
   Anthropic model too, which verifies thinking by a signature this
   reasoning does not have. A session that reasoned on a local model can
-  therefore switch to an Anthropic model; a reply that was only
-  reasoning is dropped from that request, and the prompts on either side
-  of it are sent as one message.
+  switch to an Anthropic model; a reply that was only reasoning is
+  dropped from that request, and the prompts on either side of it are
+  sent as one message.
+
+- The notices say when reasoning used up the reply. A reply cut off by
+  `max_tokens` before the model wrote any answer now reads "reached while
+  the model was still thinking (~N tokens of reasoning, no answer yet)"
+  and suggests 16384 or more for a thinking model; N is the server's
+  output count, or the reasoning's length over four when the server
+  reports none. A reply that finished with reasoning and no answer gets
+  one notice saying so. The other truncation notices are unchanged.
+  `/status` shows where `max_tokens` came from, as in
+  `max_tokens: 1024 (from config)`.
 
 ## v0.37.0 - 2026-09-18
 

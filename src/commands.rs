@@ -103,7 +103,8 @@ pub struct CommandCtx<'a> {
     /// after `/model` describes what is actually active.
     pub provider_name: &'a mut String,
     pub model: &'a mut String,
-    /// `None` = persistence disabled (`--mock`). Mutable since T10:
+    /// `None` = persistence disabled (`--mock`, or a startup archive that
+    /// failed: see `persist_off_reason`). Mutable since T10:
     /// `/resume` and `/new` REDIRECT where the driver loop saves — the
     /// pointer they update is the same local the loop reads next turn.
     pub persist_path: &'a mut Option<std::path::PathBuf>,
@@ -370,9 +371,10 @@ fn status(ctx: &mut CommandCtx) -> Vec<AgentEvent> {
             ctx.provider_name, ctx.model
         )),
         notice(format!(
-            "thinking: {} · max_tokens: {} · prompt: {}",
+            "thinking: {} \u{b7} max_tokens: {} ({}) \u{b7} prompt: {}",
             onoff(s.thinking()),
             s.max_tokens(),
+            s.max_tokens_source_label(),
             profile_word(*ctx.prompt_profile, ctx.active_resolved.prompt_profile_source)
         )),
         notice(match (s.context_window(), s.last_context_used()) {

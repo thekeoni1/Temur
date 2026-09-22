@@ -50,7 +50,7 @@ The script `greet.sh` has been created and successfully executed. It prints a gr
 > /status
   [!] profile: (none — base config)
   [!] provider: openai-compat · model: qwen3-4b
-  [!] thinking: off · max_tokens: 1024 · prompt: compact
+  [!] thinking: off · max_tokens: 1024 (from config) · prompt: compact
   [!] context: ~2872 of 8192 tokens used
   [!] session file: /home/dev/.local/state/temur/sessions/demo-9bc590dd6def5c8d.json · session: (default)
 > bye
@@ -982,7 +982,7 @@ profile whose window puts it on compact prints the same line.
 `/status` names both the profile and where it came from:
 
 ```
-thinking: off · max_tokens: 32000 · prompt: compact (auto)
+thinking: off · max_tokens: 32000 (from config) · prompt: compact (auto)
 ```
 
 `(auto)` means the rule chose it; a bare `prompt: compact` means your
@@ -1277,8 +1277,23 @@ the thinking indicator (dots in the plain REPL, a dim "thinking" line in
 the TUI) and does not print the text. The reasoning is kept in the session
 file and is not sent back to the server. It counts against `max_tokens`
 like the answer, so a reply cut off at `max_tokens` can be all reasoning
-and no answer: give a thinking model a larger `max_tokens` than you
-would a plain one.
+and no answer: give a thinking model a `max_tokens` of 16384 or more.
+`/status` shows the cap and where it came from (`max_tokens: 16384 (from
+profile "local")`). When the cap runs out before any answer, the notice
+says so:
+
+```
+response truncated: max_tokens (4096, from config) reached while the model was still thinking (~4096 tokens of reasoning, no answer yet); raise max_tokens in config.json, 16384 or more for a thinking model
+```
+
+A reply that ends with reasoning and no answer gets its own notice:
+
+```
+the model produced reasoning only and no answer (~512 tokens); ask again, or raise max_tokens in config.json if this repeats
+```
+
+The token count is what the server reported, or the reasoning's length
+over four when it reports none.
 
 ## Switching providers by model id (the T16 hop)
 

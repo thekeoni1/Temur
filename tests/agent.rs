@@ -876,6 +876,194 @@ fn truncation_is_reported_when_the_response_also_made_tool_calls() {
     assert!(notice_at < tool_at, "{events:?}");
 }
 
+// --- T66 P2: the notices tell the truth about reasoning --------------------
+
+fn thinking(t: &str) -> ContentBlock {
+    ContentBlock::Thinking { thinking: t.into(), signature: None }
+}
+
+const REASONING_ONLY_NOTICE_PREFIX: &str = "response truncated: max_tokens (800, from config) reached while the model was still thinking";
+
+#[test]
+fn max_tokens_with_reasoning_only_names_the_thinking() {
+    // (a) A reply cut off while the model was still thinking: the notice
+    // says so, with the reported output tokens.
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = session_with_window(
+        dir.path(),
+        vec![msg_with_usage(
+            vec![thinking("The user wants a greeting. Consider the tone")],
+            StopReason::MaxTokens,
+            serde_json::json!({"input_tokens": 150, "output_tokens": 4096}),
+        )],
+        None,
+        800,
+    );
+    let events = collect_events(&mut session, "hi");
+    assert_eq!(
+        notices(&events),
+        vec!["response truncated: max_tokens (800, from config) reached while the model was still thinking (~4096 tokens of reasoning, no answer yet); raise max_tokens in config.json, 16384 or more for a thinking model".to_string()],
+        "{events:?}"
+    );
+}
+
+#[test]
+fn max_tokens_with_text_keeps_the_old_string() {
+    // (b) Control: any answer text keeps today's string, reasoning or not.
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = session_with_window(
+        dir.path(),
+        vec![msg_with_usage(
+            vec![thinking("Short plan."), text("Here is the start of")],
+            StopReason::MaxTokens,
+            serde_json::json!({"input_tokens": 150, "output_tokens": 4096}),
+        )],
+        None,
+        800,
+    );
+    let events = collect_events(&mut session, "hi");
+    assert_eq!(
+        notices(&events),
+        vec!["response truncated: max_tokens (800, from config) reached; raise max_tokens in config.json".to_string()],
+        "{events:?}"
+    );
+}
+
+#[test]
+fn near_window_unchanged() {
+    // (c) Control: near the window, overflow is the likely cause, and that
+    // wording wins even over a reasoning-only reply.
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = session_with_window(
+        dir.path(),
+        vec![msg_with_usage(
+            vec![thinking("Still weighing the options")],
+            StopReason::MaxTokens,
+            serde_json::json!({"input_tokens": 150, "output_tokens": 100}),
+        )],
+        Some(1000),
+        800,
+    );
+    let events = collect_events(&mut session, "hi");
+    // The context advisory speaks too at 250 of 1000; this pins the
+    // truncation notice only.
+    let truncation: Vec<String> = notices(&events)
+        .into_iter()
+        .filter(|n| n.starts_with("response truncated"))
+        .collect();
+    assert_eq!(
+        truncation,
+        vec!["response truncated: max_tokens reached near the context window (~250 of 1000 tokens) \u{2014} likely context overflow; consider starting a new session".to_string()],
+        "{events:?}"
+    );
+}
+
+#[test]
+fn reasoning_only_endturn_says_so_once() {
+    // (d) Two empty pauses put the empty-response counter at 2; a third
+    // empty reply would stop the turn. The reasoning-only EndTurn is not
+    // empty, so it gets its own notice, once, and the guard stays quiet.
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = session_with_window(
+        dir.path(),
+        vec![
+            msg_with_usage(vec![], StopReason::PauseTurn, serde_json::json!({})),
+            msg_with_usage(vec![], StopReason::PauseTurn, serde_json::json!({})),
+            msg_with_usage(
+                vec![thinking("Nothing to add; the answer is already given.")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 150, "output_tokens": 512}),
+            ),
+        ],
+        None,
+        800,
+    );
+    let events = collect_events(&mut session, "hi");
+    assert_eq!(
+        notices(&events),
+        vec!["the model produced reasoning only and no answer (~512 tokens); ask again, or raise max_tokens in config.json if this repeats".to_string()],
+        "{events:?}"
+    );
+}
+
+#[test]
+fn endturn_with_text_and_thinking_is_silent() {
+    // (e) Control: reasoning followed by an answer is an ordinary finish.
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = session_with_window(
+        dir.path(),
+        vec![msg_with_usage(
+            vec![thinking("The user wants a greeting."), text("Hi there, friend!")],
+            StopReason::EndTurn,
+            serde_json::json!({"input_tokens": 150, "output_tokens": 512}),
+        )],
+        None,
+        800,
+    );
+    let events = collect_events(&mut session, "hi");
+    assert!(notices(&events).is_empty(), "{events:?}");
+}
+
+#[test]
+fn reasoning_estimate_falls_back_to_chars() {
+    // (g) No usage reported: the estimate is the reasoning's characters
+    // over four.
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = session_with_window(
+        dir.path(),
+        vec![msg_with_usage(
+            vec![thinking(&"x".repeat(400))],
+            StopReason::MaxTokens,
+            serde_json::json!({}),
+        )],
+        None,
+        800,
+    );
+    let events = collect_events(&mut session, "hi");
+    assert_eq!(
+        notices(&events),
+        vec![format!("{REASONING_ONLY_NOTICE_PREFIX} (~100 tokens of reasoning, no answer yet); raise max_tokens in config.json, 16384 or more for a thinking model")],
+        "{events:?}"
+    );
+}
+
+#[test]
+fn reasoning_only_truncation_with_tool_calls_is_reported_before_the_tools() {
+    // (h) The F10 caller: ToolUse with max_tokens in stop_details and no
+    // answer text. The reasoning-only shape is reported, before the tool.
+    let dir = tempfile::tempdir().unwrap();
+    let mut truncated = msg_with_usage(
+        vec![
+            thinking("Read the file first."),
+            tool_use("call_1", "read", serde_json::json!({"filePath": "nope.txt"})),
+        ],
+        StopReason::ToolUse,
+        serde_json::json!({"input_tokens": 150, "output_tokens": 700}),
+    );
+    truncated.stop_details = Some(StopDetails {
+        kind: "max_tokens".into(),
+        category: None,
+        explanation: None,
+    });
+    let mut session = session_with_window(
+        dir.path(),
+        vec![truncated, msg(vec![text("done")], StopReason::EndTurn)],
+        None,
+        800,
+    );
+    let events = collect_events(&mut session, "hi");
+    let expected = format!("{REASONING_ONLY_NOTICE_PREFIX} (~700 tokens of reasoning, no answer yet); raise max_tokens in config.json, 16384 or more for a thinking model");
+    let notice_at = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::Notice(n) if *n == expected))
+        .unwrap_or_else(|| panic!("reasoning-only truncation notice: {events:?}"));
+    let tool_at = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::ToolEnd { .. }))
+        .expect("the tool call was dispatched");
+    assert!(notice_at < tool_at, "{events:?}");
+}
+
 #[test]
 fn no_usage_reported_stays_silent_despite_window() {
     let dir = tempfile::tempdir().unwrap();
@@ -2900,7 +3088,7 @@ fn status_before_any_turn_renders_placeholders_and_no_key_material() {
     assert!(ns.iter().any(|n| n.contains("(none — base config)")), "{ns:?}");
     assert!(ns.iter().any(|n| n.contains("anthropic") && n.contains("claude-sonnet-5")));
     assert!(
-        ns.iter().any(|n| n == "thinking: off · max_tokens: 32000 · prompt: full"),
+        ns.iter().any(|n| n == "thinking: off \u{b7} max_tokens: 32000 (from config) \u{b7} prompt: full"),
         "T9 prompt field on the thinking line: {ns:?}"
     );
     assert!(ns.iter().any(|n| n.contains("no usage reported yet")));
@@ -2936,6 +3124,35 @@ fn session_with_usage(dir: &std::path::Path) -> Session {
     let (seed, _) = store::prepare_seed(file);
     session.load_seed(seed);
     session
+}
+
+#[test]
+fn status_names_the_max_tokens_source() {
+    // (f) T66 P2: /status names where max_tokens came from, in the words
+    // the truncation notice uses.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_with(dir.path(), vec![]);
+    let mut h = CmdHarness::new();
+    let build = |_: &ResolvedProfile| -> Result<Box<dyn Provider>, temur::error::Error> {
+        unreachable!()
+    };
+    let events = commands::run(commands::parse("/status"), &mut h.ctx(&mut session, &build));
+    let ns = notices(&events);
+    assert!(
+        ns.iter().any(|n| n == "thinking: off \u{b7} max_tokens: 32000 (from config) \u{b7} prompt: full"),
+        "{ns:?}"
+    );
+    let local = MockProvider {
+        responses: RefCell::new(vec![]),
+        requests: Rc::new(RefCell::new(vec![])),
+    };
+    session.switch_provider(Box::new(local), &selection("qwen3-1.7b", 1024, None), Some("p".into()));
+    let events = commands::run(commands::parse("/status"), &mut h.ctx(&mut session, &build));
+    let ns = notices(&events);
+    assert!(
+        ns.iter().any(|n| n == "thinking: off \u{b7} max_tokens: 1024 (from profile \"p\") \u{b7} prompt: full"),
+        "{ns:?}"
+    );
 }
 
 #[test]
