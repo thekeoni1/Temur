@@ -11728,3 +11728,258 @@ without, and a known positive outside the archive registered as one file
 hit. Zero hits.
 
 Archive: `~/temur-eval-archive/v0.37.0-soak/`.
+
+## v0.38.0 ship record
+
+2026-09-23. **T66 shipped at tag `v0.38.0`: `/clear` and a plain start
+keep the conversation they used to destroy, a thinking model's reasoning
+on an OpenAI-compatible server is kept instead of dropped, the
+truncation notices say when reasoning used up the reply, init and doctor
+recognise a reasoning model by its id, and `/compact` shows it is
+working.** A MINOR bump and the sixth public release, cut from `5c30fb7`
+on the laptop, the third cut on the pinned rustc 1.96.1.
+
+Six CHANGELOG items, all T66. `git log --oneline v0.37.0..5c30fb7 --
+CHANGELOG.md` lists the eight T66 commits (P0, P0b, P1, P2, P3, P4, P5,
+P5b) and nothing else, so unlike v0.37.0 no item here comes from an
+earlier round.
+
+### Sizes
+
+Raw byte counts, read from the staged files and matched byte for byte
+against the public downloads:
+
+| asset | bytes | v0.37.0 | change |
+| --- | --- | --- | --- |
+| i686 | 8,338,132 | 8,323,828 | +14,304 (+0.17%) |
+| x86_64 | 9,908,272 | 9,889,200 | +19,072 (+0.19%) |
+| aarch64 | 8,007,632 | 7,993,872 | +13,760 |
+| armv7 | 7,724,704 | 7,710,784 | +13,920 |
+
+Divided by 1,000,000 and rounded to two decimals, the v0.35.0 rule,
+README:37-38 now reads **8.34 MB** on i686 and **9.91 MB** on x86_64.
+The i686 binary is **1,661,868 bytes** under the 10,000,000 STOP
+(16.62%), down from 1,676,172 at v0.37.0. `README:31` ("under 10 MB on
+32-bit") was not edited and holds.
+
+ROADMAP's T66 cold-gate table (inside "### T66 as built (2026-09-21)")
+runs from T65 P5 8,326,124 to P5b 8,340,428 on the desktop: +14,304,
+the same figure as the laptop's +14,304 here. The published i686 is
+2,296 bytes smaller than the desktop's P5b gate binary for the same
+source, the same gap as at v0.37.0; the table is the desktop's cold gate
+and this is the laptop's host C compiler. The kickoff's estimate of
++16,600 set the desktop's P5b figure against the laptop's v0.37.0 asset,
+so it carried that gap; laptop to laptop the growth is +14,304.
+
+### The cut
+
+The version bump is a single commit on the anchor, `845b2fa`, parent
+`5c30fb7`, 5 files, 11 insertions and 11 deletions. Edited lines:
+
+- `Cargo.toml` 3, `Cargo.lock` 1475 (the temur entry only),
+  `scripts/install.sh` 10.
+- `CHANGELOG.md` 5, the `## Unreleased` heading becoming `## v0.38.0 -
+  2026-09-23` and nothing else in the file: the six items ship as
+  written and no size sentence was added.
+- `README.md` 37-38 (the size sentence, from this cut's own build), 185
+  (install raw URL), 196 (install blob URL), 208 (release-download URL
+  and asset name, two on the line), 209 (SHA256SUMS URL), 211 (asset
+  name).
+
+After the bump, `git grep -n '0\.37\.0' -- . ':!CHANGELOG.md'
+':!docs/RUNBOOK.md' ':!docs/COMPARISON.md' ':!ROADMAP.md'` returns
+nothing.
+
+Not edited: README 19-24, which names no version and stays true because
+the demo page names its own version and sha; `docs/USAGE.md`;
+`ROADMAP.md`, whose T66 section already says "ships as v0.38.0";
+`docs/COMPARISON.md`; `docs/OFFLINE.md`; `docs/TUI.md`.
+
+### Gates, and where their evidence lives
+
+The `release.sh` run that staged these assets was the second of two (see
+Corrections). Its log was teed into the cut session's scratchpad under
+`/tmp` and was lost with the laptop restart of 2026-09-23. The staged
+bytes do not depend on it: `SHA256SUMS` pins them, the public downloads
+below match them 5 of 5, and the installed binaries match them on both
+legs. What the log said is quoted from the cut session's own transcript,
+which holds the excerpts that session read from it at 2026-09-22 19:32
+local. The quoted lines, with their log line numbers where the excerpt
+carried them:
+
+- The script(1) footer: `Script done on 2026-09-22 19:32:22-04:00
+  [COMMAND_EXIT_CODE="0"]`, which is `release.sh`'s own exit, not a
+  wrapper's.
+- `== RELEASE v0.38.0: 4/4 ARTIFACTS GATED ==`.
+- 199 `OK: no INTERP program header`.
+- 269, the one history hit: `ALLOWED (already public):
+  083eb334847b07f6f3b75f713a3c492c1f90ed8e`, the T53 P1 commit message,
+  an operator mount path, public since 2026-09-08, allowlisted at v0.34.0
+  through v0.37.0.
+- 270 `OK: leak grep clean (operator patterns + generic shapes, files +
+  history)`.
+- 272 `OK: install.sh + README match version 0.38.0 and all targets`.
+- 274-277 `component rust-std for target <target> is up to date` for all
+  four release targets: the `rustup target add` step was a NO-OP,
+  nothing installed.
+
+`check.sh` is gate 1 and `release.sh` runs it under `set -eu` with no
+`SKIP_CHECK`; the transcript shows the `== gate: scripts/check.sh ==`
+header and no `check.sh SKIPPED` line. Its closing "ALL CHECKS PASSED"
+line is not among the excerpts, so check.sh's pass rests on the run
+reaching the later gates and exiting 0, not on its own verdict line.
+
+Re-run on 2026-09-23 at `845b2fa` with a clean tree, each teed into the
+laptop's release-logs directory, the one the v0.37.0 cut used. The gate 2
+and `metadata_drift.sh` logs carry `git rev-parse HEAD` at the top; the
+rustup log does not, since it reads no tree:
+
+- Gate 2: `release.sh` lines 42-128, unchanged, run under `set -u`
+  where `release.sh` itself runs under `set -eu`. One history
+  hit, `083eb33`, allowlisted, then `OK: leak grep clean`, exit 0. The
+  hit is the gate's own live control on the history scan. For the
+  file scan, the step-2a check, re-run the same day: the machine-name
+  pattern (the
+  fifth of five active lines, file mode 0600) scores 0 files at
+  `845b2fa`, 2 at `c8a4b23` (the known positive), and 0 in the
+  commit messages of `b8ff7c2..845b2fa`.
+- `rustup target add` for the four release targets on 1.96.1: "up to
+  date" four times, exit 0.
+- `metadata_drift.sh`: 4 PASS (fable, haiku, opus, sonnet), "all 4 baked
+  profiles match models.dev", exit 0.
+
+The independent gate on the same source is CI: run **35876228148** on
+`845b2fa`, `test` (107232727776) and `release-gate` (107232728028) both
+success, the only run on that sha.
+
+### What this release does NOT establish
+
+The T66 entries are re-derived from the six v0.38.0 CHANGELOG items and
+ROADMAP's "### T66 as built (2026-09-21)", not carried over from the
+v0.37.0 record. The last four entries (ARM, soak, sandbox, live model)
+are the standing ones every record carries, updated for this cut.
+
+- The new truncation notices have not been seen live. The desktop's T66
+  Thinking reading ran on this source (the P5b gate binary):
+  Qwen3-4B-Thinking-2507 Q4_K_M from the unsloth mirror, two arms, 8/9 at
+  8192/4096 and 7/9 at 32768/16384. It produced ZERO truncation notices
+  of any shape, so the still-thinking and reasoning-only notices are
+  verified by unit tests and pin-proofs only. The dogfood symptom needs a
+  task whose reasoning exceeds the cap, and none of the thirteen did. For
+  the same reason, a reply cut off mid-thought keeping its reasoning has
+  not been seen live either.
+- The two arm-B losses in that reading are 1200 s timeouts on CPU, not
+  wrong answers.
+- The plain REPL prints the thinking dots while its banner reads
+  `thinking=false`. Ruled as-is; it is a seed for the banner's label.
+- The three facts above are the desktop's, as relayed in desktop relay
+  29 (`laptop-relay-2026-09-22a.md`, sha256 `a174e9a6a800624...`, 110
+  lines). The laptop did not run the reading and holds no copy of its
+  archive.
+- No wire displays the reasoning text. It shows as the thinking
+  indicator and is kept in the session file; a display of the text
+  itself, queued in ROADMAP as P1b, has not shipped.
+- A reasoning model is recognised by its id and nothing else. Doctor
+  makes no model call, the match is a fixed substring list, and an id
+  not on it gets the same config and checks as any other model. The
+  reasoning lines in doctor apply to OpenAI-compatible profiles only;
+  an Anthropic profile gets none. No default changed.
+- Reasoning never goes back to the server, and on a switch to an
+  Anthropic model a reply that was only reasoning is dropped from the
+  request and the prompts either side of it are sent as one message.
+- A plain start archives only a file that loads. A session file that
+  exists but cannot be read is left untouched, and that run goes
+  unsaved. One-shot `-p`, `--continue` and `--resume` do not archive.
+- Archives are kept, not pruned: `session_store` has no code that
+  removes one. A kept archive is not always the whole conversation: a
+  `/clear` archive over the session size cap is trimmed, oldest
+  exchanges first, and its notice says so. Nine archives can share one second's name (the base,
+  then `-2` through `-9`); past that the archive fails rather than
+  overwrite a file that holds a conversation.
+- The `/compact` hang fix covers the stale-signal case T66 P4 pinned
+  with a test. `/compact` is still one model call and can take as long
+  as a turn; Esc interrupts it in the TUI, Ctrl+C in the plain REPL.
+- ARM remains verified at build level only, per ROADMAP T7. No ARM
+  hardware smoke has run.
+- No eval or soak has run on the v0.38.0 assets. The desktop's
+  published-asset soak on the i686 asset is next.
+- The browser sandbox still runs v0.37.0 and is not refreshed for this
+  release. README's demo sentence names no version, so it does not go
+  stale.
+- Nothing here is a live-model acceptance run. No gate called a hosted
+  model API. The network calls this session made were `rustup`,
+  `metadata_drift.sh`'s models.dev fetch and GitHub; the lost log's
+  `check.sh` run is not itemised here.
+
+### Corrections
+
+- The first `release.sh` run was stopped by the harness for memory
+  pressure while `check.sh` was running. It was re-run from the top, and
+  every number here is from the second run.
+- The first proposed tag message claimed a display of the reasoning
+  text, which P1b has not shipped. It was reworded before the tag was
+  made; the pushed message claims only that the reasoning is no longer
+  dropped.
+- The laptop restarted between HOLD 1 and the push, which moved the
+  release day. The first bump commit, `fc67635`, dated the CHANGELOG
+  heading 2026-09-22; the kickoff dates it the day the tag is pushed.
+  Asked in the cut session whether to amend or ship `fc67635` as it
+  stood, the operator chose the amend, which became `845b2fa`, and then
+  gave the authorisation again on that sha. The first
+  amend left the edit unstaged and produced `b5429da`, whose tree equals
+  `fc67635`'s; it was never pushed. The wrong assumption: that
+  `--amend` picks up a working-tree edit without `git add`.
+- The release logs went to a session scratchpad under `/tmp` and were
+  lost with the restart. The v0.37.0 cut kept its logs in a fixed
+  release-logs directory outside any session, and that is the procedure
+  from here on: release logs go there, never to a session scratchpad.
+
+### Ruling 4 and the independent check
+
+Every scan returned 0 and every control fired, the five-pattern set,
+`-i`, over the commit message and the added lines, each pattern with its
+own planted control. The scan dropped blank lines and every line
+starting with `#`, which in Markdown takes the headings with it, so the
+bump's one CHANGELOG line and this record's headings went unscanned; the
+independent check and this session re-ran both with headings kept and read
+0, control 1:
+
+- Bump commit `fc67635`, re-scanned after the restart: 0, control 1
+  per pattern.
+- Bump commit `845b2fa`, before the push: 0, control 1 per pattern.
+- Tag message, read back from the annotated tag before its push: 0,
+  control 1 per pattern.
+- This record's own commit: in the cut report.
+
+### Publication and live verification
+
+Pushed `5c30fb7..845b2fa` to `origin/main` as a plain fast-forward, with
+`origin/main` re-confirmed at `5c30fb7` immediately before. No tag was
+made until CI run 35876228148 was green.
+
+The annotated tag `v0.38.0` was then created on `845b2fa`, tag object
+`8ccd153ebe8146fe7c4f59ff493ecfcb18c10c93`, with the message "temur
+v0.38.0 - keeps your cleared and previous sessions instead of destroying
+them, and no longer drops a thinking model's reasoning (T66)", and
+pushed by its explicit ref. The remote tag peels to `845b2fa`, and the
+remote went from 40 tags to 41. Nothing was moved or recreated.
+
+The release was created public, not a draft and not a prerelease, with
+the four bare binaries and `SHA256SUMS`, titled with the tag message
+read back from the tag (object type `tag` checked first, as
+`release.sh` does). Release notes are the CHANGELOG's v0.38.0 section,
+all six items.
+
+All five assets were then downloaded from the public URLs with `env -i`
+and `curl`, no token and no `gh`. Byte counts and sha256 match the
+staged files **5 of 5**, and `sha256sum -c` on the downloaded set is 4
+of 4 OK. The i686 asset is 8,338,132 bytes, sha256
+`542e56abcf9066e464c5dcef079c4dfba47dc731d11ffd97645af04e48a9c922`.
+
+The README one-liner (README:185) was run verbatim into a fresh empty
+HOME twice, once on x86_64 and once under `setarch i686`. Each run
+fetched `install.sh` from the v0.38.0 tag, picked the matching asset,
+printed "checksum verified.", and installed a binary whose sha256 equals
+the published asset's and which prints `temur 0.38.0`. README:196's blob
+URL returns 200. This closing gate has its own log, and so does the
+publish step, both in the same release-logs directory.
