@@ -74,8 +74,9 @@ enforced by the OS, not just by these rules. Do not try to escalate around them.
   not have blanket sudo; if something needs elevation, stop and ask rather than working
   around it. Report results per stage.
 - Test before proceeding; don't stack unverified changes.
-- Scope (REVISED 2026-08-26): v1 shipped 2026-07 and the project has
-  been through thirty-nine milestones since (v0.28.0). It is a
+- Scope (REVISED 2026-09-23): v1 shipped 2026-07 and the project has
+  been through the milestones up to T66 since (v0.38.0, public since
+  v0.33.0). It is a
   **zero-runtime-dependency AI agent for 32-bit Linux, bring your own
   model**: local llama.cpp models are the primary target, hosted
   providers (Anthropic, OpenAI-compatible) are supported, and no single

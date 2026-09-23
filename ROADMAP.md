@@ -1757,9 +1757,13 @@ server, because doctor prints it only there and the notice fires on
 every provider. USAGE's Ctrl+C line is corrected for the TUI, where
 Ctrl+C arms force-quit and only Esc interrupts.
 
-The round is the dogfood round after v0.37.0, on a local `t66-stack`
-branch from `b8ff7c2`, and ships as v0.38.0. Every commit is cold-gated
-on rustc 1.96.1 in a fresh target dir.
+The round was the dogfood round after v0.37.0, on a local `t66-stack`
+branch from `b8ff7c2`, and shipped as v0.38.0 on 2026-09-23 from
+`5c30fb7` (bump `845b2fa`, tag `v0.38.0`). Every commit was cold-gated
+on rustc 1.96.1 in a fresh target dir. The published i686 asset is
+8,338,132 bytes against the table's P5b 8,340,428: the laptop-to-desktop
+compiler gap, -2,296, as at v0.37.0. The published-asset soak scored
+9/9 with tasks 11, 12 and 13 PASS, recorded in docs/RUNBOOK.md.
 
 | i686 musl release on 1.96.1 | bytes |
 | --- | --- |
@@ -1772,6 +1776,23 @@ on rustc 1.96.1 in a fresh target dir.
 | P4 | 8,339,340 |
 | P5 | 8,339,788 |
 | P5b | 8,340,428 |
+
+The reading: Qwen3-4B-Thinking-2507 (Q4_K_M) on the P5b binary, two
+arms, CPU only, one run each. At 8192/4096 it scored 8/9 (task 8); at
+32768/16384 it scored 7/9, both losses the 1200 s per-task bound (tasks
+6 and 9, both passes in the smaller arm). Neither arm produced a
+truncation notice of any shape: the longest single reasoning run stayed
+under the 4096 cap on these prompts (about 2,750 indicator characters),
+so the still-thinking and reasoning-only notices are verified by their
+tests and pin-proofs and have not been seen live. Reproducing the
+dogfood shape needs a prompt whose reasoning exceeds the cap, not a
+smaller cap alone. Task 10 failed differently per arm (never read the
+pdf; read it but did not cite it), one run each, so it is a lead. Task
+13 timed out in both arms on a clean fixture. The plain REPL prints the
+thinking indicator while its banner reads thinking=false; the dots are
+true, since the server reasons regardless of the toggle, and the banner
+label is the thing to revisit. The transcripts are in the desktop's
+eval archive.
 
 ### Queued from dogfood 2026-09-19 (T66 plan, 2026-09-21)
 
@@ -1818,11 +1839,16 @@ A/B on the eval before it ships; doom-loop refinement counting only when
 the previous result was an error or identical text; and `<think>` tag
 parsing for servers run with `--reasoning-format none`; and an archive
 prune policy (by count or age), since T66 P0 and P0b archives accumulate
-until the user deletes them.
+until the user deletes them. From the reading: a reproduction cell for
+the still-thinking notice (the eval with `EVAL_MAX_TOKENS=1024` on a
+Thinking model, one run, so the notice is seen live once); a larger
+`EVAL_TASK_TIMEOUT` or GPU offload before a 16384-budget arm's score
+means anything; the task-10 window lead; and the plain-REPL banner
+label.
 
-The playground's one refresh is spent on v0.37.0 and README 19-24 has
-been version-agnostic since T65 P5, so the launch announcement is held
-for v0.38.0 rather than spent now.
+The launch announcement goes out on v0.38.0. The playground stays on
+v0.37.0 and names its own version and sha, and README 19-24 has been
+version-agnostic since T65 P5.
 
 ### T65 as built (2026-09-17)
 

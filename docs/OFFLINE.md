@@ -645,6 +645,16 @@ the single-call tasks and fails the multi-step ones, though on
 the 2026-08-12 pass had it name the correct `bash` command and then
 decline to run it.
 
+A Thinking model's reasoning streams as `reasoning_content` and counts
+against `max_tokens` on the server, so a 4096 budget can be spent before
+the answer starts. Since v0.38.0 `temur init` recognises a reasoning
+model by its id and writes `max_tokens` as half the context window (4096
+to 16384), `temur doctor` warns when it is smaller, and a turn cut off
+while thinking says so. On 2026-09-22 with the v0.38.0 source, CPU only,
+Qwen3-4B-Thinking-2507 scored 8/9 at an 8192 window with `max_tokens`
+4096 and 7/9 at 32768 with 16384, the two losses being the eval's
+1200-second per-task bound, not wrong answers.
+
 Download source: every Q4_K_M quant measured above came from the
 community `unsloth/…-GGUF` repositories on Hugging Face (e.g.
 `unsloth/Qwen3-1.7B-GGUF`, `unsloth/gemma-3-4b-it-GGUF`); the official
