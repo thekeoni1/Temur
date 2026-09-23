@@ -11983,3 +11983,183 @@ printed "checksum verified.", and installed a binary whose sha256 equals
 the published asset's and which prints `temur 0.38.0`. README:196's blob
 URL returns 200. This closing gate has its own log, and so does the
 publish step, both in the same release-logs directory.
+
+## v0.38.0 published-asset soak (desktop, recorded 2026-09-23)
+
+The published i686 asset was downloaded anonymously on the desktop,
+checked against `SHA256SUMS`, installed through the README one-liner,
+smoked in containers and measured with one twelve-task eval on Qwen3-4B.
+Both readings that could fail at one run held: 9/9 on the nine scored
+tasks, and task 11 PASS. Tasks 12 and 13, pre-registered as no
+expectation and as variance, passed as well.
+
+### The cut, as found
+
+Tag `v0.38.0` is annotated tag object
+`8ccd153ebe8146fe7c4f59ff493ecfcb18c10c93` on commit `845b2fa`, parent
+`5c30fb7`. `origin/main` after the cut is `d88f57f`, the ship record
+above, one file and 255 insertions. The remote carries 41 tags and one
+head; `v0.37.0` is unchanged at `30bfcecc`. The desktop's eight-commit
+`t66-stack`, P0 through P5b, sits at `5c30fb7`, which is
+`origin/main^^`, so the stack is already contained in `origin/main` and
+nothing needed rebasing. Nothing was retagged.
+
+### The asset
+
+`temur-v0.38.0-i686-unknown-linux-musl`, **8,338,132 bytes**, sha256
+**`542e56abcf9066e464c5dcef079c4dfba47dc731d11ffd97645af04e48a9c922`**.
+
+It was fetched with `env -i curl -fsSLO` from the release URL, with
+`GH_TOKEN` and `GITHUB_TOKEN` unset. `sha256sum -c --ignore-missing
+SHA256SUMS` printed OK for it, and `SHA256SUMS` is 428 bytes, sha256
+`f05b0b179aec2a23ee2e727c88910b1fc13eeeadca327c67f040f93f75c9d185`,
+listing the four assets.
+
+### Container smoke on the asset
+
+The downloaded asset, staged under the name `temur` and mounted
+read-only, with no network in the containers.
+
+| check | result |
+| --- | --- |
+| i386 debian, `temur --version` | `temur 0.38.0` |
+| i386 debian, `temur doctor --no-network`, fresh container | completes; 0 pass, 0 warn, 1 fail (no config file), rc=1 |
+| i386 debian, `temur init` with no input, then `doctor --no-network` | init exits 1 on `unexpected end of input`; doctor 0 pass, 0 warn, 1 fail |
+| i386 debian, `doctor --no-network` with a config at the container home | 7 pass, 0 warn, 0 fail |
+| `busybox:stable`, `temur --version` | `temur 0.38.0` |
+| README one-liner `scripts/install.sh`, fresh empty HOME under `setarch i686` | `checksum verified.`; installed sha256 equals the asset's; `temur 0.38.0` |
+| T66 P3: init reasoning line, doctor reasoning WARN, non-reasoning local default | 0 and 0 |
+
+The fourth row gives doctor a config to read, so its checks have
+something to work on; it is an instrument smoke and is counted nowhere.
+The config is placed there by hand, as at v0.37.0. `busybox:stable` is
+image `b116e155`, the image the three previous soaks used. `check.sh`
+was not edited. The doctor prompt-floor estimate reads ~2,852 tokens
+here against ~2,849 at v0.37.0; both are estimates, not measurements.
+
+The one-liner was taken verbatim from the tag's README at line 185 and
+run on the host under `setarch i686`, tokenlessly under `env -i`, into an
+empty HOME; it needs network, which the log says. It installed an ELF
+32-bit i386 static binary byte-identical to the downloaded asset. The
+installer is still not exercised inside a container.
+
+The last row is new at v0.38.0. The phrase every T66 P3 init notice and
+doctor reasoning line carries, `looks like a reasoning model`, counts 0
+in every smoke log. Init with no input stops at the template question,
+before any model id, so its 0 is by construction. A further init run
+that accepted every default reached the model question, whose default
+is `qwen3-4b`, not a reasoning id: it wrote the same config as the
+fourth row, printed no reasoning line, and doctor on it printed 7 pass,
+0 warn, 0 fail with no reasoning WARN. That run is recorded beside the
+others and counted only here.
+
+### Judge binary and size
+
+Built from `git archive 845b2fa` with rustc 1.96.1, in a fresh target dir
+with `CARGO_TARGET_DIR` and `TEMUR_TARGET_DIR` both set. The bump commit
+is the shipped source, and the extracted tree has no `.git`.
+
+- Tools test binary `tools-73002840273d97dc`, sha256
+  `30408ba897ef13283a727604696ea5f6934c6fc0e43f66bdc79096a7f19bccab`.
+- Desktop i686 release of `845b2fa`: 8,340,428 bytes, sha256
+  `86e8fdb3e75ac689830394863ed7ae120ab7517ed0a98255ddb238f189457c23`.
+  The byte count equals the cold gate of `5c30fb7`, which is expected:
+  the bump changes `0.37.0` to `0.38.0`, the same length, and is docs
+  otherwise.
+
+The gap, asset minus desktop, is **-2,296 bytes**, the same as at
+v0.37.0 and the figure the cut report gives.
+
+### The eval reading
+
+`scripts/weak_model_eval.sh` at the shipped source with its defaults (CTX
+8192, compact profile, thinking unset, `EVAL_MAX_TOKENS` 3072, `EVAL_MIN`
+0, CPU only), model `Qwen3-4B-Instruct-2507-Q4_K_M.gguf`, one run, on the
+downloaded asset. Before the server started, the driver asserted the
+asset's sha256 and byte count, required `/app/temur --version` in the
+container to print `temur 0.38.0`, and asserted the judge's and the
+instrument's sha256; `READBACK_BIN` was set to the judge above and the
+preflight said `explicit`. It ran under the heavy-job lock on 2026-09-23,
+1323 s wall clock, rc=0.
+
+The pre-registration was written before the launch and is echoed in the
+log. The nine and task 11 were the readings that could fail at one run;
+task 12 had no expectation, having passed once, at v0.37.0; task 13 was
+pre-registered as variance with its base rate stated as 8 of 14, which
+is the 7 of 13 of the v0.37.0 record plus its PASS.
+
+| reading | result | expectation |
+| --- | --- | --- |
+| nine scored tasks | 9/9 | 9/9 |
+| 11 memo-docx | PASS, read back 9:30 | PASS |
+| 12 summary-pdf | PASS, read back Tinyq-Rollout | none |
+| 13 pdf-section | PASS, quoted the section, no bash | none; base rate 8 of 14 |
+
+D22 resume-feedback also passed, reading the pdf and citing it. Task 13's
+fixture reproduced the P1 control arm's sha256 (`52a62858...`), so it
+read the same document the arms and the three previous soaks read, and
+(b)'s skipped-documents sentence did not fire.
+
+Task 12 passed for the second soak running, by a different route. The
+model wrote the summary to `summary.txt`, then called the spreadsheet
+tool on `/work/summary.pdf`. The tool refused with the product's own
+sentence, `The spreadsheet tool writes .xlsx workbooks only. For a .docx
+or .pdf, call write with the document path and Markdown content.`, which
+is `src/tools/spreadsheet.rs:139` in the shipped source. The model
+followed it, called `write` on `/work/summary.pdf`, and the artifact is a
+valid one-page PDF 1.4 of 1,637 bytes beginning `%PDF-1.4`. The T64-16
+screen's generic form matched once, on that refusal sentence inside the
+task's session record; the three literals matched nothing, and neither
+form matched the transcript itself. The screen sent a human to the
+record, and the read is that this is not the `write.txt` .pdf misread of
+Ruling T64-16: the model did not refuse, and what it produced is a real
+PDF. The hit is the product's redirect text.
+
+Task 13 went one step further than at v0.37.0. The first read hit the
+cap as before (`Use offset=415 to continue.`). The model then called
+`grep` for `Maintenance Backlog`, which found one match at line 575 of
+the extracted text, and read again from offset 575 to the end of the
+file, 588 lines. At v0.37.0 grep found the section but the model quoted
+without a second read, so the final word of its quote came from no tool
+output; this time the whole section was in tool output before it quoted.
+It quoted the sentence with no bash.
+
+Task 13 is now 9 PASS of 15.
+
+The unattended nudge, `unattended: the turn ended without a tool call;
+one continue nudge sent`, fired in 11 of the 13 task transcripts, tasks
+10 and 13 being the two without it, the same rate and the same two tasks
+as at v0.37.0. It is reported as a rate, not as a property of any one
+task.
+
+The T59 line reads `find-needle glob=*.txt plain` here, against
+`glob=none none` at v0.37.0 and `glob=*.txt plain` at v0.36.0. It is
+reported, not judged.
+
+Two T66 counts over the 13 task transcripts, by GNU grep. `response
+truncated: max_tokens` counts 0: no reply of the Instruct model hit the
+eval's 3072 cap, which matches the T66 Thinking reading's 0. It says
+nothing about the new reasoning notices, which need reasoning content
+that the Instruct model does not produce.
+`previous session archived as` counts 0: the eval gives each task its
+own HOME, so the T66 P0b startup archive had no earlier session to
+archive, which is what the instrument is meant to guarantee. Both counts
+are also 0 over every file under the transcripts directory, the session
+records included.
+
+The instrument is byte-identical to the one the v0.37.0 soak ran:
+`weak_model_eval.sh` is sha256 `e49319b8...` at both `da8ba34` and
+`845b2fa`, and T66 touched no line of it. This is the first pair of soaks
+whose readings compare in bytes as well as in behaviour. The task 13
+source fixture, `ferry-review.md`, is also byte-identical at both tags
+(`9392abf1...`).
+
+Every transcript and log was scanned before this record was written: the
+five release leak patterns and two API-key shapes over all 91 files, 51
+of them transcripts, nothing excluded. Every grep that reads the pattern
+file carries `-i`. Three controls ran before the counts: each pattern
+matched itself, each of the 3 metacharacter-free patterns scored 1 with
+`-i` and 0 without, and a known positive outside the archive registered
+as one file hit. Zero hits.
+
+Archive: `~/temur-eval-archive/v0.38.0-soak/`.
