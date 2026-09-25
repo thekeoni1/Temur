@@ -1784,7 +1784,15 @@ arms, CPU only, one run each. At 8192/4096 it scored 8/9 (task 8); at
 truncation notice of any shape: the longest single reasoning run stayed
 under the 4096 cap on these prompts (about 2,750 indicator characters),
 so the still-thinking and reasoning-only notices are verified by their
-tests and pin-proofs and have not been seen live. Reproducing the
+tests and pin-proofs and have not been seen live. On 2026-09-24 the
+operator's laptop dogfood of the v0.38.0 x86_64 asset, with a fresh init
+against Qwen3-4B-Thinking-2507 (32768 window, max_tokens 16384 written
+by init), saw every T66 line live, the still-thinking notice at a
+hand-set cap of 1024, and passed the three graded tasks it ran (1.1,
+2.3, 3.1) at the 16384 cap; the reasoning-only notice remains unseen.
+The same run found F14 (the /model.gguf id), fixed the same day; see the
+CHANGELOG's Unreleased entry.
+Reproducing the
 dogfood shape needs a prompt whose reasoning exceeds the cap, not a
 smaller cap alone. Task 10 failed differently per arm (never read the
 pdf; read it but did not cite it), one run each, so it is a lead. Task
@@ -1844,7 +1852,19 @@ the still-thinking notice (the eval with `EVAL_MAX_TOKENS=1024` on a
 Thinking model, one run, so the notice is seen live once); a larger
 `EVAL_TASK_TIMEOUT` or GPU offload before a 16384-budget arm's score
 means anything; the task-10 window lead; and the plain-REPL banner
-label.
+label. From the laptop dogfood: F14's product half (recognise a reasoning
+model from its first `reasoning_content` rather than its id, a one-time
+notice when `max_tokens` is below the reasoning figure, since an
+alias-less server lists no name); F15 a shorter `/clear` notice, since
+`/sessions` lists the archive; F16 `/sessions` lines with the `/resume`
+key first and alone (they wrap and the key is unclear); F17 `/resume`
+completion from the sessions directory, most recent first, said in
+`/help` (T10 completes only from the last `/sessions` listing and was
+not found); F18 manual `/compact` printing the measured
+round-trips-and-bytes line the auto path prints ("8 message(s)
+summarized into 8" reads as a no-op); and `temur init` waiting on a 503
+from a server still loading instead of falling back to the free-text
+default.
 
 The launch announcement goes out on v0.38.0. The playground stays on
 v0.37.0 and names its own version and sha, and README 19-24 has been

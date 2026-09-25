@@ -2,6 +2,17 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
+## Unreleased
+
+- `scripts/serve.sh` and the container recipe in docs/OFFLINE.md now pass
+  `-a`, so the server lists the model by its file name instead of
+  `/model.gguf`. Without it `temur init` never recognised a reasoning
+  model on the documented path and wrote `max_tokens` 4096 (found on the
+  first dogfood of v0.38.0). A config written against the old id keeps
+  working, since llama-server ignores the request's model field; running
+  `temur init` again or `/model <name>` picks up the new id, and
+  `temur doctor`'s listing check names the mismatch as advisory.
+
 ## v0.38.0 - 2026-09-23
 
 - `/clear` keeps the conversation instead of destroying it. The history is

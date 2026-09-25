@@ -33,6 +33,9 @@
 #         PORT         published host port (default 8080)
 #         BIND         published host address (default 127.0.0.1, loopback only)
 #         CONTAINER_NAME  container name (default temur-llama)
+#         MODEL_ALIAS  the model id the server lists (default: the
+#                      selected .gguf's basename without .gguf); temur init
+#                      and doctor recognise a reasoning model by it
 #         MEMINFO      meminfo file read by the RAM fit warning (default
 #                      /proc/meminfo; a knob so the check is testable)
 #         CHAT_TEMPLATE_FILE  path to a .jinja chat template to serve the
@@ -223,6 +226,9 @@ start_cmd() { # $1 (optional) = model name resolved via select_model
     fi
     [ -n "$MODEL_GGUF" ] || { echo "FAIL: set MODEL_GGUF=/path/to/model.gguf"; exit 1; }
     [ -f "$MODEL_GGUF" ] || { echo "FAIL: model file not found: $MODEL_GGUF (set the MODEL_GGUF knob)"; exit 1; }
+    # F14 (2026-09-24 dogfood): the server listed /model.gguf, so init never
+    # saw a reasoning model. Name the model by its file instead.
+    MODEL_ALIAS="${MODEL_ALIAS:-$(basename "$MODEL_GGUF" .gguf)}"
     # RAM fit check, WARN only: weights are mmap'd, so the model file plus
     # KV cache and compute buffers should fit in MemAvailable or the server
     # thrashes. CTX * 131072 bytes is a deliberately generous per-token
@@ -300,8 +306,8 @@ start_cmd() { # $1 (optional) = model name resolved via select_model
     # shellcheck disable=SC2086  # $TMPL_* are deliberately word-split
     podman run -d --name "$CONTAINER_NAME" -p "$BIND:$PORT:8080" \
         -v "$MODEL_GGUF":/model.gguf:ro $TMPL_MOUNT "$LLAMA_IMAGE" \
-        -m /model.gguf -c "$CTX" --jinja $TMPL_ARG --host 0.0.0.0 --port 8080 >/dev/null
-    echo "server starting (ctx $CTX, --jinja${CHAT_TEMPLATE_FILE:+, template $CHAT_TEMPLATE_FILE}); waiting on /health"
+        -m /model.gguf -a "$MODEL_ALIAS" -c "$CTX" --jinja $TMPL_ARG --host 0.0.0.0 --port 8080 >/dev/null
+    echo "server starting (ctx $CTX, --jinja${CHAT_TEMPLATE_FILE:+, template $CHAT_TEMPLATE_FILE}, alias $MODEL_ALIAS); waiting on /health"
 
     # ~60s budget for model load, probed from the HOST through the
     # published port. On timeout, fail closed: never leave a dead

@@ -33,8 +33,15 @@ llama-server -m /path/to/model.gguf -c 8192 --jinja --port 8080
 podman run --rm -p 127.0.0.1:8080:8080 \
     -v /path/to/model.gguf:/model.gguf:ro \
     ghcr.io/ggml-org/llama.cpp:server-b10438 \
-    -m /model.gguf -c 8192 --jinja --host 0.0.0.0 --port 8080
+    -m /model.gguf -a model-name -c 8192 --jinja \
+    --host 0.0.0.0 --port 8080
 ```
+
+`-a` is the id the server lists, and the id `temur init` and `temur
+doctor` read. The container sees only `/model.gguf`, so give the file's
+own name (`Qwen3-4B-Thinking-2507-Q4_K_M`, say) or a reasoning model
+goes unrecognised. The native form needs nothing: it lists the path you
+gave.
 
 **One window** (checkout only): `scripts/serve.sh` runs the container
 form detached, so the server and temur share one terminal:
@@ -56,7 +63,9 @@ auto-selected; zero or several fail and list the candidates.
 `MODEL_GGUF=/path/to/model.gguf` is an explicit override; combining it
 with a name argument is an error. A running server keeps its current
 model: `start` against a running container reports it, so switching
-models is `stop` then `start <name>`.
+models is `stop` then `start <name>`. serve.sh passes `-a` with the
+selected file's basename, so the server lists the model by name;
+`MODEL_ALIAS=` overrides it.
 
 RAM fit warning: before starting, the script compares the model file
 size plus a generous context allowance (128 KiB per context token,
@@ -648,8 +657,14 @@ decline to run it.
 A Thinking model's reasoning streams as `reasoning_content` and counts
 against `max_tokens` on the server, so a 4096 budget can be spent before
 the answer starts. Since v0.38.0 `temur init` recognises a reasoning
-model by its id and writes `max_tokens` as half the context window (4096
-to 16384), `temur doctor` warns when it is smaller, and a turn cut off
+model by its id, the one the server lists, which is why the recipe and
+serve.sh pass `-a`. A server started without it lists `/model.gguf` and
+the detection cannot fire: the first dogfood of v0.38.0, on 2026-09-24,
+found exactly that, `max_tokens` 4096 written for a Thinking model with
+no notice. A config.json written against the old id keeps working, and
+`temur init` again picks up the new one. For a model it recognises, init
+writes `max_tokens` as half the context window (4096 to 16384),
+`temur doctor` warns when it is smaller, and a turn cut off
 while thinking says so. On 2026-09-22 with the v0.38.0 source, CPU only,
 Qwen3-4B-Thinking-2507 scored 8/9 at an 8192 window with `max_tokens`
 4096 and 7/9 at 32768 with 16384, the two losses being the eval's
