@@ -459,6 +459,13 @@ All of the following, in order, before any tag/push/release:
   `scripts/release.sh`, since a gate that reaches the network fails for
   reasons unrelated to what it gates; "not run (offline)" is a
   legitimate recorded outcome.
+- Size sweep: `grep -n -E '[0-9]+(\.[0-9]+)? MB' README.md docs/*.md`,
+  ignoring this file's own hits (it is a dated record). Every hit must
+  be README's size sentence at the new numbers, a figure that is not
+  temur's size, or a temur figure that names the version it was
+  measured at; a bare stale temur figure is fixed before the bump. The
+  sweep exists because the v0.38.0 ship-record review found the
+  COMPARISON summary row carrying the v0.25.0 size with no version.
 - Installer test green: serve `/home/dev/dist/release/v<ver>/` locally
   (`python3 -m http.server`) and run `scripts/install.sh` with
   `TEMUR_BASE_URL` pointing at it, into a temp `HOME`; installed

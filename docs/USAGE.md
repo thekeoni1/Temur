@@ -37,7 +37,9 @@ real terminal on both stdin and stdout, so `--tui` against a pipe is a
 usage error naming the two alternatives. Use `-p "..."` for piped
 one-shot input, or `--plain` for the line REPL.
 
-A small real task, followed by `/status`:
+A small real task, followed by `/status`. The transcript predates
+v0.36.0, so its `/status` block lacks the `endpoint:` line that an
+openai-compat profile has printed since then.
 
 ```
 > Create a script greet.sh that prints a greeting to the current user, then run it to show it works.
