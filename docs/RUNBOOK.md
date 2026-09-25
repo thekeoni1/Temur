@@ -11797,31 +11797,43 @@ the demo page names its own version and sha; `docs/USAGE.md`;
 
 ### Gates, and where their evidence lives
 
-The `release.sh` run that staged these assets was the second of two (see
-Corrections). Its log was teed into the cut session's scratchpad under
-`/tmp` and was lost with the laptop restart of 2026-09-23. The staged
-bytes do not depend on it: `SHA256SUMS` pins them, the public downloads
-below match them 5 of 5, and the installed binaries match them on both
-legs. What the log said is quoted from the cut session's own transcript,
-which holds the excerpts that session read from it at 2026-09-22 19:32
-local. The quoted lines, with their log line numbers where the excerpt
-carried them:
+The `release.sh` run that staged these assets was the second of two, and
+its log is lost; what it ran over, and why the staged bytes do not depend
+on it, is under Corrections. What the log said is quoted from the cut
+session's own transcript, which holds the excerpts that session read from
+it at 2026-09-22 19:32 local. The quoted lines, as read back from the cut
+session's transcript, with their log line numbers where the excerpt
+carried them. Three are shortened there, and each gives its full form
+from the source or from a surviving log:
 
 - The script(1) footer: `Script done on 2026-09-22 19:32:22-04:00
   [COMMAND_EXIT_CODE="0"]`, which is `release.sh`'s own exit, not a
   wrapper's.
-- `== RELEASE v0.38.0: 4/4 ARTIFACTS GATED ==`.
+- `== RELEASE v0.38.0: 4/4 ARTIFACTS GATED ==`, shortened. `release.sh`
+  line 241 prints the full form, `== RELEASE $TAG: $N/$N ARTIFACTS
+  GATED == (ARM verified at build level per ROADMAP T7; hardware smoke
+  pending hardware)`.
 - 199 `OK: no INTERP program header`.
 - 269, the one history hit: `ALLOWED (already public):
-  083eb334847b07f6f3b75f713a3c492c1f90ed8e`, the T53 P1 commit message,
-  an operator mount path, public since 2026-09-08, allowlisted at v0.34.0
-  through v0.37.0.
+  083eb334847b07f6f3b75f713a3c492c1f90ed8e`, shortened. `release.sh`
+  line 96 prints `ALLOWED (already public): <sha> <subject> : <reason>`,
+  and line 5 of the surviving gate-2 replica log (below) shows it in full
+  for the same commit:
+
+  ```
+  ALLOWED (already public): 083eb334847b07f6f3b75f713a3c492c1f90ed8e T53 P1: a file search can be interrupted and cannot run forever : T53 P1 message, operator mount path, public since 2026-09-08, accepted at the v0.34.0 cut
+  ```
+
+  The hit is the T53 P1 commit message, an operator mount path, public
+  since 2026-09-08, allowlisted at v0.34.0 through v0.37.0.
 - 270 `OK: leak grep clean (operator patterns + generic shapes, files +
   history)`.
 - 272 `OK: install.sh + README match version 0.38.0 and all targets`.
 - 274-277 `component rust-std for target <target> is up to date` for all
-  four release targets: the `rustup target add` step was a NO-OP,
-  nothing installed.
+  four release targets, shortened: rustup prefixes each such line with
+  `info: `, as line 3 of the surviving rustup log shows, `info: component
+  rust-std for target i686-unknown-linux-musl is up to date`. The `rustup
+  target add` step was a NO-OP, nothing installed.
 
 `check.sh` is gate 1 and `release.sh` runs it under `set -eu` with no
 `SKIP_CHECK`; the transcript shows the `== gate: scripts/check.sh ==`
@@ -11831,17 +11843,22 @@ reaching the later gates and exiting 0, not on its own verdict line.
 
 Re-run on 2026-09-23 at `845b2fa` with a clean tree, each teed into the
 laptop's release-logs directory, the one the v0.37.0 cut used. The gate 2
-and `metadata_drift.sh` logs carry `git rev-parse HEAD` at the top; the
-rustup log does not, since it reads no tree:
+and `metadata_drift.sh` logs carry `git rev-parse HEAD` at the top. The
+rustup log carries no HEAD line. Its line 2 reads
+`1.96.1-x86_64-unknown-linux-gnu (overridden by '<the
+checkout>/rust-toolchain.toml')`, the checkout's path given here by its
+role. Its file stamp is `20260923-104937`, the same as the gate-2
+replica's, whose log records HEAD `845b2fa` and 0 porcelain lines, on
+the same checkout. The rustup result is tied to `845b2fa` by that
+adjacency, not by the rustup log itself:
 
 - Gate 2: `release.sh` lines 42-128, unchanged, run under `set -u`
   where `release.sh` itself runs under `set -eu`. One history
   hit, `083eb33`, allowlisted, then `OK: leak grep clean`, exit 0. The
   hit is the gate's own live control on the history scan. For the
   file scan, the step-2a check, re-run the same day: the machine-name
-  pattern (the
-  fifth of five active lines, file mode 0600) scores 0 files at
-  `845b2fa`, 2 at `c8a4b23` (the known positive), and 0 in the
+  pattern (the fifth of five active lines, file mode 0600) scores 0
+  files at `845b2fa`, 2 at `c8a4b23` (the known positive), and 0 in the
   commit messages of `b8ff7c2..845b2fa`.
 - `rustup target add` for the four release targets on 1.96.1: "up to
   date" four times, exit 0.
@@ -11865,8 +11882,9 @@ are the standing ones every record carries, updated for this cut.
   8192/4096 and 7/9 at 32768/16384. It produced ZERO truncation notices
   of any shape, so the still-thinking and reasoning-only notices are
   verified by unit tests and pin-proofs only. The dogfood symptom needs a
-  task whose reasoning exceeds the cap, and none of the thirteen did. For
-  the same reason, a reply cut off mid-thought keeping its reasoning has
+  task whose reasoning exceeds the cap, and none of the reading's runs did
+  (relay 29's words; the laptop holds no copy of that archive). For the
+  same reason, a reply cut off mid-thought keeping its reasoning has
   not been seen live either.
 - The two arm-B losses in that reading are 1200 s timeouts on CPU, not
   wrong answers.
@@ -11893,9 +11911,9 @@ are the standing ones every record carries, updated for this cut.
 - Archives are kept, not pruned: `session_store` has no code that
   removes one. A kept archive is not always the whole conversation: a
   `/clear` archive over the session size cap is trimmed, oldest
-  exchanges first, and its notice says so. Nine archives can share one second's name (the base,
-  then `-2` through `-9`); past that the archive fails rather than
-  overwrite a file that holds a conversation.
+  exchanges first, and its notice says so. Nine archives can share one
+  second's name (the base, then `-2` through `-9`); past that the
+  archive fails rather than overwrite a file that holds a conversation.
 - The `/compact` hang fix covers the stale-signal case T66 P4 pinned
   with a test. `/compact` is still one model call and can take as long
   as a turn; Esc interrupts it in the TUI, Ctrl+C in the plain REPL.
@@ -11919,7 +11937,9 @@ are the standing ones every record carries, updated for this cut.
 - The first proposed tag message claimed a display of the reasoning
   text, which P1b has not shipped. It was reworded before the tag was
   made; the pushed message claims only that the reasoning is no longer
-  dropped.
+  dropped. The wrong assumption: that "shows a thinking model reasoning"
+  described shipped behaviour, when v0.38.0 shows only the thinking
+  indicator and P1b, the display of the text, is pending.
 - The laptop restarted between HOLD 1 and the push, which moved the
   release day. The first bump commit, `fc67635`, dated the CHANGELOG
   heading 2026-09-22; the kickoff dates it the day the tag is pushed.
@@ -11930,9 +11950,30 @@ are the standing ones every record carries, updated for this cut.
   `fc67635`'s; it was never pushed. The wrong assumption: that
   `--amend` picks up a working-tree edit without `git add`.
 - The release logs went to a session scratchpad under `/tmp` and were
-  lost with the restart. The v0.37.0 cut kept its logs in a fixed
-  release-logs directory outside any session, and that is the procedure
-  from here on: release logs go there, never to a session scratchpad.
+  lost with the laptop restart of 2026-09-23, among them the log of the
+  `release.sh` run that staged these assets, the second of two. The
+  wrong assumption: that the session scratchpad under `/tmp` was a
+  durable location; a restart clears it. The v0.37.0 cut kept its logs
+  in a fixed release-logs directory outside any session, and that is the
+  procedure from here on: release logs go there, never to a session
+  scratchpad.
+- That second run finished before any bump commit existed. Its footer
+  reads `Script done on 2026-09-22 19:32:22`; the first bump commit,
+  `fc67635`, was made at 19:33:22 the same day, and `845b2fa` at
+  2026-09-23 10:42:07. So run 2 built and gated the working tree, which
+  was `5c30fb7` plus the uncommitted bump edits, and its history scan
+  saw no bump commit message; the bump message was scanned separately
+  before the push, as Ruling 4 below says. `845b2fa` differs from
+  `fc67635` by one `CHANGELOG.md` line only (1 file, +1/-1, the release
+  date), which is not a build input, so the staged bytes are the bytes
+  `845b2fa`'s sources produce. The staged bytes do not depend on the
+  lost log: `SHA256SUMS` pins them, the public downloads below match them
+  5 of 5, and the installed binaries match them on both legs. The sha
+  pins the bytes; the source identity rests on this argument, not on a
+  logged HEAD. The lost log carried no `git rev-parse HEAD` or `git
+  status --porcelain` line, which the v0.37.0 correction had asked for;
+  the 2026-09-23 re-runs do (the gate-2 replica log opens `HEAD
+  845b2fa...` and `porcelain lines: 0`).
 
 ### Ruling 4 and the independent check
 
@@ -11949,7 +11990,12 @@ independent check and this session re-ran both with headings kept and read
 - Bump commit `845b2fa`, before the push: 0, control 1 per pattern.
 - Tag message, read back from the annotated tag before its push: 0,
   control 1 per pattern.
-- This record's own commit: in the cut report.
+- This record's own commits: the five-pattern scan of the added lines of
+  `3406fad` (the first record commit) and of `d88f57f` (its amend,
+  +38/-22) read 0 per pattern, control 1, both re-run by laptop planning
+  on 2026-09-25. The commit that corrects this record after review has
+  its message and added lines scanned before its push, counts in its
+  report.
 
 ### Publication and live verification
 
