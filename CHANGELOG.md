@@ -12,6 +12,12 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   working, since llama-server ignores the request's model field; running
   `temur init` again or `/model <name>` picks up the new id, and
   `temur doctor`'s listing check names the mismatch as advisory.
+- grep's `include` filter now says when it matched none of the files it
+  walked, where it used to answer "No matches found" as if the tree had
+  been searched. It also accepts a comma list ("README.md,*.py") as the
+  alternation the model meant. In globset a comma is a literal, so that
+  include matched nothing, and a rename task ended by reporting no
+  instances over nine hits (laptop dogfood, 2026-09-28).
 
 ## v0.38.0 - 2026-09-23
 

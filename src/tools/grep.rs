@@ -22,6 +22,24 @@ pub const GREP_NO_MATCHES: &str = "No matches found";
 fn ends_a_sentence(line: &str) -> bool {
     line.trim_end().ends_with(['.', '!', '?', ':', ';'])
 }
+
+/// F24 (laptop dogfood 2026-09-28): the glob an `include` compiles to. In
+/// globset a comma is a literal character and alternation is `{a,b}`, so
+/// the model's "README.md,*.py" matched no file name at all and the walk
+/// searched nothing. A comma list with no brace is wrapped into the
+/// alternation it was meant as; an include that already has a brace is
+/// passed through untouched. Spaces around the commas are dropped, since a
+/// space inside the braces is a literal too and "*.ts, *.tsx" would match
+/// no .tsx file.
+fn include_glob(g: &str) -> String {
+    if g.contains(',') && !g.contains('{') {
+        let pieces: Vec<&str> = g.split(',').map(str::trim).filter(|p| !p.is_empty()).collect();
+        if !pieces.is_empty() {
+            return format!("{{{}}}", pieces.join(","));
+        }
+    }
+    g.to_string()
+}
 /// T62 P1(a): how much of a document grep turns into text before searching
 /// it. A bound is needed because grep reads EVERY file it walks, so without
 /// one a directory of long reports would each be extracted whole. 20,000
@@ -59,7 +77,7 @@ impl Tool for GrepTool {
             "properties": {
                 "pattern": {"type": "string", "description": "The regex pattern to search for in file contents"},
                 "path": {"type": "string", "description": "The directory to search in. Defaults to the current working directory."},
-                "include": {"type": "string", "description": "File pattern to include in the search (e.g. \"*.js\", \"*.{ts,tsx}\")"}
+                "include": {"type": "string", "description": "File pattern to include in the search (e.g. \"*.js\", \"*.{ts,tsx}\", or a comma list \"*.ts,*.tsx\")"}
             },
             "required": ["pattern"]
         })
@@ -75,7 +93,7 @@ impl Tool for GrepTool {
         };
         let include = match &p.include {
             Some(g) => Some(
-                globset::GlobBuilder::new(g)
+                globset::GlobBuilder::new(&include_glob(g))
                     .build()
                     .map_err(|e| ToolError::InvalidInput(format!("invalid include glob: {e}")))?
                     .compile_matcher(),
@@ -106,6 +124,11 @@ impl Tool for GrepTool {
         // silent skip there is the same false answer the raw-byte skip used to
         // give: "No matches found" for a document nobody searched.
         let mut docs_unreadable = 0usize;
+        // F24: what the include filter saw. A filter that passes no file
+        // leaves `total` at 0 over a tree nobody searched, so the answer
+        // needs to know how many files it turned away.
+        let mut files_walked = 0usize;
+        let mut files_searched = 0usize;
         'walk: for entry in ignore::WalkBuilder::new(&root).build().flatten() {
             // Before the read, and for every entry including directories.
             if ctx.cancel.is_set() {
@@ -122,6 +145,7 @@ impl Tool for GrepTool {
             if guard.denies(entry.path()) {
                 continue; // key isolation: never read, never matched
             }
+            files_walked += 1;
             if let Some(inc) = &include {
                 let name_hit = entry
                     .path()
@@ -133,6 +157,7 @@ impl Tool for GrepTool {
                     continue;
                 }
             }
+            files_searched += 1;
             // T62 P1(a): a document is searched as the TEXT read would show,
             // not as raw bytes. Raw bytes are the wrong thing twice over: a
             // compressed document matches nothing, and an uncompressed one
@@ -230,7 +255,22 @@ impl Tool for GrepTool {
             if stop.is_some() {
                 String::new()
             } else {
-                GREP_NO_MATCHES.to_string()
+                match &p.include {
+                    // F24: an include that turned away every file it walked
+                    // is not a finished search, and answering "No matches
+                    // found" there is the same false answer as the T62 P1
+                    // silent skip: a tree nobody searched. This line is
+                    // deliberately NOT the constant, so the agent's futile
+                    // guard does not excuse it, and a model repeating the
+                    // same wrong include is stopped as for any repeated
+                    // result.
+                    Some(g) if files_walked > 0 && files_searched == 0 => format!(
+                        "include \"{g}\" matched none of the {files_walked} {} under {}; nothing was searched",
+                        if files_walked == 1 { "file" } else { "files" },
+                        root.display()
+                    ),
+                    _ => GREP_NO_MATCHES.to_string(),
+                }
             }
         } else {
             let mut out = format!("Found {total}{} matches\n", if total >= MAX_MATCHES { "+" } else { "" });

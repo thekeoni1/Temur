@@ -715,6 +715,62 @@ fn grep_regex_include_and_binary_skip() {
     assert!(matches!(err, ToolError::InvalidInput(_)));
 }
 
+#[test]
+fn grep_include_comma_list_is_an_alternation() {
+    // F24 (laptop dogfood 2026-09-28): the model wrote "README.md,*.py",
+    // which globset reads as one glob with a literal comma.
+    let dir = tempfile::tempdir().unwrap();
+    for f in ["README.md", "x.py", "y.txt"] {
+        std::fs::write(dir.path().join(f), "fetch_rows\n").unwrap();
+    }
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+
+    // A space after a comma is a literal inside the braces too.
+    for include in ["README.md,*.py", "{README.md,*.py}", "*.py, README.md", " README.md , *.py "] {
+        let out = run(&reg, &mut ctx, "grep", json!({"pattern": "fetch_rows", "include": include})).unwrap();
+        assert!(out.output.starts_with("Found 2"), "{include}: {}", out.output);
+        assert!(out.output.contains("README.md"), "{include}: {}", out.output);
+        assert!(out.output.contains("x.py"), "{include}: {}", out.output);
+        assert!(!out.output.contains("y.txt"), "{include}: {}", out.output);
+    }
+}
+
+#[test]
+fn grep_include_that_matches_no_file_says_so() {
+    // F24: an include that turned every file away answered GREP_NO_MATCHES,
+    // a finished search's answer, for a tree nobody searched.
+    let dir = tempfile::tempdir().unwrap();
+    for f in ["README.md", "x.py", "y.txt"] {
+        std::fs::write(dir.path().join(f), "fetch_rows\n").unwrap();
+    }
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "fetch_rows", "include": "*.zzz"})).unwrap();
+    assert!(out.output.contains("matched none of the 3 files"), "{}", out.output);
+    assert!(out.output.contains("nothing was searched"), "{}", out.output);
+    assert!(!out.output.contains(temur::tools::GREP_NO_MATCHES), "{}", out.output);
+
+    // A filter that passed files and a search that found nothing is still
+    // the old answer.
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "absent", "include": "*.py"})).unwrap();
+    assert_eq!(out.output, temur::tools::GREP_NO_MATCHES);
+
+    // Nothing walked, nothing to say.
+    let empty = tempfile::tempdir().unwrap();
+    let mut ctx = ctx_in(empty.path());
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "fetch_rows", "include": "*.zzz"})).unwrap();
+    assert_eq!(out.output, temur::tools::GREP_NO_MATCHES);
+
+    // One file walked is "1 file".
+    let single = tempfile::tempdir().unwrap();
+    std::fs::write(single.path().join("x.py"), "fetch_rows\n").unwrap();
+    let mut ctx = ctx_in(single.path());
+    let out = run(&reg, &mut ctx, "grep", json!({"pattern": "fetch_rows", "include": "*.zzz"})).unwrap();
+    assert!(out.output.contains("matched none of the 1 file under"), "{}", out.output);
+}
+
 // --- T62 P1(a): grep searches a document as text ---------------------------
 
 #[test]

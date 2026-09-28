@@ -1864,7 +1864,21 @@ not found); F18 manual `/compact` printing the measured
 round-trips-and-bytes line the auto path prints ("8 message(s)
 summarized into 8" reads as a no-op); and `temur init` waiting on a 503
 from a server still loading instead of falling back to the free-text
-default.
+default. From the second laptop dogfood (2026-09-28,
+Qwen3-4B-Thinking-2507, seven menu tasks): F24, grep's include filter
+matching nothing and answering "No matches found", fixed the same week
+(see the CHANGELOG's Unreleased entry); F19, an off-menu calculus
+question refused with "My role is to assist with software engineering
+tasks", a phrase none of recover.rs's five scope-denial phrases catches
+(first step: the phrase, with a fixture; the full fix is a more general
+DEFAULT_SYSTEM opening, a default change that moves both profiles, the
+byte-lock test, the floors and doctor's estimate, and needs the 13-task
+eval before and after); F21 and F25 as one seed, a nudge in the T61
+style when a turn claims a computed result or writes a derived file and
+no command ran in the session (the turn record has both: write or edit
+present, bash absent); F22 Esc Esc clearing the input line, since
+Ctrl+C's clear is documented only in TUI.md; and F20 the model's own
+`<response>` tags rendering raw.
 
 The launch announcement goes out on v0.38.0. The playground stays on
 v0.37.0 and names its own version and sha, and README 19-24 has been
