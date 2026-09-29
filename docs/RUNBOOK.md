@@ -12216,3 +12216,243 @@ matched itself, each of the 3 metacharacter-free patterns scored 1 with
 as one file hit. Zero hits.
 
 Archive: `~/temur-eval-archive/v0.38.0-soak/`.
+
+## v0.38.1 ship record
+
+2026-09-29. **The F14 and F24 fixes, shipped at tag `v0.38.1`.** A PATCH
+rather than a milestone: two defects found by laptop dogfood runs of the
+published v0.38.0 asset, one commit each, no new capability. Cut from
+`f8e5316` on the laptop, the fourth cut on the pinned rustc 1.96.1, in
+the shape of the v0.29.1 and v0.30.1 patches.
+
+The two fixes, as the CHANGELOG's two v0.38.1 items state them:
+
+- **F14, `fadb897`.** `scripts/serve.sh` and the container recipe in
+  docs/OFFLINE.md now pass `-a`, so the server lists the model by its
+  file name instead of `/model.gguf`. Without it `temur init` never
+  recognised a reasoning model on the documented mount and wrote
+  `max_tokens` 4096. Found by the first laptop dogfood of v0.38.0, on
+  2026-09-24.
+- **F24, `f8e5316`.** grep's `include` filter now says when it matched
+  none of the files it walked (`include "<g>" matched none of the N
+  file(s) under <root>; nothing was searched`) where it used to answer
+  "No matches found", and it reads a comma list with no brace as an
+  alternation. Found by the 2026-09-28 laptop dogfood, where a rename
+  task passed `README.md,*.py`, got "No matches found" and reported
+  nothing to rename over nine real hits. The desktop confirmed the cause
+  in globset: `README.md,*.py` matches neither name and
+  `{README.md,*.py}` matches both.
+
+`git diff --stat v0.38.0..f8e5316 -- src/ scripts/ tests/` is 4 files:
+`scripts/serve.sh` (F14), `src/tools/grep.rs`,
+`src/tools/prompts/grep.txt` and `tests/tools.rs` (F24). The bump adds
+no source change.
+
+### Sizes
+
+Raw byte counts, read from the staged files and matched byte for byte
+against the public downloads:
+
+| asset | bytes | MB | v0.38.0 | change |
+| --- | --- | --- | --- | --- |
+| i686 | 8,341,524 | 8.34 | 8,338,132 | +3,392 (+0.04%) |
+| x86_64 | 9,911,600 | 9.91 | 9,908,272 | +3,328 (+0.03%) |
+| aarch64 | 8,010,128 | 8.01 | 8,007,632 | +2,496 |
+| armv7 | 7,728,688 | 7.73 | 7,724,704 | +3,984 |
+
+Divided by 1,000,000 and rounded to two decimals, README:37-38 reads
+**8.34 MB** on i686 and **9.91 MB** on x86_64, the same figures as at
+v0.38.0, so only the version on that line moved. The i686 binary is
+**1,658,476 bytes** under the 10,000,000 STOP (16.58%), down from
+1,661,868 at v0.38.0. The desktop's cold gate of `f8e5316` measured
+8,343,948 bytes on i686 (a desktop figure, not re-measured here); the
+published i686 is 2,424 bytes smaller, where the gap at v0.37.0 and
+v0.38.0 was 2,296.
+
+### The cut
+
+The version bump is a single commit on the anchor, `eccd7fe`, parent
+`f8e5316`, 7 files, 15 insertions and 14 deletions. Edited lines:
+
+- `Cargo.toml` 3, `Cargo.lock` 1475 (the temur entry only),
+  `scripts/install.sh` 10.
+- `CHANGELOG.md` 5, the `## Unreleased` heading becoming `## v0.38.1 -
+  2026-09-29` and nothing else in the file: the two items ship as
+  written and no size sentence was added.
+- `README.md` 37 (the version in the size sentence; the figures held),
+  185 (install raw URL), 196 (install blob URL), 208 (release-download
+  URL and asset name, two on the line), 209 (SHA256SUMS URL), 211
+  (asset name).
+- `CLAUDE.md` 78, the scope line, `(v0.38.0, public since` becoming
+  `(v0.38.1, public since`.
+- `ROADMAP.md` 1883-1885, the launch paragraph, replaced by four lines
+  (1883-1886) naming v0.38.1 as the launch version and saying the
+  playground is refreshed to the announced version before the
+  announcement.
+
+The bump was first committed as `17eae3f` with the CHANGELOG heading
+dated 2026-09-28; the tag was pushed the next morning, so the commit was
+amended to `eccd7fe` before any push, and the only difference between
+the two is that date.
+
+After the bump, `git grep -n '0\.38\.0' -- . ':!CHANGELOG.md'
+':!docs/RUNBOOK.md' ':!docs/COMPARISON.md' ':!ROADMAP.md'` returns
+exactly three lines, all in `docs/OFFLINE.md`, all dated history that
+stays:
+
+- 659 ``Since v0.38.0 `temur init` recognises a reasoning`` (when the
+  detection arrived);
+- 662 `the first dogfood of v0.38.0, on 2026-09-24,` (the run that found
+  F14);
+- 668 `On 2026-09-22 with the v0.38.0 source, CPU only,` (the
+  measurement's source).
+
+The size sweep (this file's "Publish preflight"), with this file's own
+hits left out, returned ten lines, re-run at `eccd7fe` into
+`v0.38.1-preflight-rerun-20260929-075343.log`. Each is ruled:
+
+- README:31 "under 10 MB on 32-bit": a bound, not a figure. It holds
+  (8,341,524 < 10,000,000).
+- README:34 and :101 "90 MB": not temur's size.
+- README:37-38: the size sentence at this cut's figures.
+- OFFLINE:326 "~8 MB", in the diagram: a bare current figure that stays
+  true (8.34 rounds to 8), allowed by Ruling T66-30.
+- COMPARISON:50: temur 7.5 MB, tagged "the v0.25.0 measurement".
+- COMPARISON:323 and :326 "4096 MB": not temur's size.
+- COMPARISON:379 "copies one 7.2 MB static binary": a temur size, dated
+  by its section. The Terminal-Bench 2 conditions paragraph
+  (COMPARISON:316-317) pins temur 0.27.0, x86_64 static musl, and the
+  run dates 2026-08-25/26. Allowed as a figure that names its version
+  through its section.
+
+Not edited: README 19-24, which names no version; `docs/USAGE.md`;
+`docs/COMPARISON.md`; `docs/OFFLINE.md`; `docs/TUI.md`; `src/`;
+`tests/`; `scripts/` beyond `install.sh` 10.
+
+### Gates, and where their evidence lives
+
+Logs are in the laptop's release-logs directory, by basename.
+
+The first `release.sh` run, `v0.38.1-release-20260928-205854.log`, was
+INTERRUPTED: WSL restarted at about 21:05 while it built the musl test
+suites, and the log ends with no `RELEASE_SH_EXIT` line and no
+`ARTIFACTS GATED` line. It proves nothing past check.sh's first path
+and no gate here is quoted from it. The bump edits were already in the
+working tree, survived the restart, and were re-verified before the
+rerun.
+
+The run that staged these assets, `v0.38.1-release-20260928-212757.log`
+(314 lines), ran from the start with no `SKIP_CHECK` and no
+`STAGE_ROOT`, with `CARGO_BUILD_JOBS=6` in the environment as a
+precaution against a memory kill (it changes parallelism, not the
+compiler or its flags; it was set on the command line and the log does
+not record it):
+
+- 268 `== ALL CHECKS PASSED ==`: check.sh, both paths (gnu-debug and
+  musl-release), with the bare busybox container printing `temur
+  0.38.1` (265) and `mock REPL OK (bare)` (267).
+- 270, the one history hit: `ALLOWED (already public):
+  083eb334847b07f6f3b75f713a3c492c1f90ed8e`, the T53 P1 commit message,
+  an operator mount path, public since 2026-09-08, allowlisted at v0.34.0
+  through v0.38.0. The residual is unchanged from v0.38.0.
+- 271 `OK: leak grep clean (operator patterns + generic shapes, files +
+  history)`.
+- 273 `OK: install.sh + README match version 0.38.1 and all targets`.
+- 275-278 `info: component rust-std for target <target> is up to date`
+  for all four release targets: a NO-OP, nothing installed.
+- 299 `== RELEASE v0.38.1: 4/4 ARTIFACTS GATED ==`.
+- 312 `RELEASE_SH_EXIT=0`, `release.sh`'s own exit, echoed inside the
+  script(1) command.
+
+The build printed one warning, `function line_trimmed is never used`
+(`src/tools/edit/matchers.rs:122`), in both check.sh paths. The function
+is unchanged since v0.38.0; it is a test-only wrapper.
+
+Before the build, the step-2a check: the machine-name pattern (the fifth
+of five active lines, file mode 0600) scores 0 files at `f8e5316`, 2 at
+`c8a4b23` (the known positive), and 0 in the commit messages of
+`845b2fa..f8e5316`. Those counts were first taken in the cut session
+without a log; the same check was re-run into
+`v0.38.1-preflight-rerun-20260929-075343.log` with the same counts, plus
+0 files at `eccd7fe`.
+
+- `metadata_drift.sh`, `v0.38.1-metadata-drift-20260928-213859.log`: 4
+  PASS (fable, haiku, opus, sonnet), "all 4 baked profiles match
+  models.dev", exit 0.
+- Installer test, `v0.38.1-installer-20260928-213910.log`: the stage
+  directory served on 127.0.0.1 with `python3 -m http.server`,
+  `scripts/install.sh` run with `TEMUR_BASE_URL` into a temp HOME (the
+  log records the base URL, not the server command):
+  "checksum verified.", installed `temur 0.38.1`, sha256 equal to the
+  staged x86_64 asset.
+- Ruling 4 over the bump's message, its added lines and the tag message,
+  headings stripped and kept, five patterns: 0 everywhere, with the live
+  control (the fifth pattern over `c8a4b23`) at 2 file hits.
+  `v0.38.1-bump-ruling4-20260928-213956.log` for `17eae3f`,
+  `v0.38.1-bump-ruling4-20260929-072926.log` for `eccd7fe`. Register over
+  the same text: non-ASCII 0, U+2014 0, the banned adjective 0, each
+  against a planted control that scored 1.
+
+The independent gate on the same source is CI: run **36563494862** on
+`eccd7fe`, `test` (109389733500) and `release-gate` (109389733901) both
+success, the only run on that sha.
+
+### Tag
+
+Annotated tag `v0.38.1` at `eccd7fe`, tag object
+`80e0a6651655e86df5bb3b8ae7bddc87aa794d1d`. Read back raw before the
+push: `git cat-file -t v0.38.1` reads `tag`, and `git cat-file tag
+v0.38.1 | tail -1 | od -c` gives exactly `temur v0.38.1 - the grep
+include filter says when it matched nothing, and the server lists the
+model by name (F14, F24)\n`, 120 bytes, one line, ASCII, a plain
+hyphen. Ruling 4 on the tag object's message: 0 on all five patterns,
+control 2. Pushed by its explicit ref; `git ls-remote` shows the tag
+object and `^{}` at `eccd7fe`, and the remote carries 42 tags.
+
+### Publication and live verification
+
+Release `https://github.com/thekeoni1/Temur/releases/tag/v0.38.1`,
+title equal to the tag message, `isDraft=false`, `isPrerelease=false`,
+five assets: the four binaries and SHA256SUMS. Notes are the CHANGELOG's
+v0.38.1 section. Log: `v0.38.1-publish-20260929-074313.log`.
+
+| asset | sha256 |
+| --- | --- |
+| i686-unknown-linux-musl | `2279e5bbf486cc90f720e3d843c95f9ce3d3dd2341adf77ee3661877560e0740` |
+| x86_64-unknown-linux-musl | `443b41d96e700558f0f9368d5e286cd21fa08f9c9ddee2d7e1f492107f62b0b5` |
+| aarch64-unknown-linux-musl | `29acfd193eed77d3982ff9fad67b2640377084d0d4247cb2d2428ef6fe1c2b74` |
+| armv7-unknown-linux-musleabihf | `fb20c5ee05f7f40cc717fd9fee34b00785011b839ae45861adc07c5c62c002f1` |
+| SHA256SUMS (428 bytes) | `f21dfb3ddb9badf75c830ef4c123b6722fb3e57a14617255e01f7a1104aac3f7` |
+
+Closing gate, `v0.38.1-closing-gate-20260929-074918.log`:
+
+- Tokenless (`env -i`, curl, no gh): all five assets downloaded from
+  the public URLs, byte counts and sha256 equal to the staged files, 5
+  of 5; `sha256sum -c` 4 of 4.
+- The README:185 one-liner, verbatim, into a fresh empty HOME, once on
+  x86_64 and once under `setarch i686`: each fetched install.sh from the
+  v0.38.1 tag, printed "checksum verified.", and installed a binary that
+  prints `temur 0.38.1`, sha256 equal to the published x86_64 and i686
+  asset respectively.
+- The README:196 blob URL returns 200.
+- The first i686 leg's log line names only the arch, so the leg was
+  run again with the command and `setarch i686 uname -m` (`i686`)
+  written into the same log: same result, same sha256.
+
+### What this release does NOT establish
+
+Re-derived from the two v0.38.1 CHANGELOG items:
+
+- No live dogfood of the published v0.38.1 asset has run yet. The
+  desktop's soak of the published i686 asset is still to run.
+- F24's new answer (`include ... matched none of ... nothing was
+  searched`) has been seen in tests only, not in a model run.
+- The comma-list alternation was proved on a tempdir in
+  `tests/tools.rs`, not by a model passing a comma list live.
+- F14's `-a` changes the documented recipe; a config written against the
+  old `/model.gguf` id keeps working, but no live run on the published
+  asset has yet re-checked init's reasoning-model detection on the
+  documented mount.
+- F19, F20, F21, F25 and F22 remain open, as ROADMAP lists them in the
+  paragraph ending at line 1881.
+- ARM remains verified at build level only; no hardware smoke.
