@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased
+## v0.38.1 - 2026-09-29
 
 - `scripts/serve.sh` and the container recipe in docs/OFFLINE.md now pass
   `-a`, so the server lists the model by its file name instead of

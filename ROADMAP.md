@@ -1880,9 +1880,10 @@ present, bash absent); F22 Esc Esc clearing the input line, since
 Ctrl+C's clear is documented only in TUI.md; and F20 the model's own
 `<response>` tags rendering raw.
 
-The launch announcement goes out on v0.38.0. The playground stays on
-v0.37.0 and names its own version and sha, and README 19-24 has been
-version-agnostic since T65 P5.
+The launch announcement goes out on v0.38.1, the patch carrying
+F14 and F24. The playground is refreshed to the announced version
+before the announcement and names its own version and sha, and
+README 19-24 has been version-agnostic since T65 P5.
 
 ### T65 as built (2026-09-17)
 
