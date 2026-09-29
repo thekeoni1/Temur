@@ -12456,3 +12456,246 @@ Re-derived from the two v0.38.1 CHANGELOG items:
 - F19, F20, F21, F25 and F22 remain open, as ROADMAP lists them in the
   paragraph ending at line 1881.
 - ARM remains verified at build level only; no hardware smoke.
+
+## v0.38.1 published-asset soak (desktop, recorded 2026-09-29)
+
+The published i686 asset was downloaded anonymously on the desktop,
+checked against `SHA256SUMS`, installed through the README one-liner,
+smoked in containers and measured with one twelve-task eval on Qwen3-4B.
+Both readings that could fail at one run held: 9/9 on the nine scored
+tasks, and task 11 PASS. Tasks 12 and 13, pre-registered as no
+expectation and as variance, passed as well. Two new arms followed the
+eval. The F14 arm read init's reasoning-model detection on the
+documented mount and matched its pre-registration. The F24 arm is not
+read: in all four of its runs, over two attempts, the model left out
+the `include` argument it was told to pass.
+
+### The cut, as found
+
+Tag `v0.38.1` is annotated tag object
+`80e0a6651655e86df5bb3b8ae7bddc87aa794d1d` on commit `eccd7fe`, parent
+`f8e5316`. The bump is 7 files, 15 insertions and 14 deletions.
+`origin/main` after the cut is `a182e15`, the ship record above, one
+file and 240 insertions. The remote carries 42 tags and one head;
+`v0.38.0` is unchanged at `8ccd153e` and `v0.37.0` at `30bfcecc`. The
+desktop's `main` sat at `f8e5316`, which is `origin/main^^`, so it is
+contained in `origin/main` and nothing needed rebasing. Nothing was
+retagged.
+
+### The asset
+
+`temur-v0.38.1-i686-unknown-linux-musl`, **8,341,524 bytes**, sha256
+**`2279e5bbf486cc90f720e3d843c95f9ce3d3dd2341adf77ee3661877560e0740`**.
+
+It was fetched with `env -i curl -fsSLO` from the release URL, with
+`GH_TOKEN` and `GITHUB_TOKEN` unset. `sha256sum -c --ignore-missing
+SHA256SUMS` printed OK for it, and `SHA256SUMS` is 428 bytes, sha256
+`f21dfb3ddb9badf75c830ef4c123b6722fb3e57a14617255e01f7a1104aac3f7`,
+listing the four assets.
+
+### Container smoke on the asset
+
+The downloaded asset, staged under the name `temur` and mounted
+read-only, with no network in the containers.
+
+| check | result |
+| --- | --- |
+| i386 debian, `temur --version` | `temur 0.38.1` |
+| i386 debian, `temur doctor --no-network`, fresh container | completes; 0 pass, 0 warn, 1 fail (no config file), rc=1 |
+| i386 debian, `temur init` with no input, then `doctor --no-network` | init exits 1 on `unexpected end of input`; doctor 0 pass, 0 warn, 1 fail |
+| i386 debian, `temur init` accepting every default, then `doctor --no-network` | reaches `Model id [qwen3-4b]`, writes the config, init rc=0; doctor 7 pass, 0 warn, 0 fail |
+| i386 debian, `doctor --no-network` with a config at the container home | 7 pass, 0 warn, 0 fail |
+| `busybox:stable`, `temur --version` | `temur 0.38.1` |
+| README one-liner `scripts/install.sh`, fresh empty HOME under `setarch i686` | `checksum verified.`; installed sha256 equals the asset's; `temur 0.38.1` |
+| T66 P3: init reasoning line, doctor reasoning WARN, non-reasoning local default | 0 and 0 |
+
+The fifth row gives doctor a hand-placed config, as at v0.37.0 and
+v0.38.0; it is an instrument smoke and is counted nowhere. The fourth
+row is the run the v0.38.0 soak added as a supplement, now part of the
+smoke: its default model id is `qwen3-4b`, not a reasoning id, so it is
+the run that gives the T66 P3 count a model id to judge. The phrase
+every T66 P3 init notice and doctor reasoning line carries, `looks like
+a reasoning model`, counts 0 in every smoke log. `busybox:stable` is
+image `b116e155` and i386 debian `6210699e`, the images the previous
+soaks used.
+
+The doctor prompt-floor estimate reads ~2,867 tokens here against
+~2,852 at v0.38.0, still 34% of the 8192 window. F24 added the words
+`, or a comma list "*.ts,*.tsx"` to the grep tool's prompt, the only
+prompt file the release touched, so a small rise was expected. Both
+figures are estimates, not measurements.
+
+The one-liner was taken verbatim from the tag's README at line 185 and
+run on the host under `setarch i686`, tokenlessly under `env -i`, into an
+empty HOME; it needs network, which the log says. It installed an ELF
+32-bit i386 static binary byte-identical to the downloaded asset.
+
+### Judge binary and size
+
+Built from `git archive eccd7fe` with rustc 1.96.1, in a fresh target dir
+with `CARGO_TARGET_DIR` and `TEMUR_TARGET_DIR` both set. The bump commit
+is the shipped source, and the extracted tree has no `.git`.
+
+- Tools test binary `tools-1f9ae1845272148f`, sha256
+  `e12b2d8896a3cf7a32e366b7d49b4f07596b796750c3404e97222b6d23b18439`.
+- Desktop i686 release of `eccd7fe`: 8,343,948 bytes, sha256
+  `2463b82063833cc5c878ca587eec9b3593add668158eb05a52a9037ce8922e3b`.
+  The byte count equals the F24 amend gate of `f8e5316`, which is
+  expected: the bump changes `0.38.0` to `0.38.1`, the same length. The
+  sha differs from that gate's `ecda8c47...` because the version string
+  is compiled in.
+
+The gap, asset minus desktop, is **-2,424 bytes**, the figure the ship
+record gives. It was -2,296 at v0.37.0 and v0.38.0; F24's code is the
+change between the two builds.
+
+### The eval reading
+
+`scripts/weak_model_eval.sh` at the shipped source with its defaults (CTX
+8192, compact profile, thinking unset, `EVAL_MAX_TOKENS` 3072, `EVAL_MIN`
+0, CPU only), model `Qwen3-4B-Instruct-2507-Q4_K_M.gguf`, one run, on the
+downloaded asset. Before the server started, the driver asserted the
+asset's sha256 and byte count, required `/app/temur --version` in the
+container to print `temur 0.38.1`, and asserted the judge's and the
+instrument's sha256; `READBACK_BIN` was set to the judge above and the
+preflight said `explicit`. It ran under the heavy-job lock on 2026-09-29,
+1288 s wall clock, rc=0.
+
+The pre-registration was written before the launch and is echoed in the
+log. The nine and task 11 were the readings that could fail at one run;
+task 12 had no expectation, having passed at v0.37.0 and v0.38.0; task 13
+was pre-registered as variance with its base rate stated as 9 of 15,
+which is the 8 of 14 of the v0.38.0 record plus its PASS.
+
+| reading | result | expectation |
+| --- | --- | --- |
+| nine scored tasks | 9/9 | 9/9 |
+| 11 memo-docx | PASS, read back 9:30 | PASS |
+| 12 summary-pdf | PASS, read back Tinyq-Rollout | none |
+| 13 pdf-section | PASS, quoted the section, no bash | none; base rate 9 of 15 |
+
+D22 resume-feedback also passed, reading the pdf and citing it. Task 13's
+fixture reproduced the P1 control arm's sha256 (`52a62858...`), and
+(b)'s skipped-documents sentence did not fire.
+
+Task 12 took the same route as at v0.38.0. The model wrote
+`summary.txt`, called the spreadsheet tool on `/work/summary.pdf`, got
+the product's redirect sentence (`src/tools/spreadsheet.rs:139`), and
+followed it with `write` on `/work/summary.pdf`. The artifact is a valid
+one-page PDF 1.4 of 1,619 bytes. The T64-16 screen's generic form again
+matched once, on that sentence inside the session record; the three
+literals and the transcript itself matched nothing. The read is the
+same as at v0.38.0: this is the product's redirect text, not the
+`write.txt` .pdf misread of Ruling T64-16.
+
+Task 13 went back to the v0.37.0 route. The first read hit the cap
+(`Use offset=415 to continue.`). The model then called `grep` for
+`maintenance|dry|dock` on the pdf, which returned two matches, lines 577
+and 580, and quoted without a second read. The grep line for 580 ends at
+`continue every eight`, so the final word of the quote, `weeks.`, came
+from no tool output, as at v0.37.0. It quoted with no bash.
+
+Task 13 is now 10 PASS of 16.
+
+The unattended nudge fired in 11 of the 13 task transcripts, tasks 10
+and 13 being the two without it, the same rate and the same two tasks
+as at v0.37.0 and v0.38.0. It is reported as a rate, not as a property
+of any one task.
+
+The T59 line reads `find-needle glob=alpha.txt,beta.txt,gamma.txt
+comma-joined`, a form none of the earlier soaks recorded, against
+`glob=*.txt plain` at v0.38.0 and v0.36.0 and `glob=none none` at
+v0.37.0. It is reported, not judged.
+
+Two T66 counts over the 13 task transcripts, by GNU grep. `response
+truncated: max_tokens` counts 0 and `previous session archived as`
+counts 0, as at v0.38.0 and for the same reasons: no Instruct reply hit
+the 3072 cap, and each task has its own HOME. Both are also 0 over every
+file under the transcripts directory, the session records included.
+
+The instrument is byte-identical at three tags: `weak_model_eval.sh` is
+sha256 `e49319b8...` at `da8ba34`, `845b2fa` and `eccd7fe`, and
+`git diff --stat 845b2fa..eccd7fe` over it and `tests/fixtures/` is
+empty. The task 13 source fixture, `ferry-review.md`, is `9392abf1...`
+at `845b2fa` and `eccd7fe`.
+
+### The F24 arm
+
+The F24 arm is not read. It was two single-turn runs of the asset in the
+eval's container shape (own pod with no network, the eval's server
+image, model, argv and config line), each on a fresh three-file fixture
+holding `fetch_rows` once per file: `README.md`, `tool.py` and
+`notes.txt`. Run A asked for grep with `include` set to
+`README.md, *.py`, and run B with `include` set to `*.zzz`. The reading
+was pre-registered on the session record's grep arguments and
+tool_result, with the rule that a run whose model did not pass the exact
+include string is not read. Neither first run passed an `include`, so
+Ruling T66-40 allowed one more attempt per run, A2 and B2, with the
+arguments written into the prompt as a JSON object. Neither of those
+passed an `include` either, and nothing was run after them.
+
+The model was the eval's, Qwen3-4B-Instruct-2507 at a context of 8192
+with the compact profile, and in none of the four runs did it pass
+`include`. Each run made one grep call, and each reply reproduced the
+tool output. The arguments below are copied from the session records,
+under `grep-arm/` for A and B and `grep-arm2/` for A2 and B2. Run A's
+path is `./` followed by a right double quotation mark (U+201D), a comma
+and a space; the table gives it in words, since this file is ASCII.
+
+| run | arguments in the session record | tool_result |
+| --- | --- | --- |
+| A | `pattern` `fetch_rows`; `path` as described above; no `include` | `No matches found` |
+| B | `{"pattern":"fetch_rows","path":"."}` | `Found 3 matches` (all three files) |
+| A2 | `{"pattern":"fetch_rows","path":".\", \"include\": \"README.md, *.py"}` | `No matches found` |
+| B2 | `{"pattern":"fetch_rows","path":"."}` | `Found 3 matches` (all three files) |
+
+In A the model folded the include text into `path`, and in A2 it put the
+rest of the JSON object, quotes escaped, inside the `path` string. The
+tool's own tests in `tests/tools.rs`,
+`grep_include_comma_list_is_an_alternation` and
+`grep_include_that_matches_no_file_says_so`, which the gate runs, remain
+the evidence for F24.
+
+Runs A and A2 are the live instances of F26, a ROADMAP seed and not a
+change here: a grep root that does not exist answers `No matches found`,
+because the walk error is dropped and no file is walked
+(`src/tools/grep.rs:132` and `:272` at `eccd7fe`).
+
+### The F14 arm
+
+`CTX=8192 scripts/serve.sh start Qwen3-4B-Thinking-2507` from the tag's
+source tree, image `server-b10438`. The server listed
+`"id":"Qwen3-4B-Thinking-2507-Q4_K_M"`. In a fresh empty HOME, `temur
+init` accepting every default wrote `"context_window": 8192` and printed
+one reasoning line:
+
+    Qwen3-4B-Thinking-2507-Q4_K_M looks like a reasoning model; writing "max_tokens": 4096 (its thinking counts against the cap); for room to think, start llama-server with -c 32768 and run temur init again
+
+`temur doctor --no-network`, run under `env -i PATH=/usr/bin:/bin` so an
+installed copy on the host PATH could not add an install WARN, read
+`doctor: 7 pass, 1 warn, 0 fail`. The one WARN is the reasoning one,
+`looks like a reasoning model and the context window is 8192: start
+llama-server with -c 32768 or more`. The window was 8192, so this WARN,
+and no reasoning PASS, is the expected reading: the arm reads the
+detection, not the sizing. No turn was run, and the server was stopped
+afterwards.
+
+### What this soak closes
+
+Of the ship record's first four "does NOT establish" items, this soak
+closes two. The desktop soak of the published asset has run (item one).
+The F14 arm re-checked init's reasoning-model detection on the
+documented mount with the published asset (item four). Items two and
+three stay open: F24's new answer and the comma-list alternation have
+still not been seen in a model run, because the F24 arm was not read.
+
+Every transcript and log was scanned before this record was written:
+the five release leak patterns and two API-key shapes over all 139
+files, 51 of them eval transcripts, the F24 arm's transcripts, work dirs
+and session records included, nothing excluded. Every grep that reads
+the pattern file carries `-i`. Three controls ran before the counts:
+each pattern matched itself, each of the 3 metacharacter-free patterns
+scored 1 with `-i` and 0 without, and a known positive outside the
+archive registered as one file hit. Zero hits.
+
+Archive: `~/temur-eval-archive/v0.38.1-soak/`.
