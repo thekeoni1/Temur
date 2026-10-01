@@ -1341,6 +1341,10 @@ fn edit_fuzzy_fallback_matrix() {
         // Ok: (final file content, output must contain). Err: message must
         // contain — and the file must be untouched.
         expect: Result<(&'static str, &'static str), &'static str>,
+        // F27: a block-anchor splice needs the file read first. A case that
+        // expects NoMatch or Ambiguous is answered before that guard, so it
+        // needs no read.
+        read_first: bool,
     }
     let cases = [
         Case {
@@ -1352,6 +1356,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "    let y = 2;",
             replace_all: false,
             expect: Ok(("fn main() {\n\tlet y = 2;\n}\n", "whitespace-tolerant match")),
+            read_first: false,
         },
         Case {
             name: "interior_tab_vs_space_stays_not_found",
@@ -1360,6 +1365,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "z",
             replace_all: false,
             expect: Err("not found in the file, even with whitespace-tolerant"),
+            read_first: false,
         },
         Case {
             name: "crlf_file_lf_old_new_converted_rest_untouched",
@@ -1368,6 +1374,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "bar",
             replace_all: false,
             expect: Ok(("a\r\nbar\r\nb\r\n", "whitespace-tolerant match")),
+            read_first: false,
         },
         Case {
             name: "crlf_multiline_new_string_converted",
@@ -1376,6 +1383,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "x\ny",
             replace_all: false,
             expect: Ok(("a\r\nx\r\ny\r\nb\r\n", "whitespace-tolerant match")),
+            read_first: false,
         },
         Case {
             // Uniform two-space delta across both lines (F3-compatible);
@@ -1386,6 +1394,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "Q\n",
             replace_all: false,
             expect: Ok(("x\nQ\nc\n", "whitespace-tolerant match")),
+            read_first: false,
         },
         Case {
             name: "eof_without_trailing_newline",
@@ -1394,6 +1403,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "bar",
             replace_all: false,
             expect: Ok(("a\nbar", "whitespace-tolerant match")),
+            read_first: false,
         },
         Case {
             name: "file_trailing_newline_preserved",
@@ -1402,6 +1412,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "bar",
             replace_all: false,
             expect: Ok(("a\nbar\n", "whitespace-tolerant match")),
+            read_first: false,
         },
         Case {
             name: "match_at_file_start",
@@ -1410,6 +1421,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "A",
             replace_all: false,
             expect: Ok(("A\nb", "whitespace-tolerant match")),
+            read_first: false,
         },
         Case {
             name: "unicode_content_correct_splice",
@@ -1418,6 +1430,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "χ",
             replace_all: false,
             expect: Ok(("α\nχ\nδ\n", "whitespace-tolerant match")),
+            read_first: false,
         },
         Case {
             name: "exact_twice_keeps_v1_error_fuzzy_not_consulted",
@@ -1426,6 +1439,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "b",
             replace_all: false,
             expect: Err("appears 2 times"),
+            read_first: false,
         },
         Case {
             name: "replace_all_with_fuzzy_only_match_errors",
@@ -1434,6 +1448,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "b",
             replace_all: true,
             expect: Err("replaceAll requires an exact match"),
+            read_first: false,
         },
         Case {
             name: "fuzzy_ambiguous_demands_more_context",
@@ -1442,6 +1457,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "b",
             replace_all: false,
             expect: Err("matched 2 locations approximately"),
+            read_first: false,
         },
         Case {
             name: "two_line_old_skips_block_anchor",
@@ -1450,6 +1466,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "z",
             replace_all: false,
             expect: Err("not found in the file, even with whitespace-tolerant"),
+            read_first: false,
         },
         Case {
             name: "block_anchor_mangled_middle_accepted_and_marked",
@@ -1461,6 +1478,7 @@ fn edit_fuzzy_fallback_matrix() {
                 "fn f() {\n  new_body();\n}\n",
                 "block-anchor match — oldString differed from the file; re-read",
             )),
+            read_first: true,
         },
         Case {
             // F1: length tolerance now requires the middle-similarity
@@ -1471,6 +1489,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "R",
             replace_all: false,
             expect: Ok(("R\n", "block-anchor match")),
+            read_first: true,
         },
         Case {
             // F1: shorter actual block, half the search middle present.
@@ -1480,6 +1499,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "R",
             replace_all: false,
             expect: Ok(("R\n", "block-anchor match")),
+            read_first: true,
         },
         Case {
             // F1 regression (review scenario: nearest-anchor short splice).
@@ -1491,6 +1511,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "R",
             replace_all: false,
             expect: Err("not found in the file, even with whitespace-tolerant"),
+            read_first: false,
         },
         Case {
             // F1 regression (review scenario: inner-brace bind). The
@@ -1502,6 +1523,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "fn a() {\n    new_body();\n}",
             replace_all: false,
             expect: Err("not found in the file, even with whitespace-tolerant"),
+            read_first: false,
         },
         Case {
             // F3 regression (review scenario: nested Python, model wrote
@@ -1516,6 +1538,7 @@ fn edit_fuzzy_fallback_matrix() {
                 "def f():\n        if cond:\n            do_b()\n            do_c()\n        tail()\n",
                 "whitespace-tolerant match",
             )),
+            read_first: false,
         },
         Case {
             // F3: tab-delta — the file's leading tab is re-applied.
@@ -1525,6 +1548,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "if x {\n\tstop();\n}",
             replace_all: false,
             expect: Ok(("\tif x {\n\t\tstop();\n\t}\n", "whitespace-tolerant match")),
+            read_first: false,
         },
         Case {
             // F3: removal delta — the model over-indented; the extra two
@@ -1535,6 +1559,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "  c()\n  d()",
             replace_all: false,
             expect: Ok(("c()\nd()\nrest\n", "whitespace-tolerant match")),
+            read_first: false,
         },
         Case {
             // F3: inconsistent per-line delta (one line +1 space, the
@@ -1546,6 +1571,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "x",
             replace_all: false,
             expect: Err("not found in the file, even with whitespace-tolerant"),
+            read_first: false,
         },
         Case {
             // F3 + CRLF: the delta is applied to the LF-shaped newString
@@ -1561,6 +1587,7 @@ fn edit_fuzzy_fallback_matrix() {
                 "a\r\n    bar\r\n    baz\r\nb\r\n",
                 "whitespace-tolerant match",
             )),
+            read_first: false,
         },
         Case {
             name: "same_anchor_pair_twice_is_ambiguous",
@@ -1569,6 +1596,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "R",
             replace_all: false,
             expect: Err("matched 2 locations approximately"),
+            read_first: false,
         },
         Case {
             name: "old_with_more_lines_than_file_no_panic",
@@ -1577,6 +1605,7 @@ fn edit_fuzzy_fallback_matrix() {
             new: "z",
             replace_all: false,
             expect: Err("not found in the file, even with whitespace-tolerant"),
+            read_first: false,
         },
     ];
 
@@ -1586,6 +1615,9 @@ fn edit_fuzzy_fallback_matrix() {
         let f = dir.path().join("t.txt");
         std::fs::write(&f, c.initial).unwrap();
         let mut ctx = ctx_in(dir.path());
+        if c.read_first {
+            run(&reg, &mut ctx, "read", json!({"filePath": f.to_str().unwrap()})).unwrap();
+        }
         let res = run(&reg, &mut ctx, "edit", json!({
             "filePath": f.to_str().unwrap(),
             "oldString": c.old,
@@ -1629,6 +1661,70 @@ fn edit_fuzzy_fallback_matrix() {
             ),
         }
     }
+}
+
+/// F27, the dogfood shape end to end: an approximate (block-anchor) edit on
+/// a file the session has not read is refused and the file is untouched;
+/// after a read, an invented middle is still refused by the middle check,
+/// and a middle that shares half its lines applies with the marker.
+/// A refused edit does not count as a read, so neither the identical resend
+/// nor an edit after a "not found" gets past the guard.
+#[test]
+fn an_unread_file_refuses_a_block_anchor_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("report.py");
+    let initial = "def total(rows):\n    s = 0\n    for r in rows:\n        s += r\n    return s\n# end\n";
+    std::fs::write(&f, initial).unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let fp = f.to_str().unwrap();
+    // First and last lines right, two of the four middle lines right: a
+    // block-anchor candidate, so only the read-first guard can refuse it.
+    let half = json!({
+        "filePath": fp,
+        "oldString": "def total(rows):\n    s = 0\n    for r in rows:\n        s += 2 * r\n    return 2 * s\n# end",
+        "newString": "def total(rows):\n    return sum(rows)\n# end",
+    });
+    let err = run(&reg, &mut ctx, "edit", half.clone()).unwrap_err().to_string();
+    assert!(err.contains("has not been read in this session"), "{err}");
+    assert!(err.contains("block-anchor"), "{err}");
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), initial);
+
+    // The identical resend is refused again: the refusal did not arm it.
+    let err = run(&reg, &mut ctx, "edit", half.clone()).unwrap_err().to_string();
+    assert!(err.contains("has not been read in this session"), "{err}");
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), initial);
+
+    // Nor does a "not found" edit count as a read.
+    let err = run(&reg, &mut ctx, "edit", json!({
+        "filePath": fp, "oldString": "nothing like this", "newString": "x"
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("not found"), "{err}");
+    let err = run(&reg, &mut ctx, "edit", half.clone()).unwrap_err().to_string();
+    assert!(err.contains("has not been read in this session"), "{err}");
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), initial);
+
+    run(&reg, &mut ctx, "read", json!({"filePath": fp})).unwrap();
+    // An invented middle with the same line count shares nothing with the
+    // file's middle: refused by the middle check, read or not.
+    let err = run(&reg, &mut ctx, "edit", json!({
+        "filePath": fp,
+        "oldString": "def total(rows):\n    db = connect()\n    q = db.query(rows)\n    out = q.all()\n    return sum(out)\n# end",
+        "newString": "def total(rows):\n    return 0\n# end",
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("not found"), "{err}");
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), initial);
+
+    let out = run(&reg, &mut ctx, "edit", half).unwrap();
+    assert!(out.output.contains("block-anchor match"), "{}", out.output);
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        "def total(rows):\n    return sum(rows)\n# end\n"
+    );
 }
 
 /// Invalid inputs stay invalid (unchanged from v1) and touch nothing.

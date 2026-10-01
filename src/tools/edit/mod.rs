@@ -83,12 +83,12 @@ impl Tool for EditTool {
             )));
         }
         let content = std::fs::read_to_string(&path).map_err(|e| read_error(&path, e))?;
-        // T19: an edit reads the file (just above), so it arms write's
-        // read-first check like the read tool does.
-        ctx.record_read(&path);
+        // F27 (2026-10-01 dogfood: an unread file, an invented oldString whose
+        // first and last lines matched, two files overwritten): read state from earlier calls.
+        let was_read_before = ctx.was_read(&path);
         let matches = content.matches(&p.old_string).count();
         if matches == 0 {
-            return self.execute_fuzzy(&p, &path, &content);
+            return self.execute_fuzzy(ctx, &p, &path, &content, was_read_before);
         }
         if matches > 1 && !p.replace_all {
             return Err(ToolError::failed(format!(
@@ -132,6 +132,12 @@ impl Tool for EditTool {
             (content.replacen(&p.old_string, &p.new_string, 1), 1)
         };
         std::fs::write(&path, new_content).map_err(|e| ToolError::failed(e.to_string()))?;
+        // T19: an edit arms write's read-first check, as a read does. Since
+        // F27 only an edit that applied counts: a refused edit (not found,
+        // ambiguous, block-anchor on an unread file) says nothing about what
+        // the model has seen, and recording it let the refused block-anchor
+        // edit apply on its resend (bypass probe, 2026-10-01).
+        ctx.record_read(&path);
         Ok(ToolOutput {
             title: p.file_path,
             output: format!("Edited {} ({count} replacement(s))", path.display()),
@@ -169,11 +175,15 @@ impl EditTool {
     /// The exact search found nothing — consult the fuzzy pipeline (T6).
     /// `replaceAll` never edits fuzzily (a fuzzy replace-all is incoherent);
     /// it only borrows the pipeline to word its error precisely.
+    /// `was_read` is the read state before this call, from read, a
+    /// successful write, or an edit that applied (F27).
     fn execute_fuzzy(
         &self,
+        ctx: &mut ToolCtx,
         p: &Params,
         path: &std::path::Path,
         content: &str,
+        was_read: bool,
     ) -> Result<ToolOutput, ToolError> {
         let result = matchers::fuzzy_match(content, &p.old_string);
         if p.replace_all {
@@ -190,6 +200,14 @@ impl EditTool {
                 "oldString matched {count} locations approximately (whitespace-tolerant). Provide more surrounding lines to make the match unique."
             ))),
             matchers::FuzzyResult::Unique { range, matcher } => {
+                // F27: block-anchor splices a middle the model may never have
+                // seen, so it needs a read from earlier in the session.
+                if matcher == matchers::Matcher::BlockAnchor && !was_read {
+                    return Err(ToolError::failed(format!(
+                        "{} has not been read in this session, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read the file and copy oldString exactly.",
+                        path.display()
+                    )));
+                }
                 // Line-trimmed path (F3): re-apply the uniform
                 // leading-whitespace delta between oldString and the matched
                 // lines to newString, so the FILE's indentation style
@@ -220,6 +238,7 @@ impl EditTool {
                 new_content.push_str(&content[range.end..]);
                 std::fs::write(path, new_content)
                     .map_err(|e| ToolError::failed(e.to_string()))?;
+                ctx.record_read(path); // T19/F27: see execute
                 let note = match matcher {
                     matchers::Matcher::LineTrimmed => "whitespace-tolerant match",
                     matchers::Matcher::BlockAnchor => {

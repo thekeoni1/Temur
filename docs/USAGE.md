@@ -1836,8 +1836,19 @@ not seen fails with:
 <path> exists but has not been read in this session. Read it first, or use edit for targeted changes.
 ```
 
-Reading the file, editing it, or having successfully written it
+Reading the file, an edit that applied, or having successfully written it
 earlier in the session all count as "seen". New files are unaffected.
+An edit whose oldString matches only by its first and last lines, with
+a different middle (the approximate block-anchor match), is read-first
+too, and fails with:
+
+```
+<path> has not been read in this session, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read the file and copy oldString exactly.
+```
+
+An exact edit, or one that differs from the file only in each line's
+leading and trailing whitespace, needs no prior read, since every line
+it names is in the file.
 `--continue` and `--resume` start with an empty read
 set: the file may have changed on disk while temur was away, so a
 resumed session must re-read before overwriting.

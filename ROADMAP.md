@@ -1791,7 +1791,7 @@ by init), saw every T66 line live, the still-thinking notice at a
 hand-set cap of 1024, and passed the three graded tasks it ran (1.1,
 2.3, 3.1) at the 16384 cap; the reasoning-only notice remains unseen.
 The same run found F14 (the /model.gguf id), fixed the same day; see the
-CHANGELOG's Unreleased entry.
+v0.38.1 CHANGELOG section.
 Reproducing the
 dogfood shape needs a prompt whose reasoning exceeds the cap, not a
 smaller cap alone. Task 10 failed differently per arm (never read the
@@ -1867,7 +1867,7 @@ from a server still loading instead of falling back to the free-text
 default. From the second laptop dogfood (2026-09-28,
 Qwen3-4B-Thinking-2507, seven menu tasks): F24, grep's include filter
 matching nothing and answering "No matches found", fixed the same week
-(see the CHANGELOG's Unreleased entry); F19, an off-menu calculus
+(see the v0.38.1 CHANGELOG section); F19, an off-menu calculus
 question refused with "My role is to assist with software engineering
 tasks", a phrase none of recover.rs's five scope-denial phrases catches
 (first step: the phrase, with a fixture; the full fix is a more general
@@ -1879,6 +1879,19 @@ no command ran in the session (the turn record has both: write or edit
 present, bash absent); F22 Esc Esc clearing the input line, since
 Ctrl+C's clear is documented only in TUI.md; and F20 the model's own
 `<response>` tags rendering raw.
+From the third laptop dogfood (2026-10-01, v0.38.1,
+Qwen3-4B-Instruct-2507, nine menu tasks, 2 PASS / 7 FAIL, F24 confirmed
+fixed live on the shipped binary): F27, edit's block-anchor splice over
+an unread file, fixed the same day (the CHANGELOG entry after
+v0.38.1); read refusing `.dat` and `.bin`
+by extension before any content sniff (read.rs:281-287; an ASCII .dat
+is "Cannot read binary file" while the hint's own `file` says text);
+the read header naming the file's byte size beside its line count (a
+size task driven through read never sees a size); the F25 twin, a turn
+that ends on "I'll now ..." with no tool call ending silently (the T61
+nudge fires only on a claim of done work); and `temur init`'s
+existing-config refusal not naming the model the config points at (the
+same discoverability shape as D17).
 
 The launch announcement goes out on v0.38.1, the patch carrying
 F14 and F24. The playground is refreshed to the announced version

@@ -163,6 +163,9 @@ fn line_trimmed_impl(
 /// 1. If the line at the EXACT expected offset (`i + old_lines - 1`)
 ///    trimmed-matches the closing anchor, bind there — the common
 ///    weak-model case: same block shape, middle content differs.
+///    A block of four or more lines binds there only if its middle passes
+///    the same similarity guard as step 2 (F27: an invented body whose
+///    first and last lines matched was spliced over real code).
 /// 2. Otherwise fall back to the NEAREST closing anchor at least two lines
 ///    below, but ONLY if the candidate's middle passes a deterministic
 ///    similarity guard: at least half of the search block's middle lines
@@ -200,7 +203,10 @@ fn block_anchor_impl(
             continue;
         }
         let expected = i + old_trimmed.len() - 1; // >= i+2 (old has >= 3 lines)
-        let close = if expected < spans.len() && trimmed[expected] == last {
+        let close = if expected < spans.len()
+            && trimmed[expected] == last
+            && (middle.len() <= 1 || middle_similar(middle, &trimmed[i + 1..expected]))
+        {
             Some(expected)
         } else {
             ((i + 2)..spans.len())
@@ -214,7 +220,9 @@ fn block_anchor_impl(
     out
 }
 
-/// The nearest-fallback similarity guard: the fraction of `search_middle`
+/// The similarity guard for both bind steps (the exact-offset step since
+/// F27, for middles of two or more lines; the nearest-fallback step since
+/// F1): the fraction of `search_middle`
 /// lines that appear trimmed-equal, order-preserving (subsequence), in
 /// `candidate_middle` must be >= 1/2.
 fn middle_similar(search_middle: &[&str], candidate_middle: &[&str]) -> bool {
@@ -443,6 +451,27 @@ mod tests {
     }
 
     #[test]
+    fn block_anchor_exact_offset_dissimilar_middle_refuses() {
+        // F27: first and last lines at the exact offset, none of the four
+        // middle lines in the file.
+        let content = "start\na\nb\nc\nd\nend\n";
+        assert_eq!(
+            fuzzy_match(content, "start\nw\nx\ny\nz\nend"),
+            FuzzyResult::NoMatch
+        );
+    }
+
+    #[test]
+    fn block_anchor_exact_offset_half_middle_binds() {
+        // F27: two of the four middle lines appear in order, so the exact
+        // offset still binds.
+        let content = "start\na\nb\nc\nd\nend\n";
+        let (range, m) = unique(content, "start\na\nX\nc\nY\nend");
+        assert_eq!(m, Matcher::BlockAnchor);
+        assert_eq!(&content[range], "start\na\nb\nc\nd\nend");
+    }
+
+    #[test]
     fn block_anchor_tolerates_different_block_lengths_with_similar_middle() {
         // Actual block longer than the search block: the nearest-fallback
         // guard passes because the search middle (m1, m2) appears in order
@@ -489,8 +518,9 @@ mod tests {
         // Both line 2 and line 3 trimmed-match the closing anchor; the one
         // at the exact expected offset (same block shape) wins over the
         // nearer one.
+        // F27: one of the two middle lines (x) is present, so both qualify.
         let content = "s\nx\ne\ne\n";
-        let (range, m) = unique(content, "s\nq\nr\ne");
+        let (range, m) = unique(content, "s\nx\nr\ne");
         assert_eq!(m, Matcher::BlockAnchor);
         assert_eq!(&content[range], "s\nx\ne\ne");
     }

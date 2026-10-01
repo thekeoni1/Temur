@@ -2,6 +2,18 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
+## Unreleased
+
+- edit's block-anchor fallback (first and last lines of oldString found,
+  middle differing) now refuses a file the session has not read, and,
+  for a block of four or more lines, binds at the expected offset only
+  when at least half of oldString's middle lines appear in the file's,
+  in order. Before, an invented oldString whose first and last lines
+  happened to match was spliced over real code with only a note (laptop
+  dogfood, 2026-10-01: two files overwritten after a grep with no read).
+  An edit arms write's read-first check only when it applied; a refused
+  edit no longer counts as a read.
+
 ## v0.38.1 - 2026-09-29
 
 - `scripts/serve.sh` and the container recipe in docs/OFFLINE.md now pass
