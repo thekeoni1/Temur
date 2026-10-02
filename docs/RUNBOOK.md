@@ -12961,3 +12961,281 @@ Re-derived from the one v0.38.2 CHANGELOG item:
   SHA256SUMS, which both stage directories carry, so it could not tell
   the stale server from the new one. The rerun probed the versioned
   asset.
+
+## v0.38.2 published-asset soak (desktop, recorded 2026-10-02)
+
+The published i686 asset was downloaded anonymously on the desktop,
+checked against `SHA256SUMS`, installed through the README one-liner,
+smoked in containers and measured with one twelve-task eval on Qwen3-4B.
+The pre-registered 9/9 did not hold: the eval read 8/9, with task 8
+(binary-nudge) FAIL. Task 11, the other reading that could fail at one
+run, passed. Task 8 passed in one diagnostic reading of that task alone,
+so it is recorded as variance beside the soak's FAIL. Two arms followed.
+A scripted arm drove the published binary's edit, read and grep tools
+with exact arguments through a fake server, and all six runs matched
+their pre-registration. One live attempt at the F27 shape with the real
+model is read: the edit on the unread file was refused, and the model
+recovered by reading and sending an exact edit.
+
+### The cut, as found
+
+Tag `v0.38.2` is annotated tag object
+`57fe63a2d691ea3b9ed7770eab980ef0f40d5f17` on commit `6bcc983`, parent
+`630cc4a` (F27). The bump is 7 files, 15 insertions and 15 deletions.
+`origin/main` after the cut is `efe9c4c`, the ship record above, one
+file and 262 insertions. The remote carries 43 tags and one head;
+`v0.38.1` is unchanged at `80e0a665`, `v0.38.0` at `8ccd153e` and
+`v0.37.0` at `30bfcecc`. The desktop's `main` sat at `630cc4a`, which is
+`origin/main^^`, so it is contained in `origin/main` and nothing needed
+rebasing. Nothing was retagged.
+
+The first preflight on 2026-10-02 stopped at the disk check (the host
+drive holding the distro image had 9 GB free, under the 20 GB minimum)
+before anything was downloaded or built. The re-run, after space was
+freed, matched every pin and passed the disk check.
+
+### The asset
+
+`temur-v0.38.2-i686-unknown-linux-musl`, **8,342,164 bytes**, sha256
+**`1a14e42c16c2e03de7f6619fb64a87f2660e4107e7799af48fa6865dcff3c132`**.
+
+It was fetched with `env -i curl -fsSLO` from the release URL, with
+`GH_TOKEN` and `GITHUB_TOKEN` unset. `sha256sum -c --ignore-missing
+SHA256SUMS` printed OK for it, and `SHA256SUMS` is 428 bytes, sha256
+`a37b668c0e2869a601934a1512912f2a1697a019271e8836b3b5e7142bb8e4e4`,
+listing the four assets.
+
+### Container smoke on the asset
+
+The downloaded asset, staged under the name `temur` and mounted
+read-only, with no network in the containers.
+
+| check | result |
+| --- | --- |
+| i386 debian, `temur --version` | `temur 0.38.2` |
+| i386 debian, `temur doctor --no-network`, fresh container | completes; 0 pass, 0 warn, 1 fail (no config file), rc=1 |
+| i386 debian, `temur init` with no input, then `doctor --no-network` | init exits 1 on `unexpected end of input`; doctor 0 pass, 0 warn, 1 fail |
+| i386 debian, `temur init` accepting every default, then `doctor --no-network` | reaches `Model id [qwen3-4b]`, writes the config, init rc=0; doctor 7 pass, 0 warn, 0 fail |
+| i386 debian, `doctor --no-network` with a config at the container home | 7 pass, 0 warn, 0 fail |
+| `busybox:stable`, `temur --version` | `temur 0.38.2` |
+| README one-liner `scripts/install.sh`, fresh empty HOME under `setarch i686` | `checksum verified.`; installed sha256 equals the asset's; `temur 0.38.2` |
+| T66 P3: init reasoning line, doctor reasoning WARN, non-reasoning local default | 0 and 0 |
+
+The fifth row gives doctor a hand-placed config, as at the earlier soaks;
+it is an instrument smoke and is counted nowhere. The fourth row is the
+run that gives the T66 P3 count a model id to judge, since its default
+model id is `qwen3-4b`. The phrase every T66 P3 init notice and doctor
+reasoning line carries, `looks like a reasoning model`, counts 0 in
+every smoke log. `busybox:stable` is image `b116e155` and i386 debian
+`6210699e`, the images the previous soaks used.
+
+The doctor prompt-floor estimate reads ~2,867 tokens, 34% of the 8192
+window, the same figure as at v0.38.1. F27 touches no prompt file, so no
+change was expected. Both figures are estimates.
+
+The one-liner was taken verbatim from the tag's README at line 185 and
+run on the host under `setarch i686` (`uname -m` read `i686`), tokenlessly
+under `env -i`, into an empty HOME; it needs network, which the log says.
+It installed an ELF 32-bit i386 static binary byte-identical to the
+downloaded asset.
+
+### Judge binary and size
+
+Built from `git archive 6bcc983` with rustc 1.96.1, in a fresh target dir
+with `CARGO_TARGET_DIR` and `TEMUR_TARGET_DIR` both set. The bump commit
+is the shipped source, and the extracted tree has no `.git`.
+
+- Tools test binary `tools-187bc98ff4f995b7`, sha256
+  `ec5deb1a6ef7ec0d280a13029be4e24c9afadd10df350b9a2d41e34fa02fa826`.
+- Desktop i686 release of `6bcc983`: 8,344,460 bytes, sha256
+  `6d4870aadca2a4881849ce43769e91241759a1dfafc47da4a187385cbd20af19`.
+  The byte count equals the F27 gate of `630cc4a`, which is expected:
+  the bump changes `0.38.1` to `0.38.2`, the same length. The sha differs
+  from that gate's `6b60a6bc...` because the version string is compiled
+  in.
+
+The gap, asset minus desktop, is **-2,296 bytes**, the figure the ship
+record gives, and back to the v0.37.0 and v0.38.0 offset after -2,424 at
+v0.38.1.
+
+### The eval reading
+
+`scripts/weak_model_eval.sh` at the shipped source with its defaults (CTX
+8192, compact profile, thinking unset, `EVAL_MAX_TOKENS` 3072, `EVAL_MIN`
+0, CPU only), model `Qwen3-4B-Instruct-2507-Q4_K_M.gguf`, one run, on the
+downloaded asset. Before the server started, the driver asserted the
+asset's sha256 and byte count, required `/app/temur --version` in the
+container to print `temur 0.38.2`, and asserted the judge's and the
+instrument's sha256; `READBACK_BIN` was set to the judge above and the
+preflight said `explicit`. It ran under the heavy-job lock on 2026-10-02,
+1606 s wall clock, rc=0.
+
+The pre-registration was written before the launch and is echoed in the
+log. The nine and task 11 were the readings that could fail at one run;
+task 12 had no expectation, having passed at v0.37.0, v0.38.0 and
+v0.38.1; task 13 was pre-registered as variance with its base rate
+stated as 10 of 16, which is the 9 of 15 of the v0.38.1 record plus its
+PASS.
+
+| reading | result | expectation |
+| --- | --- | --- |
+| nine scored tasks | 8/9 (task 8 FAIL) | 9/9 |
+| 11 memo-docx | PASS, read back 9:30 | PASS |
+| 12 summary-pdf | PASS, read back Tinyq-Rollout | none |
+| 13 pdf-section | FAIL, never quoted the section, no bash | variance; base rate 10 of 16 |
+
+The pre-registered 9/9 did not hold. Nothing in the reading was re-run
+or overwritten.
+
+D22 resume-feedback passed, reading the pdf and citing it. Task 13's
+fixture reproduced the P1 control arm's sha256 (`52a62858...`), and
+(b)'s skipped-documents sentence did not fire.
+
+Task 12 took the same route as at v0.38.0 and v0.38.1. The model wrote
+`summary.txt`, called the spreadsheet tool on `/work/summary.pdf`, got
+the product's redirect sentence (`src/tools/spreadsheet.rs:139`), and
+followed it with `write` on `/work/summary.pdf`. The artifact is a valid
+one-page PDF 1.4 of 1,538 bytes. The T64-16 screen's generic form matched
+once, on that sentence inside the session record; the three literals and
+the transcript itself matched nothing. The read is the same as at the
+last two soaks: this is the product's redirect text, not the `write.txt`
+.pdf misread of Ruling T64-16.
+
+Task 13 made one read, which hit the cap (`Use offset=415 to
+continue.`). The model then said the file has no Maintenance Backlog
+section and stopped, with no second read, no grep and no bash. Task 13
+is now 10 PASS of 17.
+
+The unattended nudge fired in 12 of the 13 task transcripts, task 13
+being the one without it, against 11 of 13 (tasks 10 and 13 without) at
+the last three soaks. It is reported as a rate, not as a property of
+any one task.
+
+The T59 line reads `find-needle glob=none none`, the form v0.37.0
+recorded, against `comma-joined` at v0.38.1 and `glob=*.txt plain` at
+v0.38.0. It is reported, not judged.
+
+Two T66 counts over the 13 task transcripts, by GNU grep. `response
+truncated: max_tokens` counts 0 and `previous session archived as`
+counts 0, as at the last two soaks. Both are also 0 over every file
+under the transcripts directory, the session records included.
+
+The instrument is byte-identical at four tags: `weak_model_eval.sh` is
+sha256 `e49319b8...` at `da8ba34`, `845b2fa`, `eccd7fe` and `6bcc983`,
+and `git diff --stat eccd7fe..6bcc983` over it and `tests/fixtures/` is
+empty. The task 13 source fixture, `ferry-review.md`, is `9392abf1...` at
+`6bcc983`.
+
+### Task 8
+
+Task 8 asks for `notes.txt.gz` whose decompressed content is
+`eval-gz-99`, and the host scores it with `gunzip -c notes.txt.gz`. The
+session record shows eight calls. Call 1, `echo "eval-gz-99" > notes.txt
+&& gzip notes.txt && rm notes.txt`, made a correct archive; only the
+chained `rm` failed (exit 1), because gzip had already removed
+`notes.txt`. Calls 2, 5 and 7 re-ran gzip, which refused to overwrite
+the existing archive (exit 2), and calls 3, 4 and 6 were globs. Call 8,
+`echo "eval-gz-99" > notes.txt && gzip -f notes.txt.gz`, compressed the
+good archive into `notes.txt.gz.gz`, so the host found no
+`notes.txt.gz`. That nested file decompresses twice to `eval-gz-99`.
+Every tool result is the tool's own text. The route holds no edit call,
+and `git diff --stat eccd7fe..6bcc983 -- src/` is the two edit files
+only, so F27 is not on it. The T36 futile guard saw three repeats (calls
+5 and 7 against call 2, call 6 against call 4) against
+`FUTILE_NOTICE_THRESHOLD` 6 (`src/agent/mod.rs:72`) and stayed silent,
+by design. Task 8 had passed at every soak from v0.35.0 to v0.38.1.
+
+One diagnostic reading of task 8 alone followed (Ruling T66-63), with
+the same driver changed only to `EVAL_ONLY=8` and its own output root.
+It passed in 183 s: one call, `echo -n 'eval-gz-99' > notes.txt && gzip
+notes.txt`, with no `rm` chained after gzip. Task 8 is recorded as FAIL
+in the soak's reading and PASS in the diagnostic, variance, and stands
+at 5 PASS of 6 soak readings from v0.35.0 to v0.38.2. The diagnostic
+replaces nothing.
+
+### The scripted arm
+
+The scripted arm exercises the published binary's tool path with exact
+arguments. A fake OpenAI-compatible server, a Perl script inside the run
+container, answers each chat request with a pre-written SSE reply
+carrying one tool call or the text `done`, and saves every request body.
+`/app/temur` runs its own request, tool dispatch, tool result and session
+record against it, in the eval's container shape with no network and the
+eval's config line. It says nothing about what a model would send. Six
+runs, each in a fresh work, state and reply directory; the readings
+below are quoted from the session records.
+
+The edit fixture is a six-line `tool.py`, sha256 `0530410b...`. HALF is
+an oldString with the file's first and last lines and a middle of which
+two of four lines are the file's, in order; INVENTED has the same first
+and last lines and none of the middle; EXACT is the file's six lines.
+Every edit's newString is the file with its last line changed to `return
+list(rows)`.
+
+| run | scripted calls | tool result | tool.py before / after |
+| --- | --- | --- | --- |
+| E1 | edit HALF, unread file | `/work/tool.py has not been read in this session, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read the file and copy oldString exactly.` | `0530410b...` / `0530410b...`, unchanged |
+| E2 | edit INVENTED, unread file | `oldString was not found in the file, even with whitespace-tolerant matching. Re-read the file and copy the text exactly.` | `0530410b...` / `0530410b...`, unchanged |
+| E3 | read, then edit HALF | the edit: `Edited /work/tool.py (1 replacement(s), block-anchor match`, a dash, `oldString differed from the file; re-read before further edits)` | `0530410b...` / `9d1acf8d...`, the new text |
+| E4 | edit EXACT, unread file | `Edited /work/tool.py (1 replacement(s))` | `0530410b...` / `9d1acf8d...`, the new text |
+| G1 | grep `fetch_rows`, include `README.md, *.py` | `Found 2 matches`, naming `README.md` and `tool.py` | three-file fixture |
+| G2 | grep `fetch_rows`, include `*.zzz` | `include "*.zzz" matched none of the 3 files under /work/.; nothing was searched` | three-file fixture |
+
+E3's dash is U+2014 in the product text (`src/tools/edit/mod.rs:245`), so
+this ASCII file describes it. Each record's tool calls equal the scripted
+ones argument for argument (E3 two, the others one), and every container exited 0.
+The T61 unattended nudge fired once per edit run, as designed, and was
+answered by the scripted `done`; G1 and G2 made two requests each and no
+nudge, since grep does not mutate.
+
+### The live F27 attempt
+
+One run with the eval's model, server and config, on a fresh copy of the
+six-line fixture. The prompt handed the model a stale copy of the file
+(the HALF lines) and told it not to read. The verdict is READ. The three
+calls, copied from the session record:
+
+    edit {"filePath": "/work/tool.py", "newString": "def fetch_rows(conn):\n    cur = conn.cursor()\n    cur.execute(\"SELECT * FROM rows ORDER BY id\")\n    rows = cur.fetchall()\n    conn.commit()\n    return list(rows)", "oldString": "def fetch_rows(conn):\n    cur = conn.cursor()\n    cur.execute(\"SELECT * FROM rows ORDER BY id\")\n    rows = cur.fetchall()\n    conn.commit()\n    return rows"}
+    read {"filePath": "/work/tool.py"}
+    edit {"filePath": "/work/tool.py", "newString": "def fetch_rows(conn):\n    cur = conn.cursor()\n    cur.execute(\"select id, name from rows\")\n    rows = cur.fetchall()\n    cur.close()\n    return list(rows)", "oldString": "def fetch_rows(conn):\n    cur = conn.cursor()\n    cur.execute(\"select id, name from rows\")\n    rows = cur.fetchall()\n    cur.close()\n    return rows"}
+
+Its first call was an edit with no read before it, whose oldString had
+the file's first and last lines and two of four middle lines in order.
+It got the refusal quoted for E1 above. The model then read the file and
+sent an edit whose oldString was the file's six lines exactly; it
+applied, the model replied `done`, and after the nudge it closed with a
+sentence. The final file is the fixture with that second edit applied,
+sha256 `9d1acf8d...`, and holds none of the first edit's text, so the
+refused edit left it unchanged. No snapshot was taken between the two
+edits, and the arm's own reader, which compared the file at the end of
+the run, printed "NOT MET"; the corrected read is `live-f27-read2.log`.
+The recovery, a read then an exact edit, is the designed path.
+
+### What this soak closes
+
+Of the ship record's seven "does NOT establish" items, this soak closes
+three. The desktop soak of the published asset has run (item one). The
+refusal has been seen in a run of the published binary (item two), in
+the scripted E1 and in the live model run above. The half-the-middle bar
+has been seen on the published binary (item three): E1's half-right
+middle reached the read-first check, and E2's invented middle was
+refused as not found. Item four stays by design, and E4 shows an exact
+edit on an unread file applying. Items five to seven stay open.
+
+G1 and G2 read on the published binary what the v0.38.1 soak could not
+get a model to send: the comma-list include and the matched-none answer.
+That closes the v0.38.1 record's "items two and three stay open" line on
+the binary side; the laptop's dogfood of 2026-10-01 had already seen F24
+live with a model.
+
+Every transcript and log was scanned before this record was written:
+the five release leak patterns and two API-key shapes over all 221
+files, 52 of them eval transcripts, the scripted arm's and the live
+attempt's work dirs, state dirs and records included, nothing excluded.
+Every grep that reads the pattern file carries `-i`. Three controls ran
+before the counts: each pattern matched itself, each of the 3
+metacharacter-free patterns scored 1 with `-i` and 0 without, and a
+known positive outside the archive registered as one file hit. Zero
+hits.
+
+Archive: `~/temur-eval-archive/v0.38.2-soak/`.
