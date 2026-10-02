@@ -75,7 +75,7 @@ enforced by the OS, not just by these rules. Do not try to escalate around them.
   around it. Report results per stage.
 - Test before proceeding; don't stack unverified changes.
 - Scope (REVISED 2026-09-23): v1 shipped 2026-07 and the project has
-  been through the milestones up to T66 since (v0.38.1, public since
+  been through the milestones up to T66 since (v0.38.2, public since
   v0.33.0). It is a
   **zero-runtime-dependency AI agent for 32-bit Linux, bring your own
   model**: local llama.cpp models are the primary target, hosted

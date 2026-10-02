@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "temur"
-version = "0.38.1"
+version = "0.38.2"
 dependencies = [
  "calamine",
  "env_logger",

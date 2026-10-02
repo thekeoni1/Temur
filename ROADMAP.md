@@ -1882,8 +1882,8 @@ Ctrl+C's clear is documented only in TUI.md; and F20 the model's own
 From the third laptop dogfood (2026-10-01, v0.38.1,
 Qwen3-4B-Instruct-2507, nine menu tasks, 2 PASS / 7 FAIL, F24 confirmed
 fixed live on the shipped binary): F27, edit's block-anchor splice over
-an unread file, fixed the same day (the CHANGELOG entry after
-v0.38.1); read refusing `.dat` and `.bin`
+an unread file, fixed the same day (the v0.38.2 CHANGELOG
+section); read refusing `.dat` and `.bin`
 by extension before any content sniff (read.rs:281-287; an ASCII .dat
 is "Cannot read binary file" while the hint's own `file` says text);
 the read header naming the file's byte size beside its line count (a
@@ -1893,8 +1893,8 @@ nudge fires only on a claim of done work); and `temur init`'s
 existing-config refusal not naming the model the config points at (the
 same discoverability shape as D17).
 
-The launch announcement goes out on v0.38.1, the patch carrying
-F14 and F24. The playground is refreshed to the announced version
+The launch announcement goes out on v0.38.2, the patches carrying
+F14, F24 and F27. The playground is refreshed to the announced version
 before the announcement and names its own version and sha, and
 README 19-24 has been version-agnostic since T65 P5.
 

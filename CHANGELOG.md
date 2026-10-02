@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased
+## v0.38.2 - 2026-10-01
 
 - edit's block-anchor fallback (first and last lines of oldString found,
   middle differing) now refuses a file the session has not read, and,
