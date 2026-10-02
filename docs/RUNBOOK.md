@@ -12699,3 +12699,265 @@ scored 1 with `-i` and 0 without, and a known positive outside the
 archive registered as one file hit. Zero hits.
 
 Archive: `~/temur-eval-archive/v0.38.1-soak/`.
+
+## v0.38.2 ship record
+
+2026-10-01. **The F27 fix, shipped at tag `v0.38.2`.** A PATCH rather
+than a milestone: one defect found by a laptop dogfood run of the
+published v0.38.1 asset, one commit, no new capability. Cut from
+`630cc4a` on the laptop, the fifth cut on the pinned rustc 1.96.1, in
+the shape of the v0.38.1 patch.
+
+The fix, as the CHANGELOG's one v0.38.2 item states it:
+
+- **F27, `630cc4a`.** edit's block-anchor fallback (first and last lines
+  of oldString found, middle differing) now refuses a file the session
+  has not read, and, for a block of four or more lines, binds at the
+  expected offset only when at least half of oldString's middle lines
+  appear in the file's, in order. Found by the 2026-10-01 laptop dogfood
+  of the published v0.38.1 asset on Qwen3-4B-Instruct-2507: the model
+  ran a grep, then sent edits with no read, and an invented oldString
+  whose first and last lines matched the real file at the same line
+  count was spliced over real code in two files with only a note.
+
+The fix has three parts:
+
+- In `src/tools/edit/matchers.rs`, `block_anchor_impl`'s exact-offset
+  bind now requires `middle.len() <= 1 || middle_similar(...)` over the
+  file's middle, the bar the nearest fallback already had. The
+  three-line case (a middle of one line) is unchanged.
+- In `src/tools/edit/mod.rs`, `execute` captures the read state before
+  the edit and passes it to `execute_fuzzy`; a unique block-anchor
+  match on an unread file fails with `<path> has not been read in this
+  session, and oldString was not found exactly, so the approximate
+  (block-anchor) match is not trusted. Read the file and copy oldString
+  exactly.` Exact and line-trimmed edits on an unread file still apply.
+- `ctx.record_read` moved from before the match to after each
+  successful write, on both the exact and the fuzzy path, so only an
+  edit that applied arms write's read-first check. This part came from
+  the implementing session's own bypass probe. The desktop's relay 34
+  (sha256 starting `e48b19790676705a`) says the first cut, `a8254ec`,
+  "let the refused edit apply on its resend"; that commit is not on
+  main and was not checked here.
+
+`git diff --stat v0.38.1..630cc4a -- src/ scripts/ tests/` is 3 files:
+`src/tools/edit/matchers.rs`, `src/tools/edit/mod.rs` and
+`tests/tools.rs`, 152 insertions and 7 deletions. The bump adds no
+source change. `src/tools/prompts/edit.txt` is untouched.
+
+### Sizes
+
+Raw byte counts, read from the staged files and matched byte for byte
+against the public downloads:
+
+| asset | bytes | MB | v0.38.1 | change |
+| --- | --- | --- | --- | --- |
+| i686 | 8,342,164 | 8.34 | 8,341,524 | +640 (+0.01%) |
+| x86_64 | 9,911,984 | 9.91 | 9,911,600 | +384 |
+| aarch64 | 8,010,384 | 8.01 | 8,010,128 | +256 |
+| armv7 | 7,729,056 | 7.73 | 7,728,688 | +368 |
+
+Divided by 1,000,000 and rounded to two decimals, README:37-38 reads
+**8.34 MB** on i686 and **9.91 MB** on x86_64, the same figures as at
+v0.38.1, so only the version on that line moved. The i686 binary is
+**1,657,836 bytes** under the 10,000,000 STOP (16.58%), down from
+1,658,476 at v0.38.1. The desktop's gate of `630cc4a` measured
+8,344,460 bytes on i686 (a desktop figure, not re-measured here); the
+published i686 is 2,296 bytes smaller, the gap seen at v0.37.0 and
+v0.38.0 (2,424 at v0.38.1).
+
+### The cut
+
+The version bump is a single commit on the anchor, `6bcc983`, parent
+`630cc4a`, 7 files, 15 insertions and 15 deletions. Edited lines:
+
+- `Cargo.toml` 3, `Cargo.lock` 1475 (the temur entry only),
+  `scripts/install.sh` 10.
+- `CHANGELOG.md` 5, the `## Unreleased` heading becoming `## v0.38.2 -
+  2026-10-01` and nothing else in the file: the one item ships as
+  written and no size sentence was added.
+- `README.md` 37 (the version in the size sentence; the figures held),
+  185 (install raw URL), 196 (install blob URL), 208 (release-download
+  URL and asset name, two on the line), 209 (SHA256SUMS URL), 211
+  (asset name).
+- `CLAUDE.md` 78, the scope line, `(v0.38.1, public since` becoming
+  `(v0.38.2, public since`.
+- `ROADMAP.md` 1885-1886, the F27 seed's pointer becoming "(the v0.38.2
+  CHANGELOG section)", and 1896-1897, the launch paragraph naming
+  v0.38.2 and the patches carrying F14, F24 and F27. Line 1882's
+  "2026-10-01, v0.38.1," names the dogfood's binary and stays.
+
+After the bump, `git grep -n '0\.38\.1' -- . ':!CHANGELOG.md'
+':!docs/RUNBOOK.md' ':!ROADMAP.md'` returns NOTHING (exit 1). It does
+not exclude COMPARISON this time, since COMPARISON carries no 0.38.1.
+`docs/OFFLINE.md` 659, 662 and 668 carry v0.38.0, are not caught by
+this grep, and stay as dated history:
+
+- 659 ``Since v0.38.0 `temur init` recognises a reasoning`` (when the
+  detection arrived);
+- 662 `the first dogfood of v0.38.0, on 2026-09-24,` (the run that found
+  F14);
+- 668 `On 2026-09-22 with the v0.38.0 source, CPU only,` (the
+  measurement's source).
+
+The size sweep (this file's "Publish preflight"), with this file's own
+hits left out, returned the same ten lines the v0.38.1 record ruled,
+with README:37-38 at this cut's figures: README:31 (a bound, which
+holds), README:34 and :101 (not temur's size), README:37-38 (the size
+sentence), COMPARISON:50 (tagged "the v0.25.0 measurement"),
+COMPARISON:323 and :326 (not temur's size), COMPARISON:379 (a temur
+figure dated by its section, as the v0.38.1 record ruled it; the
+kickoff groups it with the not-temur figures), OFFLINE:326 ("~8 MB" in the diagram, Ruling T66-30; 8.34
+rounds to 8).
+
+Not edited: README 19-24, which names no version; `docs/USAGE.md`
+(`630cc4a` already carries the F27 paragraph); `docs/COMPARISON.md`;
+`docs/OFFLINE.md`; `docs/TUI.md`; `src/`; `tests/`; `scripts/` beyond
+`install.sh` 10.
+
+### Gates, and where their evidence lives
+
+Logs are in the laptop's release-logs directory, by basename.
+
+The run that staged these assets, `v0.38.2-release-20261001-201741.log`
+(313 lines), ran from the start with no `SKIP_CHECK` (its first gate line, 2, is
+`== gate: scripts/check.sh ==`, not the SKIPPED line) and no
+`STAGE_ROOT` (292 stages at the default release directory), with
+`CARGO_BUILD_JOBS=6` in the environment (set on the command line; the
+log does not record it):
+
+- 267 `== ALL CHECKS PASSED ==`: check.sh, both paths (gnu-debug and
+  musl-release), with the bare busybox container printing `temur
+  0.38.2` (264) and `mock REPL OK (bare)` (266).
+- 269, the one history hit: `ALLOWED (already public):
+  083eb334847b07f6f3b75f713a3c492c1f90ed8e`, the T53 P1 commit message,
+  an operator mount path, public since 2026-09-08, allowlisted at v0.34.0
+  through v0.38.1. The residual is unchanged from v0.38.1.
+- 270 `OK: leak grep clean (operator patterns + generic shapes, files +
+  history)`.
+- 272 `OK: install.sh + README match version 0.38.2 and all targets`.
+- 274-277 `info: component rust-std for target <target> is up to date`
+  for all four release targets: a NO-OP, nothing installed.
+- 298 `== RELEASE v0.38.2: 4/4 ARTIFACTS GATED ==`.
+- 311 `RELEASE_SH_EXIT=0`, `release.sh`'s own exit, echoed inside the
+  script(1) command.
+
+The build printed one compiler warning, `function line_trimmed is never
+used` (`src/tools/edit/matchers.rs:122`), in both check.sh paths, a
+test-only wrapper, as at v0.38.1. The other warnings are podman's
+linux/386 platform notice, expected.
+
+The `release.sh` run started before the `CLAUDE.md` 78 edit, which
+waited on the operator's answer in the cut session; the other six
+files' edits were in the tree, as the HOLD 1 report states (no log
+records the tree at build time). `CLAUDE.md` is not a build input, and
+the committed tree's grep and Ruling 4 below cover it.
+
+Before the build, the step-2a check: the machine-name pattern (the fifth
+of five active lines, file mode 0600) scores 0 files at `630cc4a`, 2 at
+`c8a4b23` (the known positive), and 0 in the three commit messages of
+`eccd7fe..630cc4a`. Counts taken in the cut session and reported at
+HOLD 1, then re-run after publication into
+`v0.38.2-preflight-rerun-20261001-211809.log` with the same counts,
+plus 0 files at `6bcc983`. That log also carries the post-bump grep
+(exit 1, no lines), the three OFFLINE lines, the ten-line sweep at
+`6bcc983`, `gh auth status` logged in, visibility PUBLIC, the CI run
+list for `6bcc983`, and the full tag read-back.
+
+- `metadata_drift.sh`, `v0.38.2-metadata-drift-20261001-210253.log`: 4
+  PASS (fable, haiku, opus, sonnet), "all 4 baked profiles match
+  models.dev", exit 0.
+- Installer test, `v0.38.2-installer-20261001-210314.log`: the stage
+  directory served with `python3 -m http.server 8766 --bind 127.0.0.1`
+  (the log names the server command), `scripts/install.sh` run with
+  `TEMUR_BASE_URL` into a temp HOME: "checksum verified.", installed
+  `temur 0.38.2`, sha256 equal to the staged x86_64 asset. The first
+  attempt, `v0.38.2-installer-20261001-210301.log`, got a 404: a server
+  left running from the v0.38.1 installer test still held port 8765 and
+  served the v0.38.1 stage directory, and that server answered the
+  request.
+  The test was rerun on another port; nothing in the cut changed.
+- Ruling 4 over the bump's message, its added lines and the tag message,
+  headings stripped and kept, five patterns: 0 everywhere, with the live
+  control (the fifth pattern over `c8a4b23`) at 2 file hits.
+  `v0.38.2-bump-ruling4-20261001-210352.log`. Register over the same
+  text: non-ASCII 0, U+2014 0, the banned adjective 0, each against a
+  planted control that fired (non-ASCII 2, since the planted U+2014 line
+  is also non-ASCII; U+2014 1; adjective 1).
+
+The independent gate on the same source is CI: run **36949322615** on
+`6bcc983`, `test` (110658486633) and `release-gate` (110658486805) both
+success, the only run on that sha (the run list in the preflight-rerun
+log).
+
+### Tag
+
+Annotated tag `v0.38.2` at `6bcc983`, tag object
+`57fe63a2d691ea3b9ed7770eab980ef0f40d5f17`. Read back raw before the
+push: `git cat-file -t v0.38.2` reads `tag`, and `git cat-file tag
+v0.38.2 | tail -1 | od -c` gives exactly `temur v0.38.2 - a
+block-anchor edit needs a read and a middle that fits (F27)\n`, 77
+bytes, one line, ASCII, a plain hyphen. Ruling 4 on the tag object's
+message: 0 on all five patterns, control 2. Pushed by its explicit ref;
+`git ls-remote` shows the tag object and `^{}` at `6bcc983`, and the
+remote carries 43 tags.
+
+### Publication and live verification
+
+Release `https://github.com/thekeoni1/Temur/releases/tag/v0.38.2`,
+title equal to the tag message, `draft=false prerelease=false`,
+five assets: the four binaries and SHA256SUMS. Notes are the CHANGELOG's
+v0.38.2 section. Log: `v0.38.2-publish-20261001-210643.log`.
+
+| asset | sha256 |
+| --- | --- |
+| i686-unknown-linux-musl | `1a14e42c16c2e03de7f6619fb64a87f2660e4107e7799af48fa6865dcff3c132` |
+| x86_64-unknown-linux-musl | `3fadb310eb2a38eaed1bdea827a2e6bff88473c5a5663d29391266872c0fb6c3` |
+| aarch64-unknown-linux-musl | `e3688ca9c66af67ae1110a1d83c84b476fb75dc28a41aefaed15b3faf80d5416` |
+| armv7-unknown-linux-musleabihf | `fa2b598c9d2e6eb765d7b3c77176483c8ec5929b9fd412e5ec9991d8773dd083` |
+| SHA256SUMS (428 bytes) | `a37b668c0e2869a601934a1512912f2a1697a019271e8836b3b5e7142bb8e4e4` |
+
+Closing gate, `v0.38.2-closing-gate-20261001-211429.log`:
+
+- Tokenless (`env -i`, curl, no gh): all five assets downloaded from
+  the public URLs, byte counts and sha256 equal to the staged files, 5
+  of 5; `sha256sum -c` 4 of 4.
+- The README:185 one-liner, verbatim, into a fresh empty HOME, once on
+  x86_64 and once under `setarch i686`: each fetched install.sh from the
+  v0.38.2 tag, printed "checksum verified.", and installed a binary that
+  prints `temur 0.38.2`, sha256 equal to the published x86_64 and i686
+  asset respectively. The i686 leg's log prints `setarch i686 uname -m`
+  and its output, `i686`, before the one-liner, so the record shows the
+  arch the installer saw.
+- The README:196 blob URL returns 200.
+
+### What this release does NOT establish
+
+Re-derived from the one v0.38.2 CHANGELOG item:
+
+- No live dogfood of the published v0.38.2 asset has run yet. The
+  desktop's soak of the published i686 asset is still to run.
+- The refusal message has been seen in tests only, not in a model run.
+- The half-the-middle bar was proved on fixtures in `tests/tools.rs`
+  and the matchers unit tests, not by a model.
+- An exact or line-trimmed edit on an unread file still applies, by
+  design.
+- The edit prompt's read-first sentence (`src/tools/prompts/edit.txt`
+  4) predates this fix and is not changed by it.
+- The four other 2026-10-01 seeds in ROADMAP 1882-1894, and F19, F20,
+  F21, F25 and F22 in the paragraph ending at line 1881, remain open.
+- ARM remains verified at build level only; no hardware smoke.
+
+### Corrections
+
+- The bump commit's message says "README:31 stays numberless". README:31
+  reads "under 10 MB on 32-bit", a bound with a number in it. The
+  sentence was carried over from the v0.38.1 bump message (`eccd7fe`)
+  without being re-checked against the file. The commit is pushed and
+  stays; this record is the correction. Wrong assumption: a template
+  sentence from the last cut is still true.
+- The first installer test attempt assumed port 8765 was free because
+  the last cut's test had ended. Its readiness probe fetched
+  SHA256SUMS, which both stage directories carry, so it could not tell
+  the stale server from the new one. The rerun probed the versioned
+  asset.
