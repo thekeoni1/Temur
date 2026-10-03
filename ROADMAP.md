@@ -1883,18 +1883,21 @@ From the third laptop dogfood (2026-10-01, v0.38.1,
 Qwen3-4B-Instruct-2507, nine menu tasks, 2 PASS / 7 FAIL, F24 confirmed
 fixed live on the shipped binary): F27, edit's block-anchor splice over
 an unread file, fixed the same day (the v0.38.2 CHANGELOG
-section); read refusing `.dat` and `.bin`
-by extension before any content sniff (read.rs:281-287; an ASCII .dat
-is "Cannot read binary file" while the hint's own `file` says text);
-the read header naming the file's byte size beside its line count (a
-size task driven through read never sees a size); the F25 twin, a turn
-that ends on "I'll now ..." with no tool call ending silently (the T61
-nudge fires only on a claim of done work); and `temur init`'s
-existing-config refusal not naming the model the config points at (the
-same discoverability shape as D17).
+section), and F28, the review of that guard (2026-10-02: an applied
+edit, a read of another window or a file changed since the read all
+armed the splice, blank lines counted and three-line blocks skipped the
+check), fixed in the entry after v0.38.2 in the CHANGELOG; read refusing
+`.dat` and `.bin` by extension before any content sniff
+(read.rs:286-292; an ASCII .dat is "Cannot read binary file" while the
+hint's own `file` says text); the read header naming the file's byte
+size beside its line count (a size task driven through read never sees a
+size); the F25 twin, a turn that ends on "I'll now ..." with no tool
+call ending silently (the T61 nudge fires only on a claim of done work);
+and `temur init`'s existing-config refusal not naming the model the
+config points at (the same discoverability shape as D17).
 
-The launch announcement goes out on v0.38.2, the patches carrying
-F14, F24 and F27. The playground is refreshed to the announced version
+The launch announcement goes out on v0.38.3, the patches carrying
+F14, F24, F27 and F28. The playground is refreshed to the announced version
 before the announcement and names its own version and sha, and
 README 19-24 has been version-agnostic since T65 P5.
 

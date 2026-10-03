@@ -213,6 +213,11 @@ impl Tool for ReadTool {
         }
         // T19: a successful file read arms write's read-first check.
         ctx.record_read(&path);
+        // F28: the lines this read showed, keyed to the file as it was before
+        // opening; an approximate edit may splice only inside them.
+        if document.is_none() && !raw.is_empty() {
+            ctx.record_shown(&path, offset, last, key_len, key_mtime);
+        }
         Ok(ToolOutput { title, output })
     }
 }

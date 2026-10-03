@@ -24,7 +24,7 @@ pub enum Matcher {
 pub enum FuzzyResult {
     NoMatch,
     Unique { range: Range<usize>, matcher: Matcher },
-    Ambiguous { count: usize },
+    Ambiguous { count: usize, matcher: Matcher },
 }
 
 /// The fallback pipeline: line-trimmed first, block-anchor only if the
@@ -45,7 +45,7 @@ pub fn fuzzy_match(content: &str, old: &str) -> FuzzyResult {
                 matcher: Matcher::LineTrimmed,
             }
         }
-        n if n >= 2 => return FuzzyResult::Ambiguous { count: n },
+        n if n >= 2 => return FuzzyResult::Ambiguous { count: n, matcher: Matcher::LineTrimmed },
         _ => {}
     }
     let candidates = block_anchor_impl(content, &spans, &trimmed, &old_trimmed, trailing_newline);
@@ -55,7 +55,7 @@ pub fn fuzzy_match(content: &str, old: &str) -> FuzzyResult {
             matcher: Matcher::BlockAnchor,
         },
         0 => FuzzyResult::NoMatch,
-        n => FuzzyResult::Ambiguous { count: n },
+        n => FuzzyResult::Ambiguous { count: n, matcher: Matcher::BlockAnchor },
     }
 }
 
@@ -161,11 +161,11 @@ fn line_trimmed_impl(
 /// anchor is bound in two steps:
 ///
 /// 1. If the line at the EXACT expected offset (`i + old_lines - 1`)
-///    trimmed-matches the closing anchor, bind there — the common
-///    weak-model case: same block shape, middle content differs.
-///    A block of four or more lines binds there only if its middle passes
-///    the same similarity guard as step 2 (F27: an invented body whose
-///    first and last lines matched was spliced over real code).
+///    trimmed-matches the closing anchor, bind there only if the middle
+///    passes the same similarity guard as step 2, for every block length
+///    (F28; F27 had exempted three-line blocks, and the review showed an
+///    invented one-line body splicing over a real one). A three-line block
+///    therefore binds only through step 2, to a longer block.
 /// 2. Otherwise fall back to the NEAREST closing anchor at least two lines
 ///    below, but ONLY if the candidate's middle passes a deterministic
 ///    similarity guard: at least half of the search block's middle lines
@@ -203,11 +203,10 @@ fn block_anchor_impl(
             continue;
         }
         let expected = i + old_trimmed.len() - 1; // >= i+2 (old has >= 3 lines)
-        let close = if expected < spans.len()
-            && trimmed[expected] == last
-            && (middle.len() <= 1 || middle_similar(middle, &trimmed[i + 1..expected]))
-        {
-            Some(expected)
+        let close = if expected < spans.len() && trimmed[expected] == last {
+            // F28 (review finding 8): no fallback scan; a nearer anchor's middle
+            // is a prefix of this one, so it cannot pass. No behaviour change.
+            Some(expected).filter(|_| middle_similar(middle, &trimmed[i + 1..expected]))
         } else {
             ((i + 2)..spans.len())
                 .find(|&j| trimmed[j] == last)
@@ -221,20 +220,33 @@ fn block_anchor_impl(
 }
 
 /// The similarity guard for both bind steps (the exact-offset step since
-/// F27, for middles of two or more lines; the nearest-fallback step since
+/// F27, for every middle length since F28; the nearest-fallback step since
 /// F1): the fraction of `search_middle`
 /// lines that appear trimmed-equal, order-preserving (subsequence), in
 /// `candidate_middle` must be >= 1/2.
+///
+/// F28: only lines that carry signal count, a trimmed line with at least
+/// one letter or digit. Blank and punctuation-only lines of the search
+/// middle are dropped first, and a middle with no signal line fails (the
+/// review found two blank lines carrying a four-line invented middle).
 fn middle_similar(search_middle: &[&str], candidate_middle: &[&str]) -> bool {
+    let signal: Vec<&str> = search_middle
+        .iter()
+        .copied()
+        .filter(|l| l.chars().any(char::is_alphanumeric))
+        .collect();
+    if signal.is_empty() {
+        return false;
+    }
     let mut matched: usize = 0;
     let mut pos: usize = 0;
-    for s in search_middle {
+    for s in &signal {
         if let Some(k) = candidate_middle[pos..].iter().position(|c| c == s) {
             matched += 1;
             pos += k + 1;
         }
     }
-    matched * 2 >= search_middle.len()
+    matched * 2 >= signal.len()
 }
 
 /// Leading whitespace of a line (everything before the first
@@ -420,7 +432,7 @@ mod tests {
         let content = "a\nx\na\n";
         assert_eq!(
             fuzzy_match(content, "  a"),
-            FuzzyResult::Ambiguous { count: 2 }
+            FuzzyResult::Ambiguous { count: 2, matcher: Matcher::LineTrimmed }
         );
     }
 
@@ -443,11 +455,13 @@ mod tests {
     }
 
     #[test]
-    fn block_anchor_accepts_single_candidate_with_mangled_middle() {
+    fn a_three_line_block_with_a_mangled_middle_is_not_found() {
+        // F28: the one middle line is checked too, and it is not in the file.
         let content = "start\n  middle_actual\nend\n";
-        let (range, m) = unique(content, "start\nTOTALLY DIFFERENT\nend");
-        assert_eq!(m, Matcher::BlockAnchor);
-        assert_eq!(&content[range], "start\n  middle_actual\nend");
+        assert_eq!(
+            fuzzy_match(content, "start\nTOTALLY DIFFERENT\nend"),
+            FuzzyResult::NoMatch
+        );
     }
 
     #[test]
@@ -527,11 +541,12 @@ mod tests {
 
     #[test]
     fn block_anchor_exact_offset_bind_ignores_farther_anchor() {
-        // The expected-offset arm binds the block-shaped candidate; the
-        // stray later `}` is never considered.
-        let content = "if {\n a\n}\nmore\n}\n";
-        let (range, _) = unique(content, "if {\nXX\n}");
-        assert_eq!(&content[range], "if {\n a\n}");
+        // The expected-offset arm binds the block-shaped candidate (one of
+        // its two middle lines is real, F28); the stray later `}` is never
+        // considered.
+        let content = "if {\n a\n b\n}\nmore\n}\n";
+        let (range, _) = unique(content, "if {\n a\n XX\n}");
+        assert_eq!(&content[range], "if {\n a\n b\n}");
     }
 
     #[test]
@@ -550,11 +565,56 @@ mod tests {
 
     #[test]
     fn block_anchor_same_pair_twice_is_ambiguous() {
-        let content = "start\nm\nend\nstart\nz\nend\n";
+        let content = "start\nm\nn\nend\nstart\nm\nz\nend\n";
         assert_eq!(
-            fuzzy_match(content, "start\nq\nend"),
-            FuzzyResult::Ambiguous { count: 2 }
+            fuzzy_match(content, "start\nm\nq\nend"),
+            FuzzyResult::Ambiguous { count: 2, matcher: Matcher::BlockAnchor }
         );
+    }
+
+    #[test]
+    fn f27_review_3_blank_lines_carry_no_signal() {
+        // F28: the two shared lines are blank, so 0 of 2 signal lines match.
+        let content = "def total(rows):\n    s = 0\n\n    for r in rows:\n\n    return s\n";
+        assert_eq!(
+            fuzzy_match(
+                content,
+                "def total(rows):\n    invented_a()\n\n    invented_b()\n\n    return s"
+            ),
+            FuzzyResult::NoMatch
+        );
+    }
+
+    #[test]
+    fn an_all_blank_middle_never_binds() {
+        // Line-trimmed fails on "x" vs "", so this reaches block-anchor,
+        // whose search middle has no signal line. Before F28, 2 of its 3
+        // blank lines matched and it bound.
+        let content = "a\nx\n\n\nb\n";
+        assert!(line_trimmed(content, "a\n\n\n\nb").is_empty());
+        assert_eq!(fuzzy_match(content, "a\n\n\n\nb"), FuzzyResult::NoMatch);
+    }
+
+    #[test]
+    fn punctuation_only_lines_carry_no_signal() {
+        // The one shared middle line "});" has no letter or digit, so the
+        // signal middle is [fake();], 0 of 1; before F28 it was 1 of 2.
+        let content = "fn a() {\n    real();\n    });\n}\n";
+        assert_eq!(
+            fuzzy_match(content, "fn a() {\n    fake();\n    });\n}"),
+            FuzzyResult::NoMatch
+        );
+    }
+
+    #[test]
+    fn the_fallback_does_not_run_when_the_exact_offset_anchor_fails_its_middle() {
+        // Line 4 is "e" and [q, r] vs [m, n] fails: no scan for another `e`.
+        let content = "s\nm\nn\ne\nx\ne\n";
+        assert_eq!(fuzzy_match(content, "s\nq\nr\ne"), FuzzyResult::NoMatch);
+        // One of two matches: binds at the exact offset, never the later `e`.
+        let (range, m) = unique(content, "s\nm\nr\ne");
+        assert_eq!(m, Matcher::BlockAnchor);
+        assert_eq!(&content[range], "s\nm\nn\ne");
     }
 
     #[test]

@@ -2,6 +2,21 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
+## Unreleased
+
+- edit's block-anchor (approximate) match now splices only inside lines
+  a read showed in this session, of the file as it was at that read. An
+  applied edit or a write no longer counts as a read for it, a file
+  changed since the read (by a command, a checkout, a formatter or
+  temur's own edit) must be read again, and `/compact`, `/clear` and
+  `/resume` forget what was shown. Before, one read of any part of a
+  file, or one applied edit, trusted approximate edits anywhere in it for
+  the rest of the session (review of the v0.38.2 guard, 2026-10-02, five
+  bypasses, three shown by test).
+- The block-anchor middle check counts only lines with a letter or
+  digit, and applies to three-line blocks too: an invented one-line body
+  is "not found" instead of replacing the real one.
+
 ## v0.38.2 - 2026-10-01
 
 - edit's block-anchor fallback (first and last lines of oldString found,

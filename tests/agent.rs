@@ -1950,6 +1950,134 @@ fn ambiguous_fuzzy_edit_round_trips_as_nonfatal_error_result() {
     assert_eq!(session.history().len(), 4, "turn completed normally");
 }
 
+/// F28: the F27 report.py content, and a block-anchor edit over it whose
+/// first and last lines are real and two of four middle lines invented.
+const F28_REPORT: &str =
+    "def total(rows):\n    s = 0\n    for r in rows:\n        s += r\n    return s\n# end\n";
+
+fn f28_half_edit(file: &std::path::Path) -> serde_json::Value {
+    serde_json::json!({
+        "filePath": file.to_str().unwrap(),
+        "oldString": "def total(rows):\n    s = 0\n    for r in rows:\n        s += 2 * r\n    return 2 * s\n# end",
+        "newString": "def total(rows):\n    return sum(rows)\n# end",
+    })
+}
+
+fn f28_read(file: &std::path::Path) -> serde_json::Value {
+    serde_json::json!({"filePath": file.to_str().unwrap()})
+}
+
+/// The tool_result the request's last message carries: (content, is_error).
+fn last_tool_result(req: &ChatRequest) -> (String, bool) {
+    match &req.messages.last().unwrap().content[0] {
+        ContentBlock::ToolResult {
+            content, is_error, ..
+        } => (content.clone(), *is_error),
+        other => panic!("expected tool_result, got {other:?}"),
+    }
+}
+
+/// F28 (review finding 5): `/compact` forgets what a read showed, since the
+/// read's content left the model's context with the history; a fresh read
+/// trusts the lines again.
+#[test]
+fn compaction_forgets_what_a_read_showed() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("report.py");
+    std::fs::write(&file, F28_REPORT).unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(vec![tool_use("t1", "read", f28_read(&file))], StopReason::ToolUse),
+            msg(vec![text("ok")], StopReason::EndTurn),
+            // The summary call's response.
+            msg(vec![text("Goal: edit report.py")], StopReason::EndTurn),
+            msg(vec![tool_use("t2", "edit", f28_half_edit(&file))], StopReason::ToolUse),
+            msg(vec![text("done")], StopReason::EndTurn),
+            msg(vec![tool_use("t3", "read", f28_read(&file))], StopReason::ToolUse),
+            msg(vec![tool_use("t4", "edit", f28_half_edit(&file))], StopReason::ToolUse),
+            msg(vec![text("done")], StopReason::EndTurn),
+        ],
+    );
+    collect_events(&mut session, "read report.py");
+    assert!(matches!(session.compact(), CompactOutcome::Compacted { .. }));
+
+    collect_events(&mut session, "simplify total");
+    let (content, is_error) = last_tool_result(&requests.borrow()[4]);
+    assert!(is_error, "{content}");
+    assert!(content.contains("has not been read in this session"), "{content}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), F28_REPORT);
+
+    collect_events(&mut session, "read it and try again");
+    let (content, is_error) = last_tool_result(&requests.borrow()[7]);
+    assert!(!is_error, "{content}");
+    assert!(content.contains("block-anchor match"), "{content}");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "def total(rows):\n    return sum(rows)\n# end\n"
+    );
+}
+
+/// F28 (Ruling T66-73): `/clear` forgets what a read showed too.
+#[test]
+fn clear_history_forgets_what_a_read_showed() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("report.py");
+    std::fs::write(&file, F28_REPORT).unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(vec![tool_use("t1", "read", f28_read(&file))], StopReason::ToolUse),
+            msg(vec![text("ok")], StopReason::EndTurn),
+            msg(vec![tool_use("t2", "edit", f28_half_edit(&file))], StopReason::ToolUse),
+            msg(vec![text("done")], StopReason::EndTurn),
+        ],
+    );
+    collect_events(&mut session, "read report.py");
+    session.clear_history();
+    collect_events(&mut session, "simplify total");
+    let (content, is_error) = last_tool_result(&requests.borrow()[3]);
+    assert!(is_error, "{content}");
+    assert!(content.contains("has not been read in this session"), "{content}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), F28_REPORT);
+}
+
+/// F28 (Ruling T66-73): `/resume` (load_seed) forgets what a read showed:
+/// the loaded history is another conversation's.
+#[test]
+fn load_seed_forgets_what_a_read_showed() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("report.py");
+    std::fs::write(&file, F28_REPORT).unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(vec![tool_use("t1", "read", f28_read(&file))], StopReason::ToolUse),
+            msg(vec![text("ok")], StopReason::EndTurn),
+            msg(vec![tool_use("t2", "edit", f28_half_edit(&file))], StopReason::ToolUse),
+            msg(vec![text("done")], StopReason::EndTurn),
+        ],
+    );
+    collect_events(&mut session, "read report.py");
+    let saved_file = saved(
+        vec![
+            user_msg("older prompt"),
+            RequestMessage {
+                role: Role::Assistant,
+                content: vec![text("older answer")],
+            },
+        ],
+        vec![],
+    );
+    let (seed, _) = store::prepare_seed(saved_file);
+    session.load_seed(seed);
+    collect_events(&mut session, "simplify total");
+    let (content, is_error) = last_tool_result(&requests.borrow()[3]);
+    assert!(is_error, "{content}");
+    assert!(content.contains("has not been read in this session"), "{content}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), F28_REPORT);
+}
+
 // ---------------------------------------------------- T8: between-turns seam
 
 /// Minimal recording transport over the openai fixture set, for proving
@@ -5670,6 +5798,48 @@ fn texts_of(m: &RequestMessage) -> Vec<&str> {
             _ => None,
         })
         .collect()
+}
+
+/// F28: auto-compaction forgets what a read showed, like `/compact`. The
+/// read is round-trip one, folded at round-trip four's crossing; the edit
+/// after the fold is refused.
+#[test]
+fn auto_compaction_forgets_what_a_read_showed() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("report.py");
+    std::fs::write(&file, F28_REPORT).unwrap();
+    let used = |n: u64| serde_json::json!({"input_tokens": n, "output_tokens": 0});
+    let (mut session, requests) = session_auto_compact(
+        dir.path(),
+        vec![
+            msg_with_usage(
+                vec![tool_use("tu_1", "read", f28_read(&file))],
+                StopReason::ToolUse,
+                used(100),
+            ),
+            rt(2, 100),
+            rt(3, 100),
+            rt(4, 800), // crosses
+            summary_response("WORK SO FAR"),
+            msg_with_usage(
+                vec![tool_use("tu_5", "edit", f28_half_edit(&file))],
+                StopReason::ToolUse,
+                used(100),
+            ),
+            msg_with_usage(vec![text("done")], StopReason::EndTurn, used(100)),
+        ],
+        Some(1000),
+        100,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert!(n.iter().any(|x| x.starts_with("compacted: ")), "{n:?}");
+    let reqs = requests.borrow();
+    assert_eq!(reqs.len(), 7);
+    let (content, is_error) = last_tool_result(&reqs[6]);
+    assert!(is_error, "{content}");
+    assert!(content.contains("has not been read in this session"), "{content}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), F28_REPORT);
 }
 
 #[test]

@@ -839,6 +839,7 @@ impl Session {
     /// decision was already made in `session_store::prepare_seed`.
     pub fn load_seed(&mut self, seed: SessionSeed) {
         self.history = seed.history;
+        self.tool_ctx.forget_shown(); // F28: see compact
         self.session_usage = seed.session_usage;
         self.tool_ctx.todos = seed.todos;
         self.last_context_used = seed.last_context_used;
@@ -855,6 +856,7 @@ impl Session {
     /// (T64-10, T64-12). Provider, model, and config stay.
     pub fn clear_history(&mut self) {
         self.history.clear();
+        self.tool_ctx.forget_shown(); // F28: see compact
         self.errors.clear();
         self.session_usage = Usage::default();
         self.last_context_used = None;
@@ -891,6 +893,10 @@ impl Session {
         };
         let before = self.history.len();
         self.history = compacted_history(&summary, &self.history);
+        // F28: the read's lines left the model's context with the history, so
+        // an approximate edit needs a fresh read; write's coarse set stays, it
+        // never depended on context.
+        self.tool_ctx.forget_shown();
         let after = self.history.len();
         self.last_context_used = None;
         self.context_warned = false;
@@ -928,6 +934,7 @@ impl Session {
             Err(outcome) => return outcome.into(),
         };
         self.history = auto_compacted_history(&summary, &self.history, turn_start, tail_start);
+        self.tool_ctx.forget_shown(); // F28: see compact
         // Same reset as `/compact`: the estimate described the old
         // conversation, and the advisory re-arms so a turn that fills the
         // window AGAIN can compact again, up to the bound.

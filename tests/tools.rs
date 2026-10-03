@@ -1341,9 +1341,9 @@ fn edit_fuzzy_fallback_matrix() {
         // Ok: (final file content, output must contain). Err: message must
         // contain — and the file must be untouched.
         expect: Result<(&'static str, &'static str), &'static str>,
-        // F27: a block-anchor splice needs the file read first. A case that
-        // expects NoMatch or Ambiguous is answered before that guard, so it
-        // needs no read.
+        // F27: a block-anchor splice needs the lines read first (F28). A
+        // case that expects NoMatch, or a line-trimmed Ambiguous, is
+        // answered before that guard, so it needs no read.
         read_first: bool,
     }
     let cases = [
@@ -1469,15 +1469,14 @@ fn edit_fuzzy_fallback_matrix() {
             read_first: false,
         },
         Case {
-            name: "block_anchor_mangled_middle_accepted_and_marked",
+            // F28: the one middle line is checked too. read_first stays, so
+            // the middle check, not the read guard, is what refuses.
+            name: "three_line_block_mangled_middle_not_found",
             initial: "fn f() {\n  actual_body();\n}\n",
             old: "fn f() {\n  imagined_body();\n}",
             new: "fn f() {\n  new_body();\n}",
             replace_all: false,
-            expect: Ok((
-                "fn f() {\n  new_body();\n}\n",
-                "block-anchor match — oldString differed from the file; re-read",
-            )),
+            expect: Err("not found in the file, even with whitespace-tolerant"),
             read_first: true,
         },
         Case {
@@ -1590,12 +1589,26 @@ fn edit_fuzzy_fallback_matrix() {
             read_first: false,
         },
         Case {
+            // The read makes the file trusted, so the ambiguity, not the
+            // read guard, answers (F28).
             name: "same_anchor_pair_twice_is_ambiguous",
+            initial: "start\nm\nn\nend\nstart\nm\nz\nend\n",
+            old: "start\nm\nq\nend",
+            new: "R",
+            replace_all: false,
+            expect: Err("matched 2 locations approximately"),
+            read_first: true,
+        },
+        Case {
+            // Both candidates fail the middle check since F28 removed the
+            // three-line exemption; the unread side of a true ambiguity is
+            // an_ambiguous_block_anchor_on_an_unread_file_says_read_first's.
+            name: "three_line_same_pair_twice_not_found",
             initial: "s\nm\ne\ns\nz\ne\n",
             old: "s\nq\ne",
             new: "R",
             replace_all: false,
-            expect: Err("matched 2 locations approximately"),
+            expect: Err("not found in the file, even with whitespace-tolerant"),
             read_first: false,
         },
         Case {
@@ -1724,6 +1737,229 @@ fn an_unread_file_refuses_a_block_anchor_edit() {
     assert_eq!(
         std::fs::read_to_string(&f).unwrap(),
         "def total(rows):\n    return sum(rows)\n# end\n"
+    );
+}
+
+/// F28 (review finding 1): an applied edit records no shown lines, so it
+/// does not arm a block-anchor splice anywhere in the file. It still arms
+/// write's coarse "may overwrite" check (T19, unchanged).
+#[test]
+fn f27_review_1_an_applied_edit_does_not_arm_block_anchor() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("report.py");
+    let initial = "import os\ndef total(rows):\n    s = 0\n    for r in rows:\n        s += r\n    return s\n# end\n";
+    std::fs::write(&f, initial).unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let fp = f.to_str().unwrap();
+    run(&reg, &mut ctx, "edit", json!({
+        "filePath": fp, "oldString": "import os", "newString": "import sys"
+    }))
+    .unwrap();
+    let after_exact = initial.replace("import os", "import sys");
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), after_exact);
+    // Two of the four middle lines invented.
+    let err = run(&reg, &mut ctx, "edit", json!({
+        "filePath": fp,
+        "oldString": "def total(rows):\n    s = 0\n    for r in rows:\n        s += 2 * r\n    return 2 * s\n# end",
+        "newString": "def total(rows):\n    return sum(rows)\n# end",
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("has not been read in this session"), "{err}");
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), after_exact);
+    run(&reg, &mut ctx, "write", json!({"filePath": fp, "content": "x = 1\n"})).unwrap();
+}
+
+/// F28 (review finding 4): a three-line block's one middle line is checked
+/// too, so after a read an invented body is "not found".
+#[test]
+fn f27_review_4_a_three_line_block_is_not_found_after_a_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("f.rs");
+    let initial = "fn f() {\n    real_call();\n}\n";
+    std::fs::write(&f, initial).unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let fp = f.to_str().unwrap();
+    run(&reg, &mut ctx, "read", json!({"filePath": fp})).unwrap();
+    let err = run(&reg, &mut ctx, "edit", json!({
+        "filePath": fp,
+        "oldString": "fn f() {\n    invented_call();\n}",
+        "newString": "fn f() {\n    replaced();\n}",
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("not found"), "{err}");
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), initial);
+}
+
+/// Sixty lines of "line N", with a six-line block at 40-45 and another at
+/// 50-55.
+fn sixty_lines_two_blocks() -> String {
+    let mut lines: Vec<String> = (1..=60).map(|n| format!("line {n}")).collect();
+    let g = ["def g(x):", "    a = x", "    b = a", "    c = b", "    return c", "# end g"];
+    let h = ["def h(y):", "    p = y", "    q = p", "    r = q", "    return r", "# end h"];
+    for (i, l) in g.iter().enumerate() {
+        lines[39 + i] = l.to_string();
+    }
+    for (i, l) in h.iter().enumerate() {
+        lines[49 + i] = l.to_string();
+    }
+    lines.join("\n") + "\n"
+}
+
+/// F28 (review findings 2 and 1; the third part, an applied edit stales the
+/// ranges, is finding 5): a block-anchor edit splices only inside lines a
+/// read showed, and an applied edit leaves the rest of the file stale until
+/// it is read again.
+#[test]
+fn a_block_anchor_edit_needs_the_lines_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("big.py");
+    let initial = sixty_lines_two_blocks();
+    std::fs::write(&f, &initial).unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let fp = f.to_str().unwrap();
+    let edit_g = json!({
+        "filePath": fp,
+        "oldString": "def g(x):\n    a = x\n    b = a\n    c = 2 * b\n    return 2 * c\n# end g",
+        "newString": "def g(x):\n    return x\n# end g",
+    });
+    run(&reg, &mut ctx, "read", json!({"filePath": fp, "offset": 1, "limit": 20})).unwrap();
+    let err = run(&reg, &mut ctx, "edit", edit_g.clone()).unwrap_err().to_string();
+    assert!(err.contains("lines 40-45"), "{err}");
+    assert!(err.contains("were not shown"), "{err}");
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), initial);
+
+    run(&reg, &mut ctx, "read", json!({"filePath": fp, "offset": 40, "limit": 10})).unwrap();
+    let out = run(&reg, &mut ctx, "edit", edit_g).unwrap();
+    assert!(out.output.contains("block-anchor match"), "{}", out.output);
+    let after_g = initial.replace(
+        "def g(x):\n    a = x\n    b = a\n    c = b\n    return c\n# end g",
+        "def g(x):\n    return x\n# end g",
+    );
+    assert_ne!(after_g, initial);
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), after_g);
+
+    // The applied edit moved the file's length, so every range is stale.
+    let edit_h = json!({
+        "filePath": fp,
+        "oldString": "def h(y):\n    p = y\n    q = p\n    r = 2 * q\n    return 2 * r\n# end h",
+        "newString": "def h(y):\n    return y\n# end h",
+    });
+    let err = run(&reg, &mut ctx, "edit", edit_h.clone()).unwrap_err().to_string();
+    assert!(err.contains("has changed since this session last read it"), "{err}");
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), after_g);
+    run(&reg, &mut ctx, "read", json!({"filePath": fp})).unwrap();
+    let out = run(&reg, &mut ctx, "edit", edit_h).unwrap();
+    assert!(out.output.contains("block-anchor match"), "{}", out.output);
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        after_g.replace(
+            "def h(y):\n    p = y\n    q = p\n    r = q\n    return r\n# end h",
+            "def h(y):\n    return y\n# end h",
+        )
+    );
+}
+
+/// F28 (review finding 5): a file changed outside temur since the read is
+/// not trusted. The change adds a line, so the test does not depend on the
+/// filesystem's mtime resolution.
+#[test]
+fn a_file_changed_outside_temur_is_not_trusted() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("report.py");
+    let initial = "def total(rows):\n    s = 0\n    for r in rows:\n        s += r\n    return s\n# end\n";
+    std::fs::write(&f, initial).unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let fp = f.to_str().unwrap();
+    let half = json!({
+        "filePath": fp,
+        "oldString": "def total(rows):\n    s = 0\n    for r in rows:\n        s += 2 * r\n    return 2 * s\n# end",
+        "newString": "def total(rows):\n    return sum(rows)\n# end",
+    });
+    run(&reg, &mut ctx, "read", json!({"filePath": fp})).unwrap();
+    let modified = format!("{initial}print(total([1]))\n");
+    std::fs::write(&f, &modified).unwrap();
+    let err = run(&reg, &mut ctx, "edit", half.clone()).unwrap_err().to_string();
+    assert!(err.contains("has changed since this session last read it"), "{err}");
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), modified);
+    run(&reg, &mut ctx, "read", json!({"filePath": fp})).unwrap();
+    let out = run(&reg, &mut ctx, "edit", half).unwrap();
+    assert!(out.output.contains("block-anchor match"), "{}", out.output);
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        "def total(rows):\n    return sum(rows)\n# end\nprint(total([1]))\n"
+    );
+}
+
+/// F28 (review finding 6): a block-anchor ambiguity on an unread file asks
+/// for a read, since widening oldString would only be refused next; after
+/// the read it is the ambiguity text. A line-trimmed ambiguity keeps its
+/// text, read or not.
+#[test]
+fn an_ambiguous_block_anchor_on_an_unread_file_says_read_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("t.txt");
+    let initial = "start\nm\nn\nend\nstart\nm\nz\nend\n";
+    std::fs::write(&f, initial).unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let fp = f.to_str().unwrap();
+    let edit = json!({"filePath": fp, "oldString": "start\nm\nq\nend", "newString": "R"});
+    let err = run(&reg, &mut ctx, "edit", edit.clone()).unwrap_err().to_string();
+    assert!(err.contains("has not been read in this session"), "{err}");
+    assert!(!err.contains("matched 2 locations"), "{err}");
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), initial);
+    run(&reg, &mut ctx, "read", json!({"filePath": fp})).unwrap();
+    let err = run(&reg, &mut ctx, "edit", edit).unwrap_err().to_string();
+    assert!(err.contains("matched 2 locations approximately"), "{err}");
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), initial);
+
+    let g = dir.path().join("u.txt");
+    std::fs::write(&g, "a\nx\na\n").unwrap();
+    let err = run(&reg, &mut ctx, "edit", json!({
+        "filePath": g.to_str().unwrap(), "oldString": " a", "newString": "b"
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("more surrounding lines"), "{err}");
+    assert_eq!(std::fs::read_to_string(&g).unwrap(), "a\nx\na\n");
+}
+
+/// F28: two reads of adjacent windows cover a block between them.
+#[test]
+fn a_read_of_a_window_covers_only_that_window_across_two_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("k.py");
+    let mut lines: Vec<String> = (1..=40).map(|n| format!("line {n}")).collect();
+    let k = ["def k(z):", "    a1 = z", "    a2 = a1", "    a3 = a2", "    return a3", "# end k"];
+    for (i, l) in k.iter().enumerate() {
+        lines[17 + i] = l.to_string();
+    }
+    let initial = lines.join("\n") + "\n";
+    std::fs::write(&f, &initial).unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let fp = f.to_str().unwrap();
+    run(&reg, &mut ctx, "read", json!({"filePath": fp, "offset": 1, "limit": 20})).unwrap();
+    run(&reg, &mut ctx, "read", json!({"filePath": fp, "offset": 21, "limit": 20})).unwrap();
+    let out = run(&reg, &mut ctx, "edit", json!({
+        "filePath": fp,
+        "oldString": "def k(z):\n    a1 = z\n    a2 = a1\n    a3 = 2 * a2\n    return 2 * a3\n# end k",
+        "newString": "def k(z):\n    return z\n# end k",
+    }))
+    .unwrap();
+    assert!(out.output.contains("block-anchor match"), "{}", out.output);
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        initial.replace(
+            "def k(z):\n    a1 = z\n    a2 = a1\n    a3 = a2\n    return a3\n# end k",
+            "def k(z):\n    return z\n# end k",
+        )
     );
 }
 

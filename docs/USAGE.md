@@ -1838,17 +1838,27 @@ not seen fails with:
 
 Reading the file, an edit that applied, or having successfully written it
 earlier in the session all count as "seen". New files are unaffected.
-An edit whose oldString matches only by its first and last lines, with
-a different middle (the approximate block-anchor match), is read-first
-too, and fails with:
+Edit's approximate block-anchor match (oldString's first and last lines
+found in the file, its middle differing) is held to a stricter rule
+since v0.38.3: it splices only inside lines a `read` showed in this
+session, of the file as it was at that read (same length and
+modification time). An edit or a write does not count. It fails with
+one of:
 
 ```
 <path> has not been read in this session, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read the file and copy oldString exactly.
+<path> has changed since this session last read it, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read the file again and copy oldString exactly.
+lines <N>-<M> of <path> were not shown by a read in this session, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read those lines and copy oldString exactly.
 ```
 
 An exact edit, or one that differs from the file only in each line's
 leading and trailing whitespace, needs no prior read, since every line
-it names is in the file.
+it names is in the file. A block-anchor middle counts only lines with
+at least one letter or digit, at least half of them must appear in
+order in the file's, and a three-line block with a changed middle line
+is "not found". `/compact`, auto-compaction, `/clear` and `/resume`
+forget the shown lines (the read left the context), so an approximate
+edit after any of them needs a fresh read.
 `--continue` and `--resume` start with an empty read
 set: the file may have changed on disk while temur was away, so a
 resumed session must re-read before overwriting.

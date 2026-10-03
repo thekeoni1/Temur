@@ -269,7 +269,8 @@ pub struct ToolCtx {
     /// not in this set. Starts empty on `--continue`/`--resume`
     /// DELIBERATELY: the file may have changed on disk since the saved
     /// session read it, so a resumed session must re-read before
-    /// overwriting.
+    /// overwriting. This set answers write's "may overwrite"; edit's
+    /// approximate match asks `shown` instead (F28).
     read_paths: std::collections::HashSet<PathBuf>,
     /// T63 P2b: per canonical path, the identity of the last successful file
     /// read ([`ReadKey`]), so an identical read of an unchanged file can say
@@ -285,6 +286,15 @@ pub struct ToolCtx {
     /// Starts empty, like `read_paths`, and for the same reason: after
     /// `--continue` nothing on disk is known to be temur's.
     own_document_writes: std::collections::HashMap<PathBuf, DocumentStamp>,
+    /// F28: per canonical path, the line ranges a `read` showed this
+    /// session, keyed to the file's length and modification time at that
+    /// read. Edit's block-anchor match splices only inside them. Three
+    /// rules: only `read` grants (an applied edit or a write does not), a
+    /// file whose length or mtime has changed since is not trusted, and
+    /// every compaction, /clear and /resume forget the lot, since the
+    /// read's content left the model's context with the history. Starts
+    /// empty, like `read_paths`, and for the same reason.
+    shown: std::collections::HashMap<PathBuf, ShownFile>,
 }
 
 impl ToolCtx {
@@ -303,6 +313,7 @@ impl ToolCtx {
             read_paths: std::collections::HashSet::new(),
             last_reads: std::collections::HashMap::new(),
             own_document_writes: std::collections::HashMap::new(),
+            shown: std::collections::HashMap::new(),
         }
     }
 
@@ -368,6 +379,82 @@ impl ToolCtx {
         stamp.mtime.is_some()
             && std::fs::metadata(&canon)
                 .is_ok_and(|m| m.len() == stamp.len && m.modified().ok() == stamp.mtime)
+    }
+
+    /// F28: record that a read showed lines `first..=last` of `path`, which
+    /// had length `len` and modification time `mtime` when the read began.
+    /// Ranges accumulate while the file stays the same; a read that finds a
+    /// different length or mtime replaces the file's ranges with its own.
+    pub fn record_shown(
+        &mut self,
+        path: &std::path::Path,
+        first: u64,
+        last: u64,
+        len: u64,
+        mtime: Option<std::time::SystemTime>,
+    ) {
+        let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let range = ShownLines { first, last };
+        match self.shown.get_mut(&canon) {
+            Some(f) if f.len == len && f.mtime == mtime => {
+                // Capped: paging a huge file must not grow this without bound on 32-bit.
+                if f.ranges.len() >= MAX_SHOWN_RANGES {
+                    f.ranges.remove(0);
+                }
+                f.ranges.push(range);
+            }
+            _ => {
+                self.shown.insert(canon, ShownFile { len, mtime, ranges: vec![range] });
+            }
+        }
+    }
+
+    /// F28: whether lines `first..=last` of `path`, which now has length
+    /// `len` and modification time `mtime`, were shown by a read of this
+    /// version of the file. A file with no known mtime is never trusted,
+    /// since nothing would show it had changed (the T63 P2b rule).
+    pub fn shown_state(
+        &self,
+        path: &std::path::Path,
+        first: u64,
+        last: u64,
+        len: u64,
+        mtime: Option<std::time::SystemTime>,
+    ) -> ShownState {
+        let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let Some(f) = self.shown.get(&canon) else {
+            return ShownState::NeverShown;
+        };
+        if f.len != len || f.mtime != mtime || mtime.is_none() {
+            return ShownState::Changed;
+        }
+        let covered = (first..=last).all(|n| f.ranges.iter().any(|r| r.first <= n && n <= r.last));
+        if covered {
+            ShownState::Trusted
+        } else {
+            ShownState::NotCovered { first, last }
+        }
+    }
+
+    /// F28: whether `path` has any shown range that is still current: the
+    /// file's length and mtime equal the recorded ones, and the mtime is
+    /// known.
+    pub fn has_trusted_shown(
+        &self,
+        path: &std::path::Path,
+        len: u64,
+        mtime: Option<std::time::SystemTime>,
+    ) -> bool {
+        let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.shown
+            .get(&canon)
+            .is_some_and(|f| f.len == len && f.mtime == mtime && mtime.is_some())
+    }
+
+    /// F28: forget every shown range. Called at every compaction, /clear
+    /// and /resume: the read's lines left the model's context with the history.
+    pub fn forget_shown(&mut self) {
+        self.shown.clear();
     }
 }
 
@@ -794,6 +881,39 @@ pub struct ReadKey {
 struct DocumentStamp {
     len: u64,
     mtime: Option<std::time::SystemTime>,
+}
+
+/// F28: lines `first..=last` (1-based, inclusive) that a read showed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShownLines {
+    pub first: u64,
+    pub last: u64,
+}
+
+/// F28: what reads showed of one file, and the file's length and
+/// modification time when they did.
+#[derive(Debug, Clone)]
+struct ShownFile {
+    len: u64,
+    mtime: Option<std::time::SystemTime>,
+    ranges: Vec<ShownLines>,
+}
+
+/// F28: the most ranges kept per file; the oldest goes first.
+const MAX_SHOWN_RANGES: usize = 256;
+
+/// F28: the answer [`ToolCtx::shown_state`] gives for a line range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShownState {
+    /// No read of this file is recorded.
+    NeverShown,
+    /// The file's length or modification time differs from the recorded
+    /// read's, or the modification time is unknown.
+    Changed,
+    /// The file is unchanged, but some line of `first..=last` was not shown.
+    NotCovered { first: u64, last: u64 },
+    /// Every line of the range was shown by a read of this version.
+    Trusted,
 }
 
 #[cfg(test)]

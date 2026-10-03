@@ -8,7 +8,7 @@
 
 pub mod matchers;
 
-use super::{parse_input, resolve_path, Tool, ToolCtx, ToolError, ToolOutput};
+use super::{parse_input, resolve_path, ShownState, Tool, ToolCtx, ToolError, ToolOutput};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -71,7 +71,7 @@ impl Tool for EditTool {
         // T64 P0a (F9): say why the file cannot be edited. "File not found"
         // is only for a missing path; it used to cover a binary file too,
         // and the model went looking for a file that was right there.
-        std::fs::metadata(&path).map_err(|e| read_error(&path, e))?;
+        let meta = std::fs::metadata(&path).map_err(|e| read_error(&path, e))?;
         let is_document = path
             .extension()
             .and_then(|e| e.to_str())
@@ -83,12 +83,13 @@ impl Tool for EditTool {
             )));
         }
         let content = std::fs::read_to_string(&path).map_err(|e| read_error(&path, e))?;
-        // F27 (2026-10-01 dogfood: an unread file, an invented oldString whose
-        // first and last lines matched, two files overwritten): read state from earlier calls.
-        let was_read_before = ctx.was_read(&path);
+        // F28: the same two expressions read uses, so equal files compare
+        // equal against what a read recorded.
+        let key_len = meta.len();
+        let key_mtime = meta.modified().ok();
         let matches = content.matches(&p.old_string).count();
         if matches == 0 {
-            return self.execute_fuzzy(ctx, &p, &path, &content, was_read_before);
+            return self.execute_fuzzy(ctx, &p, &path, &content, key_len, key_mtime);
         }
         if matches > 1 && !p.replace_all {
             return Err(ToolError::failed(format!(
@@ -175,15 +176,17 @@ impl EditTool {
     /// The exact search found nothing — consult the fuzzy pipeline (T6).
     /// `replaceAll` never edits fuzzily (a fuzzy replace-all is incoherent);
     /// it only borrows the pipeline to word its error precisely.
-    /// `was_read` is the read state before this call, from read, a
-    /// successful write, or an edit that applied (F27).
+    /// A block-anchor match splices only inside lines a read showed of
+    /// this version of the file (`key_len` and `key_mtime`, taken before
+    /// `content` was read), as [`ToolCtx::shown_state`] answers (F28).
     fn execute_fuzzy(
         &self,
         ctx: &mut ToolCtx,
         p: &Params,
         path: &std::path::Path,
         content: &str,
-        was_read: bool,
+        key_len: u64,
+        key_mtime: Option<std::time::SystemTime>,
     ) -> Result<ToolOutput, ToolError> {
         let result = matchers::fuzzy_match(content, &p.old_string);
         if p.replace_all {
@@ -196,17 +199,29 @@ impl EditTool {
         }
         match result {
             matchers::FuzzyResult::NoMatch => Err(ToolError::failed(NOT_FOUND_MSG)),
-            matchers::FuzzyResult::Ambiguous { count } => Err(ToolError::failed(format!(
-                "oldString matched {count} locations approximately (whitespace-tolerant). Provide more surrounding lines to make the match unique."
-            ))),
+            matchers::FuzzyResult::Ambiguous { count, matcher } => {
+                // F28 (review finding 6): widening oldString on a file with no
+                // trusted read would only be refused next; a read resolves both.
+                if matcher == matchers::Matcher::BlockAnchor
+                    && !ctx.has_trusted_shown(path, key_len, key_mtime)
+                {
+                    // Only NeverShown or Changed can come back here, so any line does.
+                    return Err(shown_refusal(path, ctx.shown_state(path, 1, 1, key_len, key_mtime)));
+                }
+                Err(ToolError::failed(format!(
+                    "oldString matched {count} locations approximately (whitespace-tolerant). Provide more surrounding lines to make the match unique."
+                )))
+            }
             matchers::FuzzyResult::Unique { range, matcher } => {
-                // F27: block-anchor splices a middle the model may never have
-                // seen, so it needs a read from earlier in the session.
-                if matcher == matchers::Matcher::BlockAnchor && !was_read {
-                    return Err(ToolError::failed(format!(
-                        "{} has not been read in this session, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read the file and copy oldString exactly.",
-                        path.display()
-                    )));
+                // F28: block-anchor splices a middle the model never copied
+                // from the file, so every line it replaces must have been
+                // shown by a read of this version of the file.
+                if matcher == matchers::Matcher::BlockAnchor {
+                    let (first, last) = line_range(content, &range);
+                    match ctx.shown_state(path, first, last, key_len, key_mtime) {
+                        ShownState::Trusted => {}
+                        state => return Err(shown_refusal(path, state)),
+                    }
                 }
                 // Line-trimmed path (F3): re-apply the uniform
                 // leading-whitespace delta between oldString and the matched
@@ -254,6 +269,33 @@ impl EditTool {
     }
 }
 
+/// F28: the 1-based lines `first..=last` that `range` of `content` covers.
+/// A terminating newline the range swallowed does not start another line.
+fn line_range(content: &str, range: &std::ops::Range<usize>) -> (u64, u64) {
+    let first = 1 + content[..range.start].matches('\n').count() as u64;
+    let inside = &content[range.clone()];
+    let newlines = inside.matches('\n').count() - usize::from(inside.ends_with('\n'));
+    (first, first + newlines as u64)
+}
+
+/// F28: why a block-anchor edit was not trusted. The never-read text is
+/// F27's, unchanged; the other two leave out its "has not been read" so a
+/// reader can tell which case fired.
+fn shown_refusal(path: &std::path::Path, state: ShownState) -> ToolError {
+    let path = path.display();
+    ToolError::failed(match state {
+        ShownState::NotCovered { first, last } => format!(
+            "lines {first}-{last} of {path} were not shown by a read in this session, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read those lines and copy oldString exactly."
+        ),
+        ShownState::Changed => format!(
+            "{path} has changed since this session last read it, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read the file again and copy oldString exactly."
+        ),
+        ShownState::NeverShown | ShownState::Trusted => format!(
+            "{path} has not been read in this session, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read the file and copy oldString exactly."
+        ),
+    })
+}
+
 const NOT_FOUND_MSG: &str = "oldString was not found in the file, even with whitespace-tolerant matching. Re-read the file and copy the text exactly.";
 
 /// The edit tool's answer when it cannot read `path` as text.
@@ -265,5 +307,19 @@ fn read_error(path: &std::path::Path, e: std::io::Error) -> ToolError {
             path.display()
         )),
         _ => ToolError::failed(format!("Cannot read {}: {e}", path.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::line_range;
+
+    #[test]
+    fn line_range_counts_lines_not_a_swallowed_terminator() {
+        let c = "a\nb\nc\nd\n";
+        assert_eq!(line_range(c, &(2..6)), (2, 3)); // "b\nc\n"
+        assert_eq!(line_range(c, &(2..5)), (2, 3)); // "b\nc"
+        assert_eq!(line_range(c, &(0..c.len())), (1, 4));
+        assert_eq!(line_range(c, &(0..1)), (1, 1)); // "a"
     }
 }
