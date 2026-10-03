@@ -1886,7 +1886,7 @@ an unread file, fixed the same day (the v0.38.2 CHANGELOG
 section), and F28, the review of that guard (2026-10-02: an applied
 edit, a read of another window or a file changed since the read all
 armed the splice, blank lines counted and three-line blocks skipped the
-check), fixed in the entry after v0.38.2 in the CHANGELOG; read refusing
+check), fixed in the v0.38.3 CHANGELOG section; read refusing
 `.dat` and `.bin` by extension before any content sniff
 (read.rs:286-292; an ASCII .dat is "Cannot read binary file" while the
 hint's own `file` says text); the read header naming the file's byte

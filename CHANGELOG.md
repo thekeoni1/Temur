@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased
+## v0.38.3 - 2026-10-03
 
 - edit's block-anchor (approximate) match now splices only inside lines
   a read showed in this session, of the file as it was at that read. An
