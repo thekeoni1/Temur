@@ -2,6 +2,18 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
+## Unreleased
+
+- edit's block-anchor (approximate) match now trusts only lines the
+  model actually received: a read cut to the model's context window, a
+  line cut at 2000 characters, a read whose result was shortened after a
+  context overflow, and a read in the same response as the edit no
+  longer count as shown. read also stops at the registry's cap for the
+  active model, so a long read on a small window ends with a
+  continuation offset instead of an elided middle (review of the v0.38.3
+  guard, 2026-10-05, ten findings: four fixed, five queued, one
+  alternative not taken).
+
 ## v0.38.3 - 2026-10-03
 
 - edit's block-anchor (approximate) match now splices only inside lines

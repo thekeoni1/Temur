@@ -1,6 +1,8 @@
 //! M3 tool tests — temp dirs on native tmpfs/ext4, run as i686 binaries.
 
-use temur::tools::{PromptProfile, Registry, Tool, ToolCtx, ToolError, ToolOutput, WalkLimits};
+use temur::tools::{
+    PromptProfile, Registry, ShownState, Tool, ToolCtx, ToolError, ToolOutput, WalkLimits,
+};
 use serde_json::json;
 
 fn ctx_in(dir: &std::path::Path) -> ToolCtx {
@@ -1861,6 +1863,106 @@ fn a_block_anchor_edit_needs_the_lines_shown() {
             "def h(y):\n    p = y\n    q = p\n    r = q\n    return r\n# end h",
             "def h(y):\n    return y\n# end h",
         )
+    );
+}
+
+/// F29 (review finding 1): on a small window read stops at the registry's
+/// cap in force, so its output is never cut in the middle, and the lines it
+/// records as shown are exactly the lines it delivered. The default cap
+/// reads the same file as before F29, with the 28 KB footer.
+#[test]
+fn a_read_on_a_small_window_stops_at_the_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("rows.txt");
+    // 600 lines of 50 chars: over 28 KB rendered, so both caps bind.
+    let content: String = (1..=600).map(|n| format!("row {n:04} {}\n", "x".repeat(41))).collect();
+    std::fs::write(&f, &content).unwrap();
+    let fp = f.to_str().unwrap();
+    let meta = std::fs::metadata(&f).unwrap();
+    let (len, mtime) = (meta.len(), meta.modified().ok());
+
+    let mut reg = Registry::standard();
+    reg.set_context_window(Some(4_000));
+    let mut ctx = ctx_in(dir.path());
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": fp})).unwrap();
+    assert!(!out.output.contains("(output truncated:"), "{}", out.output);
+    assert!(out.output.chars().count() <= 4_000, "{}", out.output.chars().count());
+    let footer = out
+        .output
+        .split("bytes for this model's context window. Showing lines 1-")
+        .nth(1)
+        .unwrap_or_else(|| panic!("{}", out.output));
+    let last: u64 = footer.split('.').next().unwrap().parse().unwrap();
+    assert!(out.output.contains("(Output capped at "), "{}", out.output);
+    assert!(footer.contains(&format!("Use offset={} to continue.)", last + 1)), "{footer}");
+    assert!(out.output.contains(&format!("\n{last}: row {last:04} ")), "{}", out.output);
+    assert!(!out.output.contains(&format!("\n{}: row", last + 1)), "{}", out.output);
+    assert_eq!(ctx.shown_state(&f, 1, last, len, mtime), ShownState::Trusted);
+    assert_eq!(
+        ctx.shown_state(&f, last + 1, last + 1, len, mtime),
+        ShownState::NotCovered { first: last + 1, last: last + 1 }
+    );
+
+    // The default cap: the 28 KB footer, as before F29.
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": fp})).unwrap();
+    assert!(!out.output.contains("(output truncated:"), "{}", out.output);
+    assert!(out.output.contains("(Output capped at 28 KB. Showing lines 1-"), "{}", out.output);
+    assert!(!out.output.contains("for this model's context window"), "{}", out.output);
+}
+
+/// F29 (review finding 2): inside a batch a read records nothing until the
+/// batch ends, so it grants nothing to an edit in the same batch.
+#[test]
+fn a_read_in_a_batch_is_shown_only_after_the_batch() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("report.py");
+    std::fs::write(&f, "def total(rows):\n    return sum(rows)\n").unwrap();
+    let meta = std::fs::metadata(&f).unwrap();
+    let (len, mtime) = (meta.len(), meta.modified().ok());
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    ctx.begin_batch();
+    run(&reg, &mut ctx, "read", json!({"filePath": f.to_str().unwrap()})).unwrap();
+    assert_eq!(ctx.shown_state(&f, 1, 2, len, mtime), ShownState::NeverShown);
+    ctx.end_batch();
+    assert_eq!(ctx.shown_state(&f, 1, 2, len, mtime), ShownState::Trusted);
+}
+
+/// F29 (review finding 4): a line cut at 2000 chars is not shown, so a
+/// block-anchor edit over it is refused; an exact edit beside it applies.
+#[test]
+fn a_line_cut_at_2000_chars_is_not_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("long.py");
+    let long = format!("    y = '{}'", "a".repeat(2_500));
+    let initial = format!("import os\ndef f(x):\n{long}\n    return y\n# end\n");
+    std::fs::write(&f, &initial).unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let fp = f.to_str().unwrap();
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": fp})).unwrap();
+    assert!(out.output.contains("(line truncated to 2000 chars)"), "{}", out.output);
+    // Four lines for the file's three (2-4): a block-anchor candidate whose
+    // middle shares the cut line, so only the shown check can refuse it.
+    let err = run(&reg, &mut ctx, "edit", json!({
+        "filePath": fp,
+        "oldString": format!("def f(x):\n{long}\n    z = 0\n    return y"),
+        "newString": "def f(x):\n    return x",
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains(&format!("lines 2-4 of {} were not shown", f.display())), "{err}");
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), initial);
+    let out = run(&reg, &mut ctx, "edit", json!({
+        "filePath": fp, "oldString": "def f(x):", "newString": "def f(x, y=None):"
+    }))
+    .unwrap();
+    assert!(!out.output.contains("block-anchor"), "{}", out.output);
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        initial.replace("def f(x):", "def f(x, y=None):")
     );
 }
 

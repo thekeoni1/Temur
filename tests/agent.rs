@@ -2018,6 +2018,49 @@ fn compaction_forgets_what_a_read_showed() {
     );
 }
 
+/// F29 (review finding 2): a read in the same response as a block-anchor
+/// edit grants nothing to it, since the model wrote the edit before it saw
+/// the read's result; the same edit in the next response applies.
+#[test]
+fn a_read_in_the_same_response_does_not_arm_a_block_anchor_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("report.py");
+    std::fs::write(&file, F28_REPORT).unwrap();
+    let (mut session, requests) = session_with(
+        dir.path(),
+        vec![
+            msg(
+                vec![
+                    tool_use("t1", "read", f28_read(&file)),
+                    tool_use("t2", "edit", f28_half_edit(&file)),
+                ],
+                StopReason::ToolUse,
+            ),
+            msg(vec![tool_use("t3", "edit", f28_half_edit(&file))], StopReason::ToolUse),
+            msg(vec![text("done")], StopReason::EndTurn),
+        ],
+    );
+    collect_events(&mut session, "simplify total");
+    let reqs = requests.borrow();
+    match &reqs[1].messages.last().unwrap().content[1] {
+        ContentBlock::ToolResult {
+            tool_use_id, content, is_error,
+        } => {
+            assert_eq!(tool_use_id, "t2");
+            assert!(is_error, "{content}");
+            assert!(content.contains("has not been read in this session"), "{content}");
+        }
+        other => panic!("expected tool_result, got {other:?}"),
+    }
+    let (content, is_error) = last_tool_result(&reqs[2]);
+    assert!(!is_error, "{content}");
+    assert!(content.contains("block-anchor match"), "{content}");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "def total(rows):\n    return sum(rows)\n# end\n"
+    );
+}
+
 /// F28 (Ruling T66-73): `/clear` forgets what a read showed too.
 #[test]
 fn clear_history_forgets_what_a_read_showed() {
@@ -7019,6 +7062,41 @@ fn overflow_on_round_trip_one_halves_the_largest_result_and_retries() {
         "{:?}",
         events.last()
     );
+}
+
+/// F29 (review finding 3): the overflow backstop cuts the middle of the
+/// largest result, which may be a read, so it forgets what reads showed,
+/// as compaction does. The read here is trusted when the overflow comes.
+#[test]
+fn overflow_elision_forgets_what_a_read_showed() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("report.py");
+    std::fs::write(&file, F28_REPORT).unwrap();
+    std::fs::write(dir.path().join("big.txt"), format!("{}\n", "x".repeat(99)).repeat(200)).unwrap();
+    let (mut session, requests) = session_overflow(
+        dir.path(),
+        vec![
+            Ok(msg(vec![tool_use("t1", "read", f28_read(&file))], StopReason::ToolUse)),
+            Ok(msg(
+                vec![tool_use("t2", "bash", serde_json::json!({"command": "cat big.txt"}))],
+                StopReason::ToolUse,
+            )),
+            Ok(msg(vec![tool_use("t3", "edit", f28_half_edit(&file))], StopReason::ToolUse)),
+            Ok(done()),
+        ],
+        Some(16_000),
+        2_000,
+        None,
+        false, // auto-compaction OFF: the elide arm is the only one, not a fold
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert!(n.iter().any(|x| x == OVERFLOW_ELIDE_MARKER), "{n:?}");
+    assert!(!n.iter().any(|x| x == OVERFLOW_COMPACT_MARKER), "{n:?}");
+    let reqs = requests.borrow();
+    let (content, is_error) = last_tool_result(reqs.last().unwrap());
+    assert!(is_error, "{content}");
+    assert!(content.contains("has not been read in this session"), "{content}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), F28_REPORT);
 }
 
 #[test]

@@ -3,9 +3,11 @@
 //! binary detection, directory-listing mode, numbered output.
 //!
 //! The byte cap counts the *rendered* line (number prefix included) and sits
-//! below the registry's central 30,000-char truncation so this tool's own
+//! below the registry's cap in force so this tool's own
 //! pagination footer ("Use offset=N to continue") always survives intact —
 //! otherwise the model loses the continuation hint and re-reads blindly.
+//! F29: on a small context window that cap is under 28 KB, and the read
+//! stops at it rather than being elided in the middle.
 
 use super::{parse_input, resolve_path, Tool, ToolCtx, ToolError, ToolOutput};
 use serde::Deserialize;
@@ -15,6 +17,12 @@ use std::io::{BufRead, Read};
 const DEFAULT_READ_LIMIT: u64 = 2000;
 const MAX_LINE_LENGTH: usize = 2000;
 const MAX_BYTES: u64 = 28 * 1024;
+/// F29: what a file read adds around its numbered lines, other than the
+/// path, which is measured per read: the tags, the longest footer with
+/// 20-digit line numbers and offsets, and the T63 P2b marker line. Measured
+/// at 292 bytes (the `read_overhead_covers_the_longest_footer` test builds
+/// each footer and asserts it); 512 leaves room for a longer footer.
+const READ_OVERHEAD: u64 = 512;
 
 #[derive(Deserialize)]
 struct Params {
@@ -106,6 +114,19 @@ impl Tool for ReadTool {
             )));
         }
 
+        // F29: never render more than the registry will deliver. Since T28
+        // the registry tells a tool its cap before it runs, and skill.rs sizes
+        // its index to it; read follows that precedent. The header carries the
+        // path, so it is measured rather than budgeted. Rendered chars never
+        // exceed rendered bytes, so a body under `max_bytes` keeps the whole
+        // output under the cap and the registry does not cut it (the one
+        // exception, a first line over the bound, is in the loop below).
+        let header = format!("<path>{}</path>\n<type>file</type>\n<content>\n", path.display());
+        let body_cap = (ctx.output_cap as u64)
+            .saturating_sub(header.len() as u64 + READ_OVERHEAD)
+            .max(1);
+        let max_bytes = MAX_BYTES.min(body_cap);
+
         let file = std::fs::File::open(&path).map_err(|e| ToolError::failed(e.to_string()))?;
         let reader = std::io::BufReader::new(file);
         let mut raw: Vec<String> = Vec::new();
@@ -113,6 +134,8 @@ impl Tool for ReadTool {
         let mut lines: u64 = 0;
         let mut truncated_by_bytes = false;
         let mut has_more = false;
+        // F29: lines cut at MAX_LINE_LENGTH; the model never saw their tail.
+        let mut truncated_lines: Vec<u64> = Vec::new();
         // One pipeline, two sources: a document's extracted text is paged
         // exactly the way a long log file is, so offset/limit, per-line
         // truncation and the byte cap all behave identically.
@@ -136,22 +159,29 @@ impl Tool for ReadTool {
             }
             let text = String::from_utf8_lossy(&line);
             let text = text.trim_end_matches('\r');
-            let line_out = if text.chars().count() > MAX_LINE_LENGTH {
+            let lineno = offset + raw.len() as u64;
+            let cut_here = text.chars().count() > MAX_LINE_LENGTH;
+            let line_out = if cut_here {
                 let cut: String = text.chars().take(MAX_LINE_LENGTH).collect();
                 format!("{cut}... (line truncated to {MAX_LINE_LENGTH} chars)")
             } else {
                 text.to_string()
             };
             // Count the line as rendered: "N: " prefix + text + newline, so
-            // MAX_BYTES bounds the actual output body (see module docs).
-            let lineno = offset + raw.len() as u64;
+            // `max_bytes` bounds the actual output body (see module docs).
+            // The first line is always taken, so a read moves forward even
+            // when one line of multibyte text is over a small window's bound;
+            // that output may then exceed the cap, and records nothing below.
             let size = lineno.to_string().len() as u64 + 2 + line_out.len() as u64 + 1;
-            if bytes + size > MAX_BYTES {
+            if bytes + size > max_bytes && !raw.is_empty() {
                 truncated_by_bytes = true;
                 has_more = true;
                 break;
             }
             bytes += size;
+            if cut_here {
+                truncated_lines.push(lineno);
+            }
             raw.push(line_out);
         }
 
@@ -161,15 +191,20 @@ impl Tool for ReadTool {
             )));
         }
 
-        let mut output = format!("<path>{}</path>\n<type>file</type>\n<content>\n", path.display());
+        let mut output = header;
         for (i, line) in raw.iter().enumerate() {
             output.push_str(&format!("{}: {line}\n", i as u64 + offset));
         }
         let last = offset + raw.len() as u64 - 1;
-        if truncated_by_bytes {
+        if truncated_by_bytes && max_bytes == MAX_BYTES {
             output.push_str(&format!(
                 "\n(Output capped at {} KB. Showing lines {offset}-{last}. Use offset={} to continue.)\n",
                 MAX_BYTES / 1024,
+                last + 1
+            ));
+        } else if truncated_by_bytes {
+            output.push_str(&format!(
+                "\n(Output capped at {max_bytes} bytes for this model's context window. Showing lines {offset}-{last}. Use offset={} to continue.)\n",
                 last + 1
             ));
         } else if has_more && !source_complete {
@@ -214,12 +249,34 @@ impl Tool for ReadTool {
         // T19: a successful file read arms write's read-first check.
         ctx.record_read(&path);
         // F28: the lines this read showed, keyed to the file as it was before
-        // opening; an approximate edit may splice only inside them.
-        if document.is_none() && !raw.is_empty() {
-            ctx.record_shown(&path, offset, last, key_len, key_mtime);
+        // opening; an approximate edit may splice only inside them. F29: only
+        // lines the model receives whole. A line cut at MAX_LINE_LENGTH is
+        // left out, and an output the registry would still cut (a path or a
+        // first line over a small window's bound) records nothing.
+        if document.is_none() && !raw.is_empty() && output.chars().count() <= ctx.output_cap {
+            for (first, last) in shown_pieces(offset, last, &truncated_lines) {
+                ctx.record_shown(&path, first, last, key_len, key_mtime);
+            }
         }
         Ok(ToolOutput { title, output })
     }
+}
+
+/// F29: the pieces of `offset..=last` left after removing the lines in
+/// `cut` (ascending, each inside the range), as inclusive ranges.
+fn shown_pieces(offset: u64, last: u64, cut: &[u64]) -> Vec<(u64, u64)> {
+    let mut pieces = Vec::new();
+    let mut start = offset;
+    for &n in cut {
+        if n > start {
+            pieces.push((start, n - 1));
+        }
+        start = n + 1;
+    }
+    if start <= last {
+        pieces.push((start, last));
+    }
+    pieces
 }
 
 fn read_dir(path: &std::path::Path, offset: u64, limit: u64, title: String) -> Result<ToolOutput, ToolError> {
@@ -309,4 +366,49 @@ fn is_binary(path: &std::path::Path) -> Result<bool, ToolError> {
         }
     }
     Ok(non_printable * 10 > n * 3) // >30% non-printable
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shown_pieces_without_cuts_is_the_whole_range() {
+        assert_eq!(shown_pieces(1, 10, &[]), vec![(1, 10)]);
+        assert_eq!(shown_pieces(40, 40, &[]), vec![(40, 40)]);
+    }
+
+    #[test]
+    fn shown_pieces_leaves_out_a_cut_first_last_or_middle_line() {
+        assert_eq!(shown_pieces(1, 10, &[1]), vec![(2, 10)]);
+        assert_eq!(shown_pieces(1, 10, &[10]), vec![(1, 9)]);
+        assert_eq!(shown_pieces(1, 10, &[5]), vec![(1, 4), (6, 10)]);
+        assert_eq!(shown_pieces(5, 5, &[5]), vec![]);
+    }
+
+    #[test]
+    fn shown_pieces_adjacent_cuts_give_no_empty_piece() {
+        assert_eq!(shown_pieces(1, 10, &[4, 5, 6]), vec![(1, 3), (7, 10)]);
+        assert_eq!(shown_pieces(1, 3, &[1, 2, 3]), vec![]);
+        assert_eq!(shown_pieces(1, 10, &[1, 2, 9, 10]), vec![(3, 8)]);
+    }
+
+    /// The footers and the marker, built with the largest numbers they can
+    /// carry, fit in READ_OVERHEAD together with the tags around the body.
+    #[test]
+    fn read_overhead_covers_the_longest_footer() {
+        let n = u64::MAX;
+        let footers = [
+            format!("\n(Output capped at {} KB. Showing lines {n}-{n}. Use offset={n} to continue.)\n", MAX_BYTES / 1024),
+            format!("\n(Output capped at {n} bytes for this model's context window. Showing lines {n}-{n}. Use offset={n} to continue.)\n"),
+            format!("\n(Showing lines {n}-{n}. More of this document was not extracted; use offset={n} to continue.)\n"),
+            format!("\n(Showing lines {n}-{n} of {n}. Use offset={n} to continue.)\n"),
+            format!("\n(End of file - total {n} lines)\n"),
+        ];
+        let longest = footers.iter().map(|f| f.len()).max().unwrap();
+        let marker = "[unchanged: identical to your previous read of this file]\n".len();
+        let tags = "<path></path>\n<type>file</type>\n<content>\n".len() + "</content>".len();
+        let measured = (longest + marker + tags) as u64;
+        assert!(measured <= READ_OVERHEAD, "measured {measured}");
+    }
 }

@@ -293,8 +293,16 @@ pub struct ToolCtx {
     /// file whose length or mtime has changed since is not trusted, and
     /// every compaction, /clear and /resume forget the lot, since the
     /// read's content left the model's context with the history. Starts
-    /// empty, like `read_paths`, and for the same reason.
+    /// empty, like `read_paths`, and for the same reason. F29: the overflow
+    /// backstop forgets the lot too, and inside an agent batch a read's
+    /// lines wait in `pending_shown` until the batch's results go back, so a
+    /// read grants nothing to an edit in the same response.
     shown: std::collections::HashMap<PathBuf, ShownFile>,
+    /// F29: what reads in the running batch showed, as (path, first, last,
+    /// len, mtime), applied in order by [`ToolCtx::end_batch`].
+    pending_shown: Vec<(PathBuf, u64, u64, u64, Option<std::time::SystemTime>)>,
+    /// F29: set between [`ToolCtx::begin_batch`] and [`ToolCtx::end_batch`].
+    deferring_shown: bool,
 }
 
 impl ToolCtx {
@@ -314,6 +322,8 @@ impl ToolCtx {
             last_reads: std::collections::HashMap::new(),
             own_document_writes: std::collections::HashMap::new(),
             shown: std::collections::HashMap::new(),
+            pending_shown: Vec::new(),
+            deferring_shown: false,
         }
     }
 
@@ -385,7 +395,24 @@ impl ToolCtx {
     /// had length `len` and modification time `mtime` when the read began.
     /// Ranges accumulate while the file stays the same; a read that finds a
     /// different length or mtime replaces the file's ranges with its own.
+    /// F29: inside a batch the record waits for [`ToolCtx::end_batch`].
     pub fn record_shown(
+        &mut self,
+        path: &std::path::Path,
+        first: u64,
+        last: u64,
+        len: u64,
+        mtime: Option<std::time::SystemTime>,
+    ) {
+        if self.deferring_shown {
+            self.pending_shown.push((path.to_path_buf(), first, last, len, mtime));
+        } else {
+            self.apply_shown(path, first, last, len, mtime);
+        }
+    }
+
+    /// F28's write-through for [`ToolCtx::record_shown`].
+    fn apply_shown(
         &mut self,
         path: &std::path::Path,
         first: u64,
@@ -451,10 +478,28 @@ impl ToolCtx {
             .is_some_and(|f| f.len == len && f.mtime == mtime && mtime.is_some())
     }
 
-    /// F28: forget every shown range. Called at every compaction, /clear
-    /// and /resume: the read's lines left the model's context with the history.
+    /// F28: forget every shown range. Called at every compaction, /clear,
+    /// /resume and (F29) the overflow backstop: the read's lines left the
+    /// model's context with the history.
     pub fn forget_shown(&mut self) {
         self.shown.clear();
+        self.pending_shown.clear();
+    }
+
+    /// F29: the agent is about to run one response's tool calls. Reads in
+    /// it record nothing until [`ToolCtx::end_batch`], since the model sees
+    /// their results only with the next request.
+    pub fn begin_batch(&mut self) {
+        self.deferring_shown = true;
+    }
+
+    /// F29: the batch's results are going back to the model; apply what its
+    /// reads showed, in order, through the write-through path.
+    pub fn end_batch(&mut self) {
+        self.deferring_shown = false;
+        for (path, first, last, len, mtime) in std::mem::take(&mut self.pending_shown) {
+            self.apply_shown(&path, first, last, len, mtime);
+        }
     }
 }
 

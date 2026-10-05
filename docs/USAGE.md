@@ -1842,7 +1842,12 @@ Edit's approximate block-anchor match (oldString's first and last lines
 found in the file, its middle differing) is held to a stricter rule
 since v0.38.3: it splices only inside lines a `read` showed in this
 session, of the file as it was at that read (same length and
-modification time). An edit or a write does not count. It fails with
+modification time). An edit or a write does not count, and only lines
+the model received count as shown: a line that read cut at 2000
+characters, a read whose result was shortened after a context overflow,
+and a read in the same response as the edit do not count. On a small
+context window read stops at the size the window allows and ends with
+a continuation offset instead of having its middle cut. It fails with
 one of:
 
 ```
@@ -1856,7 +1861,8 @@ leading and trailing whitespace, needs no prior read, since every line
 it names is in the file. A block-anchor middle counts only lines with
 at least one letter or digit, at least half of them must appear in
 order in the file's, and a three-line block with a changed middle line
-is "not found". `/compact`, auto-compaction, `/clear` and `/resume`
+is "not found". `/compact`, auto-compaction, `/clear`, `/resume` and
+the context-overflow backstop that shortens the largest tool result
 forget the shown lines (the read left the context), so an approximate
 edit after any of them needs a fresh read.
 `--continue` and `--resume` start with an empty read

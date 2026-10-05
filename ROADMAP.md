@@ -1886,9 +1886,30 @@ an unread file, fixed the same day (the v0.38.2 CHANGELOG
 section), and F28, the review of that guard (2026-10-02: an applied
 edit, a read of another window or a file changed since the read all
 armed the splice, blank lines counted and three-line blocks skipped the
-check), fixed in the v0.38.3 CHANGELOG section; read refusing
+check), fixed in the v0.38.3 CHANGELOG section, and F29, the review
+of that fix (2026-10-05: read recorded lines as shown before the
+registry cut the output, a same-response read armed the edit, the
+overflow backstop forgot nothing and a cut line counted whole), fixed
+in the Unreleased CHANGELOG section. F29's queued findings: `ShownFile`
+(tools/mod.rs:941) keys on length and mtime while `ReadKey` (:909)
+also hashes the body, so a same-length, same-mtime change is still
+trusted (a hash costs a second read per approximate edit and needs a
+ruling); auto-compaction keeps `history[tail_start..]`
+(agent/mod.rs:2983) but forgets every shown range (:937), costing one
+fail-closed refusal and re-read; a file with no readable mtime is told
+to read again, which no read satisfies (edit/mod.rs:89,
+tools/mod.rs:455-456), so it needs its own text; the trust rule is
+repeated in `shown_state` (:443), `has_trusted_shown` (:469) and
+`is_own_document_write` (:384), and the ambiguous branch canonicalizes
+twice (edit/mod.rs:206-209); and `ranges` keeps duplicates and drops
+the oldest at 256 (tools/mod.rs:948), so identical re-reads can push
+out a window the model did read. The design not taken (finding 8):
+record shown ranges in the agent from the result the model received.
+It would move which lines a result carried into the agent, which
+would then parse read output, and the four fixes close the same cases
+without it. Also from the third dogfood: read refusing
 `.dat` and `.bin` by extension before any content sniff
-(read.rs:286-292; an ASCII .dat is "Cannot read binary file" while the
+(read.rs:343-349; an ASCII .dat is "Cannot read binary file" while the
 hint's own `file` says text); the read header naming the file's byte
 size beside its line count (a size task driven through read never sees a
 size); the F25 twin, a turn that ends on "I'll now ..." with no tool
@@ -1897,7 +1918,7 @@ and `temur init`'s existing-config refusal not naming the model the
 config points at (the same discoverability shape as D17).
 
 The launch announcement goes out on v0.38.3, the patches carrying
-F14, F24, F27 and F28. The playground is refreshed to the announced version
+F14, F24, F27, F28 and F29. The playground is refreshed to the announced version
 before the announcement and names its own version and sha, and
 README 19-24 has been version-agnostic since T65 P5.
 

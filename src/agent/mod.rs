@@ -1089,6 +1089,9 @@ impl Session {
         }
         match halve_largest_tool_result(&mut self.history) {
             Some((before, after)) => {
+                // F29: the largest result may be a read whose middle just
+                // left the model's context; the compaction precedent.
+                self.tool_ctx.forget_shown();
                 ui(AgentEvent::Notice(OVERFLOW_ELIDE_NOTICE.into()));
                 ui(AgentEvent::Notice(format!(
                     "truncated the largest tool result: {before} -> {after} chars"
@@ -1891,6 +1894,9 @@ impl Session {
                     // Execute every call; ALL results go back in ONE user message.
                     let mut results: Vec<ContentBlock> = Vec::with_capacity(calls.len());
                     let mut interrupted = false;
+                    // F29: a read in this batch is trusted from the next
+                    // response on, the first the model writes after seeing it.
+                    self.tool_ctx.begin_batch();
                     for (id, name, input, input_raw) in calls {
                         // Interrupt between calls: results already produced
                         // stay factual; this call and every remaining one get
@@ -2080,6 +2086,9 @@ impl Session {
                             is_error,
                         });
                     }
+                    // F29: the loop only ever `continue`s, so this one call
+                    // covers the interrupted push below and the normal one.
+                    self.tool_ctx.end_batch();
 
                     if interrupted {
                         self.history.push(RequestMessage {
