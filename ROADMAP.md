@@ -1890,7 +1890,7 @@ check), fixed in the v0.38.3 CHANGELOG section, and F29, the review
 of that fix (2026-10-05: read recorded lines as shown before the
 registry cut the output, a same-response read armed the edit, the
 overflow backstop forgot nothing and a cut line counted whole), fixed
-in the Unreleased CHANGELOG section. F29's queued findings: `ShownFile`
+in the v0.38.4 CHANGELOG section. F29's queued findings: `ShownFile`
 (tools/mod.rs:941) keys on length and mtime while `ReadKey` (:909)
 also hashes the body, so a same-length, same-mtime change is still
 trusted (a hash costs a second read per approximate edit and needs a
@@ -1917,7 +1917,7 @@ call ending silently (the T61 nudge fires only on a claim of done work);
 and `temur init`'s existing-config refusal not naming the model the
 config points at (the same discoverability shape as D17).
 
-The launch announcement goes out on v0.38.3, the patches carrying
+The launch announcement goes out on v0.38.4, the patches carrying
 F14, F24, F27, F28 and F29. The playground is refreshed to the announced version
 before the announcement and names its own version and sha, and
 README 19-24 has been version-agnostic since T65 P5.

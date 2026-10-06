@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased
+## v0.38.4 - 2026-10-05
 
 - edit's block-anchor (approximate) match now trusts only lines the
   model actually received: a read cut to the model's context window, a
