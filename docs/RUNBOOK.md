@@ -14491,3 +14491,343 @@ known positive outside the archive registered as one file hit. Zero
 hits.
 
 Archive: `~/temur-eval-archive/v0.38.4-soak/`.
+
+## v0.38.5 ship record
+
+2026-10-11. **The F30 fix, shipped at tag `v0.38.5`.** A PATCH rather
+than a milestone: one fix for the guard v0.38.4 narrowed, one commit,
+no new capability. Cut from `b1add55` on the laptop, the eighth cut on
+the pinned rustc 1.96.1 (counted from the v0.38.4 record's "seventh"),
+in the shape of the v0.38.4 patch.
+
+The fix came from the laptop's read-only code review of the F29 guard
+shipped in v0.38.4 (2026-10-11): eight findings, six fixed, two queued.
+The review found one line the model received that still differed from
+the file's: the registry redacts the session key from a tool result
+after read has recorded the line as shown. The desktop fixed the six
+as F30, `b1add55`. The CHANGELOG's one v0.38.5 item, paraphrased:
+
+- edit's approximate (block-anchor) match no longer trusts a line the
+  tool registry altered before the model saw it: a line carrying the
+  session key, which read's output shows as [redacted], now counts as
+  not shown, like a line cut at 2000 characters, so an edit copying the
+  redacted text cannot write it over the real key. An edit over such a
+  line, and over a cut line, is refused with a message that names the
+  line; an edit sent in the same response as the first read of its file
+  is told to resend it, not to read again.
+
+The fix has these parts:
+
+- `Registry::execute` sets `ctx.redact_key` beside `output_cap`, only
+  for a key of `MIN_REDACTABLE_KEY_CHARS` (8) or more characters.
+- `src/tools/read.rs` checks each rendered numbered line for that key
+  and withholds such lines, with the lines cut at 2000 characters,
+  from the shown ranges (`shown_pieces` over the merged, deduplicated
+  list), recording each as withheld through `record_withheld`. read's
+  output does not change. One `capped_footer(max_bytes, window,
+  offset, last)` writes both capped footers, with the window clause
+  only when a context window lowered the registry's cap; both shipped
+  forms are unchanged.
+- `src/tools/mod.rs`: `ToolCtx::record` canonicalizes the path once,
+  then defers the record (`PendingShown`) or applies it. `ShownFile`
+  gains a `withheld` list of lines; a later shown range clears the
+  withheld lines it covers. `shown_state` answers `Withheld { line }`
+  before coverage. `shown_pending(path)` is true inside a batch when a
+  read of that path recorded something.
+- `src/tools/edit/mod.rs`: `shown_refusal` adds the withheld text ("line
+  N of <path> is one read cannot show whole (over 2000 characters, or
+  it carries the session key), so edit cannot change it. Change that
+  line another way, or leave it.") and the same-response text ("<path>
+  was read in this same response, so its lines count as shown only from
+  the next response, and oldString was not found exactly. The read's
+  result is in this message: send the edit again with oldString copied
+  from it."). The F27 never-read text is unchanged for every other
+  case.
+- The tests on main, in `tests/tools.rs`:
+  `a_line_carrying_the_session_key_is_not_shown` (1980),
+  `a_read_with_nothing_to_redact_shows_every_line` (2019),
+  `withheld_lines_answer_first_and_a_later_read_clears_them` (2041),
+  `a_deferred_shown_record_stays_with_the_file_read` (2062) and
+  `a_long_path_without_a_window_gets_no_window_footer` (2087); and one
+  unit test in `src/tools/read.rs`,
+  `capped_footer_keeps_both_shipped_forms` (433). The existing cut-line
+  test's one assertion and one assertion in `tests/agent.rs` moved to
+  the new texts.
+
+`git diff --stat v0.38.4..b1add55 -- src/ scripts/ tests/` is 5 files,
+344 insertions and 45 deletions, all F30. The bump adds no source
+change, and `scripts/` is unchanged since v0.38.4 apart from the
+bump's `install.sh` 10. No prompt or matcher change; `src/agent/mod.rs`
+is untouched. `docs/USAGE.md` already carried the F30 sentences and the
+two new refusal texts at `b1add55`.
+
+### Sizes
+
+Raw byte counts, read from the staged files and matched byte for byte
+against the public downloads:
+
+| asset | bytes | MB | v0.38.4 | change |
+| --- | --- | --- | --- | --- |
+| i686 | 8,364,852 | 8.36 | 8,353,332 | +11,520 (+0.14%) |
+| x86_64 | 9,928,752 | 9.93 | 9,925,296 | +3,456 |
+| aarch64 | 8,023,504 | 8.02 | 8,020,048 | +3,456 |
+| armv7 | 7,751,744 | 7.75 | 7,740,224 | +11,520 |
+
+Divided by 1,000,000 and rounded to two decimals, README:37-38 reads
+**8.36 MB** on i686 (moved from 8.35, the first i686 move since
+v0.38.0) and **9.93 MB** on x86_64 (unchanged). The i686 binary is
+**1,635,148 bytes** under the 10,000,000 STOP (16.35%), down from
+1,646,668 at v0.38.4. The desktop's gate of `b1add55` measured
+8,367,276 bytes on i686 (a desktop figure, not re-measured here); the
+published i686 is 2,424 bytes smaller. That matched neither figure the
+cut kickoff expected (8,364,980 or 8,364,916, from the 2,296 and 2,360
+gaps); 2,424 is the gap seen at v0.36.0 and v0.38.1 (2,296 at v0.37.0,
+v0.38.0, v0.38.2 and v0.38.4; 2,360 at v0.38.3). Planning accepted it
+at HOLD 1 (its ruling as sent to the cut session, not in these logs).
+
+### The cut
+
+The version bump is a single commit on the anchor, `8317c49`, parent
+`b1add55`, 7 files, 15 insertions and 14 deletions. Edited lines:
+
+- `Cargo.toml` 3, `Cargo.lock` 1475 (the temur entry only),
+  `scripts/install.sh` 10.
+- `CHANGELOG.md` 5, the `## Unreleased` heading becoming `## v0.38.5 -
+  2026-10-11` and nothing else in the file: the one item ships as
+  written.
+- `README.md` 37-38 (the version, and the i686 figure 8.35 becoming
+  8.36; the x86_64 figure stays 9.93), 185 (install raw URL), 196
+  (install blob URL), 208 (release-download URL and asset name, two on
+  the line), 209 (SHA256SUMS URL), 211 (asset name).
+- `CLAUDE.md` 78, the scope line, `(v0.38.4, public since` becoming
+  `(v0.38.5, public since`, edited on the operator's answer in the cut
+  session (the HOLD 1 report's account; no log records the answer).
+- `ROADMAP.md` 1897, the F30 seed's pointer `fixed in the Unreleased
+  CHANGELOG` becoming `fixed in the v0.38.5 CHANGELOG`, and 1932-1934:
+  `The launch announcement goes out on v0.38.4` becomes `on v0.38.5`,
+  and `F14, F24, F27, F28 and F29.` becomes `F14, F24, F27, F28, F29
+  and F30.`, with that line rewrapped so `announced version` starts the
+  next line (the one extra insertion); every other word stays. Line
+  1882's "v0.38.1" (the dogfood's binary), 1885's "(the v0.38.2
+  CHANGELOG" (F27's section), 1889's "v0.38.3 CHANGELOG section"
+  (F28's) and 1893's "v0.38.4 CHANGELOG section" (F29's) stay.
+
+The bump script (`scripts/bump_version.sh 0.38.5`, log
+`v0.38.5-bump-script-20261011-152135.log`) made the Cargo, install.sh
+and README pin edits from a clean tree, one run, `BUMP_EXIT=0`, and
+printed no leftover-pin warning. The README figure, CHANGELOG,
+CLAUDE.md and ROADMAP edits were made by hand.
+
+After the bump, `git grep -n '0\.38\.4' -- . ':!CHANGELOG.md'
+':!docs/RUNBOOK.md' ':!ROADMAP.md'` returns exactly THREE lines, none
+of them temur's version:
+
+    Cargo.lock:357: "rustix 0.38.44",
+    Cargo.lock:1185:version = "0.38.44"
+    docs/THIRD-PARTY-LICENSES.md:198:| `rustix` | 0.38.44 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+
+They stay: the pattern matches the rustix crate's version 0.38.44, a
+dependency and its licence row. `docs/USAGE.md` 1843 ("since v0.38.3:
+it splices only inside lines a `read` showed in this") is not caught
+by this grep and stays as history (F28 shipped in v0.38.3).
+`docs/OFFLINE.md` 659, 662 and 668 carry v0.38.0 and stay as dated
+history:
+
+- 659 ``Since v0.38.0 `temur init` recognises a reasoning`` (when the
+  detection arrived);
+- 662 `the first dogfood of v0.38.0, on 2026-09-24,` (the run that found
+  F14);
+- 668 `On 2026-09-22 with the v0.38.0 source, CPU only,` (the
+  measurement's source).
+
+The size sweep (this file's "Publish preflight"), with this file's own
+hits left out, returned the same ten lines the v0.38.4 record ruled,
+with README:37-38 at this cut's figures: README:31 (a bound, which
+holds), README:34 and :101 (not temur's size), README:37-38 (the size
+sentence), COMPARISON:50 (tagged "the v0.25.0 measurement"),
+COMPARISON:323 and :326 (not temur's size), COMPARISON:379 (a temur
+figure dated by its section, as ruled at v0.38.1 through v0.38.4),
+OFFLINE:326 ("~8 MB" in the diagram, Ruling T66-30; 8.36 rounds to 8).
+Log: `v0.38.5-grep-sweep-20261011-154010.log`.
+
+Not edited: README 19-24, which names no version; `docs/USAGE.md`;
+`docs/COMPARISON.md`; `docs/OFFLINE.md`; `docs/TUI.md`;
+`docs/THIRD-PARTY-LICENSES.md`; `src/`; `tests/`; `scripts/` beyond
+`install.sh` 10.
+
+### Gates, and where their evidence lives
+
+Logs are in the laptop's release-logs directory, by basename.
+
+The command was written to its own log at launch, before the run
+finished: `v0.38.5-release-command-20261011-152150.log` carries
+`CARGO_BUILD_JOBS=6 script -q -e -c 'scripts/release.sh; echo
+"RELEASE_SH_EXIT=$?"'` with the release log's name, 0 for
+`SKIP_CHECK`, `STAGE_ROOT` and `ANTHROPIC_API_KEY` in the environment,
+and the tree at launch: six files modified, the bump script's four,
+`CHANGELOG.md` and `ROADMAP.md`. README 37's i686 figure (which comes
+from the run's output) and `CLAUDE.md` 78 (which waited on the
+operator) were edited after the run. Neither is a build input; the
+committed tree's grep and Ruling 4 below cover both.
+
+The run that staged these assets, `v0.38.5-release-20261011-152150.log`
+(298 lines), ran once from the start with no `SKIP_CHECK` (its first
+gate line, 2, is `== gate: scripts/check.sh ==`) and no `STAGE_ROOT`:
+
+- 252 `== ALL CHECKS PASSED ==`: check.sh, both paths (gnu-debug and
+  musl-release), with the bare busybox container printing `temur
+  0.38.5` (249) and `mock REPL OK (bare)` (251).
+- 254, the one history hit: `ALLOWED (already public):
+  083eb334847b07f6f3b75f713a3c492c1f90ed8e`, the T53 P1 commit message,
+  an operator mount path, public since 2026-09-08, allowlisted at v0.34.0
+  through v0.38.4. The residual is unchanged from v0.38.4.
+- 255 `OK: leak grep clean (operator patterns + generic shapes, files +
+  history)`.
+- 257 `OK: install.sh + README match version 0.38.5 and all targets`.
+- 259-262 `info: component rust-std for target <target> is up to date`
+  for all four release targets: a NO-OP, nothing installed.
+- 283 `== RELEASE v0.38.5: 4/4 ARTIFACTS GATED ==`.
+- 296 `RELEASE_SH_EXIT=0`, `release.sh`'s own exit, echoed inside the
+  script(1) command; the footer reads `COMMAND_EXIT_CODE="0"`.
+
+The build printed no compiler warning and no `line_trimmed` warning.
+Besides podman's 38 linux/386 platform notices (38 at v0.38.4 too,
+expected), the log carries podman's shared-mount notice at 116,
+`WARN[0002] "/" is not a shared mount, this could cause issues or
+missing mounts with rootless containers`, at the same line as in the
+v0.38.4 log, ruled not a red there; it is also in the v0.38.1 run-2
+log, and in no other release log. No rustc crash occurred, so no rerun
+and no fresh `CARGO_TARGET_DIR`.
+
+The step-2a check ran before the bump this time and is logged
+(`v0.38.5-step2-20261011-152039.log`): the machine-name pattern (the
+fifth of five active lines, file mode 0600) scores 0 files at
+`b1add55`, 2 at `c8a4b23` (the known positive), and 0 in the three
+commit messages of `e1f01a7..b1add55`. The bump's Ruling-4 log adds 0
+files at `8317c49` and 0 in its message.
+
+- `metadata_drift.sh`: NOT RUN (offline), three tries, each
+  `FETCH-FAIL` with curl's 30-second timeout on the 5.4 MB models.dev
+  file over a slow uplink: `v0.38.5-metadata-drift-20261011-153846.log`
+  (3,272,706 of 5,394,243 bytes received),
+  `v0.38.5-metadata-drift-20261011-153933.log` (0 bytes) and
+  `v0.38.5-metadata-drift-20261011-154610.log` (5,146,506 bytes, run
+  just before the push), each exit 3. The check is report-only; the
+  script itself says a ship may proceed with the outcome recorded as
+  "not run (offline)", and planning accepted that at HOLD 1 (its
+  ruling as sent to the cut session, not in these logs).
+- Installer test, `v0.38.5-installer-20261011-153916.log`, which now
+  echoes its own commands: ports 8765-8769 with no listener before;
+  `python3 -m http.server 8765 --bind 127.0.0.1` from the stage
+  directory; a readiness probe on the versioned x86_64 asset (its first
+  try refused, ready after two); `scripts/install.sh` under `env -i`
+  with `TEMUR_BASE_URL` into a temp HOME: "checksum verified.",
+  `INSTALL_EXIT=0`, installed `temur 0.38.5`, sha256 equal to the
+  staged x86_64 asset; no listener on 8765 after.
+- Ruling 4 over the bump's message, its added lines and the tag
+  message, headings stripped and kept, five patterns: 0 everywhere,
+  with the live control (the fifth pattern over `c8a4b23`) at 2 file
+  hits. `v0.38.5-bump-ruling4-20261011-154103.log`. Register over the
+  same text: non-ASCII 0, U+2014 0, the banned adjective 0, each against
+  a planted control that fired (non-ASCII 2, since the planted U+2014
+  line is also non-ASCII; U+2014 1; adjective 1).
+
+The independent gate on the same source is CI: run **38169669933** on
+`8317c49`, `release-gate` (114559443556) and `test` (114559443882) both
+success on the first attempt, last updated 2026-10-11T19:54:16Z. The
+F30 commit's own run, 38166210567 on `b1add55`, was green on its first
+attempt (`release-gate` 114549194382, `test` 114549194598), read back
+in `v0.38.5-ci-b1add55-20261011-152259.log`. No runner-less
+cancellations, so no reruns. The bump run's CI is read back raw from
+the API in `v0.38.5-ci-runs-20261011-160258.log`; the publish log's
+CI line is a summary written by the cut session.
+
+### Tag
+
+Annotated tag `v0.38.5` at `8317c49`, tag object
+`fc1663dd3ff7eee928fbd99cc272c041c599a44b`, created at 15:54:33 -0400
+(19:54:33Z), after the CI run's last update at 19:54:16Z. Read back
+raw before the push: `git cat-file -t v0.38.5` reads `tag`, and `git
+cat-file tag v0.38.5 | tail -1 | od -c` gives `temur v0.38.5 - a line
+the registry alters is not shown (F30)` and a newline, 61 bytes before
+the newline, one line, ASCII, a plain hyphen. Ruling 4 on the tag
+object's message: 0 on all five patterns, control 2; register 0.
+Pushed by its explicit ref; `git ls-remote` shows the tag object and
+`^{}` at `8317c49`, and the remote carries 46 tags.
+
+### Publication and live verification
+
+Release `https://github.com/thekeoni1/Temur/releases/tag/v0.38.5`,
+release id 409887415, title equal to the tag message, not a draft, not
+a prerelease, marked latest, published 2026-10-11T19:56:54Z, five
+assets: the four binaries and SHA256SUMS. Notes are the CHANGELOG's
+v0.38.5 section (lines 7-17), written to `v0.38.5-release-notes.md`
+first; the published body equals that file. Log:
+`v0.38.5-publish-20261011-154952.log`, which echoes the re-check of
+origin/main (`b1add55`) and HEAD (`8317c49`) immediately before the
+bump push, the push itself and its exit, the CI result, the tag, the
+uploads and the publish.
+
+Published by the v0.38.3 method (the draft-create and tag-push
+commands are not echoed in the publish log; their results are, so the
+method is the cut session's account): a draft first, with no assets; the
+five files uploaded one per call, smallest first, each logged with its
+exit; all five checked against the staged sizes; only then the draft
+made public. Every upload succeeded on the first try (15:54:55 to
+15:55:39 -0400) and the five sizes matched.
+
+| asset | sha256 |
+| --- | --- |
+| i686-unknown-linux-musl | `39d3f1572e132f60469ab6fdeef36883236a1a5e125cc410449da9fb35945bd3` |
+| x86_64-unknown-linux-musl | `6005a5c8924c7f3159349f531a1724565b5299d5f75e710addf7b0861d8c29c1` |
+| aarch64-unknown-linux-musl | `71cfd21536551ad4ed3cab1b9facfc12e6769a6fb48b9e063118f6527c42aebf` |
+| armv7-unknown-linux-musleabihf | `1af6cbb5437ce6b6744e5487d311d9be17cdebbbba707d24879c9d6161c47ab9` |
+| SHA256SUMS (428 bytes) | `cce8c3306b4433bc09318073e6dfd7b8d3564d0da7307ccb5575a117b83cc634` |
+
+Closing gate, `v0.38.5-closing-gate-20261011-155711.log`:
+
+- Tokenless (`env -i`, curl, no gh): all five assets downloaded from
+  the public URLs, curl exit 0 each, 5 of 5 byte-identical to the
+  staged files, and `sha256sum -c` passes 4 of 4.
+- The README:185 one-liner, verbatim, into a fresh empty HOME, once on
+  x86_64 and once under `setarch i686`: each fetched install.sh from the
+  v0.38.5 tag, printed "checksum verified.", and installed a binary that
+  prints `temur 0.38.5`, sha256 equal to the published x86_64 and i686
+  asset respectively. The i686 leg's log prints `setarch i686 uname -m`
+  and its output, `i686`, before the one-liner.
+- The README:196 blob URL returns 200.
+
+### What this release does NOT establish
+
+Re-derived from the one v0.38.5 CHANGELOG item:
+
+- No live dogfood of the published v0.38.5 asset has run yet. The
+  desktop's soak of the published i686 asset is still to run.
+- The withheld-line refusal, the withholding of a line carrying the
+  session key, and the same-response resend text have been seen in
+  tests only, not in a model run.
+- A line is withheld only when the product's own session key is on it.
+  A key of another profile or another service is not redacted and not
+  withheld, by design.
+- A write of the whole file still carries whatever the model puts in
+  it, by design.
+- The two queued F30 findings and the five queued F29 findings in
+  ROADMAP (from 1897) remain open, in particular a same-length,
+  same-mtime change, which is still trusted.
+- An exact or line-trimmed edit on an unread file still applies, by
+  design.
+- The remaining 2026-10-01 seeds, and F19, F20, F21, F25 and F22,
+  remain open.
+- ARM remains verified at build level only; no hardware smoke.
+
+### Corrections
+
+- The cut kickoff's step-1 check `git grep -n 'fn record_withheld\|fn
+  shown_pending\|fn capped_footer' -- src/` expected 3 and returned 4.
+  Wrong assumption (planning's): the pattern matched definitions only.
+  It has no anchor, so it also matches the unit test
+  `capped_footer_keeps_both_shipped_forms`. The paren-anchored form
+  returns 3. The cut session stopped before any edit (its account; the
+  step-1 and bump-script log times are consistent); planning ruled it
+  a pattern slip, not a tree mismatch, the same shape as the v0.38.4
+  step-1 slip.
