@@ -2,6 +2,20 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
+## Unreleased
+
+- edit's approximate (block-anchor) match no longer trusts a line the
+  tool registry altered before the model saw it: a line carrying the
+  session key, which read's output shows as [redacted], now counts as
+  not shown, like a line cut at 2000 characters, so an edit copying the
+  redacted text cannot write it over the real key. An edit over such a
+  line, and over a cut line, is refused with a message that names the
+  line and says edit cannot change it, instead of asking for a read
+  that cannot show it. An edit sent in the same response as the first
+  read of its file is told to resend it, not to read again. (review of
+  the v0.38.4 guard, 2026-10-11, eight findings: six fixed, two
+  queued).
+
 ## v0.38.4 - 2026-10-05
 
 - edit's block-anchor (approximate) match now trusts only lines the

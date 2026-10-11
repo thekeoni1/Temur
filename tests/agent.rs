@@ -2020,7 +2020,9 @@ fn compaction_forgets_what_a_read_showed() {
 
 /// F29 (review finding 2): a read in the same response as a block-anchor
 /// edit grants nothing to it, since the model wrote the edit before it saw
-/// the read's result; the same edit in the next response applies.
+/// the read's result; the same edit in the next response applies. F30
+/// (review finding 3): the refusal says the read is in this same response
+/// and to send the edit again, not that the file was never read.
 #[test]
 fn a_read_in_the_same_response_does_not_arm_a_block_anchor_edit() {
     let dir = tempfile::tempdir().unwrap();
@@ -2048,7 +2050,9 @@ fn a_read_in_the_same_response_does_not_arm_a_block_anchor_edit() {
         } => {
             assert_eq!(tool_use_id, "t2");
             assert!(is_error, "{content}");
-            assert!(content.contains("has not been read in this session"), "{content}");
+            assert!(content.contains("was read in this same response"), "{content}");
+            assert!(content.contains("send the edit again"), "{content}");
+            assert!(!content.contains("has not been read in this session"), "{content}");
         }
         other => panic!("expected tool_result, got {other:?}"),
     }

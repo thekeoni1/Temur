@@ -205,8 +205,11 @@ impl EditTool {
                 if matcher == matchers::Matcher::BlockAnchor
                     && !ctx.has_trusted_shown(path, key_len, key_mtime)
                 {
-                    // Only NeverShown or Changed can come back here, so any line does.
-                    return Err(shown_refusal(path, ctx.shown_state(path, 1, 1, key_len, key_mtime)));
+                    // Only NeverShown or Changed can come back here, so any line
+                    // does (F30: a current read, even one that withheld every
+                    // line, makes has_trusted_shown true).
+                    let state = ctx.shown_state(path, 1, 1, key_len, key_mtime);
+                    return Err(shown_refusal(path, state, ctx.shown_pending(path)));
                 }
                 Err(ToolError::failed(format!(
                     "oldString matched {count} locations approximately (whitespace-tolerant). Provide more surrounding lines to make the match unique."
@@ -220,7 +223,7 @@ impl EditTool {
                     let (first, last) = line_range(content, &range);
                     match ctx.shown_state(path, first, last, key_len, key_mtime) {
                         ShownState::Trusted => {}
-                        state => return Err(shown_refusal(path, state)),
+                        state => return Err(shown_refusal(path, state, ctx.shown_pending(path))),
                     }
                 }
                 // Line-trimmed path (F3): re-apply the uniform
@@ -280,15 +283,23 @@ fn line_range(content: &str, range: &std::ops::Range<usize>) -> (u64, u64) {
 
 /// F28: why a block-anchor edit was not trusted. The never-read text is
 /// F27's, unchanged; the other two leave out its "has not been read" so a
-/// reader can tell which case fired.
-fn shown_refusal(path: &std::path::Path, state: ShownState) -> ToolError {
+/// reader can tell which case fired. F30: a withheld line gets a text that
+/// does not ask for a read no read can satisfy, and a never-read file whose
+/// read is in this same response (`read_pending`) is told to resend.
+fn shown_refusal(path: &std::path::Path, state: ShownState, read_pending: bool) -> ToolError {
     let path = path.display();
     ToolError::failed(match state {
+        ShownState::Withheld { line } => format!(
+            "line {line} of {path} is one read cannot show whole (over 2000 characters, or it carries the session key), so edit cannot change it. Change that line another way, or leave it."
+        ),
         ShownState::NotCovered { first, last } => format!(
             "lines {first}-{last} of {path} were not shown by a read in this session, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read those lines and copy oldString exactly."
         ),
         ShownState::Changed => format!(
             "{path} has changed since this session last read it, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read the file again and copy oldString exactly."
+        ),
+        ShownState::NeverShown if read_pending => format!(
+            "{path} was read in this same response, so its lines count as shown only from the next response, and oldString was not found exactly. The read's result is in this message: send the edit again with oldString copied from it."
         ),
         ShownState::NeverShown | ShownState::Trusted => format!(
             "{path} has not been read in this session, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read the file and copy oldString exactly."

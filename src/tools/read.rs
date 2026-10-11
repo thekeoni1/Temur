@@ -8,6 +8,10 @@
 //! otherwise the model loses the continuation hint and re-reads blindly.
 //! F29: on a small context window that cap is under 28 KB, and the read
 //! stops at it rather than being elided in the middle.
+//!
+//! F30: a line the model does not receive whole is withheld from the lines
+//! a read records as shown: one cut at 2000 chars, and one carrying the
+//! session key, which the registry redacts after the read returns.
 
 use super::{parse_input, resolve_path, Tool, ToolCtx, ToolError, ToolOutput};
 use serde::Deserialize;
@@ -192,21 +196,26 @@ impl Tool for ReadTool {
         }
 
         let mut output = header;
+        // F30: the registry redacts the session key from this output after
+        // the read returns, so a rendered line that carries it reaches the
+        // model as "[redacted]", not as the file has it. The check is on the
+        // rendered line, the exact string the registry will see.
+        let mut redacted_lines: Vec<u64> = Vec::new();
         for (i, line) in raw.iter().enumerate() {
-            output.push_str(&format!("{}: {line}\n", i as u64 + offset));
+            let lineno = i as u64 + offset;
+            let rendered = format!("{lineno}: {line}\n");
+            if ctx.redact_key.as_deref().is_some_and(|k| rendered.contains(k)) {
+                redacted_lines.push(lineno);
+            }
+            output.push_str(&rendered);
         }
         let last = offset + raw.len() as u64 - 1;
-        if truncated_by_bytes && max_bytes == MAX_BYTES {
-            output.push_str(&format!(
-                "\n(Output capped at {} KB. Showing lines {offset}-{last}. Use offset={} to continue.)\n",
-                MAX_BYTES / 1024,
-                last + 1
-            ));
-        } else if truncated_by_bytes {
-            output.push_str(&format!(
-                "\n(Output capped at {max_bytes} bytes for this model's context window. Showing lines {offset}-{last}. Use offset={} to continue.)\n",
-                last + 1
-            ));
+        if truncated_by_bytes {
+            // F30 (review findings 7 and 8): one footer. The window wording
+            // only when a context window lowered the registry's cap, not
+            // whenever a long path pushed the bound under MAX_BYTES.
+            let window = max_bytes < MAX_BYTES && ctx.output_cap < super::MAX_OUTPUT_CHARS;
+            output.push_str(&capped_footer(max_bytes, window, offset, last));
         } else if has_more && !source_complete {
             // Extraction stopped at the caller's window, so `lines` is a
             // floor, not a total: quoting it as one would be a lie the
@@ -252,14 +261,39 @@ impl Tool for ReadTool {
         // opening; an approximate edit may splice only inside them. F29: only
         // lines the model receives whole. A line cut at MAX_LINE_LENGTH is
         // left out, and an output the registry would still cut (a path or a
-        // first line over a small window's bound) records nothing.
+        // first line over a small window's bound) records nothing. F30: a
+        // line the registry redacts is left out the same way, and both kinds
+        // are recorded as withheld so an edit over one says what it is.
         if document.is_none() && !raw.is_empty() && output.chars().count() <= ctx.output_cap {
-            for (first, last) in shown_pieces(offset, last, &truncated_lines) {
+            let mut withheld = truncated_lines;
+            withheld.extend(redacted_lines);
+            withheld.sort_unstable();
+            withheld.dedup();
+            for (first, last) in shown_pieces(offset, last, &withheld) {
                 ctx.record_shown(&path, first, last, key_len, key_mtime);
+            }
+            for &line in &withheld {
+                ctx.record_withheld(&path, line, key_len, key_mtime);
             }
         }
         Ok(ToolOutput { title, output })
     }
+}
+
+/// The footer of a read stopped by its byte bound: the bound in KB when it
+/// is a whole number of KB (the 28 KB default), in bytes otherwise, and the
+/// context-window clause when `window` says a window set the bound.
+fn capped_footer(max_bytes: u64, window: bool, offset: u64, last: u64) -> String {
+    let size = if max_bytes.is_multiple_of(1024) {
+        format!("{} KB", max_bytes / 1024)
+    } else {
+        format!("{max_bytes} bytes")
+    };
+    let why = if window { " for this model's context window" } else { "" };
+    format!(
+        "\n(Output capped at {size}{why}. Showing lines {offset}-{last}. Use offset={} to continue.)\n",
+        last + 1
+    )
 }
 
 /// F29: the pieces of `offset..=last` left after removing the lines in
@@ -393,14 +427,33 @@ mod tests {
         assert_eq!(shown_pieces(1, 10, &[1, 2, 9, 10]), vec![(3, 8)]);
     }
 
+    /// F30: the two shipped forms of the capped footer, byte for byte: the
+    /// 28 KB default, and the P14 window form.
+    #[test]
+    fn capped_footer_keeps_both_shipped_forms() {
+        assert_eq!(
+            capped_footer(MAX_BYTES, false, 1, 300),
+            "\n(Output capped at 28 KB. Showing lines 1-300. Use offset=301 to continue.)\n"
+        );
+        assert_eq!(
+            capped_footer(7624, true, 1, 54),
+            "\n(Output capped at 7624 bytes for this model's context window. Showing lines 1-54. Use offset=55 to continue.)\n"
+        );
+        assert_eq!(
+            capped_footer(27_000, false, 1, 40),
+            "\n(Output capped at 27000 bytes. Showing lines 1-40. Use offset=41 to continue.)\n"
+        );
+    }
+
     /// The footers and the marker, built with the largest numbers they can
     /// carry, fit in READ_OVERHEAD together with the tags around the body.
     #[test]
     fn read_overhead_covers_the_longest_footer() {
         let n = u64::MAX;
         let footers = [
-            format!("\n(Output capped at {} KB. Showing lines {n}-{n}. Use offset={n} to continue.)\n", MAX_BYTES / 1024),
-            format!("\n(Output capped at {n} bytes for this model's context window. Showing lines {n}-{n}. Use offset={n} to continue.)\n"),
+            // n - 1 as `last` has as many digits as n and leaves room for +1.
+            capped_footer(MAX_BYTES, false, n, n - 1),
+            capped_footer(n, true, n, n - 1),
             format!("\n(Showing lines {n}-{n}. More of this document was not extracted; use offset={n} to continue.)\n"),
             format!("\n(Showing lines {n}-{n} of {n}. Use offset={n} to continue.)\n"),
             format!("\n(End of file - total {n} lines)\n"),

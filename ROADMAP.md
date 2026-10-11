@@ -1890,7 +1890,19 @@ check), fixed in the v0.38.3 CHANGELOG section, and F29, the review
 of that fix (2026-10-05: read recorded lines as shown before the
 registry cut the output, a same-response read armed the edit, the
 overflow backstop forgot nothing and a cut line counted whole), fixed
-in the v0.38.4 CHANGELOG section. F29's queued findings: `ShownFile`
+in the v0.38.4 CHANGELOG section, and F30, the review of that fix
+(2026-10-11: the registry redacted the session key after read recorded
+the line as shown, an edit over a cut line was told to read what no
+read shows, the same-response refusal told the model to read again, a
+deferred record canonicalized late), fixed in the Unreleased CHANGELOG
+section; its queued findings: the overflow backstop forgets every shown
+range whatever result it halved, a bash or grep output included
+(agent/mod.rs:1094), fail-closed at one refusal and a re-read, and a
+narrowing would key on the halved block being a read result; and read
+bounds its body in bytes (read.rs:180) while the registry cap counts
+chars, so multibyte text (CJK at 3 bytes a char) reads about a third
+of the lines the cap allows on a small window, cosmetic until a CJK
+dogfood says otherwise. F29's queued findings: `ShownFile`
 (tools/mod.rs:941) keys on length and mtime while `ReadKey` (:909)
 also hashes the body, so a same-length, same-mtime change is still
 trusted (a hash costs a second read per approximate edit and needs a

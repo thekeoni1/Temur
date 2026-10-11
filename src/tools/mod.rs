@@ -258,6 +258,13 @@ pub struct ToolCtx {
     /// default here is the ceiling, so a `ToolCtx` built outside a session
     /// behaves exactly as it did before this field existed.
     pub output_cap: usize,
+    /// F30: the key [`Registry::execute`] will redact from THIS dispatch's
+    /// output, set beside `output_cap` and only when the key is long enough
+    /// to be matched ([`MIN_REDACTABLE_KEY_CHARS`]). `read` withholds from
+    /// its shown lines any line the redaction will alter, since the model
+    /// receives that line as "[redacted]", not as it is in the file. `None`
+    /// outside a registry dispatch and when nothing would be redacted.
+    pub(crate) redact_key: Option<String>,
     /// T53/D21 test seam: per-dispatch override of the walk bounds used by
     /// `glob` and `grep`. `None` (the default everywhere) means each tool
     /// uses its own shipped constants, so every construction site outside a
@@ -298,9 +305,11 @@ pub struct ToolCtx {
     /// lines wait in `pending_shown` until the batch's results go back, so a
     /// read grants nothing to an edit in the same response.
     shown: std::collections::HashMap<PathBuf, ShownFile>,
-    /// F29: what reads in the running batch showed, as (path, first, last,
-    /// len, mtime), applied in order by [`ToolCtx::end_batch`].
-    pending_shown: Vec<(PathBuf, u64, u64, u64, Option<std::time::SystemTime>)>,
+    /// F29: what reads in the running batch showed, applied in order by
+    /// [`ToolCtx::end_batch`]. F30: each path is canonicalized when it is
+    /// recorded, so a later call in the batch that moves a symlink cannot
+    /// file the record under another file.
+    pending_shown: Vec<PendingShown>,
     /// F29: set between [`ToolCtx::begin_batch`] and [`ToolCtx::end_batch`].
     deferring_shown: bool,
 }
@@ -317,6 +326,7 @@ impl ToolCtx {
             session_allows: std::collections::HashSet::new(),
             refuse_mutations: false,
             output_cap: MAX_OUTPUT_CHARS,
+            redact_key: None,
             walk_limits: None,
             read_paths: std::collections::HashSet::new(),
             last_reads: std::collections::HashMap::new(),
@@ -404,34 +414,72 @@ impl ToolCtx {
         len: u64,
         mtime: Option<std::time::SystemTime>,
     ) {
-        if self.deferring_shown {
-            self.pending_shown.push((path.to_path_buf(), first, last, len, mtime));
-        } else {
-            self.apply_shown(path, first, last, len, mtime);
-        }
+        self.record(path, ShownRecord::Lines(ShownLines { first, last }), len, mtime);
     }
 
-    /// F28's write-through for [`ToolCtx::record_shown`].
-    fn apply_shown(
+    /// F30: record that a read rendered line `line` of `path` but the model
+    /// does not receive it whole: it was cut at 2000 characters, or it
+    /// carries the session key the registry redacts. Same version rule and
+    /// same batch deferral as [`ToolCtx::record_shown`].
+    pub fn record_withheld(
         &mut self,
         path: &std::path::Path,
-        first: u64,
-        last: u64,
+        line: u64,
+        len: u64,
+        mtime: Option<std::time::SystemTime>,
+    ) {
+        self.record(path, ShownRecord::Withheld(line), len, mtime);
+    }
+
+    /// F30 (review finding 4): canonicalize once, when the read records,
+    /// then defer or apply.
+    fn record(
+        &mut self,
+        path: &std::path::Path,
+        what: ShownRecord,
         len: u64,
         mtime: Option<std::time::SystemTime>,
     ) {
         let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        let range = ShownLines { first, last };
-        match self.shown.get_mut(&canon) {
-            Some(f) if f.len == len && f.mtime == mtime => {
-                // Capped: paging a huge file must not grow this without bound on 32-bit.
+        if self.deferring_shown {
+            self.pending_shown.push(PendingShown { canon, what, len, mtime });
+        } else {
+            self.apply_shown(canon, what, len, mtime);
+        }
+    }
+
+    /// F28's write-through for [`ToolCtx::record_shown`]; `canon` is
+    /// already canonical. F30: a shown range clears the withheld lines it
+    /// covers and a withheld line stays out of trust until then, so the
+    /// latest read of a line decides.
+    fn apply_shown(
+        &mut self,
+        canon: PathBuf,
+        what: ShownRecord,
+        len: u64,
+        mtime: Option<std::time::SystemTime>,
+    ) {
+        let fresh = || ShownFile { len, mtime, ranges: Vec::new(), withheld: Vec::new() };
+        let f = self.shown.entry(canon).or_insert_with(fresh);
+        if f.len != len || f.mtime != mtime {
+            *f = fresh();
+        }
+        // Capped: paging a huge file must not grow these without bound on 32-bit.
+        match what {
+            ShownRecord::Lines(range) => {
+                f.withheld.retain(|&n| n < range.first || range.last < n);
                 if f.ranges.len() >= MAX_SHOWN_RANGES {
                     f.ranges.remove(0);
                 }
                 f.ranges.push(range);
             }
-            _ => {
-                self.shown.insert(canon, ShownFile { len, mtime, ranges: vec![range] });
+            ShownRecord::Withheld(line) => {
+                if !f.withheld.contains(&line) {
+                    if f.withheld.len() >= MAX_SHOWN_RANGES {
+                        f.withheld.remove(0);
+                    }
+                    f.withheld.push(line);
+                }
             }
         }
     }
@@ -455,6 +503,11 @@ impl ToolCtx {
         if f.len != len || f.mtime != mtime || mtime.is_none() {
             return ShownState::Changed;
         }
+        // F30: a withheld line answers first, even beside a line no read
+        // visited, since no read can make the range trusted.
+        if let Some(&line) = f.withheld.iter().filter(|&&n| first <= n && n <= last).min() {
+            return ShownState::Withheld { line };
+        }
         let covered = (first..=last).all(|n| f.ranges.iter().any(|r| r.first <= n && n <= r.last));
         if covered {
             ShownState::Trusted
@@ -465,7 +518,9 @@ impl ToolCtx {
 
     /// F28: whether `path` has any shown range that is still current: the
     /// file's length and mtime equal the recorded ones, and the mtime is
-    /// known.
+    /// known. F30: a current read whose every line was withheld counts too.
+    /// Reading again cannot show those lines, so the question this answers
+    /// is whether this version was read, not whether a range survived.
     pub fn has_trusted_shown(
         &self,
         path: &std::path::Path,
@@ -497,9 +552,18 @@ impl ToolCtx {
     /// reads showed, in order, through the write-through path.
     pub fn end_batch(&mut self) {
         self.deferring_shown = false;
-        for (path, first, last, len, mtime) in std::mem::take(&mut self.pending_shown) {
-            self.apply_shown(&path, first, last, len, mtime);
+        for p in std::mem::take(&mut self.pending_shown) {
+            self.apply_shown(p.canon, p.what, p.len, p.mtime);
         }
+    }
+
+    /// F30 (review finding 3): whether a read in the running batch recorded
+    /// something for `path` that the next response will see. False outside
+    /// a batch, and false for a read that recorded nothing (an output over
+    /// the cap), whose lines the next response will not trust either.
+    pub fn shown_pending(&self, path: &std::path::Path) -> bool {
+        let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.deferring_shown && self.pending_shown.iter().any(|p| p.canon == canon)
     }
 }
 
@@ -847,6 +911,11 @@ impl Registry {
         }
         // T28: tell the tool what it has to fit in, before it runs.
         ctx.output_cap = self.cap_chars;
+        // F30: and what the redaction below will alter, by the same rule.
+        ctx.redact_key = self
+            .redact_key
+            .clone()
+            .filter(|k| k.chars().count() >= MIN_REDACTABLE_KEY_CHARS);
         let mut out = tool.execute(input, ctx).map_err(|e| match e {
             ToolError::InvalidInput(s) => ToolError::InvalidInput(self.redact(s)),
             ToolError::Failed(s) => ToolError::Failed(self.redact(s)),
@@ -936,15 +1005,35 @@ pub struct ShownLines {
 }
 
 /// F28: what reads showed of one file, and the file's length and
-/// modification time when they did.
+/// modification time when they did. F30: `withheld` holds the lines a read
+/// rendered but the model did not receive whole.
 #[derive(Debug, Clone)]
 struct ShownFile {
     len: u64,
     mtime: Option<std::time::SystemTime>,
     ranges: Vec<ShownLines>,
+    withheld: Vec<u64>,
 }
 
-/// F28: the most ranges kept per file; the oldest goes first.
+/// F30: one read's record, a shown range or a withheld line.
+#[derive(Debug, Clone, Copy)]
+enum ShownRecord {
+    Lines(ShownLines),
+    Withheld(u64),
+}
+
+/// F29: a record waiting for [`ToolCtx::end_batch`]; F30: under its
+/// canonical path.
+#[derive(Debug, Clone)]
+struct PendingShown {
+    canon: PathBuf,
+    what: ShownRecord,
+    len: u64,
+    mtime: Option<std::time::SystemTime>,
+}
+
+/// F28: the most ranges kept per file, and F30 the most withheld lines;
+/// the oldest goes first.
 const MAX_SHOWN_RANGES: usize = 256;
 
 /// F28: the answer [`ToolCtx::shown_state`] gives for a line range.
@@ -957,6 +1046,10 @@ pub enum ShownState {
     Changed,
     /// The file is unchanged, but some line of `first..=last` was not shown.
     NotCovered { first: u64, last: u64 },
+    /// F30: the file is unchanged, and line `line` of the range is one a
+    /// read rendered but the model did not receive whole (cut at 2000
+    /// characters, or carrying the session key). No read can show it.
+    Withheld { line: u64 },
     /// Every line of the range was shown by a read of this version.
     Trusted,
 }

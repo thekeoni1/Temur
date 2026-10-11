@@ -1932,6 +1932,8 @@ fn a_read_in_a_batch_is_shown_only_after_the_batch() {
 
 /// F29 (review finding 4): a line cut at 2000 chars is not shown, so a
 /// block-anchor edit over it is refused; an exact edit beside it applies.
+/// F30 (review finding 2): the refusal names the cut line and says edit
+/// cannot change it, instead of asking for a read that cannot show it.
 #[test]
 fn a_line_cut_at_2000_chars_is_not_shown() {
     let dir = tempfile::tempdir().unwrap();
@@ -1953,7 +1955,8 @@ fn a_line_cut_at_2000_chars_is_not_shown() {
     }))
     .unwrap_err()
     .to_string();
-    assert!(err.contains(&format!("lines 2-4 of {} were not shown", f.display())), "{err}");
+    assert!(err.contains(&format!("line 3 of {} is one read cannot show whole", f.display())), "{err}");
+    assert!(err.contains("so edit cannot change it"), "{err}");
     assert_eq!(std::fs::read_to_string(&f).unwrap(), initial);
     let out = run(&reg, &mut ctx, "edit", json!({
         "filePath": fp, "oldString": "def f(x):", "newString": "def f(x, y=None):"
@@ -1964,6 +1967,141 @@ fn a_line_cut_at_2000_chars_is_not_shown() {
         std::fs::read_to_string(&f).unwrap(),
         initial.replace("def f(x):", "def f(x, y=None):")
     );
+}
+
+/// F30 (review finding 1): a line carrying the session key reaches the
+/// model as "[redacted]", so it is not shown. A block-anchor edit copying
+/// the redacted line is refused with the withheld-line text and cannot
+/// write "[redacted]" over the key; an exact edit beside it applies. Five
+/// lines, not three: since F28 a block-anchor middle needs half its lines
+/// matching, so a three-line block over the key line never reaches the
+/// shown check.
+#[test]
+fn a_line_carrying_the_session_key_is_not_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = "placeholder-not-a-real-key-1234";
+    let f = dir.path().join("app.toml");
+    let initial = format!("[server]\nurl = 'local'\nkey = '{key}'\nmode = 'dev'\n[end]\n");
+    std::fs::write(&f, &initial).unwrap();
+    let meta = std::fs::metadata(&f).unwrap();
+    let (len, mtime) = (meta.len(), meta.modified().ok());
+    let mut reg = Registry::standard();
+    reg.set_redaction_key(Some(key.into()));
+    let mut ctx = ctx_in(dir.path());
+    let fp = f.to_str().unwrap();
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": fp})).unwrap();
+    assert!(out.output.contains("3: key = '[redacted]'"), "{}", out.output);
+    assert!(!out.output.contains(key), "{}", out.output);
+    assert_eq!(ctx.shown_state(&f, 1, 5, len, mtime), ShownState::Withheld { line: 3 });
+    assert_eq!(ctx.shown_state(&f, 1, 2, len, mtime), ShownState::Trusted);
+    assert_eq!(ctx.shown_state(&f, 4, 5, len, mtime), ShownState::Trusted);
+    let err = run(&reg, &mut ctx, "edit", json!({
+        "filePath": fp,
+        "oldString": "[server]\nurl = 'local'\nkey = '[redacted]'\nmode = 'dev'\n[end]",
+        "newString": "[server]\nurl = 'local'\nkey = '[redacted]'\nmode = 'prod'\n[end]",
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains(&format!("line 3 of {} is one read cannot show whole", f.display())), "{err}");
+    assert!(err.contains("so edit cannot change it"), "{err}");
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), initial);
+    let out = run(&reg, &mut ctx, "edit", json!({
+        "filePath": fp, "oldString": "[server]", "newString": "[app]"
+    }))
+    .unwrap();
+    assert!(!out.output.contains("block-anchor"), "{}", out.output);
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), initial.replace("[server]", "[app]"));
+}
+
+/// F30: with nothing to redact (no key, or a key under 8 chars that the
+/// registry never matches) the same read shows every line.
+#[test]
+fn a_read_with_nothing_to_redact_shows_every_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("app.toml");
+    std::fs::write(&f, "[server]\nurl = 'local'\nkey = 'local'\nmode = 'dev'\n[end]\n").unwrap();
+    let meta = std::fs::metadata(&f).unwrap();
+    let (len, mtime) = (meta.len(), meta.modified().ok());
+    let fp = f.to_str().unwrap();
+    for key in [None, Some("local")] {
+        let mut reg = Registry::standard();
+        reg.set_redaction_key(key.map(String::from));
+        let mut ctx = ctx_in(dir.path());
+        let out = run(&reg, &mut ctx, "read", json!({"filePath": fp})).unwrap();
+        assert!(out.output.contains("3: key = 'local'"), "{}", out.output);
+        assert_eq!(ctx.shown_state(&f, 1, 5, len, mtime), ShownState::Trusted, "key {key:?}");
+    }
+}
+
+/// F30 (review finding 2, ruling D): a withheld line answers first, even
+/// in a range with a line no read visited; a later read that shows the
+/// line whole clears it; a current read that withheld every line still
+/// counts as a read of this version.
+#[test]
+fn withheld_lines_answer_first_and_a_later_read_clears_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("notes.txt");
+    std::fs::write(&f, "a\nb\nc\nd\ne\n").unwrap();
+    let meta = std::fs::metadata(&f).unwrap();
+    let (len, mtime) = (meta.len(), meta.modified().ok());
+    let mut ctx = ctx_in(dir.path());
+    ctx.record_withheld(&f, 3, len, mtime);
+    assert!(ctx.has_trusted_shown(&f, len, mtime));
+    assert_eq!(ctx.shown_state(&f, 3, 3, len, mtime), ShownState::Withheld { line: 3 });
+    ctx.record_shown(&f, 1, 2, len, mtime);
+    assert_eq!(ctx.shown_state(&f, 1, 5, len, mtime), ShownState::Withheld { line: 3 });
+    assert_eq!(ctx.shown_state(&f, 4, 5, len, mtime), ShownState::NotCovered { first: 4, last: 5 });
+    ctx.record_shown(&f, 3, 5, len, mtime);
+    assert_eq!(ctx.shown_state(&f, 1, 5, len, mtime), ShownState::Trusted);
+}
+
+/// F30 (review finding 4): a deferred shown record names the file the read
+/// read, even when a later call in the same batch retargets the symlink it
+/// went through.
+#[test]
+fn a_deferred_shown_record_stays_with_the_file_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.py");
+    let b = dir.path().join("b.py");
+    let link = dir.path().join("link.py");
+    std::fs::write(&a, "x = 1\n").unwrap();
+    std::fs::write(&b, "y = 22\n").unwrap();
+    std::os::unix::fs::symlink(&a, &link).unwrap();
+    let ma = std::fs::metadata(&a).unwrap();
+    let mb = std::fs::metadata(&b).unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    ctx.begin_batch();
+    run(&reg, &mut ctx, "read", json!({"filePath": link.to_str().unwrap()})).unwrap();
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&b, &link).unwrap();
+    ctx.end_batch();
+    assert_eq!(ctx.shown_state(&a, 1, 1, ma.len(), ma.modified().ok()), ShownState::Trusted);
+    assert_eq!(ctx.shown_state(&b, 1, 1, mb.len(), mb.modified().ok()), ShownState::NeverShown);
+}
+
+/// F30 (review finding 7): with no context window, a path long enough to
+/// push read's bound under 28 KB gets the capped footer in bytes, without
+/// the context-window clause.
+#[test]
+fn a_long_path_without_a_window_gets_no_window_footer() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut deep = dir.path().to_path_buf();
+    for c in ["p", "q", "r", "s", "t"] {
+        deep.push(c.repeat(200));
+    }
+    std::fs::create_dir_all(&deep).unwrap();
+    let f = deep.join("big.txt");
+    let body: String = (0..1_000).map(|i| format!("row {i:04} {}\n", "z".repeat(40))).collect();
+    std::fs::write(&f, body).unwrap();
+    let reg = Registry::standard();
+    let mut ctx = ctx_in(dir.path());
+    let out = run(&reg, &mut ctx, "read", json!({"filePath": f.to_str().unwrap()})).unwrap();
+    assert!(f.display().to_string().len() > 816, "{}", f.display());
+    assert!(!out.output.contains("(output truncated:"), "{}", out.output);
+    assert!(out.output.contains(" bytes. Showing lines 1-"), "{}", out.output);
+    assert!(!out.output.contains("context window"), "{}", out.output);
+    assert!(!out.output.contains("(Output capped at 28 KB."), "{}", out.output);
 }
 
 /// F28 (review finding 5): a file changed outside temur since the read is

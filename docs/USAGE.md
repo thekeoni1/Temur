@@ -1844,8 +1844,9 @@ since v0.38.3: it splices only inside lines a `read` showed in this
 session, of the file as it was at that read (same length and
 modification time). An edit or a write does not count, and only lines
 the model received count as shown: a line that read cut at 2000
-characters, a read whose result was shortened after a context overflow,
-and a read in the same response as the edit do not count. On a small
+characters, a line that carries the session key (shown as [redacted]),
+a read whose result was shortened after a context overflow, and a read
+in the same response as the edit do not count. On a small
 context window read stops at the size the window allows and ends with
 a continuation offset instead of having its middle cut. It fails with
 one of:
@@ -1854,6 +1855,8 @@ one of:
 <path> has not been read in this session, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read the file and copy oldString exactly.
 <path> has changed since this session last read it, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read the file again and copy oldString exactly.
 lines <N>-<M> of <path> were not shown by a read in this session, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read those lines and copy oldString exactly.
+line <N> of <path> is one read cannot show whole (over 2000 characters, or it carries the session key), so edit cannot change it. Change that line another way, or leave it.
+<path> was read in this same response, so its lines count as shown only from the next response, and oldString was not found exactly. The read's result is in this message: send the edit again with oldString copied from it.
 ```
 
 An exact edit, or one that differs from the file only in each line's
