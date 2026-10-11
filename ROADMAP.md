@@ -1894,7 +1894,7 @@ in the v0.38.4 CHANGELOG section, and F30, the review of that fix
 (2026-10-11: the registry redacted the session key after read recorded
 the line as shown, an edit over a cut line was told to read what no
 read shows, the same-response refusal told the model to read again, a
-deferred record canonicalized late), fixed in the Unreleased CHANGELOG
+deferred record canonicalized late), fixed in the v0.38.5 CHANGELOG
 section; its queued findings: the overflow backstop forgets every shown
 range whatever result it halved, a bash or grep output included
 (agent/mod.rs:1094), fail-closed at one refusal and a re-read, and a
@@ -1929,8 +1929,9 @@ call ending silently (the T61 nudge fires only on a claim of done work);
 and `temur init`'s existing-config refusal not naming the model the
 config points at (the same discoverability shape as D17).
 
-The launch announcement goes out on v0.38.4, the patches carrying
-F14, F24, F27, F28 and F29. The playground is refreshed to the announced version
+The launch announcement goes out on v0.38.5, the patches carrying
+F14, F24, F27, F28, F29 and F30. The playground is refreshed to the
+announced version
 before the announcement and names its own version and sha, and
 README 19-24 has been version-agnostic since T65 P5.
 

@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased
+## v0.38.5 - 2026-10-11
 
 - edit's approximate (block-anchor) match no longer trusts a line the
   tool registry altered before the model saw it: a line carrying the
