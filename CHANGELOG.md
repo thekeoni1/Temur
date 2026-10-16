@@ -2,6 +2,14 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
+## Unreleased
+
+- doctor's model check now strips a leading `models/` on both sides
+  before comparing ids, as the REPL's three surfaces have since T64:
+  Gemini lists every id as `models/<id>`, so every bare Gemini id, the
+  correct one included, drew a WARN; the listing excerpt in that WARN
+  shows bare ids too (found on the 2026-10-16 hosted suite run).
+
 ## v0.38.5 - 2026-10-11
 
 - edit's approximate (block-anchor) match no longer trusts a line the

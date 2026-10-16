@@ -775,9 +775,10 @@ attaching real tool calls, and it requires the opaque thought
 signature on each call to be echoed back on the following request.
 Model ids in its listing all carry a `models/` prefix, and the bare
 form works on the wire. temur ignores the prefix when it compares ids,
-so a bare id draws no "not in the listing" note and Tab completion
-offers the bare form. Appearing in that listing is no guarantee an
-id is usable, since retired ids stay listed and 404 for new accounts.
+doctor's model check included, so a bare id draws no "not in the
+listing" note and Tab completion offers the bare form. Appearing in
+that listing is no guarantee an id is usable, since retired ids stay
+listed and 404 for new accounts.
 
 Two more optional keys: `sessions_dir` overrides where saved sessions
 live (default: the state dir, see "Sessions" above), and

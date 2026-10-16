@@ -905,7 +905,10 @@ fn model_check(
             )
         }
     };
-    if ids.iter().any(|i| i == &p.model) {
+    // T64 P0 (R2): strip one leading `models/` on both sides, as the REPL does.
+    let model = crate::commands::bare_id(&p.model);
+    let ids: Vec<&str> = ids.iter().map(|i| crate::commands::bare_id(i)).collect();
+    if ids.iter().any(|i| *i == model) {
         return if keyed {
             r.pass(&format!(
                 "{prefix}model \"{}\" is in the listing at {} (one authenticated GET)",
@@ -922,7 +925,7 @@ fn model_check(
     // is a local server's own file names, and T15's strings are pinned.
     if keyed {
         if let Some(dated) =
-            crate::provider::newest_dated_alias(&p.model, ids.iter().map(String::as_str))
+            crate::provider::newest_dated_alias(model, ids.iter().copied())
         {
             return r.pass(&format!(
                 "{prefix}model \"{}\" matches {dated} in the listing at {} (one authenticated GET)",
@@ -941,7 +944,7 @@ fn model_check(
     let shown: Vec<&str> = ids
         .iter()
         .take(MODEL_WARN_LIST_CAP)
-        .map(String::as_str)
+        .copied()
         .collect();
     let more = if ids.len() > MODEL_WARN_LIST_CAP {
         format!(" and {} more", ids.len() - MODEL_WARN_LIST_CAP)
@@ -1778,6 +1781,47 @@ mod tests {
         assert!(out.contains("real-1, real-2"), "{out}");
         assert!(out.contains("advisory only"), "{out}");
         assert!(!out.contains("invalid"), "absent is not invalid: {out}");
+    }
+
+    #[test]
+    fn keyed_model_check_strips_a_models_prefix_on_both_sides() {
+        // S6: Gemini lists every id as `models/<id>` while the wire and
+        // init use the bare id; the REPL strips the prefix since T64 P0.
+        let (prefixed, _heads) = recording_server(
+            "HTTP/1.1 200 OK",
+            r#"{"data":[{"id":"models/gemini-3.1-pro-preview"},{"id":"models/other-1"}]}"#,
+        );
+        let (bare, _heads) =
+            recording_server("HTTP/1.1 200 OK", r#"{"data":[{"id":"gemini-3.1-pro-preview"}]}"#);
+        let tmp = tempfile::tempdir().unwrap();
+        let key = staged_key(&tmp, "k\n");
+        let (healthy, out) =
+            doctor_over(&keyed_compat_config(&prefixed, "gemini-3.1-pro-preview", &key), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "PASS: model \"gemini-3.1-pro-preview\" is in the listing at {prefixed} (one authenticated GET)"
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("WARN: model"), "{out}");
+        let (healthy, out) =
+            doctor_over(&keyed_compat_config(&bare, "models/gemini-3.1-pro-preview", &key), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "PASS: model \"models/gemini-3.1-pro-preview\" is in the listing at {bare} (one authenticated GET)"
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("WARN: model"), "{out}");
+        let (healthy, out) = doctor_over(&keyed_compat_config(&prefixed, "luna", &key), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!("WARN: model \"luna\" is not in the listing at {prefixed}")),
+            "{out}"
+        );
+        assert!(out.contains("(listed: gemini-3.1-pro-preview, other-1;"), "{out}");
     }
 
     #[test]

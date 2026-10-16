@@ -765,7 +765,7 @@ fn raw_model_switch(ctx: &mut CommandCtx, id: String) -> Vec<AgentEvent> {
 /// the wire and init use the bare id. Every comparison against a listing
 /// strips one leading `models/` on both sides; the active model string
 /// itself is never rewritten.
-fn bare_id(id: &str) -> &str {
+pub(crate) fn bare_id(id: &str) -> &str {
     id.strip_prefix("models/").unwrap_or(id)
 }
 
