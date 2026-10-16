@@ -1929,8 +1929,8 @@ call ending silently (the T61 nudge fires only on a claim of done work);
 and `temur init`'s existing-config refusal not naming the model the
 config points at (the same discoverability shape as D17).
 
-The launch announcement goes out on v0.38.5, the patches carrying
-F14, F24, F27, F28, F29 and F30. The playground is refreshed to the
+The launch announcement goes out on v0.38.6, the patches carrying
+F14, F24, F27, F28, F29, F30 and S6. The playground is refreshed to the
 announced version
 before the announcement and names its own version and sha, and
 README 19-24 has been version-agnostic since T65 P5.

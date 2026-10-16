@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased
+## v0.38.6 - 2026-10-16
 
 - doctor's model check now strips a leading `models/` on both sides
   before comparing ids, as the REPL's three surfaces have since T64:
