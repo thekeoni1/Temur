@@ -15219,3 +15219,343 @@ run's `app.toml` copies, and no transcript, session record or saved
 request body.
 
 Archive: `~/temur-eval-archive/v0.38.5-soak/`.
+
+## v0.38.6 ship record
+
+2026-10-16. **The S6 fix, shipped at tag `v0.38.6`.** A PATCH rather
+than a milestone: one fix to doctor's model check, two commits (the fix
+and the bump), no new capability. Cut from `79f5d15f` on the laptop,
+the ninth cut on the pinned rustc 1.96.1 (counted from the v0.38.5
+record's "eighth"), in the shape of the v0.38.5 patch. The one
+structural difference from the v0.38.5 cut: the fix was not on main
+before the cut, so the fix commit and the bump commit were pushed
+together as one range, `79f5d15f..7c6ebc4`.
+
+S6 was found on the 2026-10-16 hosted suite run: doctor's model check
+compared ids exactly, while the REPL has stripped one leading `models/`
+on both sides since T64 P0 (R2), and `docs/USAGE.md` already said the
+prefix is ignored. Gemini lists every id as `models/<id>`, so every
+bare Gemini id, the correct one included, drew a WARN in doctor. The
+CHANGELOG's one v0.38.6 item:
+
+- doctor's model check now strips a leading `models/` on both sides
+  before comparing ids, as the REPL's three surfaces have since T64:
+  Gemini lists every id as `models/<id>`, so every bare Gemini id, the
+  correct one included, drew a WARN; the listing excerpt in that WARN
+  shows bare ids too (found on the 2026-10-16 hosted suite run).
+
+The fix, commit `5326c92` (parent `79f5d15f`, "S6: doctor strips
+models/ before comparing ids"), has these parts:
+
+- `src/commands.rs` 768: `fn bare_id` becomes `pub(crate) fn bare_id`,
+  so doctor can call the REPL's own helper; its body and doc comment
+  are unchanged.
+- `src/doctor.rs`, inside `model_check` (862): right after the listing
+  is read, a one-line comment naming T64 P0 (R2) and two lets (908-910)
+  normalise the configured model and the listed ids once with
+  `crate::commands::bare_id`. The membership test, the dated-alias
+  lookup (`newest_dated_alias(model, ids.iter().copied())`) and the
+  WARN's listing excerpt use the bare forms; every message still prints
+  the model as configured. The strip sits before the keyed/keyless
+  split, so it applies on the keyed and keyless paths alike; both sides
+  are stripped, so a local alias that itself starts with `models/`
+  still matches itself.
+- One new unit test, `keyed_model_check_strips_a_models_prefix_on_both_sides`
+  (`src/doctor.rs` 1787), three arms over two recorded listings: a bare
+  id against a `models/` listing passes; a `models/` id against a bare
+  listing passes and prints the configured string; an absent id warns
+  with the excerpt `gemini-3.1-pro-preview, other-1`, bare. With the two
+  lets put back to the unstripped forms, the test fails (panicked at
+  `src/doctor.rs` 1801, the first arm); restored, it passes
+  (`v0.38.6-s6-control-20261016-183536.log`).
+- `CHANGELOG.md`: a new `## Unreleased` section with the one item
+  (5-11 in the fix commit).
+- `docs/USAGE.md` 778-781: the sentence "temur ignores the prefix when
+  it compares ids," (ending at 777) gains "doctor's model check
+  included," and the rest of the paragraph is rewrapped to stay within
+  80 columns (three lines become four; every other word stays).
+
+`git diff --stat v0.38.5..79f5d15f -- src/ scripts/ tests/` was empty,
+so S6 is the only source change in v0.38.6. The host suite is 1262
+tests, the v0.38.5 suite's 1261 plus the new one, all passing
+(`v0.38.6-s6-host-tests-20261016-181818.log`). The two neighbouring
+doctor tests (`keyed_model_check_counts_a_dated_sibling_as_listed`,
+`keyed_model_check_warns_when_absent_without_a_sibling_and_stays_healthy`)
+and the REPL-side test in `tests/agent.rs`
+(`a_models_prefixed_listing_matches_bare_ids_on_all_three_surfaces`)
+pass unchanged.
+
+### Sizes
+
+Raw byte counts, read from the staged files and matched byte for byte
+against the public downloads:
+
+| asset | bytes | MB | v0.38.5 | change |
+| --- | --- | --- | --- | --- |
+| i686 | 8,365,108 | 8.37 | 8,364,852 | +256 |
+| x86_64 | 9,928,880 | 9.93 | 9,928,752 | +128 |
+| aarch64 | 8,023,696 | 8.02 | 8,023,504 | +192 |
+| armv7 | 7,752,000 | 7.75 | 7,751,744 | +256 |
+
+Divided by 1,000,000 and rounded to two decimals, README:37-38 reads
+**8.37 MB** on i686 and **9.93 MB** on x86_64 (unchanged). The i686
+figure moved from 8.36 on 256 bytes: 8,365,108 is 8.365108 MB, which
+rounds up, where v0.38.5's 8,364,852 rounded down. The cut kickoff
+expected 8.36 and said the staged bytes decide; planning accepted 8.37
+at HOLD 1 (its ruling as sent to the cut session, not in these logs). The i686 binary is **1,634,892 bytes** under the 10,000,000
+STOP (16.35%), down from 1,635,148 at v0.38.5.
+
+### The cut
+
+Two commits on the anchor `79f5d15f`: the fix `5326c92` (4 files, 60
+insertions, 7 deletions, above) and the bump `7c6ebc4` (parent
+`5326c92`, 7 files, 13 insertions, 13 deletions). The bump's edited
+lines:
+
+- `Cargo.toml` 3, `Cargo.lock` 1475 (the temur entry only),
+  `scripts/install.sh` 10.
+- `CHANGELOG.md` 5, the `## Unreleased` heading becoming `## v0.38.6 -
+  2026-10-16` and nothing else in the file: the one item ships as
+  written.
+- `README.md` 37 (the version, and the i686 figure 8.36 becoming 8.37;
+  38's x86_64 figure stays 9.93), 185 (install raw URL), 196 (install
+  blob URL), 208 (release-download URL and asset name, two on the line),
+  209 (SHA256SUMS URL), 211 (asset name).
+- `CLAUDE.md` 78, the scope line, `(v0.38.5, public since` becoming
+  `(v0.38.6, public since`. The operator answered "Yes, edit it" in the
+  cut session to the question whether to make this edit, which is the
+  operator's word for it (the cut session's account; no log records the
+  answer).
+- `ROADMAP.md` 1932-1933: `The launch announcement goes out on v0.38.5`
+  becomes `on v0.38.6`, and `F14, F24, F27, F28, F29 and F30.` becomes
+  `F14, F24, F27, F28, F29, F30 and S6.`, the line now 71 columns, no
+  rewrap. 1897's "fixed in the v0.38.5 CHANGELOG" (F30's section)
+  stays.
+
+The bump script (`scripts/bump_version.sh 0.38.6`, log
+`v0.38.6-bump-script-20261016-181909.log`) made the Cargo, install.sh
+and README pin edits from a clean tree at `5326c92`, one run,
+`BUMP_EXIT=0`, and printed no leftover-pin warning. The README figure,
+CHANGELOG, CLAUDE.md and ROADMAP edits were made by hand.
+
+After the bump, `git grep -n '0\.38\.5' -- . ':!CHANGELOG.md'
+':!docs/RUNBOOK.md' ':!ROADMAP.md'` returns ZERO lines, on the working
+tree before the commit and at the committed `7c6ebc4`
+(`v0.38.6-grep-sweep-20261016-183212.log`,
+`v0.38.6-s6-control-20261016-183536.log`). The rustix 0.38.44 lines
+that the v0.38.4 and v0.38.5 greps caught do not match this pattern.
+`docs/USAGE.md` 1844 ("since v0.38.3: it splices only inside lines a
+`read` showed in this", 1843 before the fix commit's rewrap added a
+line) is not caught by this grep and stays as history (F28 shipped in
+v0.38.3). `docs/OFFLINE.md` 659, 662 and 668 carry v0.38.0 and stay
+as dated history:
+
+- 659 ``Since v0.38.0 `temur init` recognises a reasoning`` (when the
+  detection arrived);
+- 662 `the first dogfood of v0.38.0, on 2026-09-24,` (the run that found
+  F14);
+- 668 `On 2026-09-22 with the v0.38.0 source, CPU only,` (the
+  measurement's source).
+
+The size sweep (this file's "Publish preflight"), with this file's own
+hits left out, returned the same ten lines the v0.38.5 record ruled,
+with README:37 at this cut's figure: README:31 (a bound, which holds),
+README:34 and :101 (not temur's size), README:37-38 (the size
+sentence), COMPARISON:50 (tagged "the v0.25.0 measurement"),
+COMPARISON:323 and :326 (not temur's size), COMPARISON:379 (a temur
+figure dated by its section, as ruled at v0.38.1 through v0.38.5),
+OFFLINE:326 ("~8 MB" in the diagram, Ruling T66-30; 8.37 rounds to 8).
+Log: `v0.38.6-grep-sweep-20261016-183212.log`.
+
+Not edited: README 19-24, which names no version; `docs/USAGE.md`
+beyond the fix commit's paragraph; `docs/COMPARISON.md`;
+`docs/OFFLINE.md`; `docs/TUI.md`; `docs/THIRD-PARTY-LICENSES.md`;
+`src/` and `tests/` beyond the fix commit; `scripts/` beyond
+`install.sh` 10.
+
+### Gates, and where their evidence lives
+
+Logs are in the laptop's release-logs directory, by basename.
+
+`release.sh` ran twice; the second run is the gate. Run 1
+(`v0.38.6-release-command-20261016-181927.log`,
+`v0.38.6-release-20261016-181927.log`, 298 lines) launched at
+`5326c92` with six of the bump's seven edits uncommitted, the v0.38.5
+shape; it passed every gate and exited 0. The cut kickoff says
+release.sh runs at the bump commit, the HEAD being tagged, and the cut's
+independent check flagged the difference, so run 2 launched at the
+committed `7c6ebc4` with a clean tree.
+
+Run 2's command was written to its own log at launch (the script(1)
+log does not record the environment, so this log is where
+`CARGO_BUILD_JOBS=6` is stated):
+`v0.38.6-release-command-20261016-183552.log` carries `CARGO_BUILD_JOBS=6
+script -q -e -c 'scripts/release.sh; echo "RELEASE_SH_EXIT=$?"'` with
+the release log's name, 0 for `SKIP_CHECK`, `STAGE_ROOT` and
+`ANTHROPIC_API_KEY` in the environment, HEAD `7c6ebc4`, and porcelain
+empty with untracked files included. Its log,
+`v0.38.6-release-20261016-183552.log` (297 lines), ran once from the
+start with no `SKIP_CHECK` and no `STAGE_ROOT`:
+
+- 251 `== ALL CHECKS PASSED ==`: check.sh, both paths (gnu-debug and
+  musl-release), with the bare busybox container steps at 247
+  (`--version`) and 249 (mock REPL).
+- 253, the one history hit: `ALLOWED (already public):
+  083eb334847b07f6f3b75f713a3c492c1f90ed8e`, the T53 P1 commit message,
+  an operator mount path, public since 2026-09-08, allowlisted since the
+  v0.34.0 cut. The residual is unchanged from v0.38.5.
+- 254 `OK: leak grep clean (operator patterns + generic shapes, files +
+  history)`.
+- 256 `OK: install.sh + README match version 0.38.6 and all targets`.
+- 258-261 `info: component rust-std for target <target> is up to date`
+  for all four release targets: a NO-OP, nothing installed.
+- 282 `== RELEASE v0.38.6: 4/4 ARTIFACTS GATED ==`.
+- 295 `RELEASE_SH_EXIT=0`, `release.sh`'s own exit, echoed inside the
+  script(1) command; the footer reads `COMMAND_EXIT_CODE="0"`.
+
+Run 2 restaged the same directory, and its SHA256SUMS is byte-identical
+to run 1's (saved before run 2 as `v0.38.6-run1-SHA256SUMS`), so every
+asset is byte-identical across the two runs. Neither run printed a
+compiler warning; the only warning lines are podman's 38 linux/386
+platform notices (38 at v0.38.5 too, expected). No rustc crash
+occurred, so no fresh `CARGO_TARGET_DIR`.
+
+The step-2 check (`v0.38.6-step2-20261016-181715.log`): the
+machine-name pattern (the fifth of five active lines, file mode 0600)
+scores 0 files at `79f5d15f`, 2 at `c8a4b23` (the known positive), and
+0 in the two commit messages of `8317c49..79f5d15f`. The range's
+Ruling-4 log adds 0 files at `7c6ebc4` and 0 in the two new messages.
+
+- `metadata_drift.sh`: RUN, "all 4 baked profiles match models.dev",
+  exit 0 (`v0.38.6-metadata-drift-20261016-183212.log`); at v0.38.5 it
+  could not fetch.
+- Installer test, `v0.38.6-installer-20261016-183212.log`, which echoes
+  its own commands: ports 8765-8769 with no listener before;
+  `python3 -m http.server 8765 --bind 127.0.0.1` from the stage
+  directory; a readiness probe on the versioned x86_64 asset (ready
+  after two); `scripts/install.sh` under `env -i` with `TEMUR_BASE_URL`
+  into a temp HOME: "checksum verified.", `INSTALL_EXIT=0`, installed
+  `temur 0.38.6`, sha256 equal to the staged x86_64 asset; no listener
+  on 8765 after. It served run 1's files, byte-identical to run 2's.
+- Ruling 4 over both commit messages, the added lines of
+  `79f5d15f..7c6ebc4` and the tag message, headings stripped and kept,
+  five patterns: 0 everywhere, and 0 again over all 119 input lines
+  unstripped, with the live control (the fifth pattern over `c8a4b23`)
+  at 2 file hits. `v0.38.6-range-ruling4-20261016-183242.log`.
+  Register over the same text: non-ASCII 0, U+2014 0, the banned
+  adjective 0, each against a planted control that fired (non-ASCII 2,
+  U+2014 1, adjective 1).
+
+The independent gate on the same source is CI: run **38989743935** on
+`7c6ebc4`, `test` (117269253542) and `release-gate` (117269253667)
+both success on the first attempt, each on a runner, last updated
+2026-10-17T01:15:39Z. CI ran once for the range: the fix commit
+`5326c92` was pushed with the bump and has no run of its own (the API
+reports 0 runs for it); run 38989743935 tests the bump's tree, which
+contains it. No runner-less cancellations, so no reruns. Read back raw
+from the API in `v0.38.6-ci-runs-20261016-211848.log`.
+
+### Tag
+
+Annotated tag `v0.38.6` at `7c6ebc4`, tag object
+`2d541b9fc348d76a1c639c8e85221fd661c4269c`, created at 21:16:44 -0400
+(tagger epoch 1792199804), after the CI run's last update at
+2026-10-17T01:15:39Z. Read back raw before the push: `git cat-file -t
+v0.38.6` reads `tag`, and the message's `od -c` gives `temur v0.38.6 -
+doctor strips models/ before comparing ids (S6)` and a newline, 63
+bytes before the newline, one line, ASCII, a plain hyphen. Ruling 4 on
+the tag object's message: 0 on all five patterns, control 2; register
+0. Pushed by its explicit ref; `git ls-remote` shows the tag object at
+`refs/tags/v0.38.6`, and the remote carries 47 tags.
+
+### Publication and live verification
+
+Release `https://github.com/thekeoni1/Temur/releases/tag/v0.38.6`,
+release id 415508766, title equal to the tag message, not a draft, not
+a prerelease, marked latest, published 2026-10-17T01:17:13Z, five
+assets: the four binaries and SHA256SUMS. Notes are the CHANGELOG's
+v0.38.6 section (lines 7-11), written to `v0.38.6-release-notes.md`
+first; the published body equals that file, 343 bytes (read from the
+raw API JSON). The publish script's own last step, a body check,
+appended a second newline to jq's output and reported a false
+difference, so the script exited 1 (`COMMAND_EXIT_CODE="1"` in its
+footer) after `PUBLISH_EXIT=0`; the log records that and the redo.
+
+The push log, `v0.38.6-publish-push-20261016-211046.log`, echoes under
+`set -x` the fetch, the check that origin/main was `79f5d15f` and HEAD
+`7c6ebc4` in the same command, and `git push origin main`
+(`PUSH_EXIT=0`, `79f5d15..7c6ebc4`, fast-forward). The publish log,
+`v0.38.6-publish-20261016-211643.log`, carries the CI result, the tag
+and its read-back, and, under `set -x`, the exact command lines of the
+tag push (`git push origin refs/tags/v0.38.6`, the explicit ref, as at
+v0.38.5; the kickoff wrote `git push origin v0.38.6`, same effect) and
+of the draft create
+(`gh release create v0.38.6 --draft --verify-tag --title '<the tag
+message>' --notes-file <the notes file>`), each followed by its exit.
+These two command lines were not echoed in the v0.38.5 publish log. The
+five files were then uploaded one per call, smallest first, each logged
+with its exit; all five checked against the staged sizes; only then the
+draft made public (`PUBLISH_EXIT=0`). Every upload succeeded on the
+first try (21:16:49 to 21:17:05 -0400) and the five sizes matched.
+
+| asset | sha256 |
+| --- | --- |
+| i686-unknown-linux-musl | `6edbeeb3de0f9312c84bf127a3d1564807641513885d969ce37498a0ab9102ff` |
+| x86_64-unknown-linux-musl | `444f3619cdeece8a3d9cadf8b80763e6bf032ac43a6aaa1fdb440e00a857e241` |
+| aarch64-unknown-linux-musl | `69af3fbc56e47d270653e816243370f9210a2f85d2258efd86adbb0c27f1e967` |
+| armv7-unknown-linux-musleabihf | `b1b2456e39a42f906a2605e7c6957d819a77930270bbb088756dfd5a3496454d` |
+| SHA256SUMS (428 bytes) | `37d9e7e47ed588342bc25ec5a9f74a75635ba1bcab0edcb676264a3393872e57` |
+
+Closing gate, `v0.38.6-closing-gate-20261016-211821.log`:
+
+- Tokenless (`env -i`, curl, no gh): all five assets downloaded from
+  the public URLs, curl exit 0 each, 5 of 5 byte-identical to the
+  staged files, and `sha256sum -c` passes 4 of 4.
+- The README:185 one-liner, verbatim, into a fresh HOME made by
+  `mktemp -d`, once on
+  x86_64 and once under `setarch i686`: each fetched install.sh from the
+  v0.38.6 tag, printed "checksum verified.", and installed a binary that
+  prints `temur 0.38.6`, sha256 equal to the published x86_64 and i686
+  asset respectively. The i686 leg's log prints `setarch i686 uname -m`
+  and its output, `i686`, before the one-liner.
+- The README:196 blob URL returns 200.
+
+### What this release does NOT establish
+
+Re-derived from the one v0.38.6 CHANGELOG item:
+
+- The fix is seen in a unit test against a recorded listing, not
+  against the live Gemini endpoint from this machine.
+- The WARN still fires for an id truly absent from the listing, by
+  design.
+- A listed id is no guarantee the id is usable: retired ids stay listed
+  and 404 for new accounts, as `docs/USAGE.md` says.
+- The dated-alias PASS line now names the listed sibling in its bare
+  form, since the lookup takes the bare ids. No Anthropic listing
+  carries `models/`, so that line is unchanged in practice; no test in
+  `src/` or `tests/` pins a prefixed dated sibling (a grep of both).
+- No live dogfood of the published v0.38.6 asset has run yet. The
+  desktop's soak of the published i686 asset is still to run.
+- The queued F29 and F30 findings in ROADMAP (from 1897), the remaining
+  2026-10-01 seeds, F19, F20, F21, F25 and F22, and seeds S1, S2, S4
+  and S5 remain open. The T67 branch is held, unshipped, and not part
+  of this release.
+- ARM remains verified at build level only; no hardware smoke.
+
+### Corrections
+
+- `release.sh` first ran at the fix commit with the bump edits
+  uncommitted. Wrong assumption (the cut session's): the v0.38.5 shape
+  was step 4's instruction, where this cut's kickoff says release.sh
+  runs at the bump commit. The cut's independent check caught it before
+  HOLD 1 was sent; run 2 at `7c6ebc4` is the gate, and its assets are
+  byte-identical to run 1's.
+- The cut kickoff's file addressed the session that cut v0.38.5, which
+  had ended; planning's cover message named the session that ran this
+  cut, in the same checkout. A kickoff fact, not a cut error; the
+  independent check flagged the mismatch and the cover message resolves
+  it.
+- The grep-sweep log labels its USAGE line "USAGE:1843" and prints line
+  1843 as it then stood, the line before the history line: the fix
+  commit's rewrap had moved the history line to 1844. The control log
+  records 1844 at `7c6ebc4`.
