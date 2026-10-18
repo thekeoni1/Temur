@@ -15559,3 +15559,454 @@ Re-derived from the one v0.38.6 CHANGELOG item:
   1843 as it then stood, the line before the history line: the fix
   commit's rewrap had moved the history line to 1844. The control log
   records 1844 at `7c6ebc4`.
+
+## v0.38.6 published-asset soak (desktop, recorded 2026-10-18)
+
+The published i686 asset was downloaded anonymously on the desktop,
+checked against `SHA256SUMS`, installed through the README one-liner,
+smoked in containers and measured with one thirteen-task eval on
+Qwen3-4B. The pre-registered 9/9 held, and task 11 passed. Task 12
+failed, as at v0.38.4 and v0.38.5. Task 13 passed: its one read ended on
+the same small-window footer as at the last two soaks, and this time a
+grep reached past it. D22 resume-feedback failed for the second time in
+a row. A scripted arm drove the published binary's edit, read, bash and
+grep tools with exact arguments through a fake server, and all fourteen
+runs matched their pre-registration. One live attempt at the dogfood-3
+shape with the real model is read: the edit on the unread file was
+refused, and the model recovered by reading and sending an exact edit.
+A new arm ran `doctor` on the published asset against the live Gemini
+listing with the operator's key: the S6 fix passes the configured id
+where the v0.38.5 asset warns on it, and an absent id still warns.
+
+### The cut, as found
+
+Tag `v0.38.6` is annotated tag object
+`2d541b9fc348d76a1c639c8e85221fd661c4269c` on commit `7c6ebc4`, parent
+`5326c92` (the S6 fix), whose parent is `79f5d15` (the v0.38.5 soak
+record). The bump is 7 files, 13 insertions and 13 deletions; the fix is
+4 files, 60 insertions and 7 deletions. `origin/main` after the cut is
+`de721d7`, the ship record above, one file and 340 insertions, and
+`docs/RUNBOOK.md` there is 15,561 lines. The remote carries 47 tags and
+one head; `v0.38.5` is unchanged at `fc1663dd` and `v0.38.4` at
+`cc7e2400`. The desktop's `main` sat at `79f5d15`, which is
+`origin/main^^^`, so it is contained in `origin/main` and nothing needed
+rebasing; the desktop's T67 branch sat at `4757d1e`, clean, and was
+left alone. Nothing was retagged.
+
+The preflight on 2026-10-18 matched every pin. The disk check went
+through `df` on the host drives' mounts with stdin from /dev/null,
+because the PowerShell route timed out with Windows interop not
+answering; every disk check in this soak took that route and passed.
+Another project's short containers ran on this machine during the soak,
+and the load was logged at each launch: the 1-minute load read 1.55, 1.35,
+2.15 and 1.57 at the build, the eval, the scripted arm and the live
+attempt, under the 8.0 at which a launch would have waited.
+
+### The asset
+
+`temur-v0.38.6-i686-unknown-linux-musl`, **8,365,108 bytes**, sha256
+**`6edbeeb3de0f9312c84bf127a3d1564807641513885d969ce37498a0ab9102ff`**.
+
+It was fetched with `env -i curl -fsSLO` from the release URL, with
+`GH_TOKEN` and `GITHUB_TOKEN` unset. `sha256sum -c --ignore-missing
+SHA256SUMS` printed OK for it, and `SHA256SUMS` is 428 bytes, sha256
+`37d9e7e47ed588342bc25ec5a9f74a75635ba1bcab0edcb676264a3393872e57`,
+listing the four assets.
+
+### Container smoke on the asset
+
+The downloaded asset, staged under the name `temur` and mounted
+read-only, with no network in the containers.
+
+| check | result |
+| --- | --- |
+| i386 debian, `temur --version` | `temur 0.38.6` |
+| i386 debian, `temur doctor --no-network`, fresh container | completes; 0 pass, 0 warn, 1 fail (no config file), rc=1 |
+| i386 debian, `temur init` with no input, then `doctor --no-network` | init exits 1; doctor 0 pass, 0 warn, 1 fail |
+| i386 debian, `temur init` accepting every default, then `doctor --no-network` | reaches `Model id [qwen3-4b]`, writes the config, init rc=0; doctor 7 pass, 0 warn, 0 fail |
+| i386 debian, `doctor --no-network` with a config at the container home | 7 pass, 0 warn, 0 fail |
+| `busybox:stable`, `temur --version` | `temur 0.38.6` |
+| README one-liner `scripts/install.sh`, fresh empty HOME under `setarch i686` | `checksum verified.`; installed sha256 equals the asset's; `temur 0.38.6` |
+| T66 P3: init reasoning line, doctor reasoning WARN, non-reasoning local default | 0 and 0 |
+
+The fifth row gives doctor a hand-placed config, as at the earlier soaks;
+it is an instrument smoke and is counted nowhere. The fourth row is the
+run that gives the T66 P3 count a model id to judge, since its default
+model id is `qwen3-4b`. The phrase every T66 P3 init notice and doctor
+reasoning line carries, `looks like a reasoning model`, counts 0 in
+every smoke log. `busybox:stable` is image `b116e155`, as at the
+previous soaks. The i386 debian base image moved: `i386/debian:stable`
+is now `fade55c4`, pulled on 2026-10-15 when the dogfood suite image was
+built; the `6210699e` the v0.38.5 soak used is still present, untagged,
+and the tagged image was used here.
+
+The doctor prompt-floor estimate reads ~2,867 tokens, 34% of the 8192
+window, the same figure as at v0.38.4 and v0.38.5. The S6 fix and the
+bump touch no prompt file and no tool schema string (the only `src/`
+files in the range are `src/commands.rs` and `src/doctor.rs`), so no
+change was expected. Both figures are estimates.
+
+The one-liner was taken verbatim from the tag's README at line 185 and
+run on the host under `setarch i686` (`uname -m` read `i686`), tokenlessly
+under `env -i`, into an empty HOME; it needs network, which the log says.
+It installed an ELF 32-bit i386 static binary byte-identical to the
+downloaded asset.
+
+### Judge binary and size
+
+Built from `git archive 7c6ebc4` with rustc 1.96.1, in a fresh target dir
+with `CARGO_TARGET_DIR` and `TEMUR_TARGET_DIR` both set. The bump commit
+is the shipped source, and the extracted tree has no `.git`.
+
+- Tools test binary `tools-fdda67388a33983f`, sha256
+  `6ea8f53d4477b847b3e236b96e3eea26bc9b8ccb1e063dbc492f282c511fb9a8`.
+- Desktop i686 release of `7c6ebc4`: 8,367,532 bytes, sha256
+  `e572c0508024574f4e57b5f1be63b941ea426a4aa78a9a6a58749c20e4b6ec4d`.
+  The byte count is the v0.38.5 desktop build (8,367,276) plus the
+  256 bytes the asset grew by, the expectation; the sha differs from
+  the v0.38.5 build's because the version string and the S6 fix are
+  compiled in.
+
+The gap, asset minus desktop, is **-2,424 bytes**, the v0.38.5, v0.36.0
+and v0.38.1 gap, against -2,296 at v0.38.4 and -2,360 at v0.38.3.
+
+### The eval reading
+
+`scripts/weak_model_eval.sh` at the shipped source with its defaults (CTX
+8192, compact profile, thinking unset, `EVAL_MAX_TOKENS` 3072, `EVAL_MIN`
+0, CPU only), model `Qwen3-4B-Instruct-2507-Q4_K_M.gguf`, one run, on the
+downloaded asset. Before the server started, the driver asserted the
+asset's sha256 and byte count, required `/app/temur --version` in the
+container to print `temur 0.38.6`, and asserted the judge's and the
+instrument's sha256; `READBACK_BIN` was set to the judge above and the
+preflight said `explicit`. Before the launch, every `-v` mount line of
+the launchers, the driver, the arm scripts and the instrument was
+listed in the launch log: each host side is the asset dir, a work,
+state, reply, config or key dir under the archive, the model file or
+the read-back deps dir, mounted at `/app`, `/work`, `/state`, `/fake`,
+`/cfg`, `/secret`, `/model.gguf` or `/suites` inside the pod, and the
+real home is mounted nowhere (Ruling T66-135). It ran under the
+heavy-job lock on 2026-10-18, 1249 s wall clock, rc=0. No task came
+near the 1200 s per-task bound; the longest, task 9, took 223 s.
+
+The pre-registration was written before the launch and is echoed in the
+log. The nine and task 11 were the readings that could fail at one run;
+task 12 had no expectation, having passed at v0.37.0 through v0.38.3 and
+failed at v0.38.4 and v0.38.5; task 13 was pre-registered as variance
+with its base rate stated as 10 of 20, the tally the v0.38.5 record
+leaves. Task 8, which failed once in nine soaks (at v0.38.2), was to be
+read as before.
+
+| reading | result | expectation |
+| --- | --- | --- |
+| nine scored tasks | 9/9 | 9/9 |
+| 11 memo-docx | PASS, read back 9:30 | PASS |
+| 12 summary-pdf | FAIL, no summary.pdf in the work dir | none |
+| 13 pdf-section | PASS, quoted the section, no bash | variance; base rate 10 of 20 |
+
+The pre-registered 9/9 held. Nothing in the reading was re-run or
+overwritten. Task 8 passed in 97 s and stands at 9 PASS of 10 soak
+readings from v0.35.0 to v0.38.6.
+
+D22 resume-feedback failed: `never read the pdf and never cited it`. It
+passed at the eight soaks from v0.35.0 to v0.38.4 and failed at v0.38.5;
+this is its second FAIL in a row. The model first answered that it could
+not read files, then globbed `resume*` (no files: the fixture is
+`sample-resume.pdf`, which that pattern does not match), and asked for
+the text instead. It never read the file. No expectation was attached
+to D22; it is reported as read, and was not re-run.
+
+Task 13's fixture reproduced the P1 control arm's sha256 (`52a62858...`),
+and (b)'s skipped-documents sentence did not fire.
+
+The T64-16 screen's generic form matched one line, task 12's session
+record, which is a single line of JSON; the three literals matched
+nothing. The transcript was read. The model wrote a todo list, globbed
+seven name patterns (`**/tinyq*.log`, `**/support*.txt`,
+`**/rollout*.md`, `**/build*.log`, `**/weekly*.report`,
+`**/status*.txt`, `**/notes*.md`; no files), grepped `Tinyq-Rollout`,
+`support tickets` and `build` (no matches), and wrote that "Since I
+don't have access to the actual data, I cannot create a summary
+document", asking for the data. The screen's words sit in that sentence
+and in the prompt's `summary.pdf` on the same JSON line. The model
+never said a PDF could not be produced and wrote no file, so this is
+not the write.txt .pdf misread; the screen hit is a cross-field match,
+reported here. Task 12 never reached a write; the work dir is empty. It
+is reported as read, with no expectation attached, and was not re-run.
+
+Task 13 made one read, which ended on the F29 footer, the same line as
+at v0.38.4 and v0.38.5, byte for byte:
+
+    (Output capped at 7616 bytes for this model's context window. Showing lines 1-126. Use offset=127 to continue.)
+
+The model then wrote that it did not "see any mention of a "Maintenance
+Backlog" section", but this time went on to grep
+`maintenance|deferred|dry-dock` in the file, which found the sentence
+at line 580, and quoted it: the read ended on the footer and the grep
+reached past it. Task 13 is now 11 PASS of 21. Its PASS and its two
+FAILs at v0.38.4 and v0.38.5 share the first read and its footer; what
+differed is whether the model made a second call.
+
+The unattended nudge fired in 10 of the 13 task transcripts; tasks 10,
+12 and 13 are the ones without it, as at v0.38.4 and v0.38.5 (12 of 13
+at v0.38.2 and v0.38.3). It is reported as a rate, not as a property of
+any one task.
+
+The T59 line reads `find-needle glob=alpha.txt,beta.txt,gamma.txt
+comma-joined`, the form v0.38.3 and v0.38.5 recorded, against
+`glob=none none` at v0.38.4. It is reported, not judged.
+
+Three T66 counts over the 13 task transcripts, by GNU grep. `response
+truncated: max_tokens` counts 0 and `previous session archived as`
+counts 0, as at the last six soaks. The F29 footer phrase `for this
+model's context window` is 0 over the task transcripts, since the plain
+transcript prints no tool result, and 1 over every file under the
+transcripts directory: task 13's session record, the footer quoted
+above, as at v0.38.4 and v0.38.5.
+
+What the 8192 cap does to a long read in the eval stands as the v0.38.4
+record gives it: since F29 a read on the eval's 8192 window stops at the
+registry's 8192-character cap with a footer naming the next offset. F30
+moved that footer into one function (`src/tools/read.rs:286` at
+`7c6ebc4`) with both shipped forms pinned by a unit test
+(`src/tools/read.rs:433`), and task 13's footer above is the same text.
+For `/work/ferry-review.pdf` the body cap is 8192 minus the 64-byte
+header minus the 512-byte overhead, 7,616 bytes.
+
+The instrument is byte-identical at eight tags: `weak_model_eval.sh` is
+sha256 `e49319b8...` at `da8ba34`, `845b2fa`, `eccd7fe`, `6bcc983`,
+`e8dcb0b`, `e1f01a7`, `8317c49` and `7c6ebc4`, and `git diff --stat
+8317c49..7c6ebc4` over it and `tests/fixtures/` is empty. The task 13
+source fixture, `ferry-review.md`, is `9392abf1...` at `7c6ebc4`.
+
+### The scripted arm
+
+The scripted arm exercises the published binary's tool path with exact
+arguments. A fake OpenAI-compatible server, a Perl script inside the run
+container, answers each chat request with a pre-written SSE reply
+carrying one tool call, two tool calls (B1 only) or the text `done`, and
+saves every request body. `/app/temur` runs its own request, tool
+dispatch, tool result and session record against it, in the eval's
+container shape with no network and the eval's config line (window
+8192, which is what makes C1's cap bind). It says nothing about what a
+model would send. Fourteen runs, each in a fresh work, state and reply
+directory; the readings below are quoted from the session records. Each
+scripted call carries its own id. The scripts are the v0.38.5 soak's,
+with the archive root, the asset and the version string changed; the
+fourteen runs, their calls and their pins are unchanged, and every
+source line number named below was re-read at `7c6ebc4`, where
+`src/tools/` and `tests/` are untouched since `8317c49`.
+
+Five edit fixtures, each compared before the run with a copy written
+from the generator's Python literals:
+
+- `tool.py`, six lines, sha256 `0530410b...`.
+- `win.py`, sixty lines, sha256 `ff585340...`: `x1 = 1` to `x49 = 49`,
+  the six `tool.py` lines at 50-55, then `y56 = 56` to `y60 = 60`.
+- `big.py`, one thousand lines, 10,869 bytes, sha256 `95687afa...`:
+  `x1 = 1` to `x600 = 600`, the six lines at 601-606, then `y607 = 607`
+  to `y1000 = 1000`.
+- `cut.py`, the six lines with line 3 replaced by `    cur.execute("`,
+  2100 `a` characters and `")`, one line of 2119 characters; 2,224
+  bytes, sha256 `5c0498a1...`.
+- `app.toml`, five lines, 82 bytes, sha256 `72ac4c90...`: `[server]`,
+  `url = 'local'`, `key = '<the placeholder>'`, `mode = 'dev'`,
+  `[end]`. It is the F30 test's file (`tests/tools.rs:1984` at
+  `7c6ebc4`) with that test's placeholder key, a literal that is not a
+  credential of anything.
+
+R1 and R2 ran with a keyed config: the same config line with one more
+field inside `openai_compat`, `"api_key_file":"/secret/key"`, and a
+key file holding the placeholder above and a newline (32 bytes, sha256
+`043e1785...`, mode 0600), mounted read-only. From the source at
+`7c6ebc4`, the product reads that file by path at startup, trims it and
+registers it as the session key (`src/main.rs:780`); the registry
+replaces it with `[redacted]` in every tool output, and since F30 hands
+it to `read` beside the output cap, so a rendered line that carries it
+is recorded as withheld rather than shown (`src/tools/read.rs:207` and
+`:276`). The key guard denies the file tools everything under `/secret`
+and touches nothing under `/work`. The provider sends the key to the
+fake as a bearer header, which the fake does not save. No bash runs in
+R1 or R2. Every other run used the plain config, as before.
+
+HALF is an oldString with the file's first and last lines and a middle
+of which two of four lines are the file's, in order; INVENTED has the
+same first and last lines and none of the middle; EXACT is the file's
+six lines. Every E, S, W, C, B and L edit's newString is the six lines
+with the last changed to `return list(rows)`. HALF's first and last
+lines occur once each in `win.py` (50 and 55), `big.py` (601 and 606)
+and `cut.py` (1 and 6). REDACTED5 is `app.toml`'s five lines with line
+3 as `key = '[redacted]'`, what a model copying the read's result would
+send; PROD5 is REDACTED5 with line 4 as `mode = 'prod'`.
+
+| run | scripted calls | tool result | file before / after |
+| --- | --- | --- | --- |
+| E1 | edit HALF, unread file | `/work/tool.py has not been read in this session, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read the file and copy oldString exactly.` | `0530410b...` / `0530410b...`, unchanged |
+| E2 | edit INVENTED, unread file | `oldString was not found in the file, even with whitespace-tolerant matching. Re-read the file and copy the text exactly.` | `0530410b...` / `0530410b...`, unchanged |
+| E3 | read, then edit HALF | the edit: `Edited /work/tool.py (1 replacement(s), block-anchor match`, a dash, `oldString differed from the file; re-read before further edits)` | `0530410b...` / `9d1acf8d...`, the new text |
+| E4 | edit EXACT, unread file | `Edited /work/tool.py (1 replacement(s))` | `0530410b...` / `9d1acf8d...`, the new text |
+| S1 | read; bash `printf '# touched\n' >> /work/tool.py`; edit HALF | bash: `(no output)`; the edit: `/work/tool.py has changed since this session last read it, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read the file again and copy oldString exactly.` | `0530410b...` / `6d96b1d6...`, the six lines plus `# touched` |
+| W1 | read `win.py` offset 1 limit 20; edit HALF on `win.py` | the read: lines 1-20, `(Showing lines 1-20 of 60. Use offset=21 to continue.)`; the edit: `lines 50-55 of /work/win.py were not shown by a read in this session, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read those lines and copy oldString exactly.` | `ff585340...` / `ff585340...`, unchanged |
+| W2 | read `win.py` offset 41 limit 20; edit HALF on `win.py` | the read: lines 41-60, `(End of file - total 60 lines)`; the edit: `Edited /work/win.py (1 replacement(s), block-anchor match`, a dash, `oldString differed from the file; re-read before further edits)` | `ff585340...` / `18ad5fb1...`, the new text at 50-55, 60 lines |
+| C1 | read `big.py`; edit HALF on `big.py`; read `big.py` offset 497; edit HALF on `big.py` | first read: lines 1-496, `(Output capped at 7626 bytes for this model's context window. Showing lines 1-496. Use offset=497 to continue.)`; first edit: `lines 601-606 of /work/big.py were not shown by a read in this session, and oldString was not found exactly, so the approximate (block-anchor) match is not trusted. Read those lines and copy oldString exactly.`; second read: lines 497-967, original line 606 `    return rows`, `(Output capped at 7626 bytes for this model's context window. Showing lines 497-967. Use offset=968 to continue.)`; second edit: `Edited /work/big.py (1 replacement(s), block-anchor match`, a dash, `oldString differed from the file; re-read before further edits)` | `95687afa...` / `324a8e2b...`, the new text at 601-606, 1000 lines, 10,875 bytes |
+| B1 | ONE reply: read `tool.py` (call_1) and edit HALF (call_2); then edit HALF (call_3) | call_1: lines 1-6, `(End of file - total 6 lines)`; call_2: `/work/tool.py was read in this same response, so its lines count as shown only from the next response, and oldString was not found exactly. The read's result is in this message: send the edit again with oldString copied from it.`; call_3: `Edited /work/tool.py (1 replacement(s), block-anchor match`, a dash, `oldString differed from the file; re-read before further edits)` | `0530410b...` / `9d1acf8d...`, the new text |
+| L1 | read `cut.py`; edit HALF on `cut.py` | the read: line 3 as its first 2000 characters then `... (line truncated to 2000 chars)`, and `(End of file - total 6 lines)`; the edit: `line 3 of /work/cut.py is one read cannot show whole (over 2000 characters, or it carries the session key), so edit cannot change it. Change that line another way, or leave it.` | `5c0498a1...` / `5c0498a1...`, unchanged |
+| R1 | keyed config; read `app.toml`; edit REDACTED5 to PROD5 | the read: `1: [server]`, `2: url = 'local'`, `3: key = '[redacted]'`, `4: mode = 'dev'`, `5: [end]`, `(End of file - total 5 lines)`; the edit: `line 3 of /work/app.toml is one read cannot show whole (over 2000 characters, or it carries the session key), so edit cannot change it. Change that line another way, or leave it.` | `72ac4c90...` / `72ac4c90...`, unchanged |
+| R2 | keyed config; read `app.toml`; edit `[server]` to `[app]` | the read: as in R1, line 3 `3: key = '[redacted]'`; the edit: `Edited /work/app.toml (1 replacement(s))` | `72ac4c90...` / `48473cf8...`, line 1 `[app]`, 79 bytes |
+| G1 | grep `fetch_rows`, include `README.md, *.py` | `Found 2 matches`, naming `README.md` and `tool.py` | three-file fixture, unchanged |
+| G2 | grep `fetch_rows`, include `*.zzz` | `include "*.zzz" matched none of the 3 files under /work/.; nothing was searched` | three-file fixture, unchanged |
+
+C1's pins come from `read.rs`: on an 8192 window the registry's cap is
+8192 characters, and the read body gets that cap less the 54-byte header
+for `/work/big.py` and the 512-byte overhead, 7,626 bytes. Each rendered
+line costs its number, `: `, its text and a newline, so lines 1-496 take
+7,612 bytes and line 497 would make 7,628; from offset 497 the body
+fits through line 967 (7,619 bytes). Both footers equal v0.38.4's and
+v0.38.5's byte for byte, and the first read carried neither the 28 KB
+footer nor the registry's `(output truncated:` elision.
+
+R1's derivation, from the source at `7c6ebc4`: the exact match fails,
+since `[redacted]` is not in the file, and the block anchor finds
+`[server]` and `[end]` once each, candidate lines 1-5, whose three
+middle lines include two of the file's, `url = 'local'` and `mode =
+'dev'`, in order, so the middle check passes. The read had recorded
+line 3 as withheld, because the rendered line carried the session key,
+so the shown check answers withheld for line 3 and the edit is refused
+before it could write `[redacted]` over the key. The placeholder counts
+0 in R1's and R2's transcripts, session records and every saved request
+body.
+
+In B1 the second request carried both tool results, in order: the
+read's (call_1) and the refused edit's (call_2). A read in the same
+response still grants nothing until its result has gone back to the
+model; since F30 the refusal says so and asks for the edit again. In L1
+the read recorded lines 1-2 and 4-6 as shown and line 3 as withheld,
+and a withheld line inside the candidate 1-6 answers before coverage,
+so the refusal names line 3 and does not ask for a read no read can
+satisfy.
+
+The dash in the notes is U+2014 in the product text
+(`src/tools/edit/mod.rs:263`), so this ASCII file describes it. The
+five refusal texts are `src/tools/edit/mod.rs:293` (withheld), `:296`
+(not shown), `:299` (changed), `:302` (same response) and `:305` (never
+read) at `7c6ebc4` with the path, line and range filled in, the
+not-found text is `:310`, the capped-read footer is
+`src/tools/read.rs:286` and the cut line `src/tools/read.rs:167-170`.
+Each record's tool calls equal the scripted ones argument for argument,
+and every container exited 0. The T61 unattended nudge fired once per
+E, S, W, C, B, L and R run, as designed, and was answered by the
+scripted `done`; G1 and G2 made two requests each and no nudge, since
+grep does not mutate.
+
+### The live attempt
+
+One run with the eval's model, server and config, on a fresh copy of the
+six-line fixture. The prompt handed the model a stale copy of the file
+(the HALF lines) and told it not to read. The verdict is READ. The three
+calls, copied from the session record:
+
+    edit {"filePath": "/work/tool.py", "newString": "def fetch_rows(conn):\n    cur = conn.cursor()\n    cur.execute(\"SELECT * FROM rows ORDER BY id\")\n    rows = cur.fetchall()\n    conn.commit()\n    return list(rows)", "oldString": "def fetch_rows(conn):\n    cur = conn.cursor()\n    cur.execute(\"SELECT * FROM rows ORDER BY id\")\n    rows = cur.fetchall()\n    conn.commit()\n    return rows"}
+    read {"filePath": "/work/tool.py"}
+    edit {"filePath": "/work/tool.py", "newString": "def fetch_rows(conn):\n    cur = conn.cursor()\n    cur.execute(\"select id, name from rows\")\n    rows = cur.fetchall()\n    cur.close()\n    return list(rows)", "oldString": "def fetch_rows(conn):\n    cur = conn.cursor()\n    cur.execute(\"select id, name from rows\")\n    rows = cur.fetchall()\n    cur.close()\n    return rows"}
+
+Its first response carried one edit call, with no read before it, whose
+oldString had the file's first and last lines and two of four middle
+lines in order. It got the never-read refusal quoted for E1 above. The
+model then read the file and sent an edit whose oldString was the
+file's six lines exactly; it applied, the model replied `done`, and
+after the nudge it closed with a sentence. The final file is the
+fixture with that last edit applied, sha256 `9d1acf8d...`, and the
+reader's replay of the later applied edit on the fixture equals it, so
+the refused edit left the file unchanged. No response carried a read
+and an edit together, so the live run did not reach B1's case. One
+edit in the first response is the v0.38.2 to v0.38.4 shape again, after
+v0.38.5's two identical edits; the recovery is the same. This attempt
+exercises the F27 net on the v0.38.6 binary with a model; the F28, F29
+and F30 texts were read on the binary by the scripted S1, W1, C1, B1,
+L1, R1 and R2, and no model sent those calls.
+
+### The S6 arm
+
+The v0.38.6 ship record says the S6 fix was seen in a unit test against
+a recorded listing, not against the live Gemini endpoint. This arm saw
+it live. The operator placed their Gemini key in a file, mode 600, 54
+bytes, outside the rig, and named it in the implementing session; the
+file was mounted read-only at `/run/suite-key` in the dogfood suite box
+(`localhost/temur-suite:py3`, image `5286c49d`, host network, a fresh
+empty scratch HOME per run, cwd the testing checkout), with the hosted
+phase's Gemini config read-only at `/cfg` (sha256 `694c4be2...`:
+provider `openai-compat`, base URL
+`https://generativelanguage.googleapis.com/v1beta/openai`, model
+`gemini-3.1-pro-preview`, `api_key_file` `/run/suite-key`, context
+window 1,000,000). Three `doctor` runs on 2026-10-18, each with
+`ANTHROPIC_API_KEY` counted 0 in the launching shell first. `doctor`
+makes one authenticated listing GET per run and no completion call, so
+the arm spent nothing, and no session record was written: the scratch
+HOME held 0 files after each run.
+
+| run | binary | config | result | model line |
+| --- | --- | --- | --- | --- |
+| 1 | v0.38.5 asset, sha256 `39d3f157...` | gemini | 9 pass, 1 warn, 0 fail, rc=0 | `WARN: model "gemini-3.1-pro-preview" is not in the listing at https://generativelanguage.googleapis.com/v1beta/openai (listed: models/gemini-2.5-flash, models/gemini-2.5-pro, models/gemini-2.5-flash-preview-tts, models/gemini-2.5-pro-preview-tts, models/gemma-4-26b-a4b-it, models/gemma-4-31b-it, models/gemini-flash-latest, models/gemini-flash-lite-latest, models/gemini-pro-latest, models/gemini-2.5-flash-lite and 53 more; advisory only, servers may alias ids)` |
+| 2 | this asset, sha256 `6edbeeb3...` | gemini | 10 pass, 0 warn, 0 fail, rc=0 | `PASS: model "gemini-3.1-pro-preview" is in the listing at https://generativelanguage.googleapis.com/v1beta/openai (one authenticated GET)` |
+| 3 | this asset | gemini with the model line changed to `gemini-3.6-pro` (sha256 `7216ed3c...`; the diff against the gemini config is that line only) | 9 pass, 1 warn, 0 fail, rc=0 | `WARN: model "gemini-3.6-pro" is not in the listing at https://generativelanguage.googleapis.com/v1beta/openai (listed: gemini-2.5-flash, gemini-2.5-pro, gemini-2.5-flash-preview-tts, gemini-2.5-pro-preview-tts, gemma-4-26b-a4b-it, gemma-4-31b-it, gemini-flash-latest, gemini-flash-lite-latest, gemini-pro-latest, gemini-2.5-flash-lite and 53 more; advisory only, servers may alias ids)` |
+
+Run 1's WARN is the hosted phase's doctor line of 2026-10-16, its listed
+excerpt byte for byte, with `models/` on every listed id: the pre-fix
+binary compared the configured bare id against the prefixed ones and
+found nothing. Run 2 is the falsifiable reading, where a WARN on this id
+or any FAIL would have stopped the soak, and it passed with the line
+`src/doctor.rs:914` at `7c6ebc4` composes. Run 3 shows the WARN still
+firing for an id the listing does not carry, with the excerpt now in
+bare form, no `models/` inside the parenthesis. The other nine checks
+read the same in all three runs: config parsed, active selection, key
+file present and mode 600, key isolation, bash key sandbox, sessions dir
+absent, endpoint reachable, no project instructions, and a prompt floor
+of ~7,651 tokens against the 1,000,000 window. The four S6 logs were
+scanned for the two Gemini key shapes and for the key file's location,
+0 each; the scratch HOME was removed after the arm; the key file is the
+operator's to remove again, and this arm never read, copied or deleted
+it.
+
+### What this soak closes
+
+Of the v0.38.6 ship record's seven "does NOT establish" items, this soak
+closes three.
+
+- Item one closes: the S6 fix was seen against the live Gemini endpoint
+  on the published asset, run 2 above, `PASS: model
+  "gemini-3.1-pro-preview" is in the listing at
+  https://generativelanguage.googleapis.com/v1beta/openai (one
+  authenticated GET)`, where the v0.38.5 asset warned on the same config
+  and the same key.
+- Item two closes: run 3 shows the WARN still fires for an absent id,
+  `gemini-3.6-pro`, with a bare listing excerpt.
+- Item three, a listed id being no guarantee the id is usable, is by
+  design and stays open; doctor made no completion call here.
+- Item four, the dated-alias PASS line, stays open: no Anthropic listing
+  was fetched by this soak.
+- Item five closes: the desktop soak of the published asset has run.
+- Item six, the queued findings and seeds with the T67 branch held,
+  stays open.
+- Item seven, ARM at build level only, stays open.
+
+Every transcript and log was scanned before this record was written: the
+five release leak patterns and two API-key shapes over all 387 files, 49
+of them under the eval's transcripts directory, the scripted arm's and
+the live attempt's work dirs, state dirs and records included, the
+placeholder key file and the R runs included, nothing excluded. Every
+grep that reads the pattern file carries `-i`. Three controls ran before
+the counts: each pattern matched itself, each of the 3 metacharacter-free
+patterns scored 1 with `-i` and 0 without, and a known positive outside
+the archive registered as one file hit. Zero hits. The placeholder key
+is neither a leak pattern nor an API-key shape; a separate listing of
+the 13 files carrying it names the generator, the reader, the arm and
+step 5 scripts, the key file and the R runs' and the host dry run's
+`app.toml` copies, and no transcript, session record or saved request
+body. A further pass counted the two Gemini key shapes, the one the
+operator's key has and the older one, with a synthetic control for each
+built outside the archive at run time (1 and 1, and 0 across): 0 and 0
+over the 387 files before the S6 arm and over the 391 after it, when the
+key file's location, given as an argument and carried by a control file
+outside the archive, counted 0 files as well.
+
+Archive: `~/temur-eval-archive/v0.38.6-soak/`.
