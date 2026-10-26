@@ -575,12 +575,35 @@ pub fn detect_promise_without_call(text: &str) -> bool {
 /// sheets, only paraphrased in the T31 ROADMAP row. Nothing here is
 /// derived from that paraphrase: inventing a phrase the model was never
 /// observed to say would widen the match on a guess.
-const SCOPE_DENIAL_PHRASES: [&str; 5] = [
+///
+/// T68 (2026-10-25) added nine entries, each a phrase a Qwen3-4B 2507
+/// model was OBSERVED to end a declining turn on, copied lowercase and
+/// without an apostrophe. Eight are in the phase 1 prompt measurement
+/// (~/temur-eval-archive/t68-p1-prompt-ab/grades-1a.tsv, evidence
+/// column), and "am a coding agent" is also the 2026-10-25 Instruct
+/// sighting's "I am a coding agent". The ninth, "my role is to assist
+/// with", is the 2026-10-25 Thinking sighting and the 2026-09-28
+/// dogfood's F19. None of them was caught by the five above. Before
+/// each went in, the T58 sweep: every archive and dogfood reply carrying
+/// it was read, and none is a file denial. The nearest is a suite reply that read its file, wrote a
+/// text summary and said a PDF "would be outside my current
+/// capabilities"; it is not a refusal to read, and its turn dispatched
+/// tools, so the caller never asks.
+const SCOPE_DENIAL_PHRASES: [&str; 14] = [
     "outside the scope of",
     "beyond the scope of",
     "not within the scope of",
     "cannot provide explanations of",
     "have the capability to",
+    "am a coding agent",
+    "a coding assistant",
+    "my role is to assist with",
+    "not a software engineering task",
+    "outside my capabilities",
+    "outside my current capabilities",
+    "beyond my current capabilities",
+    "not accessible to me",
+    "educational content",
 ];
 
 
@@ -800,7 +823,8 @@ const FILE_DENIAL_PHRASES: [&str; 9] = [
 /// normalisation of an observed phrase, not a new phrase.
 ///
 /// It is applied HERE ONLY. The scope family's behaviour is measured and
-/// published, none of its five phrases contains an apostrophe, and T58
+/// published, none of its phrases (five then, fourteen since T68)
+/// contains an apostrophe, and T58
 /// changes nothing about it.
 pub fn detect_file_denial(text: &str) -> bool {
     let trimmed = text.trim_end();
@@ -1084,6 +1108,37 @@ mod tests {
             "I don't have the capability to teach or explain that.",
             "That is beyond the scope of available tools.",
             "That is not within the scope of what these tools do.",
+            // T68: "am a coding agent", c0 q1 r2, verbatim.
+            "I cannot explain mathematical concepts like sequences and series from \
+             calculus because I am a coding agent, not a math educator.",
+            // T68: "a coding assistant", c0r q3 r3, verbatim.
+            "I'm sorry, but I'm a coding assistant and not equipped to provide \
+             explanations on mathematical concepts like implicit differentiation.",
+            // T68: "my role is to assist with", relay 2026-10-25 Thinking, verbatim.
+            "I cannot solve mathematical integrals or calculus problems. My role is \
+             to assist with software engineering tasks like reading/editing code, \
+             running commands, and searching files.",
+            // T68: "not a software engineering task", c0r q3 r2, verbatim.
+            "I'm unable to explain implicit differentiation as it is not a software \
+             engineering task.",
+            // T68: "outside my capabilities", c0 q1 r1, verbatim.
+            "I'm unable to provide a step-by-step explanation of sequences and \
+             series in calc2 as this is outside my capabilities.",
+            // T68: "outside my current capabilities", c0 q10 r3, verbatim.
+            "I can't translate text into languages as that's outside my current \
+             capabilities.",
+            // T68: "beyond my current capabilities", c3 q1 r2, verbatim.
+            "I cannot provide a step-by-step explanation of sequences and series in \
+             calculus (calc2) as it involves educational content beyond my current \
+             capabilities.",
+            // T68: "not accessible to me", c2 q1 r3, verbatim.
+            "I cannot provide an explanation of sequences and series from calc2 as \
+             it requires a detailed educational context that is not accessible to \
+             me.",
+            // T68: "educational content", c2 q1 r2, verbatim.
+            "I cannot provide a step-by-step explanation of sequences and series in \
+             calc2 (Calculus 2) as this requires educational content not accessible \
+             through available tools or data.",
         ] {
             assert!(detect_scope_denial(reply), "scope must fire: {reply}");
             assert!(!detect_file_denial(reply), "file must NOT fire: {reply}");
@@ -1142,8 +1197,8 @@ mod tests {
     #[test]
     fn the_scope_family_is_left_on_straight_apostrophes() {
         // T58 normalises U+2019 in the FILE detector only. None of the
-        // five scope phrases carries an apostrophe, so this is a pin on
-        // the boundary rather than on a behaviour anyone relies on.
+        // scope phrases (fourteen since T68) carries an apostrophe, so
+        // this is a pin on the boundary rather than on a behaviour anyone relies on.
         for p in SCOPE_DENIAL_PHRASES {
             assert!(!p.contains('\''), "{p} would need normalisation too");
         }
