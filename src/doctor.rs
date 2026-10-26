@@ -2539,7 +2539,7 @@ mod tests {
         assert_eq!(v["messages"][0]["role"], "system");
         let sent = v["messages"][0]["content"].as_str().expect("a system string");
         // The compact template, because a 10000 window auto-selects it.
-        assert!(sent.starts_with("You are temur, a coding agent in a terminal."), "{sent}");
+        assert!(sent.starts_with("You are temur, an agent in a terminal."), "{sent}");
         assert_eq!(v["max_tokens"], 1, "one generated token, like its siblings");
         let expected = crate::tools::Registry::standard_with_skills(vec![]).definitions();
         assert_eq!(

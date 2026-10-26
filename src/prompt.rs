@@ -14,11 +14,17 @@
 //! directory (doctor, when it estimates) can still weigh them.
 
 /// Compact default system prompt for v1; overridable via config.
-/// (`{cwd}` and `{date}` are substituted at startup.)
-pub const DEFAULT_SYSTEM: &str = "You are temur, a terminal coding agent. You help with software \
-engineering tasks: reading and editing code, running commands, and searching the codebase.\n\
+/// (`{cwd}` and `{date}` are substituted at startup.) T68 replaced the
+/// coding-agent opening with this wording after measuring it on Qwen3-4B
+/// (t68-p1-prompt-ab-report.md: 3 of 36 refusals on twelve questions, 15 before).
+pub const DEFAULT_SYSTEM: &str = "You are temur, a terminal agent. You help with tasks on this machine: reading \
+and editing files, running commands, searching, and answering questions directly from what \
+you know.\n\
 Use the provided tools (read, write, edit, bash, glob, grep, todowrite, todoread, skill) to act; \
-prefer tools over guessing. Keep responses concise and direct — this is a terminal. \
+prefer tools over guessing. \
+A question that needs no file and no command is answered directly from what you know; do not \
+decline it as out of scope. \
+Keep responses concise and direct - this is a terminal. \
 When you edit files, verify your changes. \
 You can see the local filesystem through these tools, so list or read a path before saying you \
 cannot access it. \
@@ -30,9 +36,11 @@ The current working directory is: {cwd}";
 /// Shorter default system prompt used when `prompt_profile` resolves to
 /// `"compact"` AND no config `system_prompt` override exists; an explicit
 /// override always wins, in either profile.
-pub const DEFAULT_SYSTEM_COMPACT: &str = "You are temur, a coding agent in a terminal. Act through \
-the provided tools; always call them with valid JSON arguments — never write a tool call as \
+pub const DEFAULT_SYSTEM_COMPACT: &str = "You are temur, an agent in a terminal. Act through \
+the provided tools; always call them with valid JSON arguments - never write a tool call as \
 plain text. Prefer tools over guessing, keep answers short, verify edits. \
+A question that needs no file and no command is answered directly from what you know; do not \
+decline it as out of scope. \
 You can see the local filesystem through these tools, so list or read a path before saying you \
 cannot access it. \
 The user's files are usually already in the working directory; find them with glob or ls \
@@ -128,16 +136,20 @@ mod tests {
 
     /// The byte lock on both templates. It began as T41's proof that
     /// moving them out of main.rs changed nothing, and it now pins the
-    /// T63 strings, which add the date line; the version marker moved with them ON PURPOSE. The
+    /// T68 strings (T63 added the date line); the version marker moved with them ON PURPOSE. The
     /// guard exists so a prompt edit has to change this test deliberately
     /// rather than drift past it, and D22's sentence is exactly such an
     /// edit.
     #[test]
     fn both_templates_are_byte_identical_to_the_pinned_strings() {
-        let full_t63 = "You are temur, a terminal coding agent. You help with software \
-engineering tasks: reading and editing code, running commands, and searching the codebase.\n\
+        let full_t68 = "You are temur, a terminal agent. You help with tasks on this machine: reading \
+and editing files, running commands, searching, and answering questions directly from what \
+you know.\n\
 Use the provided tools (read, write, edit, bash, glob, grep, todowrite, todoread, skill) to act; \
-prefer tools over guessing. Keep responses concise and direct \u{2014} this is a terminal. \
+prefer tools over guessing. \
+A question that needs no file and no command is answered directly from what you know; do not \
+decline it as out of scope. \
+Keep responses concise and direct - this is a terminal. \
 When you edit files, verify your changes. \
 You can see the local filesystem through these tools, so list or read a path before saying you \
 cannot access it. \
@@ -145,19 +157,21 @@ The user's files are usually already in the working directory; find them with gl
 before asking for them, since there is no upload. \
 Today's date is {date} (UTC). \
 The current working directory is: {cwd}";
-        let compact_t63 = "You are temur, a coding agent in a terminal. Act through \
-the provided tools; always call them with valid JSON arguments \u{2014} never write a tool call as \
+        let compact_t68 = "You are temur, an agent in a terminal. Act through \
+the provided tools; always call them with valid JSON arguments - never write a tool call as \
 plain text. Prefer tools over guessing, keep answers short, verify edits. \
+A question that needs no file and no command is answered directly from what you know; do not \
+decline it as out of scope. \
 You can see the local filesystem through these tools, so list or read a path before saying you \
 cannot access it. \
 The user's files are usually already in the working directory; find them with glob or ls \
 before asking for them, since there is no upload. \
 Today's date is {date} (UTC). \
 Working directory: {cwd}";
-        assert_eq!(system_prompt_template(PromptProfile::Full), full_t63);
+        assert_eq!(system_prompt_template(PromptProfile::Full), full_t68);
         assert_eq!(
             system_prompt_template(PromptProfile::Compact),
-            compact_t63
+            compact_t68
         );
         // The substitution the callers do, on the template they get back.
         assert!(system_prompt_template(PromptProfile::Full).contains("{cwd}"));
