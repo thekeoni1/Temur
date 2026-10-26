@@ -843,8 +843,11 @@ const MODEL_WARN_LIST_CAP: usize = 10;
 /// CONFIGURED endpoint only (the same place the key goes on every turn, so
 /// no new trust relationship is created), through the same
 /// [`crate::provider::list_models_live_with_timeout`] the `/models`
-/// command uses, and never under `--no-network`. The keyless path is
-/// untouched, byte for byte, and no doctor line ever carries a key byte.
+/// command uses, and never under `--no-network`. The keyless path keeps
+/// T15's one request and its message strings; since v0.38.6 (S6) both
+/// paths strip one leading `models/` from the configured model and from
+/// every listed id before comparing, and no doctor line ever carries a
+/// key byte.
 ///
 /// Two rules keep the amendment honest.
 ///
@@ -906,8 +909,15 @@ fn model_check(
         }
     };
     // T64 P0 (R2): strip one leading `models/` on both sides, as the REPL does.
+    // A listing that holds an id both with and without the prefix names
+    // one model, so the stripped list keeps its first occurrence only.
     let model = crate::commands::bare_id(&p.model);
-    let ids: Vec<&str> = ids.iter().map(|i| crate::commands::bare_id(i)).collect();
+    let mut seen = std::collections::BTreeSet::new();
+    let ids: Vec<&str> = ids
+        .iter()
+        .map(|i| crate::commands::bare_id(i))
+        .filter(|i| seen.insert(*i))
+        .collect();
     if ids.iter().any(|i| *i == model) {
         return if keyed {
             r.pass(&format!(
@@ -923,6 +933,8 @@ fn model_check(
     }
     // The alias rule applies to the keyed path only: the keyless listing
     // is a local server's own file names, and T15's strings are pinned.
+    // The `models/` strip above is not part of that rule: since v0.38.6 it
+    // applies to both paths.
     if keyed {
         if let Some(dated) =
             crate::provider::newest_dated_alias(model, ids.iter().copied())
@@ -1822,6 +1834,22 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("(listed: gemini-3.1-pro-preview, other-1;"), "{out}");
+        // T68 rider, item 4: a dated-alias PASS names the model as
+        // configured, prefix and all; the dated id is the stripped one the
+        // listing matched.
+        let (dated, _heads) = recording_server(
+            "HTTP/1.1 200 OK",
+            r#"{"data":[{"id":"models/gemini-9-pro-20260101"}]}"#,
+        );
+        let (healthy, out) =
+            doctor_over(&keyed_compat_config(&dated, "models/gemini-9-pro", &key), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "PASS: model \"models/gemini-9-pro\" matches gemini-9-pro-20260101 in the listing at {dated} (one authenticated GET)"
+            )),
+            "{out}"
+        );
     }
 
     #[test]
@@ -1973,6 +2001,42 @@ mod tests {
             out.contains(&format!(
                 "WARN: model \"served-a-2026\" is not in the server listing at {base} (server lists: served-a, served-a-20260101; advisory only, servers may alias ids)"
             )),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn keyless_model_check_strips_a_models_prefix_and_lists_each_id_once() {
+        // T68 rider (S6 review, ruled option b): the strip runs on the
+        // keyless path too, and the WARN excerpt shows the stripped ids.
+        let base = canned_server(
+            r#"{"data":[{"id":"models/served-a"},{"id":"models/served-a-20260101"}]}"#,
+        );
+        let (healthy, out) = doctor_over(&keyless_config(&base, "served-a"), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "PASS: model \"served-a\" is in the server listing at {base}"
+            )),
+            "{out}"
+        );
+        let (healthy, out) = doctor_over(&keyless_config(&base, "served-x"), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "WARN: model \"served-x\" is not in the server listing at {base} (server lists: served-a, served-a-20260101; advisory only, servers may alias ids)"
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("models/served-a"), "{out}");
+        // Item 5: one id listed with and without the prefix is shown once.
+        let both = canned_server(
+            r#"{"data":[{"id":"served-a"},{"id":"models/served-a"},{"id":"served-b"}]}"#,
+        );
+        let (healthy, out) = doctor_over(&keyless_config(&both, "served-x"), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains("(server lists: served-a, served-b; advisory only"),
             "{out}"
         );
     }
