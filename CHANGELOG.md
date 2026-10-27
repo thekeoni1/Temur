@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased
+## v0.39.0 - 2026-10-27
 
 - The default prompt no longer calls temur a coding agent for software
   engineering tasks. That opening is what Qwen3-4B 2507 quoted back
