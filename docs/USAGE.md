@@ -1030,20 +1030,20 @@ date line unless you write one. The line costs 18 tokens in each profile.
 ### The prompt floor
 
 The floor is what a turn costs before the conversation starts. Measured
-live on 2026-09-14 (Qwen3-4B-Instruct-2507 Q4_K_M, `context_window`
+live on 2026-10-27 (Qwen3-4B-Instruct-2507 Q4_K_M, `context_window`
 12288, cwd `/home/dev/temur-desktop`, one request per profile, the
-reported input-token count). The compact figure came from llama.cpp
-`server-b10438` on CPU. The full figure came from `server-cuda-b10438`
-with `-ngl 99`, because a CPU server did not finish that prefill inside
-doctor's 300-second bound; the token count does not depend on the device.
+reported input-token count). Both figures came from llama.cpp
+`server-cuda-b10438` with `-ngl 99`, because a CPU server did not finish
+the full prefill inside doctor's 300-second bound; the token count does
+not depend on the device.
 
 | Prompt profile | Floor | Left of a 12288 window |
 | --- | --- | --- |
-| `full` | 7,448 tokens | ~4,840 |
-| `compact` | 3,220 tokens | ~9,068 |
+| `full` | 7,501 tokens | ~4,787 |
+| `compact` | 3,267 tokens | ~9,021 |
 
 That is the reason auto-selection exists: on the full profile a 12288
-window is 60% spent before the model reads the task, and at a
+window is 61% spent before the model reads the task, and at a
 `context_window` of 4096 the floor exceeds the whole window.
 
 Your own number will differ. The floor moves with the length of your
@@ -1053,7 +1053,7 @@ rather than quoting the table above:
 
 ```
 PASS: prompt floor (estimate): ~2459 tokens; window 12288; 20% of the window
-NOTE: that estimate is prompt bytes divided by 4, which is not tokenization: expect it to be off by some percent in either direction. A networked run against a keyless openai-compat server reports a measured figure instead. Reference measurement (2026-09-14, llama.cpp, Qwen3-4B-Instruct-2507, measured from a short working-directory path; a longer one raises both): 7,448 tokens for the full profile, 3,220 for the compact one.
+NOTE: that estimate is prompt bytes divided by 4, which is not tokenization: expect it to be off by some percent in either direction. A networked run against a keyless openai-compat server reports a measured figure instead. Reference measurement (2026-10-27, llama.cpp, Qwen3-4B-Instruct-2507, measured from a short working-directory path; a longer one raises both): 7,501 tokens for the full profile, 3,267 for the compact one.
 NOTE: the prompt floor moves with the length of the cwd path and the number of installed skills, both of which ride in the system prompt
 ```
 

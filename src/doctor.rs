@@ -566,26 +566,26 @@ fn floor_estimate(system: &str, defs: &[crate::provider::ToolDef]) -> u64 {
 /// changes, because a stale reference is worse than none: T53's D22
 /// sentence moved both templates, and T54's `spreadsheet` definition
 /// moved both again, and T63's date line moved both a third time.
-/// Current figures (2026-09-14, Qwen3-4B-Instruct-2507 Q4_K_M,
-/// `context_window` 12288, cwd /home/dev/temur-desktop): 7,448 counted
-/// tokens for the full profile (llama.cpp `server-cuda-b10438`, `-ngl 99`,
-/// because a CPU server does not answer the full prefill inside the probe
-/// bound) and 3,220 for the compact one (`server-b10438`, CPU). The same
-/// day, the build without the date line counted 7,430 and 3,202, so the
-/// line costs 18 tokens in each profile. That cwd is a short path; a
+/// Current figures (2026-10-27, Qwen3-4B-Instruct-2507 Q4_K_M,
+/// `context_window` 12288, cwd /home/dev/temur-desktop): 7,501 counted
+/// tokens for the full profile and 3,267 for the compact one (both on
+/// llama.cpp `server-cuda-b10438`, `-ngl 99`; a CPU server does not answer
+/// the full prefill inside the probe bound). On 2026-09-14 they were 7,448
+/// and 3,220, and the build without the date line counted 7,430 and 3,202,
+/// so the line costs 18 tokens in each profile. That cwd is a short path; a
 /// longer working directory raises both figures. Earlier references:
 /// 2026-09-08's 7,433 and 3,205, T53's 6,972 and 2,744, and F6's pre-T53
 /// 6,991 and 2,763 (RUNBOOK, 2026-08-29). The +461 both profiles gained
 /// between T53 and 2026-09-08 is one tool definition, and it is the same
 /// number twice because the compact profile trims DESCRIPTIONS and does
 /// not drop tools. Against the current full figure this estimator reads
-/// 7,635 with the same binary and cwd, i.e. 2.5% HIGH, not low: the
+/// 7,687 with the same binary and cwd, i.e. 2.5% HIGH, not low: the
 /// estimate and the count weigh the same bytes but chars/4 is not
 /// tokenization, and a different cwd path or skill set moves both.
 /// Anyone who wants the real number can have it, from the measured
 /// line, for one request.
 const PROMPT_FLOOR_ESTIMATE_NOTE: &str =
-    "NOTE: that estimate is prompt bytes divided by 4, which is not tokenization: expect it to be off by some percent in either direction. A networked run against a keyless openai-compat server reports a measured figure instead. Reference measurement (2026-09-14, llama.cpp, Qwen3-4B-Instruct-2507, measured from a short working-directory path; a longer one raises both): 7,448 tokens for the full profile, 3,220 for the compact one.";
+    "NOTE: that estimate is prompt bytes divided by 4, which is not tokenization: expect it to be off by some percent in either direction. A networked run against a keyless openai-compat server reports a measured figure instead. Reference measurement (2026-10-27, llama.cpp, Qwen3-4B-Instruct-2507, measured from a short working-directory path; a longer one raises both): 7,501 tokens for the full profile, 3,267 for the compact one.";
 
 /// What moves the number, printed with every floor line, measured or not.
 /// Both ingredients are things the reader can change and neither is

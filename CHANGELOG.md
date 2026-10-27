@@ -2,6 +2,28 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
+## Unreleased
+
+- The default prompt no longer calls temur a coding agent for software
+  engineering tasks. That opening is what Qwen3-4B 2507 quoted back
+  when it declined a general question (a calculus explanation, a
+  recipe, a translation). Both templates now open with a terminal agent
+  for tasks on this machine, including answering from what it knows,
+  and say that a question needing no file and no command is answered
+  directly. On twelve general questions, three runs each, the full
+  profile refused 3 of 36 against 13 for the old prompt the same day.
+  The suite passed 10 of 72 against the old prompt's 16 of 72 (pass
+  rule: lose at most 6), with the same-day old prompt at 3 of 24. Both
+  templates are now ASCII.
+- The scope-denial nudge recognises nine more refusal wordings, each
+  copied from a reply the model was observed to write. None of them
+  matches an observed file denial.
+- doctor's comments about the `models/` strip now say it applies on
+  both the keyed and keyless paths, and a keyless test pins it. The
+  stripped listing names each id once. The prompt-floor reference
+  figures are re-measured for the new prompt: 7,501 tokens full and
+  3,267 compact at a 12288 window.
+
 ## v0.38.6 - 2026-10-16
 
 - doctor's model check now strips a leading `models/` on both sides

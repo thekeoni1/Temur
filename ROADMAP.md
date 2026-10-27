@@ -1629,6 +1629,96 @@ one-liner gate stays deferred to the visibility flip (RUNBOOK).
   `\text \mathrm \textbf \textit \mathbf` unwrap to their argument, `~`
   becomes a space; `\frac` and friends stay honest source by design.
 
+### T68 as built (2026-10-27)
+
+T68 stops the default prompt from calling temur a coding agent. Both
+templates opened with "a terminal coding agent. You help with software
+engineering tasks", and on the Qwen3-4B 2507 models that opening is what
+the model quoted back when it declined a general question. There were
+three sightings: 2026-09-27 on the Thinking model (the F19 seed below),
+and two on 2026-10-25 in the operator's sessions on the installed
+v0.38.6 binary. One was the Instruct model declining a calculus
+explanation with "I am a coding agent and can only assist with software
+development tasks". The other was the Thinking model declining a
+surface-of-revolution integral with "My role is to assist with software
+engineering tasks". The scope nudge fired on neither, because neither
+reply contained any of recover.rs's five phrases.
+
+Phase 1 measured before writing anything. It tried four wordings
+through the `system_prompt` config override against the shipped
+default, on twelve general questions (calculus, history, a recipe, a
+translation, probability, a haiku), three runs each, on
+Qwen3-4B-Instruct-2507 at 20480. The shipped default refused 15 of 36.
+The wording that ships (c2) refused 3 of 36. It opens with a terminal
+agent for tasks on this machine, including answering from what it
+knows, and adds one sentence: a question that needs no file and no
+command is answered directly, not declined as out of scope. On the
+Thinking model, Q1 to Q3, the default refused 6 of 9 and c2 0 of 9
+(phase 1 report t68-p1-prompt-ab-report.md, grades-1a.tsv,
+grades-z.tsv). The phase 1 suite read the other way: c0 16 of 72
+pooled against c2's 9 (8 before the M1 timesheet grader fix). Ruling
+T68-4 traced that to the measurement
+design, which was planning's error: the raw override replaces the whole
+template, so the override arms ran with no cwd line and looked for
+/quarterly.xlsx at the root. The suite therefore had to be re-read on a
+built binary carrying the real {cwd}, which phase 2 did.
+
+Phase 2 (held branch t68-prompt, archive
+temur-eval-archive/t68-p2/) put c2 in src/prompt.rs as the full
+template, byte for byte (cmp against phase 1's c2.txt), with a compact
+template in the same shape. Both templates are now ASCII. The figures
+below are from the gate binary (8,368,620 bytes) against the v0.38.6
+asset:
+
+- Twelve questions, 3 runs (grades-m2.tsv). Refusals of 36: parent full
+  13, T68 full 3, parent compact 7, T68 compact 6. False tool claims:
+  parent compact 5, the others 0.
+- Thinking model, Q1 to Q3 (grades-mz.tsv). The parent refused 5 of 9,
+  T68 0 of 9. The parent's Q2 was correct in 1 of 3, T68's in 3 of 3.
+- The eight-task suite at 72 (seq-m3.console.log). T68 passed 10 of 72
+  against the parent's 16 of 72 (c0, regraded with the fixed timesheet
+  grader; pass rule: lose at most 6), with the same-day parent at 3 of
+  24. It is in on the line, not level. The largest drop is
+  office-sales-xlsx, 2 of 9 against 6 of 9 (same-day parent 1 of 3).
+  Every one of those runs read the right file; the failures are
+  arithmetic and sequencing.
+- The weak-model eval, 2 runs per binary (m4-2-<arm>.log).
+  - SCORE 9/9 on every run of both.
+  - D22 and the T60 memo: 2 of 2 on both.
+  - The T60 summary-pdf: 1 of 2 on both.
+  - T62 pdf-section: 0 of 2 on both.
+  - No task the parent passed 2 of 2 dropped on T68.
+- The prompt floor (m5.log), 12288, cwd /home/dev/temur-desktop: 7,501
+  full and 3,267 compact, against the parent's 7,470 and 3,242.
+
+The scope-denial detector learned nine phrases. Each is copied
+lowercase, without an apostrophe, from a reply the model was observed
+to write:
+
+- "am a coding agent" (the 2026-10-25 Instruct sighting and phase 1).
+- "my role is to assist with" (the Thinking sighting and F19).
+- Seven from the phase 1 evidence column: "a coding assistant", "not a
+  software engineering task", "outside my capabilities", "outside my
+  current capabilities", "beyond my current capabilities", "not
+  accessible to me" and "educational content".
+
+The T58 sweep read every archive and dogfood reply carrying each
+phrase, and none is a file denial. The S6 post-ship review rider is in
+doctor.rs: the comments say the `models/` strip applies on both the
+keyed and keyless paths, the stripped listing names each id once, and
+a keyless test pins both.
+
+Deliberately not done:
+
+- T67 (the numbers-from-tools branch).
+- The auto-continue seed.
+- F20 (raw <response> tags).
+- The provider::listing_match helper.
+- Two refusal shapes phase 2 saw and the nudge does not catch,
+  recorded and not swept: "I don't have access to a specific course or
+  textbook titled ..." and "... as it requires external knowledge"
+  (T68 compact).
+
 ### T66 as built (2026-09-21)
 
 P0 stops `/clear` from destroying the conversation it clears. Until now
@@ -1873,7 +1963,7 @@ tasks", a phrase none of recover.rs's five scope-denial phrases catches
 (first step: the phrase, with a fixture; the full fix is a more general
 DEFAULT_SYSTEM opening, a default change that moves both profiles, the
 byte-lock test, the floors and doctor's estimate, and needs the 13-task
-eval before and after); F21 and F25 as one seed, a nudge in the T61
+eval before and after) (taken by T68); F21 and F25 as one seed, a nudge in the T61
 style when a turn claims a computed result or writes a derived file and
 no command ran in the session (the turn record has both: write or edit
 present, bash absent); F22 Esc Esc clearing the input line, since
