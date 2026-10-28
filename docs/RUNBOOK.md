@@ -16010,3 +16010,338 @@ key file's location, given as an argument and carried by a control file
 outside the archive, counted 0 files as well.
 
 Archive: `~/temur-eval-archive/v0.38.6-soak/`.
+
+## v0.39.0 ship record
+
+2026-10-27. **The T68 prompt, shipped at tag `v0.39.0`.** A MINOR
+release, the milestone T68: the default prompt stops calling temur a
+coding agent. Five commits on the anchor `7ae8bb14`: the four held
+`t68-prompt` commits and the bump, pushed together as one range,
+`7ae8bb1..4c88455`. The held T67 branch (`t67-numbers-from-tools` at
+`4757d1e`) is not in it. Cut in the v0.38.6 shape, with three
+differences:
+
+- **The first cut on the desktop.** Every earlier cut ran on the
+  laptop.
+- **The toolchain was installed for it.** The operator installed the
+  aarch64 and armv7 cross compilers (gcc 15.2.0) and qemu-user (10.2.1,
+  static-pie) as root on 2026-10-27. Ubuntu's qemu-user ships the
+  static emulators without the `-static` suffix that `release.sh`
+  looks up, so the cut used a shim instead of editing `release.sh`: a
+  directory in the cut archive holding `qemu-aarch64-static ->
+  /usr/bin/qemu-aarch64` and `qemu-arm-static -> /usr/bin/qemu-arm`,
+  first on PATH for the `release.sh` runs only (`shim.log`). Both ARM
+  summary lines read "(qemu)".
+- **The leak allow file was written for it.** The desktop had the
+  operator patterns file but no
+  `~/.config/temur-release/leak-history-allow.txt` (seen in the cut
+  session's shell, not logged at the time; the file's mtime, 15:47:09,
+  is after `prestage.log`'s, 15:44:23, `hold1-facts.log`), so the first
+  prestage stopped at the history scan on the already-public `083eb334`
+  (the T53 P1 message, allowlisted on the laptop since the v0.34.0 cut).
+  The evidence is release.sh's FAIL output in `prestage.log`. Under
+  Ruling T68-10, planning wrote the file: mode 0600, 241 bytes, sha256
+  `5409d7cd259a27511dee58ad999b65957ab59f63618ecb572978b8b0bfc7bb3c`,
+  two lines: one comment and one line keyed on the full `083eb334` sha
+  with the laptop's reason (`allow-file.log`, counts only).
+
+The CHANGELOG's three v0.39.0 items ship as written in `11edb68`; in
+summary:
+
+- The default prompt opens with a terminal agent for tasks on this
+  machine, including answering from what it knows, and says that a
+  question needing no file and no command is answered directly. On
+  twelve general questions, three runs each, the full profile refused
+  3 of 36, against 13 for the old prompt the same day. The suite passed
+  10 of 72 against the old prompt's 16 of 72 (pass rule: lose at most
+  6), with the same-day old prompt at 3 of 24. Both templates are now
+  ASCII.
+- The scope-denial nudge recognises nine more refusal wordings.
+- doctor's `models/` strip comments now say it applies on the keyed
+  and keyless paths, a keyless test pins it, and the stripped listing
+  names each id once. The prompt-floor reference figures are
+  re-measured: 7,501 tokens full and 3,267 compact at a 12288 window.
+
+The T68 commits (`git show --stat`):
+
+| commit | subject | files | +/- |
+| --- | --- | --- | --- |
+| `f40dc6e` | T68: the default prompt stops calling temur a coding agent | src/prompt.rs, src/doctor.rs | 29/15 |
+| `df1b80c` | T68: the scope-denial detector learns the refusals the prompt measurement produced | src/agent/recover.rs | 59/4 |
+| `a39a79d` | T68 rider: doctor's models/ strip is said where it is done, and pinned keyless | src/doctor.rs | 67/3 |
+| `11edb68` | T68: floors re-measured, docs, ROADMAP and CHANGELOG | CHANGELOG.md, ROADMAP.md, docs/OFFLINE.md, docs/USAGE.md, src/doctor.rs | 134/22 |
+
+The phase-2 gate ran at `a39a79d` (the code-complete commit), with
+check.sh's two paths: "ALL CHECKS PASSED", binary 8,368,620 bytes, sha
+`eb88ea0a...`. Planning accepted the phase as T68-9.
+
+### Sizes
+
+Raw byte counts, read from the staged files and matched byte for byte
+against the public downloads:
+
+| asset | bytes | MB | v0.38.6 | change |
+| --- | --- | --- | --- | --- |
+| i686 | 8,368,620 | 8.37 | 8,365,108 | +3,512 |
+| x86_64 | 9,938,344 | 9.94 | 9,928,880 | +9,464 |
+| aarch64 | 8,026,568 | 8.03 | 8,023,696 | +2,872 |
+| armv7 | 7,746,360 | 7.75 | 7,752,000 | -5,640 |
+
+Divided by 1,000,000 and rounded to two decimals, README:37-38 reads
+**8.37 MB** on i686 (unchanged) and **9.94 MB** on x86_64 (was 9.93).
+The i686 binary is the same size as the phase-2 gate binary (delta 0).
+Its sha differs, as the version string predicts. It is **1,631,380
+bytes** under the 10,000,000 STOP (16.31%), down from 1,634,892 at
+v0.38.6.
+
+### The cut
+
+The bump `4c88455` (parent `11edb68`, message `v0.39.0` and the session
+trailer lines) has 7 files, 15 insertions and 15 deletions. Its edited
+lines:
+
+- `Cargo.toml` 3, `Cargo.lock` 1475 (the temur entry only),
+  `scripts/install.sh` 10.
+- `CHANGELOG.md` 5: the `## Unreleased` heading becomes `## v0.39.0 -
+  2026-10-27`, and nothing else in the file changes.
+- `README.md`:
+  - 37: the version.
+  - 38: the x86_64 figure, 9.93 becoming 9.94.
+  - 185: the install raw URL.
+  - 196: the install blob URL.
+  - 208: the release-download URL and asset name.
+  - 209: the SHA256SUMS URL.
+  - 211: the asset name.
+- `CLAUDE.md` 78, the scope line: `(v0.38.6, public since` becomes
+  `(v0.39.0, public since`. The cut session asked the operator to
+  choose between (a) that edit only, (b) that plus `up to T66` becoming
+  `up to T68`, and (c) no edit. The operator chose "(a) version only"
+  (`bump.log`).
+- `ROADMAP.md` 2022-2024: `goes out on v0.38.6` becomes `goes out on
+  v0.39.0`, and `F14, F24, F27, F28, F29, F30 and S6.` becomes `F14,
+  F24, F27, F28, F29, F30 and S6 and the T68 prompt.`. With the added
+  words, 2023 would have run to 90 columns, so "is refreshed to the"
+  moved onto 2024. The lines are now 65, 70 and 37 columns.
+
+The bump script (`scripts/bump_version.sh 0.39.0`, one run from the
+clean tree at `11edb68`, `BUMP_EXIT=0`) made the Cargo, install.sh and
+README pin edits, README 37's version included. The README figure, the
+CHANGELOG, CLAUDE.md and ROADMAP edits were made by hand. The figures
+came from a prestage run (`SKIP_CHECK=1`, `STAGE_ROOT` in the archive,
+`prestage-2.log`) whose SHA256SUMS is byte-identical to the gate's.
+
+Sweeps at the committed bump (`sweep.log`):
+
+- `git grep -n '0\.38\.6' -- . ':!CHANGELOG.md' ':!docs/RUNBOOK.md'
+  ':!ROADMAP.md'` returns `src/doctor.rs` 847 and 936 only ("since
+  v0.38.6", the S6 history, which stays).
+- The size sweep (this file's "Publish preflight"), with this file's
+  own hits left out, returned the ten lines the v0.38.6 record ruled.
+  README:37-38 are at this cut's figures.
+- Register over the bump's added lines and message: non-ASCII 0 and
+  U+2014 0, each against a planted control that fired.
+
+### Gates, and where their evidence lives
+
+Logs are in the cut archive, `~/temur-eval-archive/v0.39.0-cut/`, by
+basename. The cut report is `~/temur-desktop/reports/v0390-cut.md`.
+
+`release.sh` ran once as the gate, at the committed `4c88455` with a
+clean tree. `release-command.log` was written first and records:
+
+- the command, `script -q -e -c 'scripts/release.sh; echo
+  "RELEASE_SH_EXIT=$?"'`;
+- HEAD `4c88455` and an empty porcelain, untracked files included;
+- the API key count 0;
+- `SKIP_CHECK`, `STAGE_ROOT`, `LEAK_PATTERNS` and `LEAK_HISTORY_ALLOW`
+  unset;
+- the shim first on PATH, the stage directory absent, and the allow
+  file's sha.
+
+`release.log` has 297 lines:
+
+- 251 `== ALL CHECKS PASSED ==`: check.sh on both paths (gnu-debug at 3,
+  musl-release at 179), with the bare busybox container steps at
+  247-250.
+- 253, the one history hit: `ALLOWED (already public):
+  083eb334847b07f6f3b75f713a3c492c1f90ed8e`, the T53 P1 commit message,
+  unchanged from v0.38.6.
+- 254 `OK: leak grep clean (operator patterns + generic shapes, files +
+  history)`.
+- 256 `OK: install.sh + README match version 0.39.0 and all targets`.
+- 258-261: all four rust-std targets "up to date". The x86_64, aarch64
+  and armv7 musl components had installed during the prestage
+  (`prestage-2.log` 17-18); only i686-musl was present before the cut.
+- 277-280, the summary: "(native)" for i686 and x86_64, "(qemu)" for
+  aarch64 and armv7.
+- 282 `== RELEASE v0.39.0: 4/4 ARTIFACTS GATED ==`.
+- 295 `RELEASE_SH_EXIT=0`.
+
+The only warning lines are podman's 38 linux/386 platform notices.
+There are no compiler warnings and no rustc crash (`hold1-facts.log`).
+
+- `metadata_drift.sh`: RUN, "all 4 baked profiles match models.dev",
+  exit 0 (`drift.log`).
+- Installer test (`installer.log`):
+  - port 56969, with no listener before or after;
+  - `python3 -m http.server` on 127.0.0.1 from the stage;
+  - `scripts/install.sh` under `env -i` with `TEMUR_BASE_URL`, into a
+    temp HOME: "checksum verified.", `INSTALL_EXIT=0`, `temur 0.39.0`,
+    sha256 equal to the staged x86_64 asset.
+- Range scan (`scan-range.log`): the T66 P5b `scan.sh` and
+  `scan_extras.sh`, copied under T66-56 (`scripts/script-copies.log`: only the
+  banner and one label line differ), run on `7ae8bb1..4c88455`.
+  - 5 active patterns; control 3 of 3, 0 failures.
+  - 0 hits in the 5 messages and in the added lines.
+  - Non-ASCII 0, U+2014 0, key 0, case-sensitive hostname 0.
+  - The 5 patterns over the 203 files at HEAD: 0 (`hold1-facts-2.log`).
+- An independent check, a fresh subagent given only the cut file, the
+  range diff, the bump diff, the draft report, the logs and scripts and
+  read-only git, answered YES on the diff.
+  It answered PARTLY on log coverage and report sourcing: no value was
+  wrong, but several figures were unlogged. They were logged in
+  `hold1-facts.log` before HOLD 1 (Corrections).
+
+The independent gate on the same source is CI: run **40612606327** on
+`4c88455`, the only run the push started (`container-gate.yml` is
+`workflow_dispatch` only). `release-gate` (122567516548) and `test`
+(122567521257) both succeeded on run_attempt 1, on GitHub-hosted
+ubuntu-24.04 runners, between 2026-10-28T01:02:37Z and 01:07:30Z
+(`ci.log`).
+
+### Tag
+
+Annotated tag `v0.39.0` at `4c88455`, tag object
+`0e7907c7fd1698eb94688b160aab87fd08e1a9b9`, created at 18:07:49 -0700,
+after CI's last update. Read back before the push:
+
+- `git cat-file -t` reads `tag`.
+- The message's `od -c` gives `temur v0.39.0 - a general-purpose
+  default prompt (T68)`: one line, ASCII, a plain hyphen.
+- The 5 patterns over the message: 0.
+
+The tag was pushed by its explicit ref, `git push origin
+refs/tags/v0.39.0`. `git ls-remote` shows the tag object, and the
+remote carries 48 tags.
+
+### Publication and live verification
+
+The operator's word was typed in the cut session at 18:02:28 -0700 on
+2026-10-27, the CHANGELOG date. It named the bump sha in full
+(`word.log`). An earlier reply that did not name the sha was not taken
+as the word.
+
+The push log, `publish-push.log`, records under `set -x`:
+
+- the fetch;
+- the check that origin/main was `7ae8bb14` and HEAD `4c88455`, in the
+  same command;
+- `git push origin t68-prompt:main`: `PUSH_EXIT=0`, `7ae8bb1..4c88455`,
+  a fast-forward.
+
+Release `https://github.com/thekeoni1/Temur/releases/tag/v0.39.0`,
+release id 426156526:
+
+- The title equals the tag message.
+- It is not a draft, not a prerelease, and is marked latest.
+- It was published at 2026-10-28T01:08:23Z, with five assets.
+- The notes are the CHANGELOG's v0.39.0 section body (`notes.md`, 19
+  lines, 1,194 bytes).
+
+The sequence in `publish.log`:
+
+- The draft create (`--draft --verify-tag`) exited 0.
+- The five uploads ran one per call, smallest first, each exiting 0.
+- All five sizes matched the stage.
+- Then `gh release edit --draft=false --latest` (`PUBLISH_EXIT=0`).
+- The published body equals `notes.md`, 1,194 bytes, read from the raw
+  API JSON with `python3 -I` (Corrections).
+
+| asset | sha256 |
+| --- | --- |
+| i686-unknown-linux-musl | `b54b4f3bf2cb86961eba14b536a9902e46940988504a885075f0e26fbdf1af03` |
+| x86_64-unknown-linux-musl | `fbb4c5409fe16d2899b1fedd52b399d0d963078733d8b8a24a6a81fd8ec90ccf` |
+| aarch64-unknown-linux-musl | `d9b9370d0a99745c8d35d47b148dd91a02b8851b490b20d702d3d55055cd3d87` |
+| armv7-unknown-linux-musleabihf | `aa0b12a7f91d023ac7cab183383110a600ab42d4e39d7bdc5daeb57e179dea92` |
+| SHA256SUMS (428 bytes) | `d7a22a8f3b9b697d4f61d07adc7f97736d3b5756db595f8285567c80d238aa0b` |
+
+Closing gate, `closing-gate.log`:
+
+- Tokenless (`env -i`, curl, no gh): all five assets downloaded from
+  the public URLs, curl exit 0 each, 5 of 5 byte-identical to the
+  staged files, and `sha256sum -c` passes 4 of 4.
+- The README:185 one-liner, verbatim, ran into a fresh HOME made by
+  `mktemp -d`, once on x86_64 and once under `setarch i686`. The i686
+  leg logs `setarch i686 uname -m` and its output, `i686`. Each run
+  printed "checksum verified." and installed a binary that prints
+  `temur 0.39.0`. The installed sha256 equals the published x86_64 and
+  i686 asset respectively.
+- The README:196 blob URL returns 200.
+
+Planning accepted HOLD 1 as Ruling T68-11 and HOLD 2 as Ruling T68-12
+(both recorded in the cut report).
+
+### What this release does NOT establish
+
+Re-derived from the three v0.39.0 CHANGELOG items:
+
+- The refusal drop (3 of 36 against 13) is the full profile's, on
+  twelve general questions with Qwen3-4B-Instruct-2507, three runs
+  each. The compact profile moved much less, 6 of 36 against 7 (5
+  against 6 on the alternative reading of one row). Qwen3-4B-Thinking-2507
+  went from 5 of 9 to 0 of 9, on three of the questions only. No other
+  model or question set was measured, and none of this measures answer
+  quality.
+- The suite did not improve. It passed 10 of 72 against the old
+  prompt's 16 of 72, a loss of exactly 6, which is IN only because the
+  rule is OUT above 6. The new prompt is accepted as no worse than that
+  line, not as better on tasks.
+- The nine nudge wordings are the refusals observed in the T68
+  measurement. Other wordings of the same refusal are not caught, and
+  "none of them matches an observed file denial" covers the observed
+  denials only.
+- doctor's model check is unchanged in what it passes or warns on; the
+  one behaviour change is that the WARN's listing excerpt now names each
+  stripped id once (`a39a79d`), and the floor note doctor prints carries
+  the re-measured figures. The prompt-floor figures (7,501 / 3,267 at
+  12288) are reference figures for this prompt on one model and server.
+- No live dogfood of the published v0.39.0 asset has run yet.
+- The held T67 branch is not part of this release. The open queue in
+  ROADMAP is unchanged by this cut, and the launch announcement is
+  still to go out.
+- ARM remains verified at build level only (qemu on this cut); no
+  hardware smoke.
+
+### Corrections
+
+- The first prestage stopped at the history leak scan because the
+  desktop had no leak allow file. Wrong assumption (planning's): the
+  kickoff expected the v0.38.6 ALLOWED line without checking that the
+  desktop had the laptop's allow file. Ruling T68-10 had planning write
+  `~/.config/temur-release/leak-history-allow.txt` (above). The second
+  prestage and the gate each print the one ALLOWED line.
+- The cut file expected the ARM rust-std targets to install during the
+  gate run. They installed during the prestage, the first run to reach
+  rustup, together with x86_64-musl, which was also absent. The first
+  draft of the cut report named ARM only; the independent check caught
+  the x86_64 component.
+- `hold1-facts.log` lines 35-36 (the 5 patterns over files at HEAD) are
+  void. `set -C` refused the write into a fresh `mktemp` file, so the
+  pattern list was empty. The check was redone in `hold1-facts-2.log`
+  (active 5, 0 files, control 1).
+- The release-body check failed twice before the good one; both
+  attempts are void and logged. The first passed `-j` to `gh --jq`.
+  The second piped to `jq -j`, but jq is not installed on the desktop.
+  Wrong assumption: the desktop has jq, like the laptop. The third read
+  the raw API JSON with `python3 -I` and wrote `.body` with no added
+  newline: identical.
+- The record was committed before its independent check, where the cut
+  file puts the check first. The check then found two overclaims in
+  "What this release does NOT establish" (doctor's behaviour called
+  unchanged; no other profile or model called measured) and four
+  sourcing gaps; they were fixed by amending this same unpushed commit,
+  so the record is still one commit.
+- This gh has no `attempt` field in `gh run view --json`, so
+  run_attempt was read from the API. `gh api .../releases/tags/<tag>`
+  returns 404 while the release is a draft, so the draft's sizes were
+  read with `gh release view`.
