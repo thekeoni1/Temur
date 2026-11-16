@@ -1629,6 +1629,159 @@ one-liner gate stays deferred to the visibility flip (RUNBOOK).
   `\text \mathrm \textbf \textit \mathbf` unwrap to their argument, `~`
   becomes a space; `\frac` and friends stay honest source by design.
 
+### Queued from the all-models dogfood 2026-11-16 (T69 plan, 2026-11-16)
+
+T69 is the next milestone: more local models work through llama.cpp.
+The operator approved it on 2026-11-16. Nothing in it is built yet, and
+the launch waits for it.
+
+The evidence is the all-models dogfood of 2026-11-16: the v0.39.0 i686
+release asset (sha256 `b54b4f3b`) against llama.cpp `server-cuda-b10438`
+with a context window of 8192, `max_tokens` 4096, 24 runs per model. Ten
+of the twelve models had run when the plan was written
+(Qwen3-4B-Thinking-2507 and Qwen3-8B had not). One of the ten scored,
+Qwen3-4B-Instruct-2507 at 3/24. Seven of the other nine never got a
+fair turn, for three different reasons:
+
+| Group | Models | Pass | What stops it | Does doctor see it |
+|---|---|---|---|---|
+| A. The server rejects the model's output | Llama-3.2-3B, Llama-3.1-8B | 0/24, 0/24 | llama.cpp peg-native parser error, returned as HTTP 200 `server_error` | no, 11 pass 0 warn |
+| B. The template drops the tools | Phi-4-mini, SmolLM2-1.7B, gemma-3-4b-it | 0/24 each | the tools array is never rendered (upstream ggml-org/llama.cpp#27129) | yes, WARN on all three |
+| C. Calls written as JSON text | Qwen2.5-Coder-1.5B, Qwen2.5-Coder-3B | 0/24 each | the model ignores the tool interface; recovery runs some calls and the edits then miss | no, 11 pass 0 warn |
+
+Qwen3-0.6B and Qwen3-1.7B made real tool calls and scored 0/24 each on
+edit misses and false done-claims. That is model-floor work and stays
+out of T69, except for item 1 below, a harness bug that hit them.
+
+Verified, with the code anchors read against `405e0db`:
+
+1. Overflow recovery is skipped after three compactions.
+   `src/agent/mod.rs:338` sets `MAX_AUTO_COMPACTIONS_PER_TURN` to 3, and
+   `src/agent/mod.rs:1637-1639` runs the T42 recovery only while
+   `auto_compactions` is below that bound. An unattended run is one
+   turn, so after three automatic compactions a server overflow is
+   terminal. Seen 5 times in the dogfood, each with exactly 3
+   "compacted:" lines and 0 "context overflow:" lines before the error:
+   Qwen3-1.7B log-triage r1 (8211 tokens) and r3 (8799),
+   Qwen3-4B-Instruct two-bug-invoice r2 (8299) and refactor-rename r3
+   (8205), Llama-3.1-8B feature-from-spec r3 (8333), all against a
+   window of 8192. This one does not depend on the model.
+2. The text-call recovery does not know the key "function".
+   `src/agent/recover.rs:219-221`, `:272-274` and `:352-354` accept
+   "name" or "tool" for the tool name; `:224-226` accept "arguments",
+   "input" or "parameters" for the arguments. Both Coder models also
+   write `{"function": "read", "arguments": {...}}`, in 4 logs per
+   model, and those calls never run.
+3. Group A as far as the logs go. The user sees only "provider error:
+   api error (HTTP 200) server_error: The model produced output that
+   does not match the expected peg-native format", in 22 of 24 task
+   logs for Llama-3.1-8B and 15 of 24 for Llama-3.2-3B. The three
+   "unparsed peg-native output" lines kept from the 8B server log show
+   two shapes: several calls joined by "; ", where the parser took one
+   call and failed on the rest, and one call with malformed JSON from
+   shell quoting. temur receives the error and never the model's text,
+   so the text-call recovery cannot act on it. The request body
+   (`src/provider/openai_compat/mod.rs:96-116`) never sends
+   `parallel_tool_calls`, and the name has 0 hits in `src`, `docs` and
+   this file. The run used the compact prompt profile, whose tool
+   prompts do not ask for several calls per message. The full profile
+   does (`src/tools/prompts/bash.txt:37` and `:66`, `glob.txt:5`,
+   `read.txt:12`), so at a larger window temur itself invites the
+   format that the parser rejects.
+4. Group B: doctor warns and the session does not.
+   The tools-drop probe is `tools_drop_check` at
+   `src/doctor.rs:764-823`. No session-start path calls it (a grep for
+   it in `src/main.rs`, `src/agent` and `src/ui` finds nothing), so a
+   user who never runs doctor gets a prose answer and exit 0. No mode
+   describes the tools in the system prompt for a template without
+   tool support.
+5. The docs are stale for group A. In `docs/OFFLINE.md` near lines
+   356-364 the Llama-3.1-8B row says the server rejected 4 of 9, and
+   the Llama-3.2-3B row says "unreliable" with eval 4/9, 3/9 and does
+   not name the rejection.
+
+Phase 0 measures, with no source change. Each arm is one model, the 8
+core tasks x 3, on the same rig (GPU, `--cache-ram 0`), with the server
+log kept whole.
+
+- 0a. Llama-3.1-8B and Llama-3.2-3B: count the rejected outputs by
+  shape (multi-call, malformed JSON, other).
+- 0b. The same two models with requests made by hand, using temur's
+  real tool definitions and a prompt that invites two steps: no field,
+  `parallel_tool_calls` false, `parallel_tool_calls` true. Record
+  accept or reject and what the response carries.
+- 0c. Llama-3.1-8B through temur with a "make exactly one tool call
+  per message" rule appended to a copy of the compact default prompt,
+  against an unchanged control run.
+- 0d. One newer llama.cpp server image, same two models, no other
+  change, to see whether upstream already fixed the parser.
+- 0e. gemma-3-4b-it with the tool list written into the system prompt
+  (name, one line, argument names) and the JSON text form the recovery
+  accepts. Does anything run, and
+  does any task pass.
+
+Phase 0 stops and reports. Phase 1's content depends on it, except 1a
+and 1b.
+
+Phase 1 fixes, in order of confidence:
+
+- 1a. The compaction bound no longer starves overflow recovery: the
+  server-overflow recovery gets its own small budget per turn, or the
+  shared counter resets on a continue nudge. A test drives three
+  auto-compactions and then an overflow. Needs no phase 0 result.
+- 1b. The three recovery sites accept "function" as a tool-name key,
+  under the same arguments-like-key requirement that guards the
+  others, with tests beside the existing "tool" and "input" pins.
+  Needs no phase 0 result.
+- 1c. The group A lever, whichever phase 0 shows works, alone or
+  combined: a request field sent only where measured to help; one
+  bounded retry with a short nudge on the peg-native `server_error`;
+  tool prompts that stop inviting several calls per message on local
+  openai-compat servers. Existing configs keep sending a
+  byte-identical request body unless the operator rules a default
+  flip.
+- 1d. Group B: at session start on a keyless openai-compat endpoint,
+  the session says what doctor would say when the tools are dropped.
+  The cost is two tiny requests. To rule on: always probe, probe once
+  and cache per model and server, or only point at doctor. If 0e
+  shows it works: a prose-tools mode for such templates (see the open
+  decision below).
+- 1e. Doctor learns groups A and C: a probe that invites a two-step
+  answer and reports "the server rejected the model's tool-call
+  output" or "the model answered with a text call, recovery will be
+  used". It never FAILs, the same rule as the tools-drop probe.
+
+Phase 2 re-measures and closes the docs. The affected models run again
+on the built binary (both Llamas, the three group B models, both Coder
+models, Qwen3-4B-Instruct as the control) for a before and after
+table. `docs/OFFLINE.md` gets refreshed Llama rows and any row the
+re-measure moves, and `docs/USAGE.md` any new field or message. Then
+CHANGELOG and the ship record. The version is 0.40.0 if a request
+field or a new doctor probe ships, and 0.39.1 if only 1a and 1b ship.
+
+Open decision, awaiting the operator: whether group B gets the session
+warning only, or also a prose-tools mode if 0e shows it works.
+Planning recommends both, with the mode switched on automatically when
+the drop is detected and never for a model whose template renders
+tools.
+
+Not in T69:
+
+- The claim-done habit, edit misses and the model floor in general.
+- T67, the auto-continue seed, F20 and the `provider::listing_match`
+  helper, all still not done, as recorded under T68 below.
+- Any server other than llama.cpp. Ollama and others are a later
+  question.
+- The launch drafts. If T69 ships, their "built for small, local
+  models" wording gets re-read against the new table under its own
+  kickoff.
+
+T69 succeeds when, on llama.cpp, each of the families people reach for
+first (Llama 3.x, Gemma 3, Phi-4, Qwen2.5-Coder, Qwen3) either gets a
+working tool turn with no configuration, or temur says in the session,
+in one line, why not and what to do. A working turn is not a passed
+task: small models stay weak, and the model table must keep saying so.
+
 ### T68 as built (2026-10-27)
 
 T68 stops the default prompt from calling temur a coding agent. Both
