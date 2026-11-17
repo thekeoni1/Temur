@@ -7240,6 +7240,11 @@ fn overflow_recovery_respects_the_per_turn_bound() {
         3,
         "three recoveries ran after them, and no fourth: {n:?}"
     );
+    assert_eq!(
+        n.iter().filter(|x| x.starts_with("compacted: ")).count(),
+        6,
+        "three proactive folds performed, and one per recovery: {n:?}"
+    );
     // 9 scripted sends, then three times (rejected send, summary call,
     // retry), then the fourth rejected send with nothing after it.
     assert_eq!(requests.borrow().len(), 19);
@@ -7266,6 +7271,11 @@ fn an_overflow_after_three_proactive_folds_is_recovered() {
         3,
         "the three folds the logs show: {n:?}"
     );
+    assert_eq!(
+        n.iter().filter(|x| x.starts_with("compacted: ")).count(),
+        4,
+        "three proactive folds performed, and the recovery's own: {n:?}"
+    );
     assert_eq!(overflow_markers(&n), OVERFLOW_MARKERS_PER_RECOVERY, "{n:?}");
     // 9 scripted sends, the rejected send, the summary call, the retry.
     assert_eq!(requests.borrow().len(), 12);
@@ -7276,11 +7286,67 @@ fn an_overflow_after_three_proactive_folds_is_recovered() {
     );
 }
 
+/// T69 1a: the step 1 pin's own script, unchanged up to the server's
+/// refusal and extended with the recovery's summary response and a final
+/// answer. Every tool result here is a few bytes, so the recovery is the
+/// fold alone: it frees enough to count (the T44 gate), nothing is cut,
+/// and the retry completes the turn.
+#[test]
+fn an_overflow_after_three_folds_of_small_results_is_recovered_by_the_fold() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_overflow(
+        dir.path(),
+        vec![
+            Ok(rt(1, 100)),
+            Ok(rt(2, 100)),
+            Ok(rt(3, 800)),
+            Ok(summary_response("S1")),
+            Ok(rt(4, 800)),
+            Ok(summary_response("S2")),
+            Ok(rt(5, 800)),
+            Ok(summary_response("S3")),
+            Ok(rt(6, 800)),
+            overflow_error(),
+            Ok(summary_response("S4")),
+            Ok(done()),
+        ],
+        None,
+        0,
+        Some(1000),
+        true,
+    );
+    let events = collect_events(&mut session, "the task");
+    let n = notices(&events);
+    assert_eq!(
+        n.iter().filter(|x| *x == OVERFLOW_COMPACT_MARKER).count(),
+        1,
+        "{n:?}"
+    );
+    assert!(
+        !n.iter().any(|x| x == OVERFLOW_ELIDE_MARKER),
+        "the fold was enough, so nothing was cut: {n:?}"
+    );
+    assert_eq!(
+        n.iter().filter(|x| x.starts_with("compacted: ")).count(),
+        4,
+        "three proactive folds and the recovery's: {n:?}"
+    );
+    // 9 scripted sends, the rejected send, the summary call, the retry.
+    assert_eq!(requests.borrow().len(), 12);
+    assert!(
+        matches!(events.last(), Some(AgentEvent::TurnComplete { .. })),
+        "{:?}",
+        events.last()
+    );
+}
+
 /// T69 1a: the recovery's own bound holds. No window and no
 /// auto-compaction, so nothing here is proactive and the only arm is the
-/// elision. The result is 20,000 chars, then 10,000, 5,000 and 2,500 after
-/// three recoveries, still above the 1,024-char floor: the fourth overflow
-/// is refused by the bound and not by the floor.
+/// elision. The result is 20,000 chars and is halved three times, to
+/// about 2,500, still above the 1,024-char floor: the fourth overflow is
+/// refused by the bound and not by the floor. This test pins the value of
+/// the bound; with auto-compaction off it does not show the separation
+/// from the proactive count, which the three tests around it do.
 #[test]
 fn the_fourth_overflow_recovery_in_a_turn_propagates() {
     let dir = tempfile::tempdir().unwrap();
