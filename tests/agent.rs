@@ -6961,6 +6961,33 @@ fn overflow_session(
     auto_compact: bool,
     cancel_on_summary: bool,
 ) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
+    overflow_session_mode(
+        dir,
+        seed,
+        outcomes,
+        limit,
+        tool_overhead,
+        context_window,
+        auto_compact,
+        cancel_on_summary,
+        false,
+    )
+}
+
+/// [`overflow_session`] with the run mode exposed: `unattended` is what a
+/// one-shot `-p` run sets, where the whole task is ONE turn (T69 1a).
+#[allow(clippy::too_many_arguments)]
+fn overflow_session_mode(
+    dir: &std::path::Path,
+    seed: Option<Vec<RequestMessage>>,
+    outcomes: Vec<Result<ResponseMessage, ProviderError>>,
+    limit: Option<usize>,
+    tool_overhead: usize,
+    context_window: Option<u64>,
+    auto_compact: bool,
+    cancel_on_summary: bool,
+    unattended: bool,
+) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
     let requests = Rc::new(RefCell::new(vec![]));
     let provider = OverflowProvider {
         outcomes: RefCell::new(outcomes),
@@ -6986,7 +7013,7 @@ fn overflow_session(
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact,
-        unattended: false,
+        unattended,
         unattended_nudge: true,
     };
     let session = match seed {
@@ -7184,6 +7211,70 @@ fn overflow_recovery_respects_the_per_turn_bound() {
     );
     // No retry was sent.
     assert_eq!(requests.borrow().len(), 10);
+}
+
+/// T69 1a, step 1: a PIN OF TODAY'S BEHAVIOUR, written to be flipped by the
+/// fix. The all-models dogfood of 2026-11-16 ended nine unattended runs
+/// this way at a window of 8192: three automatic compactions, then a server
+/// overflow that nothing acted on, because the T42 recovery shares
+/// `MAX_AUTO_COMPACTIONS_PER_TURN` with proactive compaction and an
+/// unattended run is one turn. Every one of the nine logs shows exactly
+/// three "compacted:" lines and no "context overflow:" line before the
+/// error, which is what this asserts.
+///
+/// [`overflow_recovery_respects_the_per_turn_bound`] pins the same
+/// mechanism for an interactive turn, as the deliberate T42 choice it was.
+#[test]
+fn t69_1a_pin_today_an_unattended_overflow_after_three_compactions_is_terminal() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = overflow_session_mode(
+        dir.path(),
+        None,
+        vec![
+            Ok(rt(1, 100)),
+            Ok(rt(2, 100)),
+            Ok(rt(3, 800)),
+            Ok(summary_response("S1")),
+            Ok(rt(4, 800)),
+            Ok(summary_response("S2")),
+            Ok(rt(5, 800)),
+            Ok(summary_response("S3")),
+            // The fourth crossing: the bound is spent, so it only advises.
+            Ok(rt(6, 800)),
+            // The dogfood's own error, Qwen3-1.7B log-triage r1.
+            Err(ProviderError::Api {
+                status: 400,
+                kind: "exceed_context_size_error".into(),
+                message: "request (8211 tokens) exceeds the available context size (8192 tokens), try increasing it"
+                    .into(),
+            }),
+        ],
+        None,
+        0,
+        Some(1000),
+        true,
+        false,
+        true,
+    );
+    let mut events = vec![];
+    let err = session.turn("the task", &mut |e| events.push(e)).unwrap_err();
+    let n = notices(&events);
+    // The three folds the logs show.
+    assert_eq!(
+        n.iter().filter(|x| x.starts_with("compacted: ")).count(),
+        3,
+        "{n:?}"
+    );
+    // TODAY: the overflow is terminal. The fix flips these three.
+    assert!(
+        err.to_string().contains("exceed_context_size_error"),
+        "today the server's error ends the run: {err}"
+    );
+    assert!(
+        !n.iter().any(|x| x.starts_with("context overflow:")),
+        "today no recovery is announced: {n:?}"
+    );
+    assert_eq!(requests.borrow().len(), 10, "today no retry is sent");
 }
 
 #[test]
