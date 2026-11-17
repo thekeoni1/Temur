@@ -1972,3 +1972,188 @@ fn reasoning_only_stop_is_a_thinking_block_and_end_turn() {
     );
     assert_eq!(msg.stop_reason, Some(StopReason::EndTurn));
 }
+
+// ---------------------------------------------------------------------------
+// T69 1c: keep the first call. llama.cpp's parser hands over a model's first
+// tool call and then ends the stream with a peg-native `server_error` when
+// the model wrote more calls after it. The fixtures are authored in the wire
+// shape phase 0 arm 0b recorded on server-cuda-b10438 (2026-11-17).
+// ---------------------------------------------------------------------------
+
+const PEG_ERROR_TEXT: &str = "api error (HTTP 200) server_error: The model produced output that does not match the expected peg-native format";
+const KEPT_ONE: &str =
+    "the server rejected the rest of the model's output; temur kept the first tool call and goes on with it";
+const KEPT_TWO: &str =
+    "the server rejected the rest of the model's output; temur kept the first 2 tool calls and goes on with them";
+
+fn tool_uses(msg: &ResponseMessage) -> Vec<(String, serde_json::Value)> {
+    msg.content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::ToolUse { name, input, input_raw, .. } => {
+                assert!(input_raw.is_none(), "a kept call is never a cut one");
+                Some((name.clone(), input.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The unchanged path: the error text byte for byte, and no notice.
+fn assert_peg_error_unchanged(fixture: &'static str, expected: &str) {
+    let provider = provider_with(vec![Ok(fixture)]);
+    let mut events = vec![];
+    let err = provider
+        .stream(&sample_request(), &mut |e| events.push(e), &CancelToken::new())
+        .unwrap_err();
+    assert_eq!(err.to_string(), expected, "{fixture}");
+    assert!(notices(&events).is_empty(), "{fixture}: {events:?}");
+}
+
+#[test]
+fn peg_reject_after_one_whole_call_keeps_the_call() {
+    let provider = provider_with(vec![Ok("peg_reject_one_call")]);
+    let mut events = vec![];
+    let msg = provider
+        .stream(&sample_request(), &mut |e| events.push(e), &CancelToken::new())
+        .unwrap();
+    assert_eq!(msg.stop_reason, Some(StopReason::ToolUse));
+    assert_eq!(
+        tool_uses(&msg),
+        vec![("read".to_string(), serde_json::json!({"filePath": "a.txt"}))]
+    );
+    assert_eq!(notices(&events), vec![KEPT_ONE.to_string()]);
+}
+
+#[test]
+fn peg_reject_after_two_whole_calls_keeps_both() {
+    let provider = provider_with(vec![Ok("peg_reject_two_calls")]);
+    let mut events = vec![];
+    let msg = provider
+        .stream(&sample_request(), &mut |e| events.push(e), &CancelToken::new())
+        .unwrap();
+    assert_eq!(msg.stop_reason, Some(StopReason::ToolUse));
+    assert_eq!(
+        tool_uses(&msg),
+        vec![
+            ("read".to_string(), serde_json::json!({"filePath": "a.txt"})),
+            ("bash".to_string(), serde_json::json!({"command": "echo second"})),
+        ]
+    );
+    assert_eq!(notices(&events), vec![KEPT_TWO.to_string()]);
+}
+
+#[test]
+fn peg_reject_with_no_call_is_the_unchanged_error() {
+    assert_peg_error_unchanged("peg_reject_no_call", PEG_ERROR_TEXT);
+}
+
+#[test]
+fn peg_reject_after_a_partial_call_is_the_unchanged_error() {
+    assert_peg_error_unchanged("peg_reject_partial_call", PEG_ERROR_TEXT);
+}
+
+/// A whole call followed by a cut one: nothing is kept. Keeping the whole
+/// one alone would be possible, and it is not what was ruled or measured.
+#[test]
+fn peg_reject_after_a_whole_and_a_partial_call_is_the_unchanged_error() {
+    assert_peg_error_unchanged("peg_reject_whole_then_partial_call", PEG_ERROR_TEXT);
+}
+
+#[test]
+fn another_server_error_after_a_whole_call_is_the_unchanged_error() {
+    assert_peg_error_unchanged(
+        "other_error_after_call",
+        "api error (HTTP 200) server_error: The server ran out of slots while generating",
+    );
+}
+
+fn t69_cfg(dir: &std::path::Path) -> temur::agent::SessionConfig {
+    temur::agent::SessionConfig {
+        model: "local-test".into(),
+        max_tokens: 8_000,
+        system: Some("test system".into()),
+        thinking: false,
+        cwd: dir.to_path_buf(),
+        max_iterations: 10,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+        max_tokens_source: None,
+        prose_tool_calls: true,
+        cost_rates: None,
+        cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
+        auto_compact: false,
+        unattended: false,
+        unattended_nudge: true,
+    }
+}
+
+/// The whole path: the kept call runs, its result goes back on the second
+/// request, the user reads one line, and the session record holds the same
+/// line.
+#[test]
+fn a_kept_call_is_executed_and_the_turn_goes_on() {
+    use temur::agent::events::AgentEvent;
+    use temur::agent::Session;
+    use temur::tools::Registry;
+
+    let (provider, transport) =
+        provider_and_transport(vec![Ok("peg_reject_one_call"), Ok("text_simple")], None);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "kept-call-marker-7f3\n").unwrap();
+    let mut session = Session::new(Box::new(provider), Registry::standard(), t69_cfg(dir.path()));
+    let mut events = vec![];
+    session.turn("read a.txt and b.txt", &mut |e| events.push(e)).unwrap();
+
+    let bodies = transport.bodies.borrow();
+    assert_eq!(bodies.len(), 2, "the turn went on to a second request");
+    let b2: serde_json::Value = serde_json::from_str(&bodies[1]).unwrap();
+    let msgs = b2["messages"].as_array().unwrap();
+    let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+    assert_eq!(roles, vec!["system", "user", "assistant", "tool"]);
+    assert_eq!(msgs[2]["tool_calls"][0]["id"], "call_K1");
+    assert_eq!(msgs[3]["tool_call_id"], "call_K1");
+    assert!(
+        msgs[3]["content"].as_str().unwrap().contains("kept-call-marker-7f3"),
+        "the read ran: {}",
+        msgs[3]["content"]
+    );
+
+    let shown: Vec<&String> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Notice(n) if n.starts_with("the server rejected") => Some(n),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown, vec![KEPT_ONE], "one line, once");
+    let errors = session.snapshot().errors;
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].message, KEPT_ONE);
+    assert_eq!(errors[0].model, "local-test");
+}
+
+/// A cut call never runs: the turn ends on the server's error after the one
+/// request, with nothing recorded as kept.
+#[test]
+fn a_partial_call_before_a_peg_reject_executes_nothing() {
+    use temur::agent::events::AgentEvent;
+    use temur::agent::Session;
+    use temur::tools::Registry;
+
+    let (provider, transport) = provider_and_transport(vec![Ok("peg_reject_partial_call")], None);
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::new(Box::new(provider), Registry::standard(), t69_cfg(dir.path()));
+    let mut events = vec![];
+    let err = session.turn("read a.txt and b.txt", &mut |e| events.push(e)).unwrap_err();
+    assert!(err.to_string().ends_with(PEG_ERROR_TEXT), "{err}");
+    assert_eq!(transport.bodies.borrow().len(), 1, "no second request");
+    assert!(
+        // ToolStart is the stream announcing the call's name; ToolEnd is
+        // the only event an executed call produces.
+        !events.iter().any(|e| matches!(e, AgentEvent::ToolEnd { .. })),
+        "nothing ran: {events:?}"
+    );
+    assert!(session.snapshot().errors.is_empty(), "nothing kept, nothing recorded as kept");
+}

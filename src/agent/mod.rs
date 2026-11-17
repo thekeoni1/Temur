@@ -1640,9 +1640,17 @@ impl Session {
             self.persist_now(ui);
 
             let req = self.chat_request();
-            let mut result =
-                self.provider
-                    .stream(&req, &mut |ev| ui(stream_event_to_agent(ev)), &self.cancel);
+            // T69 1c: a kept-call notice from the provider is shown like
+            // any other and also goes into the session file, below.
+            let mut kept: Vec<String> = Vec::new();
+            let mut result = self.provider.stream(
+                &req,
+                &mut |ev| {
+                    note_kept_calls(&ev, &mut kept);
+                    ui(stream_event_to_agent(ev))
+                },
+                &self.cancel,
+            );
             // T42 OVERFLOW RECOVERY. The provider has already said this
             // request does not fit its window, which before T42 was simply
             // terminal: three of desktop experiment 5's five CTX deaths
@@ -1683,7 +1691,10 @@ impl Session {
                         let retry = self.chat_request();
                         result = self.provider.stream(
                             &retry,
-                            &mut |ev| ui(stream_event_to_agent(ev)),
+                            &mut |ev| {
+                                note_kept_calls(&ev, &mut kept);
+                                ui(stream_event_to_agent(ev))
+                            },
                             &self.cancel,
                         );
                         // Deliberately NOT re-examined: one recovery per
@@ -1691,6 +1702,9 @@ impl Session {
                         // instead of looping.
                     }
                 }
+            }
+            for line in kept {
+                self.record_kept_calls(line);
             }
             if self.cancel.is_set() {
                 // Interrupted. An error that raced the cancel still ends the
@@ -2603,6 +2617,23 @@ impl Session {
         Ok(())
     }
 
+    /// T69 1c: the session file's record of a kept-call notice. It shares
+    /// the list and the cap of the provider errors turns ended on
+    /// ([`report_turn_error`]), although this turn goes on: a reader of
+    /// the file should see that the server rejected part of a response.
+    fn record_kept_calls(&mut self, message: String) {
+        self.errors.push(crate::session_store::SessionError {
+            history_len: self.history.len() as u64,
+            model: self.cfg.model.clone(),
+            message,
+        });
+        let excess = self
+            .errors
+            .len()
+            .saturating_sub(crate::session_store::MAX_SESSION_ERRORS);
+        self.errors.drain(..excess);
+    }
+
     /// T6 landing policy for an interrupted stream: file whatever partial
     /// response arrived on a wire-valid history boundary and close every UI
     /// cell the stream opened, so the driver-loop save that follows persists
@@ -2853,6 +2884,17 @@ fn elide_to_half(content: &str) -> String {
     format!(
         "{head}\n\n(truncated again: the server rejected the request as larger than its context window, so this result was cut from {total} to {target} chars, keeping the first {head_n} and the last {tail_n}; re-run the tool over a narrower range to see the elided middle)\n\n{tail}"
     )
+}
+
+/// T69 1c: collect the provider's kept-call notice (the server rejected
+/// the rest of the model's output and the delivered tool calls were kept),
+/// so the turn loop can write it into the session file as well.
+fn note_kept_calls(ev: &crate::provider::StreamEvent, kept: &mut Vec<String>) {
+    if let crate::provider::StreamEvent::Notice(n) = ev {
+        if n.starts_with(crate::provider::openai_compat::KEPT_CALLS_NOTICE_PREFIX) {
+            kept.push(n.clone());
+        }
+    }
 }
 
 /// The stream-event mapping the turn loop hands the provider. A free

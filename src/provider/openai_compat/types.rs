@@ -541,6 +541,27 @@ impl ChunkAccumulator {
         }
     }
 
+    /// T69 1c: how many tool calls this stream has delivered, when every
+    /// one of them is whole: a name, and arguments that parse as a JSON
+    /// object. `None` when there is no call, when any call is partial or
+    /// unparsable (empty arguments count as partial here: nothing says the
+    /// model had finished them), or when the stream carried a refusal.
+    /// The one caller is the provider's keep-the-first-call path, which
+    /// must never hand a cut call to the agent.
+    pub fn whole_calls(&self) -> Option<usize> {
+        if self.calls.is_empty() || !self.refusal.is_empty() {
+            return None;
+        }
+        let whole = self.calls.iter().all(|c| {
+            !c.name.is_empty()
+                && matches!(
+                    serde_json::from_str::<Value>(&c.arguments),
+                    Ok(Value::Object(_))
+                )
+        });
+        whole.then_some(self.calls.len())
+    }
+
     fn push_tool_fragment(
         &mut self,
         frag: &ToolCallDelta,

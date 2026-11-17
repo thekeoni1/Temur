@@ -1,0 +1,10 @@
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"role":"assistant","content":null}}],"created":1794886223,"id":"chatcmpl-t69","model":"local-test","system_fingerprint":"b10438-fixture","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_K1","type":"function","function":{"name":"read","arguments":"{"}}]}}],"created":1794886223,"id":"chatcmpl-t69","model":"local-test","system_fingerprint":"b10438-fixture","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"filePath\""}}]}}],"created":1794886223,"id":"chatcmpl-t69","model":"local-test","system_fingerprint":"b10438-fixture","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":": \"a."}}]}}],"created":1794886223,"id":"chatcmpl-t69","model":"local-test","system_fingerprint":"b10438-fixture","object":"chat.completion.chunk"}
+
+data: {"error":{"code":500,"message":"The model produced output that does not match the expected peg-native format","type":"server_error"}}
+

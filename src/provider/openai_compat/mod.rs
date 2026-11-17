@@ -182,7 +182,19 @@ impl OpenAiCompatProvider {
                 break;
             }
         }
-        if let Some(err) = acc.error {
+        if let Some(err) = acc.error.take() {
+            // T69 1c: keep the first call. llama.cpp's parser hands over a
+            // model's first tool call and then fails on what follows it
+            // (several calls in one message), ending the stream with this
+            // error. The call it delivered is whole, so the turn goes on
+            // with it. Anything short of that is the error it always was:
+            // no call, a cut call, a refusal, or any other error text.
+            if err.message.contains(PEG_NATIVE_REJECT) {
+                if let Some(n) = acc.whole_calls() {
+                    on_event(StreamEvent::Notice(kept_calls_notice(n)));
+                    return acc.into_message(&req.model).ok_or(ProviderError::Incomplete);
+                }
+            }
             return Err(ProviderError::Api {
                 status: 200, // stream was accepted; the error arrived mid-stream
                 kind: err.kind_label(),
@@ -257,6 +269,27 @@ impl Provider for OpenAiCompatProvider {
             }
             Err(e2) => Err(transport_error_to_provider(e2, &self.base_url)),
         }
+    }
+}
+
+/// T69 1c: the text in the server's mid-stream error that marks a tool-call
+/// output its parser could not take. Matched as a substring of the error
+/// message. Seen on llama.cpp `server-cuda-b10438` and `server-cuda-b12429`
+/// as "The model produced output that does not match the expected
+/// peg-native format" (HTTP 200, type `server_error`).
+pub const PEG_NATIVE_REJECT: &str = "does not match the expected peg-native format";
+
+/// T69 1c: how every kept-call notice starts. The agent matches on it to
+/// write the same line into the session file.
+pub const KEPT_CALLS_NOTICE_PREFIX: &str = "the server rejected the rest of the model's output";
+
+/// The one line the user reads when [`PEG_NATIVE_REJECT`] ended a stream
+/// that had already delivered `n` whole tool calls.
+pub fn kept_calls_notice(n: usize) -> String {
+    if n == 1 {
+        format!("{KEPT_CALLS_NOTICE_PREFIX}; temur kept the first tool call and goes on with it")
+    } else {
+        format!("{KEPT_CALLS_NOTICE_PREFIX}; temur kept the first {n} tool calls and goes on with them")
     }
 }
 

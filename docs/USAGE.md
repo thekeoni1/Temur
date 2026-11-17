@@ -265,7 +265,9 @@ the time. A stored message longer than 1,000 characters is cut there and
 marked `(truncated)`; what the screen showed is never cut. It keeps the
 most recent 50. `/clear` and `/new` drop them with
 the history they describe (the archive `/clear` writes keeps both), and
-the key is absent from a session that has had no errors.
+the key is absent from a session that has had no errors. The same list
+records each time a llama.cpp server rejected part of a response and
+temur kept the tool call it had delivered (see "The weak-model floor").
 
 The save happens *within* a turn as well as at the end of one. An
 agentic turn can run for many minutes across many tool calls, so the
@@ -2058,6 +2060,25 @@ or `.docx` name gets the same line, prefixed with the path and that it
 starts with plain text. The `spreadsheet` tool refuses any path that
 does not end in `.xlsx` with the same pointer, so a workbook is never
 written under a document's name.
+
+A llama.cpp server can cut a response short after the first tool
+call. Some models (Llama 3.1 and 3.2 among them) write several calls
+in one message, the server's parser takes the first and rejects the
+rest, and the stream ends with a `server_error` naming the
+"peg-native format". When the call the server did deliver is whole,
+temur runs it and the turn goes on:
+
+```
+[!] the server rejected the rest of the model's output; temur kept the first tool call and goes on with it
+```
+
+The calls the server rejected are lost, and the model sees only the
+result of the one that ran. When the server delivered no whole call,
+the turn ends on the server's error as before:
+
+```
+[!] provider error: api error (HTTP 200) server_error: The model produced output that does not match the expected peg-native format
+```
 
 ## Key isolation
 
