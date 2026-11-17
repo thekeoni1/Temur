@@ -873,6 +873,12 @@ fn repl(
     // T40 rider: what "act" means (advise, or compact and continue) is the
     // session's decision, not main.rs's.
     if pending_loaded.is_some() {
+        // T69 1d: with auto-compaction on, the resume seam can send a
+        // summary request, which is a chat request, so the probe is
+        // collected first.
+        if cfg.auto_compact_enabled(oneshot.is_some()) {
+            warn_if_tools_dropped(&mut tools_watch, None, &mut session, ui.as_mut());
+        }
         session.resume_seam_context_action(&mut |ev| ui.event(&ev));
     }
     // T69 1d: an interactive start gives the probe a moment, so the
@@ -983,6 +989,11 @@ fn repl(
             // the plain REPL says so first, on stdout like its notices. (The
             // TUI shows a busy row instead, set on its render thread.) Not
             // in replay/capture mode, where /compact makes no call at all.
+            // T69 1d: such a command sends a chat request of its own, so a
+            // probe still running is collected before it, as before a turn.
+            if temur::commands::calls_the_provider(&cmd) {
+                warn_if_tools_dropped(&mut tools_watch, None, &mut session, ui.as_mut());
+            }
             if !use_tui && !replay_mode && temur::commands::calls_the_provider(&cmd) {
                 println!("  {}", temur::commands::COMPACTING);
             }

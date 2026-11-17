@@ -2571,6 +2571,16 @@ fn tools_probe_server(
     bare: u64,
     with_tools: u64,
 ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    tools_probe_server_delayed(bare, with_tools, 0)
+}
+
+/// [`tools_probe_server`] answering each PROBE request `delay_ms` late, so
+/// a test can have the probe outlast the 2 s an interactive start waits.
+fn tools_probe_server_delayed(
+    bare: u64,
+    with_tools: u64,
+    delay_ms: u64,
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://127.0.0.1:{}/v1", listener.local_addr().unwrap().port());
     let sse = std::fs::read_to_string(fixture("openai/text_simple.sse")).unwrap();
@@ -2609,6 +2619,7 @@ fn tools_probe_server(
                 if text.contains("\"stream\":true") {
                     ("text/event-stream", sse.clone())
                 } else {
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
                     let n = if text.contains("\"tools\"") { with_tools } else { bare };
                     ("application/json", format!(r#"{{"usage":{{"prompt_tokens":{n}}}}}"#))
                 }
@@ -2826,4 +2837,53 @@ fn mock_run_sends_no_probe() {
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
     assert!(!stderr.contains("tool definitions"), "{stderr}");
     assert!(posts.lock().unwrap().is_empty(), "a replay run reached the network");
+}
+
+/// A probe slower than the 2 s an interactive start waits is collected
+/// before the first turn's chat request: the bare answer alone takes
+/// 2.5 s here, so the start's wait runs out with the probe still going.
+#[test]
+fn a_slow_probe_is_collected_before_the_first_turn() {
+    let (base, posts) = tools_probe_server_delayed(10, 10, 2500);
+    let sb = sandbox();
+    sb.write_config(&keyless_local_config(&base));
+    let (code, out, err) = sb.plain_turn(&[], "hi");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert_eq!(out.matches(&tools_drop_line(&base)).count(), 1, "{out}");
+    let posts = posts.lock().unwrap();
+    assert_eq!(posts.len(), 3, "{posts:?}");
+    assert!(posts[1].contains("\"tools\""), "{}", posts[1]);
+    assert!(posts[2].contains("\"stream\":true"), "the chat request waited: {}", posts[2]);
+}
+
+/// `/compact` sends a chat request of its own (the summary), so a probe
+/// still running is collected before it too. A first run leaves a
+/// session; the second resumes it against a slow probe and compacts
+/// before any turn.
+#[test]
+fn a_slow_probe_is_collected_before_a_compact_command() {
+    // The session is built against a server that renders the tools and
+    // answers at once; only the run under test meets the slow probe.
+    let (quick, _) = tools_probe_server(10, 31);
+    let sb = sandbox();
+    sb.write_config(&keyless_local_config(&quick));
+    for q in ["first question", "second question", "third question"] {
+        let (code, out, err) = sb.plain_turn(&["--continue"][..usize::from(q != "first question")], q);
+        assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    }
+    let (base, posts) = tools_probe_server_delayed(10, 10, 2500);
+    sb.write_config(&keyless_local_config(&base));
+    let before = 0;
+    let mut c = sb.cmd();
+    c.args(["--plain", "--continue"]);
+    let (code, out, err) = run(c, "/compact\n");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    let posts = posts.lock().unwrap();
+    let new = &posts[before..];
+    assert_eq!(new.len(), 3, "the probe pair, then the summary request: {out}");
+    assert!(!new[0].contains("\"stream\":true") && !new[1].contains("\"stream\":true"));
+    assert!(new[2].contains("\"stream\":true"), "{}", new[2]);
+    let warned = out.find(&tools_drop_line(&base)).expect("the warning");
+    let compacting = out.find(temur::commands::COMPACTING).expect("the compacting line");
+    assert!(warned < compacting, "the warning comes first: {out}");
 }
