@@ -202,6 +202,15 @@ pub fn detect_text_tool_call(text: &str, tool_names: &[String]) -> bool {
 /// The inner test both detection paths share: a leading-brace JSON object
 /// (whole, or its first balanced prefix if prose follows) naming a
 /// REGISTERED tool alongside an arguments-like key.
+///
+/// T69 1b (all-models dogfood 2026-11-16): the tool name is read from
+/// `"name"`, then `"tool"`, then `"function"`, and only when the value is a
+/// string. Both Qwen2.5-Coder models also write
+/// `{"function": "read", "arguments": {...}}`, which used to be neither run
+/// nor nudged. The same three keys, in the same order, are read by
+/// [`unknown_tool_named_with_args`] and [`extract_prose_tool_call`]. The
+/// OpenAI nested form `{"function": {"name": ...}}` is NOT accepted: an
+/// object under `"function"` is not a name.
 fn names_registered_tool_with_args(body: &str, tool_names: &[String]) -> bool {
     let body = body.trim();
     if !body.starts_with('{') {
@@ -219,6 +228,7 @@ fn names_registered_tool_with_args(body: &str, tool_names: &[String]) -> bool {
     let named = obj
         .get("name")
         .or_else(|| obj.get("tool"))
+        .or_else(|| obj.get("function"))
         .and_then(|v| v.as_str())
         .is_some_and(|n| tool_names.iter().any(|t| t.as_str() == n));
     let has_args = obj.get("arguments").is_some()
@@ -272,6 +282,7 @@ fn unknown_tool_named_with_args(body: &str, tool_names: &[String]) -> Option<Str
     let name = obj
         .get("name")
         .or_else(|| obj.get("tool"))
+        .or_else(|| obj.get("function"))
         .and_then(|v| v.as_str())?;
     if tool_names.iter().any(|t| t.as_str() == name) {
         return None;
@@ -325,7 +336,7 @@ pub struct ProseCall {
 ///   disqualifies; two or more candidates disqualify);
 /// - an inner object that [`repair_json`] yields as `Lossless` (fence and
 ///   trailing-comma repair fine; truncation completion NEVER executes);
-/// - a registered tool under `"name"`/`"tool"` and an OBJECT under
+/// - a registered tool under `"name"`/`"tool"`/`"function"` and an OBJECT under
 ///   `"arguments"`/`"input"`/`"parameters"`.
 pub fn extract_prose_tool_call(text: &str, tool_names: &[String]) -> Option<ProseCall> {
     const OPEN: &str = "<tool_call>";
@@ -352,6 +363,7 @@ pub fn extract_prose_tool_call(text: &str, tool_names: &[String]) -> Option<Pros
     let name = v
         .get("name")
         .or_else(|| v.get("tool"))
+        .or_else(|| v.get("function"))
         .and_then(|n| n.as_str())?;
     if !tool_names.iter().any(|t| t.as_str() == name) {
         return None;
@@ -1560,6 +1572,127 @@ mod tests {
                 detect_unknown_tool_call(text, &tools).as_deref(),
                 expected,
                 "text: {text:?}"
+            );
+        }
+    }
+
+    /// T69 1b: `"function"` is a third tool-name key at all three sites,
+    /// under every guard the other two keys already have.
+    #[test]
+    fn function_key_names_a_tool_at_all_three_sites() {
+        let tools: Vec<String> = vec!["read".into(), "write".into(), "bash".into()];
+        // The shape seen in the dogfood (Qwen2.5-Coder, office-sales-xlsx).
+        let seen = "```json\n{\n  \"function\": \"read\",\n  \"arguments\": {\n    \"filePath\": \"/work/quarterly.xlsx\",\n    \"limit\": 100\n  }\n}\n```";
+        assert!(detect_text_tool_call(seen, &tools));
+        assert_eq!(
+            extract_prose_tool_call(seen, &tools),
+            Some(ProseCall {
+                name: "read".into(),
+                args: json!({"filePath": "/work/quarterly.xlsx", "limit": 100}),
+            })
+        );
+        assert_eq!(detect_unknown_tool_call(seen, &tools), None);
+
+        // (text, detect, extract is Some, unknown-tool name)
+        let cases: Vec<(&str, bool, bool, Option<&str>)> = vec![
+            // Leading-brace, unfenced, "function" + "input" spelling.
+            (
+                "{\"function\": \"bash\", \"input\": {\"command\": \"ls\"}}",
+                true,
+                true,
+                None,
+            ),
+            // Preamble then a fenced call: nudged, never executed (T30).
+            (
+                "Let me look.\n```json\n{\"function\": \"read\", \"parameters\": {\"filePath\": \"a\"}}\n```",
+                true,
+                false,
+                None,
+            ),
+            // An unregistered tool under "function": the bogus-name path
+            // when fenced, and never a call.
+            (
+                "```json\n{\"function\": \"delete\", \"arguments\": {\"filePath\": \"a\"}}\n```",
+                false,
+                false,
+                Some("delete"),
+            ),
+            // Unregistered and UNFENCED: undetected, as for "name".
+            (
+                "{\"function\": \"compile\", \"arguments\": {}}",
+                false,
+                false,
+                None,
+            ),
+            // No arguments-like key: not a call at any site.
+            ("{\"function\": \"read\"}", false, false, None),
+            (
+                "```json\n{\"function\": \"read\", \"file\": \"a\"}\n```",
+                false,
+                false,
+                None,
+            ),
+            (
+                "```json\n{\"function\": \"delete\", \"file\": \"a\"}\n```",
+                false,
+                false,
+                None,
+            ),
+            // Prose that quotes the shape while discussing it, unfenced:
+            // not run and not nudged, the same pin as for "name".
+            (
+                "Here is the plan: {\"function\": \"read\", \"arguments\": {}}",
+                false,
+                false,
+                None,
+            ),
+            // Arguments present but not an object: detected, never run.
+            (
+                "{\"function\": \"read\", \"arguments\": \"a.txt\"}",
+                true,
+                false,
+                None,
+            ),
+            // The OpenAI nested form is NOT accepted: an object under
+            // "function" is not a name, with or without top-level args.
+            (
+                "```json\n{\"function\": {\"name\": \"read\", \"arguments\": {\"filePath\": \"a\"}}}\n```",
+                false,
+                false,
+                None,
+            ),
+            (
+                "```json\n{\"function\": {\"name\": \"read\"}, \"arguments\": {\"filePath\": \"a\"}}\n```",
+                false,
+                false,
+                None,
+            ),
+            // A non-string under "function" of any other kind.
+            (
+                "{\"function\": 7, \"arguments\": {}}",
+                false,
+                false,
+                None,
+            ),
+            // "name" still wins when both are present.
+            (
+                "{\"name\": \"read\", \"function\": \"compile\", \"arguments\": {}}",
+                true,
+                true,
+                None,
+            ),
+        ];
+        for (text, detect, extract, unknown) in cases {
+            assert_eq!(detect_text_tool_call(text, &tools), detect, "detect: {text:?}");
+            assert_eq!(
+                extract_prose_tool_call(text, &tools).is_some(),
+                extract,
+                "extract: {text:?}"
+            );
+            assert_eq!(
+                detect_unknown_tool_call(text, &tools).as_deref(),
+                unknown,
+                "unknown: {text:?}"
             );
         }
     }
