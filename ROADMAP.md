@@ -1634,7 +1634,8 @@ one-liner gate stays deferred to the visibility flip (RUNBOOK).
 T69 is the next milestone: more local models work through llama.cpp.
 The operator approved it on 2026-11-16, and the launch waits for it. As
 of 2026-11-17 the fixes 1a and 1b are built on the branch `t69-p1` and
-are in no release. The rest of phase 1 and phase 2 are not built.
+are in no release. So are 1c (keep the first call) and 1e (the doctor
+probe). 1d and phase 2 are not built.
 
 The evidence is the all-models dogfood of 2026-11-16: the v0.39.0 i686
 release asset (sha256 `b54b4f3b`) against llama.cpp `server-cuda-b10438`
@@ -1642,7 +1643,8 @@ with a context window of 8192, `max_tokens` 4096, 24 runs per model. Ten
 of the twelve models had run when the plan was written
 (Qwen3-4B-Thinking-2507 and Qwen3-8B had not). One of the ten scored,
 Qwen3-4B-Instruct-2507 at 3/24. Seven of the other nine never got a
-fair turn, for three different reasons:
+fair turn, for three different reasons. The table describes v0.39.0,
+doctor counts included:
 
 | Group | Models | Pass | What stops it | Does doctor see it |
 |---|---|---|---|---|
@@ -1671,7 +1673,10 @@ Verified, with the code anchors read against `405e0db`:
    log-triage r2 (8217) and r3 (8264), all against a window of 8192.
    A tenth is in a Llama-3.1-8B attempt that was cut for host memory
    and is not scored: json-reshape r2 (10484 tokens), with the same 3
-   and 0 lines. This one does not depend on the model.
+   and 0 lines. The count is of the dogfood suites only. Phase 0 arm
+   0a holds one more on the same binary: Llama-3.1-8B
+   feature-from-spec r3 (8600 tokens), again with 3 and 0 lines. This
+   one does not depend on the model.
    Fixed on the branch `t69-p1`, anchors read at `167fbc6`: the
    recovery has its own bound, `MAX_OVERFLOW_RECOVERIES_PER_TURN` = 3
    at `src/agent/mod.rs:353`, checked at `:1659` in place of the
@@ -1818,15 +1823,21 @@ Phase 1 fixes, in order of confidence:
   the request field (0b), the tool-prompt change (0c, 19 rejects
   against 16 in the control). Not measured and not taken: a bounded
   retry on the error, and the `--skip-chat-parsing` flag of b12429.
+  Known limit, to measure in phase 2: a response cut off this way
+  carries no usage figures, so temur's estimate of the context in use
+  is not refreshed on that round-trip, and the proactive compaction
+  check works from the previous figure.
 - 1d. Group B: at session start on a keyless openai-compat endpoint,
   the session says what doctor would say when the tools are dropped.
   The cost is two tiny requests. Still to rule on: always probe,
   probe once and cache per model and server, or only point at doctor.
   The prose-tools mode is held (see the ruling below).
 - 1e. Doctor learns groups A and C: a probe that invites a two-step
-  answer and reports "the server rejected the model's tool-call
-  output" or "the model answered with a text call, recovery will be
-  used". It never FAILs, the same rule as the tools-drop probe.
+  answer and reports that the server rejected the model's tool-call
+  output (and whether temur kept a first call), or that the model
+  "answered the tool-call probe with a call written as text, not
+  through the tool interface", with whether the text-call recovery is
+  on. It never FAILs, the same rule as the tools-drop probe.
 
 Phase 2 re-measures and closes the docs. The affected models run again
 on the built binary (both Llamas, the three group B models, both Coder
