@@ -2060,6 +2060,19 @@ fn peg_reject_after_a_whole_and_a_partial_call_is_the_unchanged_error() {
     assert_peg_error_unchanged("peg_reject_whole_then_partial_call", PEG_ERROR_TEXT);
 }
 
+/// A stream that carried refusal text keeps nothing, whole call or not.
+#[test]
+fn peg_reject_after_a_refusal_and_a_whole_call_is_the_unchanged_error() {
+    assert_peg_error_unchanged("peg_reject_refusal_and_call", PEG_ERROR_TEXT);
+}
+
+/// A named call with no argument bytes is not whole: nothing says the
+/// model had finished it.
+#[test]
+fn peg_reject_after_a_call_with_empty_arguments_is_the_unchanged_error() {
+    assert_peg_error_unchanged("peg_reject_empty_arguments", PEG_ERROR_TEXT);
+}
+
 #[test]
 fn another_server_error_after_a_whole_call_is_the_unchanged_error() {
     assert_peg_error_unchanged(

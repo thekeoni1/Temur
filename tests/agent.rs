@@ -7439,6 +7439,56 @@ fn a_turn_that_recovered_once_still_has_three_proactive_folds() {
     );
 }
 
+/// T69 1c at the turn loop's SECOND send site, the retry after an
+/// overflow recovery: a kept-call notice raised there is shown and
+/// recorded like one raised on the first send.
+struct KeptOnRetryProvider {
+    dir: std::path::PathBuf,
+    calls: std::cell::Cell<u32>,
+}
+
+impl Provider for KeptOnRetryProvider {
+    fn stream(
+        &self,
+        _req: &ChatRequest,
+        on_event: &mut dyn FnMut(StreamEvent),
+        _cancel: &CancelToken,
+    ) -> Result<ResponseMessage, ProviderError> {
+        let n = self.calls.get();
+        self.calls.set(n + 1);
+        match n {
+            0 => Ok(big_file(&self.dir, "big.txt", 200)),
+            1 => overflow_error(),
+            _ => {
+                if n == 2 {
+                    on_event(StreamEvent::Notice(
+                        temur::provider::openai_compat::kept_calls_notice(1),
+                    ));
+                }
+                Ok(done())
+            }
+        }
+    }
+}
+
+#[test]
+fn a_kept_call_notice_on_the_overflow_retry_is_recorded_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = KeptOnRetryProvider {
+        dir: dir.path().to_path_buf(),
+        calls: std::cell::Cell::new(0),
+    };
+    let mut session = Session::new(Box::new(provider), Registry::standard(), r6_cfg(dir.path()));
+    let events = collect_events(&mut session, "the task");
+    let n = notices(&events);
+    assert_eq!(overflow_markers(&n), 1, "the retry is the second send site: {n:?}");
+    let kept = temur::provider::openai_compat::kept_calls_notice(1);
+    assert_eq!(n.iter().filter(|x| **x == kept).count(), 1, "{n:?}");
+    let errors = session.snapshot().errors;
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].message, kept);
+}
+
 /// T69 1a: the separate budget does not make a recovery loop. After three
 /// proactive folds the overflow is recovered once and retried once; the
 /// retry is rejected again and that error ends the turn, although two

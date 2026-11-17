@@ -834,6 +834,36 @@ fn tools_drop_check(
     Ok(rendered)
 }
 
+/// The tool-call probe's transport: the chat transport with the probe's
+/// own bounds, and no re-send. The shared retry policy lives inside the
+/// provider and re-sends a retryable failure up to twice; a probe that
+/// carries the whole prompt should ask once. A retryable failure sets the
+/// probe's own cancel token, and the retry loop returns the pending error
+/// unchanged when it sees the token, so the NOTE quotes what the server
+/// said. A failure that is not retryable is left alone, which keeps the
+/// provider's one token-cap-name retry (D19) working.
+struct OneShotTransport {
+    inner: crate::provider::openai_compat::transport::HttpTransport,
+    cancel: crate::cancel::CancelToken,
+}
+
+impl crate::provider::transport::Transport for OneShotTransport {
+    fn post_stream(
+        &self,
+        url: &str,
+        api_key: &str,
+        body: &str,
+    ) -> Result<Box<dyn std::io::Read>, crate::provider::transport::TransportError> {
+        let res = self.inner.post_stream(url, api_key, body);
+        if let Err(e) = &res {
+            if e.retryable() {
+                self.cancel.set();
+            }
+        }
+        res
+    }
+}
+
 /// What the tool-call probe asks. Two files, so a model that writes
 /// several calls in one message has a reason to. The same prompt drew the
 /// rejection from both Llama models in all 30 hand-made requests of T69
@@ -848,7 +878,8 @@ const TOOL_CALL_PROBE_MAX_TOKENS: u32 = 256;
 /// How a model answered the tool-call probe.
 #[derive(Debug, PartialEq)]
 enum ToolCallShape {
-    /// At least one call arrived through the tool interface.
+    /// At least one call arrived through the tool interface with
+    /// arguments that parsed and are not empty.
     Native,
     /// The server rejected the output after delivering whole calls, and
     /// the provider kept them (T69 1c).
@@ -860,7 +891,8 @@ enum ToolCallShape {
     TextCall,
     /// An answer with no call of either kind.
     NoCall,
-    /// Anything else, in the provider's words.
+    /// Anything else: the provider's error text, or doctor's own words
+    /// for an answer whose only tool calls were cut or empty.
     Inconclusive(String),
 }
 
@@ -878,10 +910,23 @@ fn classify_tool_call_probe(
             // A call whose arguments did not parse (`input_raw` is set)
             // was cut, most likely by the probe's own token cap. It shows
             // the model reached for the interface and nothing more.
-            let mut cut = false;
+            //
+            // A call with no arguments at all is not a PASS either. The
+            // probe asks for a read, which needs one, and a call cut right
+            // after its name reaches this function as an empty object: the
+            // provider maps empty raw arguments to `{}`, so a literal `{}`
+            // from the model cannot be told apart here and gets the same
+            // NOTE.
+            let (mut cut, mut empty) = (false, false);
             for b in &msg.content {
                 match b {
-                    ContentBlock::ToolUse { input_raw: None, .. } => return ToolCallShape::Native,
+                    ContentBlock::ToolUse { input_raw: None, input, .. } => {
+                        if input.as_object().is_some_and(|o| o.is_empty()) {
+                            empty = true;
+                        } else {
+                            return ToolCallShape::Native;
+                        }
+                    }
                     ContentBlock::ToolUse { .. } => cut = true,
                     _ => {}
                 }
@@ -890,6 +935,11 @@ fn classify_tool_call_probe(
                 return ToolCallShape::Inconclusive(
                     "the answer ended inside a tool call, before its arguments were complete"
                         .into(),
+                );
+            }
+            if empty {
+                return ToolCallShape::Inconclusive(
+                    "the answer held a tool call with no arguments".into(),
                 );
             }
             let text: String = msg
@@ -931,6 +981,10 @@ fn classify_tool_call_probe(
 /// Nothing is executed; the answer is only classified. Never FAILs, the
 /// same rule as the tools-drop probe. One answer is one sample: a model
 /// that passes here can still be rejected on another prompt.
+///
+/// Bounds: the same [`crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS`] the
+/// two older probes allow, here for the response head and again between
+/// stream reads, and no re-send (see [`OneShotTransport`]).
 fn tool_call_shape_check(
     r: &mut Report<'_>,
     cfg: &Config,
@@ -941,14 +995,27 @@ fn tool_call_shape_check(
     use crate::provider::{ContentBlock, Provider, RequestMessage, Role, StreamEvent};
     writeln!(
         r.out,
-        "NOTE: tool-call probe: asking \"{}\" at {} for a two-step answer (up to {} generated tokens)",
-        p.model, p.base_url, TOOL_CALL_PROBE_MAX_TOKENS
+        "NOTE: tool-call probe: asking \"{}\" at {} for a two-step answer (up to {} generated tokens; waits up to {}s for the server)",
+        p.model,
+        p.base_url,
+        TOOL_CALL_PROBE_MAX_TOKENS,
+        crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS
     )?;
     let _ = r.out.flush();
-    let provider = crate::provider::openai_compat::OpenAiCompatProvider::with_http(
+    let cancel = crate::cancel::CancelToken::new();
+    let bound = std::time::Duration::from_secs(crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS);
+    let provider = crate::provider::openai_compat::OpenAiCompatProvider::new(
         p.base_url.clone(),
         None,
         p.max_tokens_parameter.unwrap_or_default(),
+        Box::new(OneShotTransport {
+            inner: crate::provider::openai_compat::transport::HttpTransport::with_timeouts(
+                std::time::Duration::from_secs(crate::provider::transport::CHAT_CONNECT_TIMEOUT_SECS),
+                bound,
+                bound,
+            ),
+            cancel: cancel.clone(),
+        }),
     );
     let req = crate::provider::ChatRequest {
         model: p.model.clone(),
@@ -975,7 +1042,7 @@ fn tool_call_shape_check(
                 }
             }
         },
-        &crate::cancel::CancelToken::new(),
+        &cancel,
     );
     let names: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
     match classify_tool_call_probe(&result, kept, &names) {
@@ -992,8 +1059,10 @@ fn tool_call_shape_check(
             p.base_url, p.model
         )),
         ToolCallShape::TextCall => r.warn(&format!(
-            "\"{}\" at {} answered the tool-call probe with a call written as text: the text-call recovery will be used",
-            p.model, p.base_url
+            "\"{}\" at {} answered the tool-call probe with a call written as text, not through the tool interface; temur's text-call recovery is {}",
+            p.model,
+            p.base_url,
+            if cfg.prose_tool_calls { "on" } else { "off (prose_tool_calls: false)" }
         )),
         ToolCallShape::NoCall => writeln!(
             r.out,
@@ -1665,8 +1734,8 @@ mod tests {
     }
 
     /// [`canned_server_with_completions_ex`] plus the T69 tool-call probe's
-    /// answer: a request with `"stream":true` gets `stream_body` (SSE
-    /// text) when one is given. With `None` a streamed request gets the
+    /// answer: a request with `"stream":true` gets `stream_body` (a status
+    /// line and the body, SSE text on a 200) when one is given. With `None` a streamed request gets the
     /// with-tools JSON like any other request carrying tools, which the
     /// provider reads as an empty stream.
     fn canned_server_with_stream(
@@ -1674,7 +1743,7 @@ mod tests {
         bare: &'static str,
         with_tools_status: &'static str,
         with_tools: &'static str,
-        stream_body: Option<&'static str>,
+        stream_body: Option<(&'static str, &'static str)>,
     ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1714,8 +1783,8 @@ mod tests {
                 }
                 let (status, picked) = if text.starts_with("POST ") {
                     seen.lock().unwrap().push(text.clone());
-                    if let (true, Some(sse)) = (text.contains("\"stream\":true"), stream_body) {
-                        ("HTTP/1.1 200 OK", sse)
+                    if let (true, Some(answer)) = (text.contains("\"stream\":true"), stream_body) {
+                        answer
                     } else if text.contains("\"tools\"") {
                         if with_tools_status.is_empty() {
                             continue; // answer nothing: the stream drops here
@@ -2828,7 +2897,13 @@ mod tests {
         sse: Option<&'static str>,
     ) -> (bool, String, String, Vec<String>) {
         let (base, posts) =
-            canned_server_with_stream(LLAMA_MODELS, USAGE_10, "HTTP/1.1 200 OK", USAGE_31, sse);
+            canned_server_with_stream(
+                LLAMA_MODELS,
+                USAGE_10,
+                "HTTP/1.1 200 OK",
+                USAGE_31,
+                sse.map(|s| ("HTTP/1.1 200 OK", s)),
+            );
         let (healthy, out) = doctor_over(&keyless_config(&base, "m"), false);
         let bodies = posts.lock().unwrap().clone();
         (healthy, out, base, bodies)
@@ -2849,7 +2924,7 @@ mod tests {
         // and no credential header.
         assert!(
             out.contains(&format!(
-                "NOTE: tool-call probe: asking \"m\" at {base} for a two-step answer (up to 256 generated tokens)"
+                "NOTE: tool-call probe: asking \"m\" at {base} for a two-step answer (up to 256 generated tokens; waits up to 300s for the server)"
             )),
             "{out}"
         );
@@ -2900,10 +2975,75 @@ mod tests {
         assert!(healthy, "a WARN, never a FAIL: {out}");
         assert!(
             out.contains(&format!(
-                "WARN: \"m\" at {base} answered the tool-call probe with a call written as text: the text-call recovery will be used"
+                "WARN: \"m\" at {base} answered the tool-call probe with a call written as text, not through the tool interface; temur's text-call recovery is on"
             )),
             "{out}"
         );
+        // The same answer with the recovery switched off in the config.
+        let (base, _posts) = canned_server_with_stream(
+            LLAMA_MODELS,
+            USAGE_10,
+            "HTTP/1.1 200 OK",
+            USAGE_31,
+            Some(("HTTP/1.1 200 OK", SSE_TEXT_CALL)),
+        );
+        let config = keyless_config(&base, "m").replacen('{', "{\"prose_tool_calls\": false, ", 1);
+        let (healthy, out) = doctor_over(&config, false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "WARN: \"m\" at {base} answered the tool-call probe with a call written as text, not through the tool interface; temur's text-call recovery is off (prose_tool_calls: false)"
+            )),
+            "{out}"
+        );
+    }
+
+    /// A call with no arguments is not a PASS: the probe asks for a read,
+    /// and a call cut right after its name looks exactly like this.
+    #[test]
+    fn tool_call_probe_with_an_argumentless_call_is_a_note() {
+        const SSE_NO_ARGS: &str = "data: {\"choices\":[{\"finish_reason\":null,\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"\"}}]}}],\"id\":\"c1\",\"model\":\"m\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"finish_reason\":\"length\",\"index\":0,\"delta\":{}}],\"id\":\"c1\",\"model\":\"m\",\"object\":\"chat.completion.chunk\"}\n\ndata: [DONE]\n\n";
+        let (healthy, out, base, _) = doctor_with_stream(Some(SSE_NO_ARGS));
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "NOTE: tool-call probe at {base} inconclusive: the answer held a tool call with no arguments"
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("answered the tool-call probe"), "{out}");
+    }
+
+    /// The probe asks once. A 503 is retryable under the shared policy,
+    /// which would re-send the whole prompt twice more; the probe's
+    /// transport stops that, and the NOTE still quotes the server.
+    #[test]
+    fn tool_call_probe_is_sent_once_even_when_the_failure_is_retryable() {
+        let (base, posts) = canned_server_with_stream(
+            LLAMA_MODELS,
+            USAGE_10,
+            "HTTP/1.1 200 OK",
+            USAGE_31,
+            Some((
+                "HTTP/1.1 503 Service Unavailable",
+                r#"{"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}"#,
+            )),
+        );
+        let (healthy, out) = doctor_over(&keyless_config(&base, "m"), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "NOTE: tool-call probe at {base} inconclusive: api error (HTTP 503) unavailable_error: Loading model"
+            )),
+            "{out}"
+        );
+        let streamed = posts
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|b| b.contains("\"stream\":true"))
+            .count();
+        assert_eq!(streamed, 1, "one request, no re-send");
     }
 
     #[test]
@@ -2946,7 +3086,7 @@ mod tests {
     #[test]
     fn tool_call_probe_runs_only_where_the_tools_are_rendered() {
         let (base, posts) =
-            canned_server_with_stream(LLAMA_MODELS, USAGE_10, "HTTP/1.1 200 OK", USAGE_10, Some(SSE_NATIVE));
+            canned_server_with_stream(LLAMA_MODELS, USAGE_10, "HTTP/1.1 200 OK", USAGE_10, Some(("HTTP/1.1 200 OK", SSE_NATIVE)));
         let (_healthy, out) = doctor_over(&keyless_config(&base, "m"), false);
         assert!(out.contains("appears to drop tool definitions"), "{out}");
         assert!(!out.contains("tool-call probe"), "{out}");
@@ -2955,7 +3095,7 @@ mod tests {
             "no streamed request went out"
         );
         let (base, posts) =
-            canned_server_with_stream(LLAMA_MODELS, USAGE_10, "HTTP/1.1 200 OK", USAGE_31, Some(SSE_NATIVE));
+            canned_server_with_stream(LLAMA_MODELS, USAGE_10, "HTTP/1.1 200 OK", USAGE_31, Some(("HTTP/1.1 200 OK", SSE_NATIVE)));
         let (_healthy, out) = doctor_over(&keyless_config(&base, "m"), true);
         assert!(!out.contains("tool-call probe"), "{out}");
         assert!(posts.lock().unwrap().is_empty(), "no request at all under --no-network");

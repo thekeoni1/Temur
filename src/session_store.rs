@@ -118,7 +118,10 @@ pub struct SessionFile {
 }
 
 /// T64 P0 (R6): one provider error a turn ended on, recorded as the UI
-/// showed it (already redacted).
+/// showed it (already redacted). Since T69 1c the list also holds the
+/// kept-call notice of a turn that went on: the server rejected part of a
+/// response and temur kept the tool calls it had delivered. Such an entry
+/// is not an error the turn ended on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionError {
     /// How many history messages there were when the turn failed. A
