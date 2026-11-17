@@ -2873,17 +2873,93 @@ fn a_slow_probe_is_collected_before_a_compact_command() {
     }
     let (base, posts) = tools_probe_server_delayed(10, 10, 2500);
     sb.write_config(&keyless_local_config(&base));
-    let before = 0;
     let mut c = sb.cmd();
     c.args(["--plain", "--continue"]);
     let (code, out, err) = run(c, "/compact\n");
     assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
     let posts = posts.lock().unwrap();
-    let new = &posts[before..];
+    let new = &posts[..];
     assert_eq!(new.len(), 3, "the probe pair, then the summary request: {out}");
     assert!(!new[0].contains("\"stream\":true") && !new[1].contains("\"stream\":true"));
     assert!(new[2].contains("\"stream\":true"), "{}", new[2]);
     let warned = out.find(&tools_drop_line(&base)).expect("the warning");
     let compacting = out.find(temur::commands::COMPACTING).expect("the compacting line");
     assert!(warned < compacting, "the warning comes first: {out}");
+}
+
+/// Three turns against a quick server that renders the tools, leaving a
+/// default session with enough history for a fold. Returns the sandbox.
+fn sandbox_with_a_three_turn_session() -> Sandbox {
+    let (quick, _) = tools_probe_server(10, 31);
+    let sb = sandbox();
+    sb.write_config(&keyless_local_config(&quick));
+    for q in ["first question", "second question", "third question"] {
+        let (code, out, err) = sb.plain_turn(&["--continue"][..usize::from(q != "first question")], q);
+        assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    }
+    sb
+}
+
+/// Rewrite a session file so its restored context estimate crosses the
+/// threshold of the 32768 window the test configs use.
+fn mark_session_as_nearly_full(path: &std::path::Path) {
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    v["last_context_used"] = serde_json::json!(30000);
+    std::fs::write(path, serde_json::to_string(&v).unwrap()).unwrap();
+}
+
+/// A resumed one-shot whose restored estimate crosses the threshold
+/// compacts at the resume seam, which sends a summary request before the
+/// turn. A probe still running is collected before that request.
+#[test]
+fn a_slow_probe_is_collected_before_the_resume_seam_compacts() {
+    let sb = sandbox_with_a_three_turn_session();
+    mark_session_as_nearly_full(&sb.default_session());
+    let (base, posts) = tools_probe_server_delayed(10, 10, 2500);
+    sb.write_config(&keyless_local_config(&base));
+    let mut c = sb.cmd();
+    c.args(["--continue", "-p", "fourth question"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    let warned = stderr.find(&tools_drop_line(&base)).expect("the warning");
+    let compacting = stderr.find("compacting automatically").expect("the seam compacted");
+    assert!(warned < compacting, "the warning comes first: {stderr}");
+    let posts = posts.lock().unwrap();
+    assert!(posts.len() >= 4, "probe pair, summary, turn: {}", posts.len());
+    assert!(!posts[0].contains("\"stream\":true") && !posts[1].contains("\"stream\":true"));
+    assert!(posts[2].contains("\"stream\":true"), "{}", posts[2]);
+}
+
+/// The same seam runs inside a session on `/resume`. With auto-compaction
+/// on in the config, a probe still running is collected before it.
+#[test]
+fn a_slow_probe_is_collected_before_a_resume_command_compacts() {
+    let sb = sandbox_with_a_three_turn_session();
+    // A start that runs no turn archives the session under a key.
+    let (code, out, err) = sb.turnless_start();
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    let default_name = sb.default_session().file_name().unwrap().to_string_lossy().into_owned();
+    let (file, archive) = sb
+        .sessions()
+        .into_iter()
+        .find(|f| f.0 != default_name)
+        .expect("the archive");
+    let key = archive.name.expect("an archive records its key");
+    mark_session_as_nearly_full(&sb.sessions_dir().join(file));
+
+    let (base, posts) = tools_probe_server_delayed(10, 10, 2500);
+    sb.write_config(&format!(
+        r#"{{"provider":"openai-compat","auto_compact":true,"openai_compat":{{"base_url":"{base}","model":"local-gguf","context_window":32768}}}}"#
+    ));
+    let mut c = sb.cmd();
+    c.arg("--plain");
+    let (code, out, err) = run(c, &format!("/resume {key}\n"));
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    let warned = out.find(&tools_drop_line(&base)).expect("the warning");
+    let compacting = out.find("compacting automatically").expect("the seam compacted");
+    assert!(warned < compacting, "the warning comes first: {out}");
+    let posts = posts.lock().unwrap();
+    assert_eq!(posts.len(), 3, "the probe pair, then the summary request: {out}");
+    assert!(posts[2].contains("\"stream\":true"), "{}", posts[2]);
 }

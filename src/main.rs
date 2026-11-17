@@ -991,7 +991,11 @@ fn repl(
             // in replay/capture mode, where /compact makes no call at all.
             // T69 1d: such a command sends a chat request of its own, so a
             // probe still running is collected before it, as before a turn.
-            if temur::commands::calls_the_provider(&cmd) {
+            // `/resume` is one of them when auto-compaction is on: its
+            // resume seam can send a summary request.
+            let resume_may_compact = matches!(cmd, temur::commands::Command::Resume(_))
+                && cfg.auto_compact_enabled(false);
+            if temur::commands::calls_the_provider(&cmd) || resume_may_compact {
                 warn_if_tools_dropped(&mut tools_watch, None, &mut session, ui.as_mut());
             }
             if !use_tui && !replay_mode && temur::commands::calls_the_provider(&cmd) {
