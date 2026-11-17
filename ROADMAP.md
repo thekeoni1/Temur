@@ -1632,8 +1632,9 @@ one-liner gate stays deferred to the visibility flip (RUNBOOK).
 ### Queued from the all-models dogfood 2026-11-16 (T69 plan, 2026-11-16)
 
 T69 is the next milestone: more local models work through llama.cpp.
-The operator approved it on 2026-11-16. Nothing in it is built yet, and
-the launch waits for it.
+The operator approved it on 2026-11-16, and the launch waits for it. As
+of 2026-11-17 the fixes 1a and 1b are built on the branch `t69-p1` and
+are in no release. The rest of phase 1 and phase 2 are not built.
 
 The evidence is the all-models dogfood of 2026-11-16: the v0.39.0 i686
 release asset (sha256 `b54b4f3b`) against llama.cpp `server-cuda-b10438`
@@ -1770,9 +1771,26 @@ otherwise.
 - The tool list in the system prompt gets gemma to run tools through
   the existing prose-call recovery, and no task passes.
 - The window is not what holds Qwen3-4B-Instruct at 3/24.
-- The 1a build ended the overflow deaths on Qwen3-8B. Its 0/24 against
-  2/24 comes from two runs a day apart, so a same-day repeat pair runs
-  before the fix is pushed.
+- The 1a build had no overflow death on Qwen3-8B in this arm. Its 0/24
+  against 2/24 comes from two runs a day apart, so a same-day repeat
+  pair ran before the fix is pushed.
+
+The repeat pair (2026-11-17, Qwen3-8B, same day and settings, v0.39.0
+first):
+
+| Binary | Pass | Overflow deaths | Recoveries |
+|---|---|---|---|
+| v0.39.0 | 1/24 | 3 | 0 |
+| built from `t69-p1` | 2/24 | 1 | 7, in 3 tasks |
+
+The 0/24 did not repeat. Across the four Qwen3-8B runs the pass count
+is 0, 1, 2 and 2, each pass on the same task, so the pair shows no
+effect of the build on passes in either direction. The fix lowers the
+overflow deaths and does not end them. In the one remaining death
+(log-triage r3) the log holds three proactive folds, three recoveries
+and then the overflow error. Read, and not stated by the log: that is
+a fourth overflow in one turn, which the bound of three recoveries
+refuses. No run that recovered went on to pass.
 
 Phase 1 fixes, in order of confidence:
 
