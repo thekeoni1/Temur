@@ -1660,18 +1660,32 @@ Verified, with the code anchors read against `405e0db`:
    `src/agent/mod.rs:1637-1639` runs the T42 recovery only while
    `auto_compactions` is below that bound. An unattended run is one
    turn, so after three automatic compactions a server overflow is
-   terminal. Seen 5 times in the dogfood, each with exactly 3
-   "compacted:" lines and 0 "context overflow:" lines before the error:
-   Qwen3-1.7B log-triage r1 (8211 tokens) and r3 (8799),
-   Qwen3-4B-Instruct two-bug-invoice r2 (8299) and refactor-rename r3
-   (8205), Llama-3.1-8B feature-from-spec r3 (8333), all against a
-   window of 8192. This one does not depend on the model.
+   terminal. Seen 9 times in the twelve scored suites of the dogfood
+   (the count was 5 when this entry was written, before Qwen3-8B had
+   run), each with exactly 3 "compacted:" lines and 0 "context
+   overflow:" lines before the error: Qwen3-1.7B log-triage r1 (8211
+   tokens) and r3 (8799), Qwen3-4B-Instruct two-bug-invoice r2 (8299)
+   and refactor-rename r3 (8205), Llama-3.1-8B feature-from-spec r3
+   (8333), Qwen3-8B feature-from-spec r1 (8788) and r2 (8263) and
+   log-triage r2 (8217) and r3 (8264), all against a window of 8192.
+   A tenth is in a Llama-3.1-8B attempt that was cut for host memory
+   and is not scored: json-reshape r2 (10484 tokens), with the same 3
+   and 0 lines. This one does not depend on the model.
+   Fixed on the branch `t69-p1`, anchors read at `167fbc6`: the
+   recovery has its own bound, `MAX_OVERFLOW_RECOVERIES_PER_TURN` = 3
+   at `src/agent/mod.rs:353`, checked at `:1659` in place of the
+   compaction counter. A turn can now make up to six summary calls,
+   three proactive folds and three recoveries.
 2. The text-call recovery does not know the key "function".
    `src/agent/recover.rs:219-221`, `:272-274` and `:352-354` accept
    "name" or "tool" for the tool name; `:224-226` accept "arguments",
    "input" or "parameters" for the arguments. Both Coder models also
    write `{"function": "read", "arguments": {...}}`, in 4 logs per
    model, and those calls never run.
+   Fixed on the branch `t69-p1`, anchors read at `167fbc6`: the three
+   sites accept "function" as a third name key when its value is a
+   string (`src/agent/recover.rs:231`, `:285` and `:366`). The nested
+   form `{"function": {"name": ...}}` is still not accepted.
 3. Group A as far as the logs go. The user sees only "provider error:
    api error (HTTP 200) server_error: The model produced output that
    does not match the expected peg-native format", in 22 of 24 task
@@ -1723,6 +1737,43 @@ log kept whole.
 Phase 0 stops and reports. Phase 1's content depends on it, except 1a
 and 1b.
 
+Phase 0 results (2026-11-17). Every arm ran on the v0.39.0 asset
+against `server-cuda-b10438` at a window of 8192 unless the row says
+otherwise.
+
+| Arm | Model | What changed | Pass | Counted |
+|---|---|---|---|---|
+| 0a | Llama-3.1-8B | server at `-lv 4` | 0/24 | 20 rejected outputs, 18 of them after a parsed first call |
+| 0a | Llama-3.2-3B | server at `-lv 4` | 0/24 | 14 rejected outputs, 5 of them after a parsed first call |
+| 0b | both Llamas | 15 requests per model by hand: no field, `parallel_tool_calls` false, true | none accepted | 30 of 30 rejected, each after one tool call in the stream |
+| 0c | Llama-3.1-8B | one-call rule in the prompt | 0/24 | 19 tasks ended by the reject |
+| 0c | Llama-3.1-8B | control, the same prompt without the rule | 0/24 | 16 tasks ended by the reject |
+| 0d | Llama-3.1-8B | image `server-cuda-b12429` | 0/24 | 24 tasks ended by the reject |
+| 0d | Llama-3.2-3B | image `server-cuda-b12429` | 0/24 | 13 tasks ended by the reject |
+| 0e | gemma-3-4b-it | tool list in the system prompt | 0/24 | a tool ran in 21 of 24 tasks |
+| 0e | gemma-3-4b-it | the same, without the "never write a tool call as plain text" clause | 0/24 | a tool ran in 21 of 24 tasks |
+| window | Qwen3-4B-Instruct-2507 | window 32768 | 2/24 | 0 overflow deaths, against 3/24 and 2 at 8192 |
+| 1a build | Qwen3-8B | binary built from `t69-p1` | 0/24 | 0 overflow deaths and 4 recoveries in 3 tasks, against 2/24 and 4 deaths on v0.39.0 |
+
+- The Llama rejects are several calls written in one message, joined
+  by "; ". The parser takes the first call and fails on the rest. In
+  0b the stream carried that first call before the error in all 30
+  requests. In the suite arms the first call is inferred from a
+  leftover text that starts with "; ".
+- `parallel_tool_calls` changes nothing: absent, false and true were
+  rejected alike.
+- The one-call rule did not reduce the rejects, 19 against 16 in the
+  control.
+- The newer image `server-cuda-b12429` rejects the same way. It no
+  longer accepts `--no-mmap`; the arm ran with `--load-mode none`,
+  which is one flag of difference from the other arms.
+- The tool list in the system prompt gets gemma to run tools through
+  the existing prose-call recovery, and no task passes.
+- The window is not what holds Qwen3-4B-Instruct at 3/24.
+- The 1a build ended the overflow deaths on Qwen3-8B. Its 0/24 against
+  2/24 comes from two runs a day apart, so a same-day repeat pair runs
+  before the fix is pushed.
+
 Phase 1 fixes, in order of confidence:
 
 - 1a. The compaction bound no longer starves overflow recovery: the
@@ -1733,19 +1784,27 @@ Phase 1 fixes, in order of confidence:
   under the same arguments-like-key requirement that guards the
   others, with tests beside the existing "tool" and "input" pins.
   Needs no phase 0 result.
-- 1c. The group A lever, whichever phase 0 shows works, alone or
-  combined: a request field sent only where measured to help; one
-  bounded retry with a short nudge on the peg-native `server_error`;
-  tool prompts that stop inviting several calls per message on local
-  openai-compat servers. Existing configs keep sending a
-  byte-identical request body unless the operator rules a default
-  flip.
+- 1c. The group A lever is to keep the first call (operator ruling,
+  2026-11-17). When the stream has delivered a complete tool call and
+  then ends with the peg-native `server_error`, temur runs that call,
+  continues the turn, and prints one line saying the server rejected
+  the rest of the model's output. Measured reach in 0a: the parser
+  had taken a first call in 18 of the 20 rejects on Llama-3.1-8B and
+  5 of the 14 on Llama-3.2-3B. Those two figures are inferred from
+  the leading "; " in the server log; the call was seen on the wire
+  only in 0b. The other rejects (no call parsed, or one call with
+  malformed JSON) stay an error, and the user is told what they are
+  told today: "provider error: api error (HTTP 200) server_error: The
+  model produced output that does not match the expected peg-native
+  format". The request body does not change. Measured and not taken:
+  the request field (0b), the tool-prompt change (0c, 19 rejects
+  against 16 in the control). Not measured and not taken: a bounded
+  retry on the error, and the `--skip-chat-parsing` flag of b12429.
 - 1d. Group B: at session start on a keyless openai-compat endpoint,
   the session says what doctor would say when the tools are dropped.
-  The cost is two tiny requests. To rule on: always probe, probe once
-  and cache per model and server, or only point at doctor. If 0e
-  shows it works: a prose-tools mode for such templates (see the open
-  decision below).
+  The cost is two tiny requests. Still to rule on: always probe,
+  probe once and cache per model and server, or only point at doctor.
+  The prose-tools mode is held (see the ruling below).
 - 1e. Doctor learns groups A and C: a probe that invites a two-step
   answer and reports "the server rejected the model's tool-call
   output" or "the model answered with a text call, recovery will be
@@ -1759,11 +1818,9 @@ re-measure moves, and `docs/USAGE.md` any new field or message. Then
 CHANGELOG and the ship record. The version is 0.40.0 if a request
 field or a new doctor probe ships, and 0.39.1 if only 1a and 1b ship.
 
-Open decision, awaiting the operator: whether group B gets the session
-warning only, or also a prose-tools mode if 0e shows it works.
-Planning recommends both, with the mode switched on automatically when
-the drop is detected and never for a model whose template renders
-tools.
+Ruled by the operator on 2026-11-17: group B gets the session warning.
+The prose-tools mode is held, because 0e scored 0/24 with and without
+the plain-text clause.
 
 Not in T69:
 
