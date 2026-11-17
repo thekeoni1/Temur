@@ -1864,7 +1864,8 @@ Phase 1 fixes, in order of confidence:
   4108 or more, so no fold brought the turn back under that trigger.
   36 of the 38 second and third proactive folds came one round trip
   after the fold before, and 18 of the 57 freed less than a sixteenth
-  of the history. Three rulings of 2026-11-17:
+  of the history. Ruled by the operator on 2026-11-17, two rules to
+  build and a third, limited to the recovery path, to specify first:
   - Built on the branch: for a model id that does not look like a
     reasoning model, the room kept for one response is the smaller of
     `max_tokens` and a quarter of the window, so that config folds
@@ -1877,8 +1878,8 @@ Phase 1 fixes, in order of confidence:
   - Built on the branch: a proactive fold waits until two round trips
     have completed since the turn's last fold, proactive or recovery.
     The recovery after a refused request is not gated.
-  - Spec, not ruled: after a recovery fold that leaves the history
-    large, also cut the largest kept tool result. The spec's own
+  - Spec, its rule not ruled: after a recovery fold that leaves the
+    history large, also cut the largest kept tool result. The spec's own
     arithmetic does not show it removing the remaining death: in that
     turn the model fetched the same 3616-char result again after each
     recovery.
