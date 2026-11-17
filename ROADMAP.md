@@ -1645,7 +1645,7 @@ fair turn, for three different reasons:
 
 | Group | Models | Pass | What stops it | Does doctor see it |
 |---|---|---|---|---|
-| A. The server rejects the model's output | Llama-3.2-3B, Llama-3.1-8B | 0/24, 0/24 | llama.cpp peg-native parser error, returned as HTTP 200 `server_error` | no, 11 pass 0 warn |
+| A. The server rejects the model's output | Llama-3.2-3B, Llama-3.1-8B | 0/24, 0/24 | llama.cpp peg-native parser error, returned as HTTP 200 `server_error` | no, 10 pass 1 warn (the warn is the prompt floor) |
 | B. The template drops the tools | Phi-4-mini, SmolLM2-1.7B, gemma-3-4b-it | 0/24 each | the tools array is never rendered (upstream ggml-org/llama.cpp#27129) | yes, WARN on all three |
 | C. Calls written as JSON text | Qwen2.5-Coder-1.5B, Qwen2.5-Coder-3B | 0/24 each | the model ignores the tool interface; recovery runs some calls and the edits then miss | no, 11 pass 0 warn |
 
