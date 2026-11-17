@@ -14,4 +14,5 @@ pub mod session_store;
 pub mod signal;
 pub mod skills;
 pub mod tools;
+pub mod tools_drop;
 pub mod ui;

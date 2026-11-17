@@ -777,7 +777,7 @@ fn tools_drop_check(
     defs: &[crate::provider::ToolDef],
     no_network: bool,
 ) -> std::io::Result<bool> {
-    use crate::provider::ProbeOutcome;
+    use crate::tools_drop::Verdict;
     if no_network || p.provider != "openai-compat" || p.api_key_file.is_some() {
         return Ok(false);
     }
@@ -798,13 +798,16 @@ fn tools_drop_check(
     let bare = crate::provider::probe_prompt_tokens(&p.base_url, &p.model, None, None, timeout);
     let with_tools =
         crate::provider::probe_prompt_tokens(&p.base_url, &p.model, Some(defs), None, timeout);
-    let rendered = matches!((&bare, &with_tools), (ProbeOutcome::Ok(a), ProbeOutcome::Ok(b)) if a != b);
-    match (bare, with_tools) {
-        (ProbeOutcome::Ok(a), ProbeOutcome::Ok(b)) if a == b => r.warn(&format!(
+    // The classification is shared with the session-start warning
+    // (T69 1d); only the wording below is doctor's.
+    let verdict = crate::tools_drop::verdict(bare, with_tools);
+    let rendered = matches!(verdict, Verdict::Rendered { .. });
+    match verdict {
+        Verdict::Dropped { tokens: a } => r.warn(&format!(
             "the server at {} appears to drop tool definitions for \"{}\" (prompt_tokens {a} with and without temur's tools): the chat template has no tool support, so tool calls can silently never happen",
             p.base_url, p.model
         )),
-        (ProbeOutcome::Ok(a), ProbeOutcome::Ok(b)) => r.pass(&format!(
+        Verdict::Rendered { bare: a, with_tools: b } => r.pass(&format!(
             "the server at {} renders temur's tool definitions for \"{}\" (prompt_tokens {a} without tools, {b} with)",
             p.base_url, p.model
         )),
@@ -812,20 +815,20 @@ fn tools_drop_check(
         // completion, and rejects the request the moment temur's real tool
         // definitions are attached. Every turn this session makes will fail
         // exactly here, so the server's own words are worth repeating.
-        (ProbeOutcome::Ok(_), ProbeOutcome::HttpError { status, message }) => r.warn(&format!(
+        Verdict::Rejected { status, message } => r.warn(&format!(
             "the server at {} rejected temur's tool definitions for \"{}\" (HTTP {status}: {message}): every turn that sends tools will fail the same way",
             p.base_url, p.model
         )),
         // A bare request that answered and a with-tools request that never
         // did is almost always the prefill above running past the bound,
         // not a dead server: say which, so nobody reads it as "no signal".
-        (ProbeOutcome::Ok(_), ProbeOutcome::Unreachable) => writeln!(
+        Verdict::Unanswered => writeln!(
             r.out,
             "NOTE: tools-drop probe at {} inconclusive: the server answered a bare completion but not the one carrying temur's tools within {}s (a slow local server may need longer to prefill them)",
             p.base_url,
             crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS
         ),
-        _ => writeln!(
+        Verdict::NoSignal => writeln!(
             r.out,
             "NOTE: tools-drop probe at {} skipped: the server reported no usable prompt_tokens",
             p.base_url
@@ -839,8 +842,13 @@ fn tools_drop_check(
 /// provider and re-sends a retryable failure up to twice; a probe that
 /// carries the whole prompt should ask once. A retryable failure sets the
 /// probe's own cancel token, and the retry loop returns the pending error
-/// unchanged when it sees the token, so the NOTE quotes what the server
-/// said. A failure that is not retryable is left alone, which keeps the
+/// unchanged when it sees the token during its wait, so the NOTE quotes
+/// what the server said. The wait must exist for that: with
+/// `Retry-After: 0` the loop skips it, meets the token at the top of the
+/// next attempt and answers "interrupted by user" in place of the
+/// server's words. So a status error goes back without its `Retry-After`
+/// and the loop takes its own backoff, which the token ends at once. A
+/// failure that is not retryable is left alone, which keeps the
 /// provider's one token-cap-name retry (D19) working.
 struct OneShotTransport {
     inner: crate::provider::openai_compat::transport::HttpTransport,
@@ -854,13 +862,21 @@ impl crate::provider::transport::Transport for OneShotTransport {
         api_key: &str,
         body: &str,
     ) -> Result<Box<dyn std::io::Read>, crate::provider::transport::TransportError> {
-        let res = self.inner.post_stream(url, api_key, body);
-        if let Err(e) = &res {
-            if e.retryable() {
+        use crate::provider::transport::TransportError;
+        match self.inner.post_stream(url, api_key, body) {
+            Err(e) if e.retryable() => {
                 self.cancel.set();
+                Err(match e {
+                    TransportError::Status { code, body, .. } => TransportError::Status {
+                        code,
+                        retry_after: None,
+                        body,
+                    },
+                    other => other,
+                })
             }
+            res => res,
         }
-        res
     }
 }
 
@@ -3012,6 +3028,41 @@ mod tests {
             "{out}"
         );
         assert!(!out.contains("answered the tool-call probe"), "{out}");
+    }
+
+    /// T69 1e residual: a retryable failure that carries `Retry-After: 0`.
+    /// The shared retry loop skips a zero wait, so it used to meet the
+    /// probe's own cancel token at the top of the next attempt and answer
+    /// "interrupted by user". The NOTE must quote the server, and the
+    /// request is still sent once.
+    #[test]
+    fn tool_call_probe_quotes_the_server_when_retry_after_is_zero() {
+        let (base, posts) = canned_server_with_stream(
+            LLAMA_MODELS,
+            USAGE_10,
+            "HTTP/1.1 200 OK",
+            USAGE_31,
+            Some((
+                "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 0",
+                r#"{"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}"#,
+            )),
+        );
+        let (healthy, out) = doctor_over(&keyless_config(&base, "m"), false);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "NOTE: tool-call probe at {base} inconclusive: api error (HTTP 503) unavailable_error: Loading model"
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("interrupted by user"), "{out}");
+        let streamed = posts
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|b| b.contains("\"stream\":true"))
+            .count();
+        assert_eq!(streamed, 1, "sent once: {out}");
     }
 
     /// The probe asks once. A 503 is retryable under the shared policy,

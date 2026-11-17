@@ -1536,6 +1536,9 @@ fn startup_probes_props_for_a_missing_context_window() {
     let (base, rx) = sequential_server(vec![
         ("application/json", r#"{"object":"list","data":[{"id":"local-gguf"}]}"#.into()),
         ("application/json", r#"{"default_generation_settings":{"n_ctx":12288}}"#.into()),
+        // T69 1d: the session-start tools-drop probe's bare request. An
+        // answer with no usage block ends the probe there, silently.
+        ("application/json", "{}".into()),
         ("text/event-stream", sse),
     ]);
     let sb = sandbox();
@@ -1552,8 +1555,11 @@ fn startup_probes_props_for_a_missing_context_window() {
     // No trained size on this path, so T41's own words are unchanged.
     assert!(stderr.contains("prompt profile: compact (context_window 12288 is below"), "{stderr}");
 
-    let heads = heads_seen(&rx, 3);
-    assert_eq!(heads.len(), 3, "listing, /props fallback, completion: {heads:?}");
+    let heads = heads_seen(&rx, 4);
+    assert_eq!(heads.len(), 4, "listing, /props fallback, tools-drop probe, completion: {heads:?}");
+    assert!(heads[2].starts_with("post /v1/chat/completions "), "{}", heads[2]);
+    assert_no_credential_header(&heads[2]);
+    assert!(heads[3].starts_with("post /v1/chat/completions "), "{}", heads[3]);
     assert!(heads[0].starts_with("get /v1/models "), "{}", heads[0]);
     assert!(heads[1].starts_with("get /props "), "{}", heads[1]);
     assert_no_credential_header(&heads[0]);
@@ -1572,6 +1578,9 @@ fn startup_reads_served_and_trained_from_the_listing_meta() {
             "application/json",
             r#"{"object":"list","data":[{"id":"local-gguf","meta":{"n_ctx":12288,"n_ctx_train":262144}}]}"#.into(),
         ),
+        // T69 1d: the session-start tools-drop probe's bare request. An
+        // answer with no usage block ends the probe there, silently.
+        ("application/json", "{}".into()),
         ("text/event-stream", sse),
     ]);
     let sb = sandbox();
@@ -1589,8 +1598,9 @@ fn startup_reads_served_and_trained_from_the_listing_meta() {
         ),
         "{stderr}"
     );
-    let heads = heads_seen(&rx, 2);
-    assert_eq!(heads.len(), 2, "one probe, one completion: {heads:?}");
+    let heads = heads_seen(&rx, 3);
+    assert_eq!(heads.len(), 3, "one context probe, the tools-drop probe, one completion: {heads:?}");
+    assert!(heads[2].starts_with("post /v1/chat/completions "), "{}", heads[2]);
     assert!(heads[0].starts_with("get /v1/models "), "{}", heads[0]);
     assert_no_credential_header(&heads[0]);
     assert!(heads[1].starts_with("post /v1/chat/completions "), "{}", heads[1]);
@@ -1609,6 +1619,9 @@ fn a_configured_compact_window_is_never_replaced_but_learns_the_trained_size() {
             "application/json",
             r#"{"object":"list","data":[{"id":"local-gguf","meta":{"n_ctx":12288,"n_ctx_train":262144}}]}"#.into(),
         ),
+        // T69 1d: the session-start tools-drop probe's bare request. An
+        // answer with no usage block ends the probe there, silently.
+        ("application/json", "{}".into()),
         ("text/event-stream", sse),
     ]);
     let sb = sandbox();
@@ -1626,8 +1639,9 @@ fn a_configured_compact_window_is_never_replaced_but_learns_the_trained_size() {
         ),
         "{stderr}"
     );
-    let heads = heads_seen(&rx, 2);
-    assert_eq!(heads.len(), 2, "one probe, one completion: {heads:?}");
+    let heads = heads_seen(&rx, 3);
+    assert_eq!(heads.len(), 3, "one context probe, the tools-drop probe, one completion: {heads:?}");
+    assert!(heads[2].starts_with("post /v1/chat/completions "), "{}", heads[2]);
     assert!(heads[0].starts_with("get /v1/models "), "{}", heads[0]);
     assert_no_credential_header(&heads[0]);
     assert!(heads[1].starts_with("post /v1/chat/completions "), "{}", heads[1]);
@@ -1642,6 +1656,9 @@ fn a_configured_window_asks_the_listing_once_and_never_props() {
     let sse = std::fs::read_to_string(fixture("text_simple.sse")).unwrap();
     let (base, rx) = sequential_server(vec![
         ("application/json", r#"{"object":"list","data":[{"id":"local-gguf"}]}"#.into()),
+        // T69 1d: the session-start tools-drop probe's bare request. An
+        // answer with no usage block ends the probe there, silently.
+        ("application/json", "{}".into()),
         ("text/event-stream", sse),
     ]);
     let sb = sandbox();
@@ -1656,20 +1673,28 @@ fn a_configured_window_asks_the_listing_once_and_never_props() {
     // No trained size was learned, so the notice takes its trained-less words.
     assert!(stderr.contains("context_window 8192 is below"), "{stderr}");
 
-    let heads = heads_seen(&rx, 2);
-    assert_eq!(heads.len(), 2, "one listing, one completion, no /props: {heads:?}");
+    let heads = heads_seen(&rx, 3);
+    assert_eq!(heads.len(), 3, "one listing, the tools-drop probe, one completion, no /props: {heads:?}");
+    assert!(heads[2].starts_with("post /v1/chat/completions "), "{}", heads[2]);
     assert!(heads[0].starts_with("get /v1/models "), "{}", heads[0]);
     assert_no_credential_header(&heads[0]);
     assert!(heads[1].starts_with("post /v1/chat/completions "), "{}", heads[1]);
 }
 
 /// An explicit prompt_profile with a configured window is never probed:
-/// nothing the probe could learn would change what is printed (T63-8). The
-/// FIRST request the server sees is the completion.
+/// nothing the context probe could learn would change what is printed
+/// (T63-8). The server sees no GET at all: its first request is the T69 1d
+/// tools-drop probe, which is a different question, and the completion
+/// follows.
 #[test]
 fn a_configured_context_window_with_an_explicit_profile_is_never_probed() {
     let sse = std::fs::read_to_string(fixture("text_simple.sse")).unwrap();
-    let (base, rx) = sequential_server(vec![("text/event-stream", sse)]);
+    let (base, rx) = sequential_server(vec![
+        // T69 1d: the tools-drop probe's bare request, answered with no
+        // usage block, which ends that probe silently.
+        ("application/json", "{}".into()),
+        ("text/event-stream", sse),
+    ]);
     let sb = sandbox();
     sb.write_config(&format!(
         r#"{{"provider":"openai-compat","prompt_profile":"compact","openai_compat":{{"base_url":"{base}","model":"local-gguf","context_window":8192}}}}"#
@@ -1679,9 +1704,10 @@ fn a_configured_context_window_with_an_explicit_profile_is_never_probed() {
     let (code, stdout, stderr) = run(c, "");
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
     assert!(!stderr.contains("detected from the server"), "no probe was made: {stderr}");
-    let heads = heads_seen(&rx, 1);
-    assert_eq!(heads.len(), 1, "{heads:?}");
+    let heads = heads_seen(&rx, 2);
+    assert_eq!(heads.len(), 2, "the tools-drop probe and the completion: {heads:?}");
     assert!(heads[0].starts_with("post /v1/chat/completions "), "{}", heads[0]);
+    assert!(heads[1].starts_with("post /v1/chat/completions "), "{}", heads[1]);
 }
 
 // ------------------------------- T46 P2: one-shot -p refuses mutations
@@ -2531,4 +2557,273 @@ fn continue_after_a_turnless_start_is_empty() {
         .expect("the default file");
     assert_eq!(default.history.len(), 2, "only the second turn: the first was archived");
     assert!(first_prompt(&default).contains("second question"));
+}
+
+// ------------------------- T69 1d: the session-start tools-drop warning
+
+/// A canned llama.cpp for the session-start probe, alive for the test
+/// process. Every GET is a one-model listing. A POST with `"stream":true`
+/// is the chat request and gets the `text_simple` SSE; any other POST is a
+/// probe and gets a usage block, `bare` prompt tokens without a tools
+/// array and `with_tools` with one. Each POST is recorded whole, head and
+/// body, in arrival order.
+fn tools_probe_server(
+    bare: u64,
+    with_tools: u64,
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://127.0.0.1:{}/v1", listener.local_addr().unwrap().port());
+    let sse = std::fs::read_to_string(fixture("openai/text_simple.sse")).unwrap();
+    let posts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = std::sync::Arc::clone(&posts);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            use std::io::Read;
+            let Ok(mut stream) = stream else { return };
+            let mut req = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        req.extend_from_slice(&buf[..n]);
+                        let Some(h) = req.windows(4).position(|w| w == b"\r\n\r\n") else {
+                            continue;
+                        };
+                        let head = String::from_utf8_lossy(&req[..h]).to_ascii_lowercase();
+                        let len: usize = head
+                            .split("content-length:")
+                            .nth(1)
+                            .and_then(|s| s.split(['\r', '\n']).next())
+                            .and_then(|s| s.trim().parse().ok())
+                            .unwrap_or(0);
+                        if req.len() >= h + 4 + len {
+                            break;
+                        }
+                    }
+                }
+            }
+            let text = String::from_utf8_lossy(&req).into_owned();
+            let (ctype, body) = if text.starts_with("POST") {
+                seen.lock().unwrap().push(text.clone());
+                if text.contains("\"stream\":true") {
+                    ("text/event-stream", sse.clone())
+                } else {
+                    let n = if text.contains("\"tools\"") { with_tools } else { bare };
+                    ("application/json", format!(r#"{{"usage":{{"prompt_tokens":{n}}}}}"#))
+                }
+            } else {
+                ("application/json", r#"{"object":"list","data":[{"id":"local-gguf"}]}"#.to_string())
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    (base, posts)
+}
+
+fn keyless_local_config(base: &str) -> String {
+    format!(
+        r#"{{"provider":"openai-compat","openai_compat":{{"base_url":"{base}","model":"local-gguf","context_window":32768}}}}"#
+    )
+}
+
+fn tools_drop_line(base: &str) -> String {
+    format!(
+        "  [!] the server at {base} appears to drop tool definitions for \"local-gguf\" (prompt_tokens 10 with and without temur's tools): the chat template has no tool support, so the model cannot call tools in this session; `temur doctor` has the full report"
+    )
+}
+
+/// The body of a recorded POST.
+fn post_body(post: &str) -> &str {
+    post.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("")
+}
+
+/// One-shot: the warning is on stderr before the answer, the two probe
+/// requests go out first and carry no credential, and the line is in the
+/// session file's errors list.
+#[test]
+fn one_shot_warns_on_stderr_when_the_server_drops_the_tools() {
+    let (base, posts) = tools_probe_server(10, 10);
+    let sb = sandbox();
+    sb.write_config(&keyless_local_config(&base));
+    let mut c = sb.cmd();
+    c.args(["-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    let line = tools_drop_line(&base);
+    assert_eq!(stderr.matches(&line).count(), 1, "said once on stderr: {stderr}");
+    assert!(!stdout.contains("drop tool definitions"), "stdout is the answer only: {stdout}");
+
+    let posts = posts.lock().unwrap();
+    assert_eq!(posts.len(), 3, "bare probe, probe with tools, the chat request");
+    assert!(!posts[0].contains("\"stream\":true") && !posts[0].contains("\"tools\""), "{}", posts[0]);
+    assert!(!posts[1].contains("\"stream\":true") && posts[1].contains("\"tools\""), "{}", posts[1]);
+    assert!(posts[2].contains("\"stream\":true"), "the chat request comes last: {}", posts[2]);
+    for p in posts.iter() {
+        assert_no_credential_header(&p.to_ascii_lowercase());
+    }
+
+    let files = sb.sessions();
+    assert_eq!(files.len(), 1);
+    let errors = &files[0].1.errors;
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(format!("  [!] {}", errors[0].message), line);
+    assert_eq!(errors[0].history_len, 0, "recorded before the first turn");
+    assert_eq!(errors[0].model, "local-gguf");
+}
+
+/// The plain REPL shows the same line on stdout, with its notices.
+#[test]
+fn plain_repl_warns_when_the_server_drops_the_tools() {
+    let (base, posts) = tools_probe_server(10, 10);
+    let sb = sandbox();
+    sb.write_config(&keyless_local_config(&base));
+    let (code, out, err) = sb.plain_turn(&[], "hi");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert_eq!(out.matches(&tools_drop_line(&base)).count(), 1, "{out}");
+    let posts = posts.lock().unwrap();
+    assert_eq!(posts.len(), 3, "the probe pair, then the chat request");
+    assert!(posts[2].contains("\"stream\":true"), "{}", posts[2]);
+}
+
+/// Differing counts: the probe ran and the session says nothing about it.
+#[test]
+fn session_start_is_silent_when_the_server_renders_the_tools() {
+    let (base, posts) = tools_probe_server(10, 31);
+    let sb = sandbox();
+    sb.write_config(&keyless_local_config(&base));
+    let mut c = sb.cmd();
+    c.args(["-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    let (code, out, err) = sb.plain_turn(&[], "hi");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    for text in [&stdout, &stderr, &out, &err] {
+        assert!(!text.contains("tool definitions"), "{text}");
+        assert!(!text.contains("temur doctor"), "{text}");
+    }
+    assert_eq!(posts.lock().unwrap().len(), 6, "two runs, each the probe pair and one chat request");
+    for (_, f) in sb.sessions() {
+        assert!(f.errors.is_empty(), "{:?}", f.errors);
+    }
+}
+
+/// Nothing listening: the probe says nothing and holds nothing up, and
+/// the chat request reports its own error in the words it had before.
+#[test]
+fn session_start_probe_is_silent_on_a_dead_endpoint() {
+    let base = refused_base_url();
+    let sb = sandbox();
+    sb.write_config(&keyless_local_config(&base));
+    let mut c = sb.cmd();
+    c.args(["-p", "hi"]);
+    let started = std::time::Instant::now();
+    let (code, stdout, stderr) = run(c, "");
+    assert_ne!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!stderr.contains("tool definitions"), "{stderr}");
+    assert!(stderr.contains("provider error: network: nothing is listening at "), "{stderr}");
+    // The chat request's own retries (2s + 4s of backoff) are the wait.
+    assert!(started.elapsed() < std::time::Duration::from_secs(30), "{:?}", started.elapsed());
+}
+
+/// A selection with a key file is never probed: one POST, the chat
+/// request, and it is the one carrying the credential.
+#[test]
+fn session_start_probe_is_never_sent_with_a_key() {
+    let (base, posts) = tools_probe_server(10, 10);
+    let sb = sandbox();
+    let key = write_key(&sb, "probe-test.key", "not-a-real-key\n", 0o600);
+    sb.write_config(&format!(
+        r#"{{"provider":"openai-compat","openai_compat":{{"base_url":"{base}","model":"local-gguf","context_window":32768,"api_key_file":"{}"}}}}"#,
+        key.display()
+    ));
+    let mut c = sb.cmd();
+    c.args(["-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!stderr.contains("tool definitions"), "{stderr}");
+    let posts = posts.lock().unwrap();
+    assert_eq!(posts.len(), 1, "the chat request and nothing else: {posts:?}");
+    assert!(posts[0].contains("\"stream\":true"), "{}", posts[0]);
+    assert!(posts[0].to_ascii_lowercase().contains("authorization: bearer "), "{}", posts[0]);
+}
+
+/// The chat request body is the same bytes whether the probe ran before
+/// it or not. The same sandbox runs twice against one server: keyless
+/// (probed), then with a key file (not probed). The key rides in a
+/// header, so the two bodies must be equal.
+#[test]
+fn chat_request_body_is_identical_with_and_without_the_probe() {
+    let (base, posts) = tools_probe_server(10, 10);
+    let sb = sandbox();
+    sb.write_config(&keyless_local_config(&base));
+    let mut c = sb.cmd();
+    c.args(["-p", "hi"]).env("TEMUR_TODAY", "2026-11-17");
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+
+    let key = write_key(&sb, "probe-test.key", "not-a-real-key\n", 0o600);
+    sb.write_config(&format!(
+        r#"{{"provider":"openai-compat","openai_compat":{{"base_url":"{base}","model":"local-gguf","context_window":32768,"api_key_file":"{}"}}}}"#,
+        key.display()
+    ));
+    let mut c = sb.cmd();
+    c.args(["-p", "hi"]).env("TEMUR_TODAY", "2026-11-17");
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+
+    let posts = posts.lock().unwrap();
+    let chats: Vec<&String> = posts.iter().filter(|p| p.contains("\"stream\":true")).collect();
+    assert_eq!(posts.len(), 4, "probe pair + chat, then chat alone");
+    assert_eq!(chats.len(), 2);
+    assert!(!post_body(chats[0]).is_empty());
+    assert_eq!(post_body(chats[0]), post_body(chats[1]));
+}
+
+/// A `/model` switch is a new selection and is probed again: a session
+/// that starts on a server rendering the tools and switches to one that
+/// drops them is told so, about the second server, before the next turn.
+#[test]
+fn a_model_switch_probes_the_new_selection() {
+    let (good, good_posts) = tools_probe_server(10, 31);
+    let (bad, bad_posts) = tools_probe_server(10, 10);
+    let sb = sandbox();
+    sb.write_config(&format!(
+        r#"{{"profile":"good","profiles":{{
+            "good":{{"provider":"openai-compat","base_url":"{good}","model":"local-gguf","context_window":32768}},
+            "bad":{{"provider":"openai-compat","base_url":"{bad}","model":"local-gguf","context_window":32768}}}}}}"#
+    ));
+    let mut c = sb.cmd();
+    c.arg("--plain");
+    let (code, out, err) = run(c, "/model bad\nhi\n");
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert_eq!(out.matches(&tools_drop_line(&bad)).count(), 1, "{out}");
+    assert!(!out.contains(&format!("the server at {good} appears")), "{out}");
+    let switched = out.find("switched to bad").expect("the switch line");
+    let warned = out.find(&tools_drop_line(&bad)).unwrap();
+    assert!(switched < warned, "the warning follows the switch: {out}");
+    assert_eq!(good_posts.lock().unwrap().len(), 2, "the start's probe pair, no chat");
+    let bad_posts = bad_posts.lock().unwrap();
+    assert_eq!(bad_posts.len(), 3, "the switch's probe pair, then the chat request");
+    assert!(bad_posts[2].contains("\"stream\":true"), "{}", bad_posts[2]);
+}
+
+/// A `--mock` run replays fixtures and must send nothing, the probe
+/// included, even with a keyless openai-compat config pointing at a
+/// server that would answer.
+#[test]
+fn mock_run_sends_no_probe() {
+    let (base, posts) = tools_probe_server(10, 10);
+    let sb = sandbox();
+    sb.write_config(&keyless_local_config(&base));
+    let mut c = sb.cmd();
+    c.args(["--mock", &fixture("openai/text_simple.sse"), "-p", "hi"]);
+    let (code, stdout, stderr) = run(c, "");
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!stderr.contains("tool definitions"), "{stderr}");
+    assert!(posts.lock().unwrap().is_empty(), "a replay run reached the network");
 }

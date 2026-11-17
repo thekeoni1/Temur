@@ -778,6 +778,16 @@ fn repl(
     // T18 layer 3: the startup credential (already read above, or None)
     // registers for tool-output redaction.
     session.set_redaction_key(startup_key);
+    // T69 1d: on a keyless openai-compat endpoint, ask the server what
+    // doctor asks (does it drop the tool definitions?) while the UI comes
+    // up. Never in replay or capture mode, never with a key, never on the
+    // Anthropic transport; `Watch::start` applies the last two itself.
+    let probe_live = mock.is_none() && capture.is_none();
+    let mut tools_watch = if probe_live {
+        temur::tools_drop::Watch::start(&resolved, session.tool_definitions())
+    } else {
+        temur::tools_drop::Watch::idle()
+    };
 
     let mut ui: Box<dyn Ui> = if use_tui {
         let tui = TuiUi::new(
@@ -865,6 +875,19 @@ fn repl(
     if pending_loaded.is_some() {
         session.resume_seam_context_action(&mut |ev| ui.event(&ev));
     }
+    // T69 1d: an interactive start gives the probe a moment, so the
+    // warning lands with the startup notices when the server is quick. A
+    // one-shot run waits for it before its turn, below.
+    if oneshot.is_none() {
+        warn_if_tools_dropped(
+            &mut tools_watch,
+            Some(std::time::Duration::from_millis(
+                temur::tools_drop::SESSION_PROBE_START_GRACE_MS,
+            )),
+            &mut session,
+            ui.as_mut(),
+        );
+    }
 
     // F4: plain-REPL SIGINT — the first Ctrl+C interrupts the running turn
     // through the same cooperative token as a TUI Esc; the second (while
@@ -904,6 +927,7 @@ fn repl(
             session_name.as_deref(),
             session_max_bytes,
         ));
+        warn_if_tools_dropped(&mut tools_watch, None, &mut session, ui.as_mut());
         let result = session.turn(prompt, &mut |ev| ui.event(&ev));
         // Read the token right after the turn, before anything else can
         // touch it: set means a Ctrl+C landed THIS turn (T6 semantics), and
@@ -996,16 +1020,35 @@ fn repl(
             if let Some(key) = switched_key.borrow_mut().take() {
                 session.set_redaction_key(key);
             }
+            let mut switched = false;
             for ev in &events {
                 // The listing cache itself is refreshed inside the command
                 // layer (T22); the loop only enforces the drop rule.
                 if let AgentEvent::ModelSwitched { provider, .. } = ev {
+                    switched = true;
                     if *provider != cached_ids_provider {
                         cached_models.clear();
                         cached_ids_provider = provider.clone();
                     }
                 }
                 ui.event(ev);
+            }
+            // T69 1d: a `/model` switch is a new selection, so the question
+            // is asked again of the server now active. A probe still
+            // running for the selection just left is dropped unheard.
+            if switched && probe_live {
+                tools_watch = temur::tools_drop::Watch::start(
+                    &active_resolved,
+                    session.tool_definitions(),
+                );
+                warn_if_tools_dropped(
+                    &mut tools_watch,
+                    Some(std::time::Duration::from_millis(
+                        temur::tools_drop::SESSION_PROBE_START_GRACE_MS,
+                    )),
+                    &mut session,
+                    ui.as_mut(),
+                );
             }
             continue;
         }
@@ -1019,6 +1062,9 @@ fn repl(
             session_name.as_deref(),
             session_max_bytes,
         ));
+        // T69 1d: a probe the start (or a switch) did not wait out is
+        // collected here, before the chat request it is about.
+        warn_if_tools_dropped(&mut tools_watch, None, &mut session, ui.as_mut());
         if let Err(e) = session.turn(&line, &mut |ev| ui.event(&ev)) {
             // Provider-level failure: surface through the UI seam and keep
             // the session alive. (Behavior note, docs/TUI.md: in the plain
@@ -1039,6 +1085,36 @@ fn repl(
         println!("bye");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// T69 1d: show the session-start tools-drop warning when the probe has
+/// one, and write it into the session's errors list the way a kept-call
+/// notice is written. `wait` is how long to wait for a probe that is still
+/// running. `None` waits until it ends, which its own bounds guarantee,
+/// or until the session's cancel token is set (Esc, Ctrl+C): the wait is
+/// taken in short slices so an interrupt is not held behind it, and a
+/// probe left running that way is collected before the next turn.
+fn warn_if_tools_dropped(
+    watch: &mut temur::tools_drop::Watch,
+    wait: Option<std::time::Duration>,
+    session: &mut Session,
+    ui: &mut dyn Ui,
+) {
+    let line = match wait {
+        Some(d) => watch.take(Some(d)),
+        None => {
+            let cancel = session.cancel_token();
+            let mut line = None;
+            while watch.pending() && line.is_none() && !cancel.is_set() {
+                line = watch.take(Some(std::time::Duration::from_millis(200)));
+            }
+            line
+        }
+    };
+    if let Some(line) = line {
+        session.record_notice(line.clone());
+        ui.event(&AgentEvent::Notice(line));
+    }
 }
 
 /// T40 P2: the persist target for the NEXT turn, from the state main.rs

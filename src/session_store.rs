@@ -108,8 +108,9 @@ pub struct SessionFile {
     /// direction — a pre-T10 file loads as the default session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// T64 P0 (R6): the provider errors turns ended on, oldest first, at
-    /// most [`MAX_SESSION_ERRORS`]. Absent when empty, so an error-free
+    /// T64 P0 (R6): the provider errors turns ended on, and since T69 1c
+    /// the kept-call notices of turns that went on (see [`SessionError`]),
+    /// oldest first, at most [`MAX_SESSION_ERRORS`]. Absent when empty, so an error-free
     /// file stays byte-identical to the pre-R6 shape and FORMAT_VERSION
     /// stays 1. Both `/clear` and `/new` drop the record along with the
     /// history it describes.
@@ -124,9 +125,10 @@ pub struct SessionFile {
 /// is not an error the turn ended on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionError {
-    /// How many history messages there were when the turn failed. A
-    /// resume that drops a dangling prompt can leave this past the end of
-    /// the resumed history; that is recorded, not corrected.
+    /// How many history messages there were when the turn failed, or,
+    /// for a kept-call notice, when the notice was recorded. A resume
+    /// that drops a dangling prompt can leave this past the end of the
+    /// resumed history; that is recorded, not corrected.
     pub history_len: u64,
     pub model: String,
     pub message: String,

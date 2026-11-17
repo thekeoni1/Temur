@@ -2622,6 +2622,20 @@ impl Session {
     /// ([`report_turn_error`]), although this turn goes on: a reader of
     /// the file should see that the server rejected part of a response.
     fn record_kept_calls(&mut self, message: String) {
+        self.record_notice(message);
+    }
+
+    /// The tool definitions this session sends with every chat request,
+    /// for the session-start tools-drop probe (T69 1d).
+    pub fn tool_definitions(&self) -> Vec<crate::provider::ToolDef> {
+        self.registry.definitions()
+    }
+
+    /// T69 1d: write one notice into the session file's errors list, the
+    /// way a kept-call notice is written. Used for the session-start
+    /// warning that the server drops the tool definitions, which is not
+    /// an error a turn ended on either.
+    pub fn record_notice(&mut self, message: String) {
         self.errors.push(crate::session_store::SessionError {
             history_len: self.history.len() as u64,
             model: self.cfg.model.clone(),

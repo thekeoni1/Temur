@@ -863,6 +863,19 @@ The two extra requests are capped at one generated token each, go to a
 local keyless endpoint, and are skipped entirely under `--no-network`.
 See OFFLINE.md for which models this hits.
 
+A session asks the first of these questions itself. On a keyless
+local endpoint, every session start and every `/model` switch sends
+the same two requests, and identical counts draw one line before the
+first chat request:
+
+```
+[!] the server at http://127.0.0.1:8080/v1 appears to drop tool definitions for "gemma-3-4b" (prompt_tokens 10 with and without temur's tools): the chat template has no tool support, so the model cannot call tools in this session; `temur doctor` has the full report
+```
+
+Any other outcome is silent: differing counts, a server that cannot be
+reached, and one that does not answer a request within 60 seconds. The
+session starts either way.
+
 Under the same gate, and capped the same way, doctor also measures the
 prompt floor: how much of the context window this selection spends
 before the first instruction. That check has an offline half that runs
