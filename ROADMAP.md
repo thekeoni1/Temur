@@ -1634,8 +1634,9 @@ one-liner gate stays deferred to the visibility flip (RUNBOOK).
 T69 is the next milestone: more local models work through llama.cpp.
 The operator approved it on 2026-11-16, and the launch waits for it. As
 of 2026-11-17 the fixes 1a and 1b are built on the branch `t69-p1` and
-are in no release. So are 1c (keep the first call) and 1e (the doctor
-probe). 1d and phase 2 are not built.
+are in no release. So are 1c (keep the first call), 1d (the session
+warning), 1e (the doctor probe) and the two compaction rules of 1f.
+Phase 2 is not built.
 
 The evidence is the all-models dogfood of 2026-11-16: the v0.39.0 i686
 release asset (sha256 `b54b4f3b`) against llama.cpp `server-cuda-b10438`
@@ -1829,15 +1830,63 @@ Phase 1 fixes, in order of confidence:
   check works from the previous figure.
 - 1d. Group B: at session start on a keyless openai-compat endpoint,
   the session says what doctor would say when the tools are dropped.
-  The cost is two tiny requests. Still to rule on: always probe,
-  probe once and cache per model and server, or only point at doctor.
-  The prose-tools mode is held (see the ruling below).
+  Ruled by the operator on 2026-11-17: always probe, no cache. Built
+  on the branch `t69-p1`: each session start and each `/model` switch
+  sends the two requests of doctor's tools-drop probe on a thread of
+  their own, and identical prompt-token counts draw one line before
+  the first chat request, "the server at ... appears to drop tool
+  definitions for ... `temur doctor` has the full report". The line
+  is also written into the session file's errors list. Every other
+  outcome is silent. The two requests share one deadline of 5 s from
+  the probe's start (ruled the same day, in place of a first build
+  that allowed 60 s each); a probe that has not finished by then is
+  dropped and nothing is said. An interactive start waits up to 2 s
+  for it and collects the rest before the first request. Never with a
+  key file, never on the Anthropic transport, never under `--mock` or
+  `--capture-sse`. Not measured yet: what the probe costs on a live
+  server. The prose-tools mode is held (see the ruling below).
 - 1e. Doctor learns groups A and C: a probe that invites a two-step
   answer and reports that the server rejected the model's tool-call
   output (and whether temur kept a first call), or that the model
   "answered the tool-call probe with a call written as text, not
   through the tool interface", with whether the text-call recovery is
   on. It never FAILs, the same rule as the tools-drop probe.
+- 1f. Compaction at a small window. The operator ruled on 2026-11-17
+  that the overflow death left in the repeat pair is to be fixed
+  before T69 ships. Read from the logs that already existed: 19 runs
+  with an overflow death or a recovery, all at a window of 8192 with
+  `max_tokens` 4096 (the nine dogfood deaths, four runs of phase 0,
+  six of the repeat pair), holding 68 folds, 57 proactive and 11
+  recoveries, and 14 deaths. 54 of the 57 proactive folds were
+  triggered by the "room for one response" test alone, which at that
+  config is true from 4097 tokens used, beside a measured prompt floor
+  of 3271. The first occupancy figure after each of the 68 folds was
+  4108 or more, so no fold brought the turn back under that trigger.
+  36 of the 38 second and third proactive folds came one round trip
+  after the fold before, and 18 of the 57 freed less than a sixteenth
+  of the history. Three rulings of 2026-11-17:
+  - Built on the branch: for a model id that does not look like a
+    reasoning model, the room kept for one response is the smaller of
+    `max_tokens` and a quarter of the window, so that config folds
+    from 6145 tokens used. A reasoning model id keeps the full
+    reserve, and nothing changes where `max_tokens` is at most a
+    quarter of the window. The request body is unchanged. Existing
+    8192/4096 configs change behaviour with no file edit. Doctor's
+    WARN for a `max_tokens` larger than the window no longer says the
+    advisory fires from the first response.
+  - Built on the branch: a proactive fold waits until two round trips
+    have completed since the turn's last fold, proactive or recovery.
+    The recovery after a refused request is not gated.
+  - Spec, not ruled: after a recovery fold that leaves the history
+    large, also cut the largest kept tool result. The spec's own
+    arithmetic does not show it removing the remaining death: in that
+    turn the model fetched the same 3616-char result again after each
+    recovery.
+  Not taken: a change to the `max_tokens` that `init` writes, and a
+  freed-enough test applied to a proactive fold after the fact.
+  Neither built rule is measured on a served model yet; a pair comes
+  after the ruling on the spec. Until a pair says otherwise, one
+  overflow death remains in the repeat pair.
 
 Phase 2 re-measures and closes the docs. The affected models run again
 on the built binary (both Llamas, the three group B models, both Coder
