@@ -1105,10 +1105,11 @@ fn repl(
 /// T69 1d: show the session-start tools-drop warning when the probe has
 /// one, and write it into the session's errors list the way a kept-call
 /// notice is written. `wait` is how long to wait for a probe that is still
-/// running. `None` waits until it ends, which its own bounds guarantee,
-/// or until the session's cancel token is set (Esc, Ctrl+C): the wait is
-/// taken in short slices so an interrupt is not held behind it, and a
-/// probe left running that way is collected before the next turn.
+/// running. `None` waits for what is left of the probe's deadline
+/// (`SESSION_PROBE_DEADLINE_MS` from its start), or until the session's
+/// cancel token is set (Esc, Ctrl+C): the wait is taken in short slices
+/// so an interrupt is not held behind it, and a probe left running that
+/// way is collected before the next turn if its deadline has not passed.
 fn warn_if_tools_dropped(
     watch: &mut temur::tools_drop::Watch,
     wait: Option<std::time::Duration>,

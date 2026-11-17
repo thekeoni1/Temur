@@ -59,14 +59,19 @@ pub fn wanted(p: &ResolvedProfile) -> bool {
     p.provider == "openai-compat" && p.api_key_file.is_none()
 }
 
-/// The bound on ONE of the session probe's two requests, connect
-/// included. Doctor allows its own pair
-/// [`crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS`] each, which is
-/// longer than a chat request waits for its response head, so the session
-/// takes the chat's bound: a server too slow for this is one the first
-/// chat request would time out on as well.
-pub const SESSION_PROBE_TIMEOUT_SECS: u64 =
-    crate::provider::transport::CHAT_RESPONSE_HEAD_TIMEOUT_SECS;
+/// The session probe's deadline: both requests, connects and body reads
+/// included, share this much time from the probe's start. A probe that
+/// has not finished by then is dropped and nothing is said. Doctor allows
+/// its own pair [`crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS`] each;
+/// a session start is not the place to wait that long for a server that
+/// is slow to prefill the tools, and such a user still has doctor. A
+/// ruled value (operator, 2026-11-17).
+pub const SESSION_PROBE_DEADLINE_MS: u64 = 5000;
+
+/// How long past the deadline a collector still waits for the probe
+/// thread's answer before giving up on it. The thread's own requests end
+/// at the deadline; this covers the hand-over.
+const DEADLINE_SLACK_MS: u64 = 250;
 
 /// How long an interactive start waits for the probe before it shows the
 /// prompt. A probe still running after this is collected before the
@@ -85,16 +90,27 @@ pub fn session_warning(base_url: &str, model: &str, tokens: u64) -> String {
 /// The thread sends the bare request and, only when that answered with a
 /// count, the one carrying the tools: without the first count there is
 /// nothing to compare the second against. No retry, no stored state. A
-/// probe that cannot connect, times out, or gets an answer that is not
-/// the drop yields nothing.
+/// probe that cannot connect, runs past its deadline, or gets an answer
+/// that is not the drop yields nothing.
+///
+/// The deadline is kept twice. Each request is given what is left of it
+/// as its whole-call timeout, so the request ends there and its
+/// connection is closed when the client drops it. And [`Watch::take`]
+/// stops waiting shortly after the deadline whatever the thread is doing,
+/// so a collector is never held by a request that did not honour it.
 pub struct Watch {
     rx: Option<std::sync::mpsc::Receiver<Option<String>>>,
+    /// When a collector gives up: the deadline plus a little slack.
+    give_up: std::time::Instant,
 }
 
 impl Watch {
     /// A watch that never has anything to say.
     pub fn idle() -> Self {
-        Watch { rx: None }
+        Watch {
+            rx: None,
+            give_up: std::time::Instant::now(),
+        }
     }
 
     /// Start the probe for `p` when [`wanted`] says so, else [`Watch::idle`].
@@ -103,16 +119,16 @@ impl Watch {
         Self::start_with(
             p,
             defs,
-            std::time::Duration::from_secs(SESSION_PROBE_TIMEOUT_SECS),
+            std::time::Duration::from_millis(SESSION_PROBE_DEADLINE_MS),
         )
     }
 
-    /// [`Watch::start`] with the per-request bound supplied, so a test
-    /// can watch a timeout without waiting a minute for it.
+    /// [`Watch::start`] with the deadline supplied, so a test can watch
+    /// one pass without waiting out the real one.
     pub fn start_with(
         p: &ResolvedProfile,
         defs: Vec<ToolDef>,
-        timeout: std::time::Duration,
+        deadline: std::time::Duration,
     ) -> Self {
         if !wanted(p) {
             return Self::idle();
@@ -120,16 +136,25 @@ impl Watch {
         let (tx, rx) = std::sync::mpsc::channel();
         let base_url = p.base_url.clone();
         let model = p.model.clone();
+        let ends = std::time::Instant::now() + deadline;
         std::thread::spawn(move || {
-            let bare =
-                crate::provider::probe_prompt_tokens(&base_url, &model, None, None, timeout);
-            let line = if matches!(bare, ProbeOutcome::Ok(_)) {
+            // What is left of the deadline, or `None` once it has passed.
+            let left = || {
+                let d = ends.saturating_duration_since(std::time::Instant::now());
+                (!d.is_zero()).then_some(d)
+            };
+            let line = (|| {
+                let bare =
+                    crate::provider::probe_prompt_tokens(&base_url, &model, None, None, left()?);
+                if !matches!(bare, ProbeOutcome::Ok(_)) {
+                    return None;
+                }
                 let with_tools = crate::provider::probe_prompt_tokens(
                     &base_url,
                     &model,
                     Some(&defs),
                     None,
-                    timeout,
+                    left()?,
                 );
                 match verdict(bare, with_tools) {
                     Verdict::Dropped { tokens } => {
@@ -137,13 +162,15 @@ impl Watch {
                     }
                     _ => None,
                 }
-            } else {
-                None
-            };
-            // The receiver may be gone (the session ended first).
+            })();
+            // The receiver may be gone: the session ended first, or the
+            // collector gave up at the deadline.
             let _ = tx.send(line);
         });
-        Watch { rx: Some(rx) }
+        Watch {
+            rx: Some(rx),
+            give_up: ends + std::time::Duration::from_millis(DEADLINE_SLACK_MS),
+        }
     }
 
     /// Whether a probe was started and has not been collected yet.
@@ -152,21 +179,28 @@ impl Watch {
     }
 
     /// The warning, once. `wait` bounds how long to wait for a probe
-    /// that is still running; `None` waits until it ends, which the
-    /// probe's own bounds guarantee. After the probe has answered, and on
-    /// an idle watch, this returns `None` at once.
+    /// that is still running; `None` waits for what is left of the
+    /// probe's deadline. Either way the wait never runs past the
+    /// deadline: a probe that has not answered by then is dropped here
+    /// and never heard. After the probe has answered or been dropped,
+    /// and on an idle watch, this returns `None` at once.
     pub fn take(&mut self, wait: Option<std::time::Duration>) -> Option<String> {
         let rx = self.rx.as_ref()?;
-        let got = match wait {
-            None => rx.recv().ok(),
-            Some(d) => match rx.recv_timeout(d) {
-                Ok(line) => Some(line),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return None,
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
-            },
+        let left = self
+            .give_up
+            .saturating_duration_since(std::time::Instant::now());
+        let got = match rx.recv_timeout(wait.map_or(left, |d| d.min(left))) {
+            Ok(line) => line,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if std::time::Instant::now() < self.give_up {
+                    return None; // the caller's own bound; still collectable
+                }
+                None
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
         };
         self.rx = None;
-        got.flatten()
+        got
     }
 }
 
@@ -318,7 +352,7 @@ mod tests {
 
     /// The with-tools request never answers. A bounded wait comes back
     /// empty-handed while the probe runs, and the unbounded one ends at
-    /// the probe's own bound, with nothing to say.
+    /// the probe's deadline, with nothing to say.
     #[test]
     fn silent_on_a_timeout_and_never_blocks_past_the_bound() {
         let (base, hits) = server(10, 10, true);
@@ -379,5 +413,132 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(hits.load(Ordering::SeqCst), 0, "no request left the process");
         assert!(wanted(&profile("openai-compat", &base, false)));
+    }
+
+    /// A server that sends the response head and then stalls the body.
+    /// The client's whole-call timeout covers the body read, so the
+    /// request ends at the deadline and the watch has nothing to say.
+    /// `closed` records that the server saw its connection end.
+    #[test]
+    fn a_stalled_body_is_dropped_at_the_deadline() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://127.0.0.1:{}/v1", listener.local_addr().unwrap().port());
+        let closed = Arc::new(AtomicU64::new(0));
+        let saw_close = Arc::clone(&closed);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let saw_close = Arc::clone(&saw_close);
+                std::thread::spawn(move || {
+                    use std::io::{Read, Write};
+                    let mut buf = [0u8; 4096];
+                    let _ = stream.read(&mut buf);
+                    // The head promises 64 bytes; 9 arrive and no more.
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 64\r\n\r\n{\"usage\":",
+                    );
+                    let _ = stream.flush();
+                    // Read until the client goes away: 0 bytes or an error.
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(20)));
+                    loop {
+                        match stream.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(_) => {}
+                        }
+                    }
+                    saw_close.fetch_add(1, Ordering::SeqCst);
+                });
+            }
+        });
+        let started = Instant::now();
+        let mut w = Watch::start_with(
+            &profile("openai-compat", &base, false),
+            defs(),
+            Duration::from_secs(1),
+        );
+        assert_eq!(w.take(None), None);
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(900), "{waited:?}");
+        assert!(waited < Duration::from_secs(3), "{waited:?}");
+        assert!(!w.pending());
+        // The request ended at the deadline and its connection with it.
+        let until = Instant::now() + Duration::from_secs(5);
+        while closed.load(Ordering::SeqCst) == 0 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(closed.load(Ordering::SeqCst), 1, "the server saw the connection close");
+    }
+
+    /// The two requests share ONE deadline. The bare answer takes 0.6 s
+    /// of a 1 s deadline, so the request with the tools has 0.4 s left
+    /// and its connection must close about 1 s after the start. With a
+    /// bound per request it would stay open until 1.6 s.
+    #[test]
+    fn the_request_with_the_tools_gets_only_what_is_left_of_the_deadline() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://127.0.0.1:{}/v1", listener.local_addr().unwrap().port());
+        let closed_at = Arc::new(std::sync::Mutex::new(None::<Instant>));
+        let record = Arc::clone(&closed_at);
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let mut buf = [0u8; 65536];
+            // First connection: the bare request, answered 0.6 s late.
+            let (mut bare, _) = listener.accept().unwrap();
+            let _ = bare.read(&mut buf);
+            std::thread::sleep(Duration::from_millis(600));
+            let body = r#"{"usage":{"prompt_tokens":10}}"#;
+            let _ = bare.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+            drop(bare);
+            // Second connection: the request with the tools, never
+            // answered. Note when the client lets go of it.
+            let (mut tools, _) = listener.accept().unwrap();
+            let _ = tools.set_read_timeout(Some(Duration::from_secs(20)));
+            loop {
+                match tools.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+            *record.lock().unwrap() = Some(Instant::now());
+        });
+        let started = Instant::now();
+        let mut w = Watch::start_with(
+            &profile("openai-compat", &base, false),
+            defs(),
+            Duration::from_secs(1),
+        );
+        assert_eq!(w.take(None), None);
+        let until = Instant::now() + Duration::from_secs(5);
+        while closed_at.lock().unwrap().is_none() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let closed = closed_at.lock().unwrap().expect("the server saw the connection close");
+        let after = closed.duration_since(started);
+        assert!(after >= Duration::from_millis(900), "{after:?}");
+        assert!(after < Duration::from_millis(1400), "{after:?}");
+    }
+
+    /// A collector is released at the deadline even if the probe thread
+    /// has not answered: here the thread is given far longer than the
+    /// watch, which is how a request that ignored its timeout would look.
+    #[test]
+    fn a_collector_gives_up_at_the_deadline_whatever_the_thread_does() {
+        let (base, _) = server(10, 10, true);
+        let mut w = Watch::start_with(
+            &profile("openai-compat", &base, false),
+            defs(),
+            Duration::from_secs(30),
+        );
+        w.give_up = Instant::now() + Duration::from_millis(300);
+        let started = Instant::now();
+        assert_eq!(w.take(None), None);
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+        assert!(!w.pending(), "dropped, not left for a later collection");
     }
 }

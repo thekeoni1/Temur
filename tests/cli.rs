@@ -2575,7 +2575,8 @@ fn tools_probe_server(
 }
 
 /// [`tools_probe_server`] answering each PROBE request `delay_ms` late, so
-/// a test can have the probe outlast the 2 s an interactive start waits.
+/// a test can have the probe outlast the 2 s an interactive start waits,
+/// or the 5 s deadline of the probe as a whole.
 fn tools_probe_server_delayed(
     bare: u64,
     with_tools: u64,
@@ -2587,9 +2588,13 @@ fn tools_probe_server_delayed(
     let posts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen = std::sync::Arc::clone(&posts);
     std::thread::spawn(move || {
+        // One thread per connection: a probe request held back by
+        // `delay_ms` must not keep the chat request from being accepted.
         for stream in listener.incoming() {
-            use std::io::Read;
             let Ok(mut stream) = stream else { return };
+            let (sse, seen) = (sse.clone(), std::sync::Arc::clone(&seen));
+            std::thread::spawn(move || {
+            use std::io::Read;
             let mut req = Vec::new();
             let mut buf = [0u8; 4096];
             loop {
@@ -2631,6 +2636,7 @@ fn tools_probe_server_delayed(
                 body.len()
             );
             let _ = stream.write_all(response.as_bytes());
+            });
         }
     });
     (base, posts)
@@ -2840,11 +2846,12 @@ fn mock_run_sends_no_probe() {
 }
 
 /// A probe slower than the 2 s an interactive start waits is collected
-/// before the first turn's chat request: the bare answer alone takes
-/// 2.5 s here, so the start's wait runs out with the probe still going.
+/// before the first turn's chat request: each answer takes 1.25 s here,
+/// so the pair lands at 2.5 s, after the start's wait has run out and
+/// inside the probe's 5 s deadline.
 #[test]
 fn a_slow_probe_is_collected_before_the_first_turn() {
-    let (base, posts) = tools_probe_server_delayed(10, 10, 2500);
+    let (base, posts) = tools_probe_server_delayed(10, 10, 1250);
     let sb = sandbox();
     sb.write_config(&keyless_local_config(&base));
     let (code, out, err) = sb.plain_turn(&[], "hi");
@@ -2871,7 +2878,7 @@ fn a_slow_probe_is_collected_before_a_compact_command() {
         let (code, out, err) = sb.plain_turn(&["--continue"][..usize::from(q != "first question")], q);
         assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
     }
-    let (base, posts) = tools_probe_server_delayed(10, 10, 2500);
+    let (base, posts) = tools_probe_server_delayed(10, 10, 1250);
     sb.write_config(&keyless_local_config(&base));
     let mut c = sb.cmd();
     c.args(["--plain", "--continue"]);
@@ -2916,7 +2923,7 @@ fn mark_session_as_nearly_full(path: &std::path::Path) {
 fn a_slow_probe_is_collected_before_the_resume_seam_compacts() {
     let sb = sandbox_with_a_three_turn_session();
     mark_session_as_nearly_full(&sb.default_session());
-    let (base, posts) = tools_probe_server_delayed(10, 10, 2500);
+    let (base, posts) = tools_probe_server_delayed(10, 10, 1250);
     sb.write_config(&keyless_local_config(&base));
     let mut c = sb.cmd();
     c.args(["--continue", "-p", "fourth question"]);
@@ -2948,7 +2955,7 @@ fn a_slow_probe_is_collected_before_a_resume_command_compacts() {
     let key = archive.name.expect("an archive records its key");
     mark_session_as_nearly_full(&sb.sessions_dir().join(file));
 
-    let (base, posts) = tools_probe_server_delayed(10, 10, 2500);
+    let (base, posts) = tools_probe_server_delayed(10, 10, 1250);
     sb.write_config(&format!(
         r#"{{"provider":"openai-compat","auto_compact":true,"openai_compat":{{"base_url":"{base}","model":"local-gguf","context_window":32768}}}}"#
     ));
@@ -2962,4 +2969,35 @@ fn a_slow_probe_is_collected_before_a_resume_command_compacts() {
     let posts = posts.lock().unwrap();
     assert_eq!(posts.len(), 3, "the probe pair, then the summary request: {out}");
     assert!(posts[2].contains("\"stream\":true"), "{}", posts[2]);
+}
+
+/// A probe that would answer after its 5 s deadline is dropped: nothing
+/// is shown, and the chat request leaves at the deadline, not when the
+/// server finally answers. Each probe answer takes 3 s here, so the bare
+/// one lands at 3 s and the one with the tools would land at 6 s. With a
+/// bound per request in place of one deadline it would land, and warn.
+#[test]
+fn a_probe_past_its_deadline_is_dropped_and_the_turn_goes_on() {
+    let (base, posts) = tools_probe_server_delayed(10, 10, 3000);
+    let sb = sandbox();
+    sb.write_config(&keyless_local_config(&base));
+    let mut c = sb.cmd();
+    c.args(["-p", "hi"]);
+    let started = std::time::Instant::now();
+    let (code, stdout, stderr) = run(c, "");
+    let elapsed = started.elapsed();
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!stderr.contains("tool definitions"), "{stderr}");
+    assert!(stdout.contains("Hello"), "the turn ran: {stdout}");
+    // 5 s of deadline, a quarter second of hand-over, the turn itself.
+    assert!(elapsed >= std::time::Duration::from_millis(4900), "{elapsed:?}");
+    assert!(elapsed < std::time::Duration::from_millis(5900), "{elapsed:?}");
+    let posts = posts.lock().unwrap();
+    assert_eq!(posts.len(), 3, "bare probe, probe with tools, chat: {}", posts.len());
+    assert!(!posts[0].contains("\"stream\":true") && !posts[0].contains("\"tools\""));
+    assert!(!posts[1].contains("\"stream\":true") && posts[1].contains("\"tools\""));
+    assert!(posts[2].contains("\"stream\":true"), "{}", posts[2]);
+    for (_, f) in sb.sessions() {
+        assert!(f.errors.is_empty(), "nothing recorded: {:?}", f.errors);
+    }
 }

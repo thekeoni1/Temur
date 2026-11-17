@@ -873,8 +873,8 @@ first chat request:
 ```
 
 Any other outcome is silent: differing counts, a server that cannot be
-reached, and one that does not answer a request within 60 seconds. The
-session starts either way.
+reached, and one whose two answers have not arrived within 5 seconds
+of the probe's start. The session starts either way.
 
 Under the same gate, and capped the same way, doctor also measures the
 prompt floor: how much of the context window this selection spends
