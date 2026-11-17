@@ -1878,16 +1878,33 @@ Phase 1 fixes, in order of confidence:
   - Built on the branch: a proactive fold waits until two round trips
     have completed since the turn's last fold, proactive or recovery.
     The recovery after a refused request is not gated.
-  - Spec, its rule not ruled: after a recovery fold that leaves the
-    history large, also cut the largest kept tool result. The spec's own
-    arithmetic does not show it removing the remaining death: in that
-    turn the model fetched the same 3616-char result again after each
-    recovery.
+  - Measured and not taken: after a recovery fold that leaves the
+    history large, also cut the largest kept tool result. It was
+    specified and not built. The operator ruled that a second pair on
+    the build with the two rules above decides it, and that no
+    overflow death there drops it. The second pair, Qwen3-8B at 8192
+    with `max_tokens` 4096, v0.39.0 against the branch build, 24 runs
+    each: overflow deaths 4 against 0, recovery folds 0 against 0,
+    "compacted:" lines 48 against 11, passes 3 against 2 of 24,
+    loop-guard stops 4 against 7. With no recovery fold on the branch
+    build the rule had nothing to act on, and it is dropped.
+  - Seen and not scoped: in the one death of the first pair's branch
+    arm the model fetched the same 3616-char result again after each
+    recovery. The spec's own arithmetic did not show the cut above
+    removing that death. The second pair has no such turn.
   Not taken: a change to the `max_tokens` that `init` writes, and a
   freed-enough test applied to a proactive fold after the fact.
-  Neither built rule is measured on a served model yet; a pair comes
-  after the ruling on the spec. Until a pair says otherwise, one
-  overflow death remains in the repeat pair.
+  Overflow deaths in the two pairs, v0.39.0 against the branch build
+  of the day: 3 against 1 in the first pair, before the two rules,
+  and 4 against 0 in the second, with them. This is one model and one
+  run per arm. On the branch build in the second pair no proactive
+  fold came fewer than two round trips after the fold before, and the
+  lowest occupancy at a fold was 6153 tokens used. log-triage spent
+  all three proactive folds of its turn in two of its three runs
+  there; a turn folds proactively at most three times, and after the
+  third each of those two runs crossed the trigger once more (about
+  6303 and 6497 tokens used) and got the advisory, not a fold.
+  Neither run died.
 
 Phase 2 re-measures and closes the docs. The affected models run again
 on the built binary (both Llamas, the three group B models, both Coder
