@@ -7389,6 +7389,56 @@ fn the_fourth_overflow_recovery_in_a_turn_propagates() {
     );
 }
 
+/// T69 1a, the other direction of the separation: a recovery spends none
+/// of the proactive budget. The turn overflows on its first round-trip and
+/// recovers by cutting the big result, and after that three crossings
+/// still fold proactively, which is the whole of
+/// `MAX_AUTO_COMPACTIONS_PER_TURN`. Before T69 the recovery counted as
+/// the first of the three and the third crossing here only advised.
+#[test]
+fn a_turn_that_recovered_once_still_has_three_proactive_folds() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_overflow(
+        dir.path(),
+        vec![
+            Ok(big_file(dir.path(), "big.txt", 200)),
+            // The one recovery of the turn, then its retry.
+            overflow_error(),
+            Ok(rt(2, 100)),
+            Ok(rt(3, 800)),
+            Ok(summary_response("S1")),
+            Ok(rt(4, 800)),
+            Ok(summary_response("S2")),
+            Ok(rt(5, 800)),
+            Ok(summary_response("S3")),
+            Ok(done()),
+        ],
+        None,
+        0,
+        Some(1000),
+        true,
+    );
+    let events = collect_events(&mut session, "the task");
+    let n = notices(&events);
+    assert_eq!(overflow_markers(&n), 1, "one recovery: {n:?}");
+    assert_eq!(
+        n.iter().filter(|x| x.contains("compacting automatically")).count(),
+        3,
+        "all three proactive folds were still available: {n:?}"
+    );
+    assert_eq!(
+        n.iter().filter(|x| x.starts_with("compacted: ")).count(),
+        3,
+        "and all three were performed: {n:?}"
+    );
+    assert_eq!(requests.borrow().len(), 10);
+    assert!(
+        matches!(events.last(), Some(AgentEvent::TurnComplete { .. })),
+        "{:?}",
+        events.last()
+    );
+}
+
 /// T69 1a: the separate budget does not make a recovery loop. After three
 /// proactive folds the overflow is recovered once and retried once; the
 /// retry is rejected again and that error ends the turn, although two
