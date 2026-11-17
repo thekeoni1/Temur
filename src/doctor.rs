@@ -313,7 +313,14 @@ fn run_with_sandbox_probe(
     // Tools-drop probe (T31). The ACTIVE selection only, because unlike
     // the checks above this one POSTs, and two requests per configured
     // profile is more than a report should cost.
-    tools_drop_check(&mut r, &active, &defs, no_network)?;
+    let rendered = tools_drop_check(&mut r, &active, &defs, no_network)?;
+
+    // Tool-call probe (T69 1e). Only where the tools-drop probe ran and
+    // found the tools rendered: a template that drops them has no tool
+    // call to shape, and that WARN already says so.
+    if rendered {
+        tool_call_shape_check(&mut r, &cfg, &active, &defs, &guard)?;
+    }
 
     finish(r)
 }
@@ -761,15 +768,18 @@ fn floor_notes(r: &mut Report<'_>, estimated: bool) -> std::io::Result<()> {
 /// the ACTIVE selection, on a keyless openai-compat endpoint, with network
 /// checks enabled. Never FAILs: a degraded server is a known world, and
 /// doctor stays honest but calm.
+///
+/// Returns whether the probe ran and found the tools rendered (its PASS
+/// arm), which is the gate for [`tool_call_shape_check`].
 fn tools_drop_check(
     r: &mut Report<'_>,
     p: &crate::config::ResolvedProfile,
     defs: &[crate::provider::ToolDef],
     no_network: bool,
-) -> std::io::Result<()> {
+) -> std::io::Result<bool> {
     use crate::provider::ProbeOutcome;
     if no_network || p.provider != "openai-compat" || p.api_key_file.is_some() {
-        return Ok(());
+        return Ok(false);
     }
     let timeout =
         std::time::Duration::from_secs(crate::provider::TOOLS_DROP_PROBE_TIMEOUT_SECS);
@@ -788,6 +798,7 @@ fn tools_drop_check(
     let bare = crate::provider::probe_prompt_tokens(&p.base_url, &p.model, None, None, timeout);
     let with_tools =
         crate::provider::probe_prompt_tokens(&p.base_url, &p.model, Some(defs), None, timeout);
+    let rendered = matches!((&bare, &with_tools), (ProbeOutcome::Ok(a), ProbeOutcome::Ok(b)) if a != b);
     match (bare, with_tools) {
         (ProbeOutcome::Ok(a), ProbeOutcome::Ok(b)) if a == b => r.warn(&format!(
             "the server at {} appears to drop tool definitions for \"{}\" (prompt_tokens {a} with and without temur's tools): the chat template has no tool support, so tool calls can silently never happen",
@@ -817,6 +828,167 @@ fn tools_drop_check(
         _ => writeln!(
             r.out,
             "NOTE: tools-drop probe at {} skipped: the server reported no usable prompt_tokens",
+            p.base_url
+        ),
+    }?;
+    Ok(rendered)
+}
+
+/// What the tool-call probe asks. Two files, so a model that writes
+/// several calls in one message has a reason to. The same prompt drew the
+/// rejection from both Llama models in all 30 hand-made requests of T69
+/// phase 0 (arm 0b, 2026-11-17).
+const TOOL_CALL_PROBE_PROMPT: &str =
+    "Read a.txt and b.txt in this directory, then tell me what each file says.";
+
+/// The response cap for the tool-call probe: room for two short calls,
+/// and a bound on what a slow server is asked to generate.
+const TOOL_CALL_PROBE_MAX_TOKENS: u32 = 256;
+
+/// How a model answered the tool-call probe.
+#[derive(Debug, PartialEq)]
+enum ToolCallShape {
+    /// At least one call arrived through the tool interface.
+    Native,
+    /// The server rejected the output after delivering whole calls, and
+    /// the provider kept them (T69 1c).
+    Kept,
+    /// The server rejected the output and delivered no whole call.
+    Rejected,
+    /// No call through the interface; the text holds one the text-call
+    /// recovery recognizes.
+    TextCall,
+    /// An answer with no call of either kind.
+    NoCall,
+    /// Anything else, in the provider's words.
+    Inconclusive(String),
+}
+
+/// Pure, so each arm is testable without a server. `kept` is whether the
+/// provider raised its kept-call notice during the stream.
+fn classify_tool_call_probe(
+    result: &Result<crate::provider::ResponseMessage, crate::provider::ProviderError>,
+    kept: bool,
+    tool_names: &[String],
+) -> ToolCallShape {
+    use crate::provider::{ContentBlock, ProviderError};
+    match result {
+        Ok(_) if kept => ToolCallShape::Kept,
+        Ok(msg) => {
+            if msg.content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. })) {
+                return ToolCallShape::Native;
+            }
+            let text: String = msg
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if crate::agent::recover::detect_text_tool_call(&text, tool_names) {
+                ToolCallShape::TextCall
+            } else {
+                ToolCallShape::NoCall
+            }
+        }
+        Err(ProviderError::Api { message, .. })
+            if message.contains(crate::provider::openai_compat::PEG_NATIVE_REJECT) =>
+        {
+            ToolCallShape::Rejected
+        }
+        Err(e) => ToolCallShape::Inconclusive(e.to_string()),
+    }
+}
+
+/// The tool-call probe (T69 1e). The tools-drop probe shows that the
+/// template renders the tools. It does not show what happens when the
+/// model answers with them, and the all-models dogfood of 2026-11-16 had
+/// two families at 0/24 under a green doctor: Llama 3.1 and 3.2, whose
+/// output the server's parser rejected, and Qwen2.5-Coder, which wrote
+/// its calls as JSON text.
+///
+/// One streamed request through the real openai-compat provider, with the
+/// session's system prompt and tool definitions and a prompt that invites
+/// two steps, capped at [`TOOL_CALL_PROBE_MAX_TOKENS`]. Keyless by
+/// construction: the caller is gated on a keyless openai-compat selection
+/// and the provider is built with no key, so no auth header is sent.
+/// Nothing is executed; the answer is only classified. Never FAILs, the
+/// same rule as the tools-drop probe. One answer is one sample: a model
+/// that passes here can still be rejected on another prompt.
+fn tool_call_shape_check(
+    r: &mut Report<'_>,
+    cfg: &Config,
+    p: &crate::config::ResolvedProfile,
+    defs: &[crate::provider::ToolDef],
+    guard: &crate::tools::KeyGuard,
+) -> std::io::Result<()> {
+    use crate::provider::{ContentBlock, Provider, RequestMessage, Role, StreamEvent};
+    writeln!(
+        r.out,
+        "NOTE: tool-call probe: asking \"{}\" at {} for a two-step answer (up to {} generated tokens)",
+        p.model, p.base_url, TOOL_CALL_PROBE_MAX_TOKENS
+    )?;
+    let _ = r.out.flush();
+    let provider = crate::provider::openai_compat::OpenAiCompatProvider::with_http(
+        p.base_url.clone(),
+        None,
+        p.max_tokens_parameter.unwrap_or_default(),
+    );
+    let req = crate::provider::ChatRequest {
+        model: p.model.clone(),
+        max_tokens: TOOL_CALL_PROBE_MAX_TOKENS,
+        system: Some(session_system_prompt(cfg, p, guard)),
+        thinking: false,
+        temperature: None,
+        top_p: None,
+        messages: vec![RequestMessage {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: TOOL_CALL_PROBE_PROMPT.into(),
+            }],
+        }],
+        tools: defs.to_vec(),
+    };
+    let mut kept = false;
+    let result = provider.stream(
+        &req,
+        &mut |ev| {
+            if let StreamEvent::Notice(n) = &ev {
+                if n.starts_with(crate::provider::openai_compat::KEPT_CALLS_NOTICE_PREFIX) {
+                    kept = true;
+                }
+            }
+        },
+        &crate::cancel::CancelToken::new(),
+    );
+    let names: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
+    match classify_tool_call_probe(&result, kept, &names) {
+        ToolCallShape::Native => r.pass(&format!(
+            "\"{}\" at {} answered the tool-call probe with a call through the tool interface",
+            p.model, p.base_url
+        )),
+        ToolCallShape::Kept => r.warn(&format!(
+            "the server at {} rejected part of the tool-call output of \"{}\" (several calls in one message): temur keeps the first call and goes on, and the calls after it are lost",
+            p.base_url, p.model
+        )),
+        ToolCallShape::Rejected => r.warn(&format!(
+            "the server at {} rejected the tool-call output of \"{}\" and delivered no whole call: a turn that goes this way ends on the server's error",
+            p.base_url, p.model
+        )),
+        ToolCallShape::TextCall => r.warn(&format!(
+            "\"{}\" at {} answered the tool-call probe with a call written as text: the text-call recovery will be used",
+            p.model, p.base_url
+        )),
+        ToolCallShape::NoCall => writeln!(
+            r.out,
+            "NOTE: tool-call probe at {} inconclusive: \"{}\" answered without a tool call",
+            p.base_url, p.model
+        ),
+        ToolCallShape::Inconclusive(why) => writeln!(
+            r.out,
+            "NOTE: tool-call probe at {} inconclusive: {why}",
             p.base_url
         ),
     }
@@ -1475,6 +1647,21 @@ mod tests {
         with_tools_status: &'static str,
         with_tools: &'static str,
     ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        canned_server_with_stream(models_body, bare, with_tools_status, with_tools, None)
+    }
+
+    /// [`canned_server_with_completions_ex`] plus the T69 tool-call probe's
+    /// answer: a request with `"stream":true` gets `stream_body` (SSE
+    /// text) when one is given. With `None` a streamed request gets the
+    /// with-tools JSON like any other request carrying tools, which the
+    /// provider reads as an empty stream.
+    fn canned_server_with_stream(
+        models_body: &'static str,
+        bare: &'static str,
+        with_tools_status: &'static str,
+        with_tools: &'static str,
+        stream_body: Option<&'static str>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let posts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1513,7 +1700,9 @@ mod tests {
                 }
                 let (status, picked) = if text.starts_with("POST ") {
                     seen.lock().unwrap().push(text.clone());
-                    if text.contains("\"tools\"") {
+                    if let (true, Some(sse)) = (text.contains("\"stream\":true"), stream_body) {
+                        ("HTTP/1.1 200 OK", sse)
+                    } else if text.contains("\"tools\"") {
                         if with_tools_status.is_empty() {
                             continue; // answer nothing: the stream drops here
                         }
@@ -2613,6 +2802,135 @@ mod tests {
         );
     }
 
+    // ------------------------------------------- T69 1e: tool-call probe
+
+    const SSE_NATIVE: &str = include_str!("../tests/fixtures/openai/tool_fragmented.sse");
+    const SSE_KEPT: &str = include_str!("../tests/fixtures/openai/peg_reject_one_call.sse");
+    const SSE_REJECTED: &str = include_str!("../tests/fixtures/openai/peg_reject_no_call.sse");
+    const SSE_TEXT_CALL: &str = "data: {\"choices\":[{\"finish_reason\":null,\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"{\\\"name\\\": \\\"read\\\", \\\"arguments\\\": {\\\"filePath\\\": \\\"a.txt\\\"}}\"}}],\"id\":\"c1\",\"model\":\"m\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}],\"id\":\"c1\",\"model\":\"m\",\"object\":\"chat.completion.chunk\"}\n\ndata: [DONE]\n\n";
+    const SSE_PROSE: &str = "data: {\"choices\":[{\"finish_reason\":null,\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"I cannot see those files.\"}}],\"id\":\"c1\",\"model\":\"m\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}],\"id\":\"c1\",\"model\":\"m\",\"object\":\"chat.completion.chunk\"}\n\ndata: [DONE]\n\n";
+
+    fn doctor_with_stream(
+        sse: Option<&'static str>,
+    ) -> (bool, String, String, Vec<String>) {
+        let (base, posts) =
+            canned_server_with_stream(LLAMA_MODELS, USAGE_10, "HTTP/1.1 200 OK", USAGE_31, sse);
+        let (healthy, out) = doctor_over(&keyless_config(&base, "m"), false);
+        let bodies = posts.lock().unwrap().clone();
+        (healthy, out, base, bodies)
+    }
+
+    #[test]
+    fn tool_call_probe_passes_on_a_call_through_the_interface() {
+        let (healthy, out, base, bodies) = doctor_with_stream(Some(SSE_NATIVE));
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "PASS: \"m\" at {base} answered the tool-call probe with a call through the tool interface"
+            )),
+            "{out}"
+        );
+        // What went out: one streamed request, announced first, carrying
+        // the system prompt, the probe prompt, the real tools and the cap,
+        // and no credential header.
+        assert!(
+            out.contains(&format!(
+                "NOTE: tool-call probe: asking \"m\" at {base} for a two-step answer (up to 256 generated tokens)"
+            )),
+            "{out}"
+        );
+        let streamed: Vec<&String> =
+            bodies.iter().filter(|b| b.contains("\"stream\":true")).collect();
+        assert_eq!(streamed.len(), 1, "{bodies:?}");
+        let raw = streamed[0];
+        assert!(!raw.to_ascii_lowercase().contains("authorization"), "{raw}");
+        let v: serde_json::Value =
+            serde_json::from_str(&raw[raw.find("\r\n\r\n").unwrap() + 4..]).unwrap();
+        assert_eq!(v["max_tokens"], 256);
+        assert_eq!(v["messages"][0]["role"], "system");
+        assert_eq!(
+            v["messages"][1]["content"],
+            "Read a.txt and b.txt in this directory, then tell me what each file says."
+        );
+        let expected = crate::tools::Registry::standard_with_skills(vec![]).definitions();
+        assert_eq!(v["tools"].as_array().unwrap().len(), expected.len());
+    }
+
+    #[test]
+    fn tool_call_probe_warns_when_the_server_rejects_the_rest_and_a_call_is_kept() {
+        let (healthy, out, base, _) = doctor_with_stream(Some(SSE_KEPT));
+        assert!(healthy, "a WARN, never a FAIL: {out}");
+        assert!(
+            out.contains(&format!(
+                "WARN: the server at {base} rejected part of the tool-call output of \"m\" (several calls in one message): temur keeps the first call and goes on, and the calls after it are lost"
+            )),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn tool_call_probe_warns_when_the_server_rejects_and_delivers_no_call() {
+        let (healthy, out, base, _) = doctor_with_stream(Some(SSE_REJECTED));
+        assert!(healthy, "a WARN, never a FAIL: {out}");
+        assert!(
+            out.contains(&format!(
+                "WARN: the server at {base} rejected the tool-call output of \"m\" and delivered no whole call: a turn that goes this way ends on the server's error"
+            )),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn tool_call_probe_warns_on_a_call_written_as_text() {
+        let (healthy, out, base, _) = doctor_with_stream(Some(SSE_TEXT_CALL));
+        assert!(healthy, "a WARN, never a FAIL: {out}");
+        assert!(
+            out.contains(&format!(
+                "WARN: \"m\" at {base} answered the tool-call probe with a call written as text: the text-call recovery will be used"
+            )),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn tool_call_probe_without_a_call_or_an_answer_is_a_note() {
+        let (healthy, out, base, _) = doctor_with_stream(Some(SSE_PROSE));
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "NOTE: tool-call probe at {base} inconclusive: \"m\" answered without a tool call"
+            )),
+            "{out}"
+        );
+        // A server that answers the streamed request with no stream at all.
+        let (healthy, out, base, _) = doctor_with_stream(None);
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!("NOTE: tool-call probe at {base} inconclusive: ")),
+            "{out}"
+        );
+        assert!(!out.contains("answered the tool-call probe"), "{out}");
+    }
+
+    /// The gate: no probe when the tools are dropped, and none offline.
+    #[test]
+    fn tool_call_probe_runs_only_where_the_tools_are_rendered() {
+        let (base, posts) =
+            canned_server_with_stream(LLAMA_MODELS, USAGE_10, "HTTP/1.1 200 OK", USAGE_10, Some(SSE_NATIVE));
+        let (_healthy, out) = doctor_over(&keyless_config(&base, "m"), false);
+        assert!(out.contains("appears to drop tool definitions"), "{out}");
+        assert!(!out.contains("tool-call probe"), "{out}");
+        assert!(
+            !posts.lock().unwrap().iter().any(|b| b.contains("\"stream\":true")),
+            "no streamed request went out"
+        );
+        let (base, posts) =
+            canned_server_with_stream(LLAMA_MODELS, USAGE_10, "HTTP/1.1 200 OK", USAGE_31, Some(SSE_NATIVE));
+        let (_healthy, out) = doctor_over(&keyless_config(&base, "m"), true);
+        assert!(!out.contains("tool-call probe"), "{out}");
+        assert!(posts.lock().unwrap().is_empty(), "no request at all under --no-network");
+    }
+
     /// The T34 comparison baseline must not move: the two tools-drop
     /// bodies are byte-identical to their pre-T41 selves, which here means
     /// they carry no system message at all.
@@ -2626,7 +2944,11 @@ mod tests {
         );
         let (_healthy, _out) = doctor_over(&windowed_keyless(&base, 10000, None), false);
         let bodies = posts.lock().unwrap().clone();
-        assert_eq!(bodies.len(), 3, "one floor probe plus the tools-drop pair");
+        assert_eq!(
+            bodies.len(),
+            4,
+            "one floor probe, the tools-drop pair, and the T69 tool-call probe"
+        );
         let without_system: Vec<&String> =
             bodies.iter().filter(|b| !b.contains("\"system\"")).collect();
         assert_eq!(without_system.len(), 2, "exactly the tools-drop pair: {bodies:?}");
