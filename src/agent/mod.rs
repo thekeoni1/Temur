@@ -337,6 +337,21 @@ to be discarded; anything not in the summary is lost.";
 /// it would have, which may 400, and that is the honest outcome.
 const MAX_AUTO_COMPACTIONS_PER_TURN: u32 = 3;
 
+/// T69 1a: the most T42 overflow recoveries one turn may perform, counted
+/// on their own. Until T69 the recovery spent [`MAX_AUTO_COMPACTIONS_PER_TURN`]
+/// too, so a turn that had already folded three times proactively had no
+/// recovery left when the server refused a request, and an unattended run
+/// is one turn. The all-models dogfood of 2026-11-16 ended nine runs that
+/// way at a window of 8192, each with three "compacted:" lines and no
+/// recovery attempt before the error.
+///
+/// The bound in full: one turn performs at most 3 proactive folds plus 3
+/// recoveries. Each recovery is at most one summary call and one retry,
+/// and a retry that overflows still propagates. A recovery acts only after
+/// the server has already refused a request, so a turn that fits pays
+/// nothing for this.
+const MAX_OVERFLOW_RECOVERIES_PER_TURN: u32 = 3;
+
 /// T40: how many completed round-trips the auto-compaction tail keeps
 /// verbatim. Two is the immediate working state (the last tool call and
 /// its result, plus the one before it for context), small enough that the
@@ -1002,8 +1017,9 @@ impl Session {
     /// T42: the ONE bounded attempt to make an over-window request fit,
     /// after the provider has already rejected it with
     /// [`CONTEXT_OVERFLOW_KIND`]. Called from the turn loop only, at most
-    /// once per send, and counted against the same per-turn bound as
-    /// auto-compaction.
+    /// once per send, and counted against its own per-turn bound,
+    /// [`MAX_OVERFLOW_RECOVERIES_PER_TURN`] (T69 1a; until then it shared
+    /// auto-compaction's).
     ///
     /// Arm (a) is the ordinary fold, taken whenever auto-compaction is on
     /// and the turn already holds enough round-trips. Arm (b) is the class
@@ -1478,6 +1494,10 @@ impl Session {
         // was made on. See the safe point below for why it moved.
         let mut compact_pending: Option<(u64, u64)> = None;
         let mut auto_compactions: u32 = 0;
+        // T69 1a: the T42 overflow recoveries this turn has spent against
+        // MAX_OVERFLOW_RECOVERIES_PER_TURN. Separate from the count above:
+        // proactive folds no longer use up the recovery.
+        let mut overflow_recoveries: u32 = 0;
         // F2 (v0.29.1): a crossing arrived that nothing could act on yet.
         // Rider 2 was right that it must not CONSUME the latch; it was
         // wrong to let the turn end without ever saying so. Cleared as soon
@@ -1631,17 +1651,17 @@ impl Session {
             // client-side is invisible to it. Recover once, then retry once.
             //
             // Not on an interrupted send (the cancel arm below owns that),
-            // and never past the per-turn bound that auto-compaction shares:
-            // a turn needing a fourth of these is not going to be rescued
-            // by it.
+            // and never past its own per-turn bound (T69 1a). Before T69
+            // this read auto-compaction's counter, and three proactive
+            // folds left an overflow with nothing to act on it.
             if !self.cancel.is_set()
                 && is_context_overflow(&result)
-                && auto_compactions < MAX_AUTO_COMPACTIONS_PER_TURN
+                && overflow_recoveries < MAX_OVERFLOW_RECOVERIES_PER_TURN
             {
                 match self.recover_from_context_overflow(turn_start, ui) {
                     OverflowRecovery::None => {}
                     outcome => {
-                        auto_compactions += 1;
+                        overflow_recoveries += 1;
                         if matches!(
                             outcome,
                             OverflowRecovery::Compacted

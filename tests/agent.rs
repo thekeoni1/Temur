@@ -6961,33 +6961,6 @@ fn overflow_session(
     auto_compact: bool,
     cancel_on_summary: bool,
 ) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
-    overflow_session_mode(
-        dir,
-        seed,
-        outcomes,
-        limit,
-        tool_overhead,
-        context_window,
-        auto_compact,
-        cancel_on_summary,
-        false,
-    )
-}
-
-/// [`overflow_session`] with the run mode exposed: `unattended` is what a
-/// one-shot `-p` run sets, where the whole task is ONE turn (T69 1a).
-#[allow(clippy::too_many_arguments)]
-fn overflow_session_mode(
-    dir: &std::path::Path,
-    seed: Option<Vec<RequestMessage>>,
-    outcomes: Vec<Result<ResponseMessage, ProviderError>>,
-    limit: Option<usize>,
-    tool_overhead: usize,
-    context_window: Option<u64>,
-    auto_compact: bool,
-    cancel_on_summary: bool,
-    unattended: bool,
-) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
     let requests = Rc::new(RefCell::new(vec![]));
     let provider = OverflowProvider {
         outcomes: RefCell::new(outcomes),
@@ -7013,7 +6986,7 @@ fn overflow_session_mode(
         cost_rates: None,
         cost_advisory_step_usd: temur::config::DEFAULT_COST_ADVISORY_STEP_USD,
         auto_compact,
-        unattended,
+        unattended: false,
         unattended_nudge: true,
     };
     let session = match seed {
@@ -7168,33 +7141,85 @@ fn overflow_on_a_foldable_turn_compacts_and_retries() {
     assert_eq!(tool_results(&reqs[5].messages).len(), 2);
 }
 
+/// The server's refusal as the script returns it. The figures are the
+/// dogfood's own, Qwen3-1.7B log-triage r1 (2026-11-16).
+fn overflow_error() -> Result<ResponseMessage, ProviderError> {
+    Err(ProviderError::Api {
+        status: 400,
+        kind: "exceed_context_size_error".into(),
+        message: "request (8211 tokens) exceeds the available context size (8192 tokens), try increasing it"
+            .into(),
+    })
+}
+
+/// Three crossings fold proactively and the fourth only advises, which is
+/// the whole of `MAX_AUTO_COMPACTIONS_PER_TURN`. The last round-trip cats
+/// `big.txt`, whose result the T19 cap holds to about 4,100 chars at this
+/// window, so the overflow that follows has something a recovery can act
+/// on.
+fn three_folds_then_a_big_result(
+    dir: &std::path::Path,
+) -> Vec<Result<ResponseMessage, ProviderError>> {
+    vec![
+        Ok(rt(1, 100)),
+        Ok(rt(2, 100)),
+        Ok(rt(3, 800)),
+        Ok(summary_response("S1")),
+        Ok(rt(4, 800)),
+        Ok(summary_response("S2")),
+        Ok(rt(5, 800)),
+        Ok(summary_response("S3")),
+        // The fourth crossing: the proactive bound is spent, so it advises.
+        Ok(cat_rt(dir, "big.txt", 200, 800)),
+    ]
+}
+
+/// What ONE recovery prints in the scripts built on
+/// [`three_folds_then_a_big_result`]: the fold's marker, then the
+/// elision's, because the fold frees under a sixteenth (the T44 gate) and
+/// the recovery cuts the largest result as well before its single retry.
+const OVERFLOW_MARKERS_PER_RECOVERY: usize = 2;
+
+fn overflow_markers(n: &[String]) -> usize {
+    n.iter()
+        .filter(|x| *x == OVERFLOW_COMPACT_MARKER || *x == OVERFLOW_ELIDE_MARKER)
+        .count()
+}
+
+/// T69 1a REVERSED the T42 P1 choice this test used to pin, on the
+/// operator's ruling of 2026-11-17. T42 counted a recovery against
+/// `MAX_AUTO_COMPACTIONS_PER_TURN`, so after three proactive folds an
+/// overflow was terminal, and this test asserted exactly that. The
+/// recovery now has its own bound, and the per-turn rule in full is: at
+/// most 3 proactive folds plus 3 recoveries, and the fourth overflow
+/// propagates.
 #[test]
 fn overflow_recovery_respects_the_per_turn_bound() {
     let dir = tempfile::tempdir().unwrap();
-    // The T40 shape: three crossings compact, the fourth advises, and the
-    // bound is spent. The send after that overflows and nothing may act.
+    let mut script = three_folds_then_a_big_result(dir.path());
+    script.extend([
+        // Recovery 1: the fold's summary call, then the retry.
+        overflow_error(),
+        Ok(summary_response("S4")),
+        Ok(rt(7, 100)),
+        // Recovery 2.
+        overflow_error(),
+        Ok(summary_response("S5")),
+        Ok(rt(8, 100)),
+        // Recovery 3.
+        overflow_error(),
+        Ok(summary_response("S6")),
+        Ok(rt(9, 100)),
+        // The fourth overflow of the turn: the recovery bound is spent.
+        overflow_error(),
+    ]);
     let (mut session, requests) = session_overflow(
         dir.path(),
-        vec![
-            Ok(rt(1, 100)),
-            Ok(rt(2, 100)),
-            Ok(rt(3, 800)),
-            Ok(summary_response("S1")),
-            Ok(rt(4, 800)),
-            Ok(summary_response("S2")),
-            Ok(rt(5, 800)),
-            Ok(summary_response("S3")),
-            Ok(rt(6, 800)),
-            Err(ProviderError::Api {
-                status: 400,
-                kind: "exceed_context_size_error".into(),
-                message: "request (13402 tokens) exceeds the available context size (12288 tokens)"
-                    .into(),
-            }),
-        ],
+        script,
         None,
         0,
-        // A window IS needed here: the bound is spent by real crossings.
+        // A window IS needed here: the proactive bound is spent by real
+        // crossings.
         Some(1000),
         true,
     );
@@ -7205,76 +7230,122 @@ fn overflow_recovery_respects_the_per_turn_bound() {
         "the ORIGINAL error propagates: {err}"
     );
     let n = notices(&events);
-    assert!(
-        !n.iter().any(|x| x == OVERFLOW_COMPACT_MARKER || x == OVERFLOW_ELIDE_MARKER),
-        "at the bound nothing recovers: {n:?}"
+    assert_eq!(
+        n.iter().filter(|x| x.contains("compacting automatically")).count(),
+        3,
+        "the three proactive folds: {n:?}"
     );
-    // No retry was sent.
-    assert_eq!(requests.borrow().len(), 10);
+    assert_eq!(
+        n.iter().filter(|x| *x == OVERFLOW_COMPACT_MARKER).count(),
+        3,
+        "three recoveries ran after them, and no fourth: {n:?}"
+    );
+    // 9 scripted sends, then three times (rejected send, summary call,
+    // retry), then the fourth rejected send with nothing after it.
+    assert_eq!(requests.borrow().len(), 19);
 }
 
-/// T69 1a, step 1: a PIN OF TODAY'S BEHAVIOUR, written to be flipped by the
-/// fix. The all-models dogfood of 2026-11-16 ended nine unattended runs
-/// this way at a window of 8192: three automatic compactions, then a server
-/// overflow that nothing acted on, because the T42 recovery shares
-/// `MAX_AUTO_COMPACTIONS_PER_TURN` with proactive compaction and an
-/// unattended run is one turn. Every one of the nine logs shows exactly
-/// three "compacted:" lines and no "context overflow:" line before the
-/// error, which is what this asserts.
-///
-/// [`overflow_recovery_respects_the_per_turn_bound`] pins the same
-/// mechanism for an interactive turn, as the deliberate T42 choice it was.
+/// T69 1a, the dogfood shape. The all-models dogfood of 2026-11-16 ended
+/// nine unattended runs at a window of 8192 with three automatic
+/// compactions and then a server overflow that nothing acted on. Every one
+/// of the nine logs shows exactly three "compacted:" lines and no "context
+/// overflow:" line before the error. Step 1 pinned that outcome here; this
+/// is the same script with the recovery's summary call and a final answer
+/// added, and the turn now completes.
 #[test]
-fn t69_1a_pin_today_an_unattended_overflow_after_three_compactions_is_terminal() {
+fn an_overflow_after_three_proactive_folds_is_recovered() {
     let dir = tempfile::tempdir().unwrap();
-    let (mut session, requests) = overflow_session_mode(
+    let mut script = three_folds_then_a_big_result(dir.path());
+    script.extend([overflow_error(), Ok(summary_response("S4")), Ok(done())]);
+    let (mut session, requests) =
+        session_overflow(dir.path(), script, None, 0, Some(1000), true);
+    let events = collect_events(&mut session, "the task");
+    let n = notices(&events);
+    assert_eq!(
+        n.iter().filter(|x| x.contains("compacting automatically")).count(),
+        3,
+        "the three folds the logs show: {n:?}"
+    );
+    assert_eq!(overflow_markers(&n), OVERFLOW_MARKERS_PER_RECOVERY, "{n:?}");
+    // 9 scripted sends, the rejected send, the summary call, the retry.
+    assert_eq!(requests.borrow().len(), 12);
+    assert!(
+        matches!(events.last(), Some(AgentEvent::TurnComplete { .. })),
+        "the turn finished on the retry: {:?}",
+        events.last()
+    );
+}
+
+/// T69 1a: the recovery's own bound holds. No window and no
+/// auto-compaction, so nothing here is proactive and the only arm is the
+/// elision. The result is 20,000 chars, then 10,000, 5,000 and 2,500 after
+/// three recoveries, still above the 1,024-char floor: the fourth overflow
+/// is refused by the bound and not by the floor.
+#[test]
+fn the_fourth_overflow_recovery_in_a_turn_propagates() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_overflow(
         dir.path(),
-        None,
         vec![
-            Ok(rt(1, 100)),
-            Ok(rt(2, 100)),
-            Ok(rt(3, 800)),
-            Ok(summary_response("S1")),
-            Ok(rt(4, 800)),
-            Ok(summary_response("S2")),
-            Ok(rt(5, 800)),
-            Ok(summary_response("S3")),
-            // The fourth crossing: the bound is spent, so it only advises.
-            Ok(rt(6, 800)),
-            // The dogfood's own error, Qwen3-1.7B log-triage r1.
-            Err(ProviderError::Api {
-                status: 400,
-                kind: "exceed_context_size_error".into(),
-                message: "request (8211 tokens) exceeds the available context size (8192 tokens), try increasing it"
-                    .into(),
-            }),
+            Ok(big_file(dir.path(), "big.txt", 200)),
+            overflow_error(),
+            Ok(rt(2, 10)),
+            overflow_error(),
+            Ok(rt(3, 10)),
+            overflow_error(),
+            Ok(rt(4, 10)),
+            overflow_error(),
         ],
         None,
         0,
-        Some(1000),
-        true,
+        None,
         false,
-        true,
     );
     let mut events = vec![];
     let err = session.turn("the task", &mut |e| events.push(e)).unwrap_err();
+    assert!(err.to_string().contains("exceed_context_size_error"), "{err}");
     let n = notices(&events);
-    // The three folds the logs show.
     assert_eq!(
-        n.iter().filter(|x| x.starts_with("compacted: ")).count(),
+        n.iter().filter(|x| *x == OVERFLOW_ELIDE_MARKER).count(),
         3,
-        "{n:?}"
+        "three recoveries and no fourth: {n:?}"
     );
-    // TODAY: the overflow is terminal. The fix flips these three.
+    // Four round-trips, three retries, and the fourth rejected send.
+    assert_eq!(requests.borrow().len(), 8, "no fourth retry");
+    let largest = tool_results(session.history())
+        .iter()
+        .map(|r| r.chars().count())
+        .max()
+        .unwrap();
     assert!(
-        err.to_string().contains("exceed_context_size_error"),
-        "today the server's error ends the run: {err}"
+        largest > 2_048,
+        "a fourth halving was possible, so the bound is what stopped it: {largest}"
     );
-    assert!(
-        !n.iter().any(|x| x.starts_with("context overflow:")),
-        "today no recovery is announced: {n:?}"
+}
+
+/// T69 1a: the separate budget does not make a recovery loop. After three
+/// proactive folds the overflow is recovered once and retried once; the
+/// retry is rejected again and that error ends the turn, although two
+/// recoveries are still unspent.
+#[test]
+fn a_retry_that_overflows_again_after_three_folds_propagates() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut script = three_folds_then_a_big_result(dir.path());
+    script.extend([overflow_error(), Ok(summary_response("S4")), overflow_error()]);
+    let (mut session, requests) =
+        session_overflow(dir.path(), script, None, 0, Some(1000), true);
+    let mut events = vec![];
+    let err = session.turn("the task", &mut |e| events.push(e)).unwrap_err();
+    assert!(err.to_string().contains("exceed_context_size_error"), "{err}");
+    let n = notices(&events);
+    assert_eq!(
+        overflow_markers(&n),
+        OVERFLOW_MARKERS_PER_RECOVERY,
+        "exactly one recovery ran: {n:?}"
     );
-    assert_eq!(requests.borrow().len(), 10, "today no retry is sent");
+    // 9 scripted sends, the rejected send, the summary call, the rejected
+    // retry, and nothing after it.
+    assert_eq!(requests.borrow().len(), 12, "one retry, no loop");
 }
 
 #[test]
