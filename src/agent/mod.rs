@@ -352,6 +352,24 @@ const MAX_AUTO_COMPACTIONS_PER_TURN: u32 = 3;
 /// nothing for this.
 const MAX_OVERFLOW_RECOVERIES_PER_TURN: u32 = 3;
 
+/// T69 (C2): the most of the window the "room for one full response"
+/// test reserves for a model that is not a reasoning model: a quarter.
+///
+/// The reserve used to be `max_tokens` whatever the window. With the
+/// window 8192 and max_tokens 4096 that `init` and the README write, the
+/// test was true from 4097 tokens used, a few hundred above the prompt
+/// floor. Measured on 19 runs at that config (2026-11-17, kickoff 4 report,
+/// Part B): 54 of 57 proactive triggers had this test alone true, and the
+/// first occupancy figure after every one of the 68 folds was above 4096,
+/// so no fold brought the turn back under its own trigger. A model that
+/// is not reasoning does not write 4096 tokens in one reply there; the
+/// cap moves the test to 6145 at that config and changes nothing where
+/// max_tokens is at most a quarter of the window. A reasoning model keeps
+/// the full reserve, because its thinking is spent from `max_tokens`.
+///
+/// A ruled value (operator, 2026-11-17), not a derived one.
+const RESPONSE_RESERVE_WINDOW_DIVISOR: u64 = 4;
+
 /// T40: how many completed round-trips the auto-compaction tail keeps
 /// verbatim. Two is the immediate working state (the last tool call and
 /// its result, plus the one before it for context), small enough that the
@@ -1282,13 +1300,18 @@ impl Session {
     /// at or past 80% of the window, or too little window left for one
     /// full response. The LATCH is checked here too, which is what makes
     /// the two sites one speaker: whichever fires first closes it.
+    ///
+    /// "One full response" is `max_tokens`, capped for a model that is
+    /// not a reasoning model at a quarter of the window (T69 C2, see
+    /// [`RESPONSE_RESERVE_WINDOW_DIVISOR`]).
     fn crossing_at(&self, used: u64) -> Option<(u64, u64)> {
         if self.context_warned {
             return None;
         }
         let window = self.cfg.context_window?;
         let eighty = u128::from(used) * 5 >= u128::from(window) * 4;
-        let tight = window.saturating_sub(used) < u64::from(self.cfg.max_tokens);
+        let reserve = response_reserve(&self.cfg.model, self.cfg.max_tokens, window);
+        let tight = window.saturating_sub(used) < reserve;
         if !(eighty || tight) {
             return None;
         }
@@ -1498,6 +1521,10 @@ impl Session {
         // MAX_OVERFLOW_RECOVERIES_PER_TURN. Separate from the count above:
         // proactive folds no longer use up the recovery.
         let mut overflow_recoveries: u32 = 0;
+        // T69 (C1): round trips completed since this turn's last fold,
+        // proactive or recovery; `None` until the turn folds. A proactive
+        // fold waits for [`fold_margin_met`]. The recovery does not.
+        let mut round_trips_since_fold: Option<usize> = None;
         // F2 (v0.29.1): a crossing arrived that nothing could act on yet.
         // Rider 2 was right that it must not CONSUME the latch; it was
         // wrong to let the turn end without ever saying so. Cleared as soon
@@ -1533,6 +1560,10 @@ impl Session {
                     self.context_warned = true;
                     crossing_unspoken = false;
                     ui(AgentEvent::Notice(context_advisory_text(used, window)));
+                } else if !fold_margin_met(round_trips_since_fold) {
+                    // T69 (C1): too soon after this turn's last fold. The
+                    // third outcome, as below: nothing said, nothing spent.
+                    crossing_unspoken = true;
                 } else if auto_compact_folds(
                     // History is COMPLETE here (results appended), which is
                     // what the safe point will fold, so this is the plain
@@ -1583,6 +1614,7 @@ impl Session {
                         after_bytes,
                     } => {
                         auto_compactions += 1;
+                        round_trips_since_fold = Some(0);
                         // The fold rewrote history as [prompt, summary,
                         // resume, tail], so this turn's prompt is at 0 now.
                         // Leaving the captured index here made a SECOND
@@ -1681,6 +1713,9 @@ impl Session {
                             // fall-through folded too, so it owes the reset
                             // even though what it REPORTS is the elision.
                             turn_start = 0;
+                            // T69 (C1): a recovery fold starts the margin
+                            // for the next proactive fold as well.
+                            round_trips_since_fold = Some(0);
                         }
                         // The pre-send save above ran against the history
                         // recovery has just rewritten, so it is stale. This
@@ -1715,6 +1750,10 @@ impl Session {
                 break;
             }
             let msg = result?;
+            // T69 (C1): one more round trip completed since the last fold.
+            if let Some(n) = round_trips_since_fold.as_mut() {
+                *n += 1;
+            }
             // T66 P2: the reasoning-only notices quote it after `msg` is
             // consumed below.
             let output_tokens = msg.usage.output_tokens;
@@ -1744,6 +1783,12 @@ impl Session {
                     self.context_warned = true;
                     crossing_unspoken = false;
                     ui(AgentEvent::Notice(context_advisory_text(used, window)));
+                } else if !fold_margin_met(round_trips_since_fold) {
+                    // T69 (C1): too soon after this turn's last fold, so
+                    // the third outcome below, for the same reasons: say
+                    // nothing, consume nothing, look again after the next
+                    // round trip.
+                    crossing_unspoken = true;
                 } else if auto_compact_will_fold(
                     self.history.len(),
                     turn_start,
@@ -2898,6 +2943,35 @@ fn elide_to_half(content: &str) -> String {
     format!(
         "{head}\n\n(truncated again: the server rejected the request as larger than its context window, so this result was cut from {total} to {target} chars, keeping the first {head_n} and the last {tail_n}; re-run the tool over a narrower range to see the elided middle)\n\n{tail}"
     )
+}
+
+/// T69 (C2): the window the crossing test keeps free for one response.
+/// `max_tokens` for a reasoning model id
+/// ([`crate::config::looks_like_reasoning_model`], the test `init` uses);
+/// for any other model the smaller of `max_tokens` and a quarter of the
+/// window. Only the crossing test reads this: the request still carries
+/// `max_tokens` as configured.
+fn response_reserve(model: &str, max_tokens: u32, window: u64) -> u64 {
+    let full = u64::from(max_tokens);
+    if crate::config::looks_like_reasoning_model(model) {
+        full
+    } else {
+        full.min(window / RESPONSE_RESERVE_WINDOW_DIVISOR)
+    }
+}
+
+/// T69 (C1): may a proactive fold be taken now? Yes when this turn has
+/// not folded yet, or when at least [`AUTO_COMPACT_TAIL_ROUND_TRIPS`]
+/// round trips have completed since its last fold of either kind.
+///
+/// Without the margin a turn whose occupancy after a fold is still over
+/// the trigger folded again after ONE new round trip: the tail keeps two,
+/// the summary counts as a third, so the fold replaced the old summary
+/// and one round trip with a new summary. 36 of 38 second and third
+/// proactive folds in the 19 runs of the kickoff 4 report (Part B) were
+/// that, and 11 of those 36 freed less than 1/16 of the history.
+fn fold_margin_met(round_trips_since_fold: Option<usize>) -> bool {
+    round_trips_since_fold.is_none_or(|n| n >= AUTO_COMPACT_TAIL_ROUND_TRIPS)
 }
 
 /// T69 1c: collect the provider's kept-call notice (the server rejected

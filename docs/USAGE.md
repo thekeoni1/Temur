@@ -307,8 +307,9 @@ it. Archives accumulate in the sessions dir until you delete them.
 With a `context_window` configured, temur tracks an advisory estimate
 of context use (the last response's reported input+output tokens) and
 warns once per session when the conversation gets tight: at 80% of the
-window, or when the remaining room is smaller than `max_tokens`,
-whichever comes first. The advisory names both remedies: `/compact`
+window, or when the remaining room is smaller than `max_tokens` (for a
+model that is not a reasoning model, smaller than `max_tokens` or a
+quarter of the window, whichever is less), whichever comes first. The advisory names both remedies: `/compact`
 summarizes the conversation and continues in a fraction of the window;
 a new session starts clean. The same advisory also fires immediately
 at `--continue`/`--resume`/`/resume` when the restored session is

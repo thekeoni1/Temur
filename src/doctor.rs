@@ -427,7 +427,7 @@ fn max_tokens_check(
     if let Some(window) = p.context_window {
         if u64::from(p.max_tokens) > window {
             r.warn(&format!(
-                "{prefix}max_tokens {} is larger than context_window {window}: the context advisory fires from the first response of every session, and every request reserves more output than the window can hold; lower max_tokens below {window} or raise context_window",
+                "{prefix}max_tokens {} is larger than context_window {window}: every request reserves more output than the window can hold; lower max_tokens below {window} or raise context_window",
                 p.max_tokens
             ))?;
         }
@@ -2382,7 +2382,9 @@ mod tests {
             out.contains("WARN: max_tokens 32000 is larger than context_window 12288"),
             "{out}"
         );
-        assert!(out.contains("fires from the first response"), "{out}");
+        // T69 (C2): the advisory clause went with the reserve cap, which
+        // made it false for a model that is not a reasoning model.
+        assert!(!out.contains("fires from the first response"), "{out}");
         assert!(out.contains("reserves more output than the window can hold"), "{out}");
         assert!(
             out.contains("lower max_tokens below 12288 or raise context_window"),

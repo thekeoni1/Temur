@@ -222,7 +222,9 @@ header:
 Set `max_tokens` well below the model's context window for local use.
 temur's default (32000) suits large cloud contexts; against an
 8192-token window it lets one response outgrow the context, and the
-advisory fires immediately. 1024 to 4096 is a sensible local range.
+advisory fires immediately for a reasoning model id and at three
+quarters of the window otherwise. 1024 to 4096 is a sensible local
+range.
 
 ## Compact prompt profile
 
@@ -711,8 +713,10 @@ equivalent (`/api/show`) is deliberately not probed, so for Ollama and
 LM Studio you state the value by hand. However it gets set, temur then:
 
 - advises once per session when the conversation gets tight: at 80% of
-  the window, or when the remaining room drops below `max_tokens` (the
-  next response may not fit), whichever comes first; the advisory names
+  the window, or when the remaining room drops below `max_tokens` (for a
+  model that is not a reasoning model, below `max_tokens` or a quarter
+  of the window, whichever is less; the next response may not fit),
+  whichever comes first; the advisory names
   `/compact` and a new session as the remedies, and also fires at
   `--continue`/`--resume`/`/resume` when the restored session is
   already past the threshold;

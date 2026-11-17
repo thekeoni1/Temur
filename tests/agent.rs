@@ -549,19 +549,23 @@ fn notices(events: &[AgentEvent]) -> Vec<String> {
 #[test]
 fn context_prewarn_fires_once_per_session() {
     let dir = tempfile::tempdir().unwrap();
-    // window 1000, max_tokens 800: usage 150+100=250 leaves 750 < 800.
+    // window 1000, max_tokens 800. Since T69 (C2) the room kept for a
+    // response is capped at a quarter of the window for a model that is
+    // not a reasoning model: usage 660+100=760 leaves 240 < 250, and is
+    // under 80%, so the remaining-window arm alone fires. (Before the cap
+    // this test used 150+100=250 against the full 800.)
     let mut session = session_with_window(
         dir.path(),
         vec![
             msg_with_usage(
                 vec![text("a")],
                 StopReason::EndTurn,
-                serde_json::json!({"input_tokens": 150, "output_tokens": 100}),
+                serde_json::json!({"input_tokens": 660, "output_tokens": 100}),
             ),
             msg_with_usage(
                 vec![text("b")],
                 StopReason::EndTurn,
-                serde_json::json!({"input_tokens": 300, "output_tokens": 100}),
+                serde_json::json!({"input_tokens": 700, "output_tokens": 100}),
             ),
         ],
         Some(1000),
@@ -570,7 +574,7 @@ fn context_prewarn_fires_once_per_session() {
     let n1 = notices(&collect_events(&mut session, "one"));
     assert_eq!(n1.len(), 1, "exactly one pre-warn: {n1:?}");
     // T20 unified wording: both remedies, /compact first.
-    assert!(n1[0].contains("context: ~250 of 1000 tokens used"));
+    assert!(n1[0].contains("context: ~760 of 1000 tokens used"));
     assert!(n1[0].contains("/compact frees the window"));
     assert!(n1[0].contains("or start a new session"));
     // Turn two re-satisfies the condition; the warning is once per SESSION.
@@ -5775,13 +5779,25 @@ fn session_auto_compact(
     max_tokens: u32,
     auto_compact: bool,
 ) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
+    session_auto_compact_for("local-test", dir, responses, context_window, max_tokens, auto_compact)
+}
+
+/// [`session_auto_compact`] with the model id supplied (T69 C2 reads it).
+fn session_auto_compact_for(
+    model: &str,
+    dir: &std::path::Path,
+    responses: Vec<ResponseMessage>,
+    context_window: Option<u64>,
+    max_tokens: u32,
+    auto_compact: bool,
+) -> (Session, Rc<RefCell<Vec<ChatRequest>>>) {
     let requests = Rc::new(RefCell::new(vec![]));
     let provider = MockProvider {
         responses: RefCell::new(responses),
         requests: requests.clone(),
     };
     let cfg = SessionConfig {
-        model: "local-test".into(),
+        model: model.into(),
         max_tokens,
         system: None,
         thinking: false,
@@ -5980,14 +5996,16 @@ fn auto_compact_folds_the_middle_and_keeps_prompt_and_last_two_round_trips() {
 #[test]
 fn auto_compact_fires_on_the_tight_arm_too() {
     let dir = tempfile::tempdir().unwrap();
-    // window 1000, max_tokens 800: used 250 leaves 750 < 800. Far below 80%,
-    // so only the remaining-window arm can be firing here.
+    // window 1000, max_tokens 800, and a model that is not a reasoning
+    // model, so since T69 (C2) the room kept for a response is 250, a
+    // quarter of the window: used 760 leaves 240 < 250. Below 80%, so only
+    // the remaining-window arm can be firing here. (Before the cap: 250.)
     let (mut session, requests) = session_auto_compact(
         dir.path(),
         vec![
             rt(1, 100),
             rt(2, 100),
-            rt(3, 250), // tight arm
+            rt(3, 760), // tight arm
             summary_response("S"),
             msg_with_usage(
                 vec![text("done")],
@@ -6001,7 +6019,7 @@ fn auto_compact_fires_on_the_tight_arm_too() {
     );
     let n = notices(&collect_events(&mut session, "the task"));
     assert!(
-        n.iter().any(|x| x == "context: ~250 of 1000 tokens used; compacting automatically"),
+        n.iter().any(|x| x == "context: ~760 of 1000 tokens used; compacting automatically"),
         "{n:?}"
     );
     // One round-trip folded, two kept. Worth pinning that the byte figures
@@ -6029,9 +6047,13 @@ fn auto_compact_is_bounded_at_three_then_advises() {
             rt(2, 100),
             rt(3, 800), // cross 1
             summary_response("S1"),
-            rt(4, 800), // cross 2
+            // T69 (C1): a fold waits for two round trips after the last
+            // one, so each later fold takes one more round trip to reach.
+            rt(4, 800), // crossed, one round trip since the fold: waits
+            rt(41, 800), // cross 2
             summary_response("S2"),
-            rt(5, 800), // cross 3
+            rt(5, 800), // waits
+            rt(51, 800), // cross 3
             summary_response("S3"),
             rt(6, 800), // cross 4: over the bound
             msg_with_usage(
@@ -6055,8 +6077,8 @@ fn auto_compact_is_bounded_at_three_then_advises() {
     // to what a session without auto-compaction would have printed.
     assert!(n.iter().any(|x| x
         == "context: ~800 of 1000 tokens used; /compact frees the window by summarizing the conversation, or start a new session"));
-    // 10 responses = 7 turn round-trips + 3 summary calls.
-    assert_eq!(requests.borrow().len(), 10);
+    // 12 responses = 9 turn round-trips + 3 summary calls.
+    assert_eq!(requests.borrow().len(), 12);
 }
 
 #[test]
@@ -7165,9 +7187,13 @@ fn three_folds_then_a_big_result(
         Ok(rt(2, 100)),
         Ok(rt(3, 800)),
         Ok(summary_response("S1")),
+        // T69 (C1): one round trip after a fold is too soon for the next;
+        // the second one folds.
         Ok(rt(4, 800)),
+        Ok(rt(41, 800)),
         Ok(summary_response("S2")),
         Ok(rt(5, 800)),
+        Ok(rt(51, 800)),
         Ok(summary_response("S3")),
         // The fourth crossing: the proactive bound is spent, so it advises.
         Ok(cat_rt(dir, "big.txt", 200, 800)),
@@ -7245,9 +7271,9 @@ fn overflow_recovery_respects_the_per_turn_bound() {
         6,
         "three proactive folds performed, and one per recovery: {n:?}"
     );
-    // 9 scripted sends, then three times (rejected send, summary call,
+    // 11 scripted sends, then three times (rejected send, summary call,
     // retry), then the fourth rejected send with nothing after it.
-    assert_eq!(requests.borrow().len(), 19);
+    assert_eq!(requests.borrow().len(), 21);
 }
 
 /// T69 1a, the dogfood shape. The all-models dogfood of 2026-11-16 ended
@@ -7277,8 +7303,8 @@ fn an_overflow_after_three_proactive_folds_is_recovered() {
         "three proactive folds performed, and the recovery's own: {n:?}"
     );
     assert_eq!(overflow_markers(&n), OVERFLOW_MARKERS_PER_RECOVERY, "{n:?}");
-    // 9 scripted sends, the rejected send, the summary call, the retry.
-    assert_eq!(requests.borrow().len(), 12);
+    // 11 scripted sends, the rejected send, the summary call, the retry.
+    assert_eq!(requests.borrow().len(), 14);
     assert!(
         matches!(events.last(), Some(AgentEvent::TurnComplete { .. })),
         "the turn finished on the retry: {:?}",
@@ -7301,9 +7327,12 @@ fn an_overflow_after_three_folds_of_small_results_is_recovered_by_the_fold() {
             Ok(rt(2, 100)),
             Ok(rt(3, 800)),
             Ok(summary_response("S1")),
+            // T69 (C1): two round trips between folds.
             Ok(rt(4, 800)),
+            Ok(rt(41, 800)),
             Ok(summary_response("S2")),
             Ok(rt(5, 800)),
+            Ok(rt(51, 800)),
             Ok(summary_response("S3")),
             Ok(rt(6, 800)),
             overflow_error(),
@@ -7331,8 +7360,8 @@ fn an_overflow_after_three_folds_of_small_results_is_recovered_by_the_fold() {
         4,
         "three proactive folds and the recovery's: {n:?}"
     );
-    // 9 scripted sends, the rejected send, the summary call, the retry.
-    assert_eq!(requests.borrow().len(), 12);
+    // 11 scripted sends, the rejected send, the summary call, the retry.
+    assert_eq!(requests.borrow().len(), 14);
     assert!(
         matches!(events.last(), Some(AgentEvent::TurnComplete { .. })),
         "{:?}",
@@ -7407,9 +7436,12 @@ fn a_turn_that_recovered_once_still_has_three_proactive_folds() {
             Ok(rt(2, 100)),
             Ok(rt(3, 800)),
             Ok(summary_response("S1")),
+            // T69 (C1): two round trips between folds.
             Ok(rt(4, 800)),
+            Ok(rt(41, 800)),
             Ok(summary_response("S2")),
             Ok(rt(5, 800)),
+            Ok(rt(51, 800)),
             Ok(summary_response("S3")),
             Ok(done()),
         ],
@@ -7431,7 +7463,7 @@ fn a_turn_that_recovered_once_still_has_three_proactive_folds() {
         3,
         "and all three were performed: {n:?}"
     );
-    assert_eq!(requests.borrow().len(), 10);
+    assert_eq!(requests.borrow().len(), 12);
     assert!(
         matches!(events.last(), Some(AgentEvent::TurnComplete { .. })),
         "{:?}",
@@ -7509,9 +7541,9 @@ fn a_retry_that_overflows_again_after_three_folds_propagates() {
         OVERFLOW_MARKERS_PER_RECOVERY,
         "exactly one recovery ran: {n:?}"
     );
-    // 9 scripted sends, the rejected send, the summary call, the rejected
+    // 11 scripted sends, the rejected send, the summary call, the rejected
     // retry, and nothing after it.
-    assert_eq!(requests.borrow().len(), 12, "one retry, no loop");
+    assert_eq!(requests.borrow().len(), 14, "one retry, no loop");
 }
 
 #[test]
@@ -7764,6 +7796,9 @@ fn a_fall_through_still_moves_turn_start_to_zero() {
             Ok(cat_rt(dir.path(), "big.txt", 300, 100)), // 30000 chars, into the tail
             Ok(summary_response("S1")), // the recovery fold: frees ~nothing
             Ok(rt(4, 28_000)),          // crosses 80%, on the retried history
+            // T69 (C1): the recovery's fold starts the margin too, so the
+            // crossing above waits and this second round trip folds.
+            Ok(rt(5, 28_000)),
             Ok(summary_response("S2")), // the second fold, on the reset index
             Ok(done()),
         ],
@@ -7781,7 +7816,7 @@ fn a_fall_through_still_moves_turn_start_to_zero() {
         2,
         "the fall-through's own fold, then a second fold on the reset index: {n:?}"
     );
-    assert_eq!(requests.borrow().len(), 8);
+    assert_eq!(requests.borrow().len(), 9);
 
     let h = session.history();
     assert_eq!(h[0].role, Role::User, "history opens with the user prompt");
@@ -8729,3 +8764,263 @@ fn a_registered_key_in_an_error_body_is_redacted_on_screen_and_on_disk() {
     assert!(text.contains(&format!("key {short} was rejected")), "{text}");
 }
 
+
+// ------------------------------------------------- T69 C2: the response reserve
+
+/// One response reporting `used` input tokens, in a session with no
+/// auto-compaction: did the context advisory fire?
+fn crossing_fires(model: &str, window: u64, max_tokens: u32, used: u64) -> bool {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = session_auto_compact_for(
+        model,
+        dir.path(),
+        vec![msg_with_usage(
+            vec![text("ok")],
+            StopReason::EndTurn,
+            serde_json::json!({"input_tokens": used, "output_tokens": 0}),
+        )],
+        Some(window),
+        max_tokens,
+        false,
+    );
+    let n = notices(&collect_events(&mut session, "q"));
+    let fired = n.iter().any(|x| x.starts_with(&format!("context: ~{used} of {window} tokens used")));
+    assert_eq!(fired, !n.is_empty(), "no other notice in this script: {n:?}");
+    fired
+}
+
+/// T69 C2 at the exact boundaries. For a model id that does not look like
+/// a reasoning model the room kept for one response is
+/// min(max_tokens, window / 4); for one that does it is max_tokens. The
+/// 80% arm is untouched.
+#[test]
+fn the_crossing_boundaries_with_the_response_reserve_cap() {
+    // (model, window, max_tokens, last used that does NOT cross)
+    let rows: &[(&str, u64, u32, u64, &str)] = &[
+        // 8192 - 6145 = 2047 < 2048. Before the cap: 4096 / 4097.
+        ("Qwen3-8B-Q4_K_M", 8192, 4096, 6144, "the cap: a quarter of 8192"),
+        // max_tokens is under a quarter (8192), so the 80% arm decides,
+        // as it always did: 26215 * 5 >= 32768 * 4.
+        ("Qwen3-4B-Instruct-2507-Q4_K_M", 32768, 4096, 26214, "32768/4096 unchanged"),
+        // Reasoning ids keep the full reserve at every window.
+        ("Qwen3-4B-Thinking-2507-Q4_K_M", 32768, 16384, 16384, "reasoning, 32768/16384 unchanged"),
+        ("Qwen3-4B-Thinking-2507-Q4_K_M", 8192, 4096, 4096, "reasoning, 8192/4096 unchanged"),
+        // max_tokens under a quarter of the window: the cap is not in play
+        // and the reserve arm (8192 - 1024 = 7168) sits above the 80% arm.
+        ("Qwen3-8B-Q4_K_M", 8192, 1024, 6553, "max_tokens under window / 4 unchanged"),
+        // A hosted default shape: 64000 of 1,000,000 is under a quarter.
+        ("claude-sonnet-5", 1_000_000, 64_000, 799_999, "hosted, unchanged"),
+    ];
+    for (model, window, max_tokens, last_quiet, what) in rows {
+        assert!(
+            !crossing_fires(model, *window, *max_tokens, *last_quiet),
+            "{what}: {last_quiet} of {window} must not cross"
+        );
+        assert!(
+            crossing_fires(model, *window, *max_tokens, last_quiet + 1),
+            "{what}: {} of {window} must cross",
+            last_quiet + 1
+        );
+    }
+}
+
+/// The config `init` and the README write, 8192 with max_tokens 4096, at
+/// the occupancy the dogfood folded at (the median proactive trigger in
+/// the kickoff 4 report was 4745): no summary call is made.
+#[test]
+fn a_turn_at_5000_of_8192_with_max_tokens_4096_makes_no_summary_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = || vec![rt(1, 100), rt(2, 100), rt(3, 5000), rt(4, 5000), done()];
+    let (mut session, requests) =
+        session_auto_compact_for("Qwen3-8B-Q4_K_M", dir.path(), script(), Some(8192), 4096, true);
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert!(n.is_empty(), "nothing to say at 5000 of 8192: {n:?}");
+    let reqs = requests.borrow();
+    assert_eq!(reqs.len(), 5, "the five scripted sends and no summary call");
+    assert!(reqs.iter().all(|r| !r.tools.is_empty()), "every request is a chat request");
+    drop(reqs);
+
+    // The control: a reasoning id at the same figures keeps the old
+    // trigger and folds.
+    let dir = tempfile::tempdir().unwrap();
+    let mut with_summary = script();
+    with_summary.insert(3, summary_response("S"));
+    let (mut session, requests) = session_auto_compact_for(
+        "Qwen3-4B-Thinking-2507-Q4_K_M",
+        dir.path(),
+        with_summary,
+        Some(8192),
+        4096,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert!(
+        n.iter().any(|x| x == "context: ~5000 of 8192 tokens used; compacting automatically"),
+        "{n:?}"
+    );
+    assert!(requests.borrow()[3].tools.is_empty(), "the fourth send is the summary call");
+}
+
+// ------------------------------------------------- T69 C1: the refold margin
+
+/// A crossing on the first response after a fold makes no summary call
+/// and prints no "compacting automatically" line; the fold comes after
+/// the second round trip.
+#[test]
+fn a_crossing_one_round_trip_after_a_fold_waits_for_the_second() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_auto_compact(
+        dir.path(),
+        vec![
+            rt(1, 100),
+            rt(2, 100),
+            rt(3, 800), // cross 1
+            summary_response("S1"),
+            rt(4, 800), // crossed again, one round trip since the fold
+            rt(5, 800), // two round trips since the fold
+            summary_response("S2"),
+            done(),
+        ],
+        Some(1000),
+        100,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert_eq!(
+        n.iter().filter(|x| x.ends_with("compacting automatically")).count(),
+        2,
+        "{n:?}"
+    );
+    assert_eq!(n.iter().filter(|x| x.starts_with("compacted: ")).count(), 2, "{n:?}");
+    assert!(
+        !n.iter().any(|x| x.contains("/compact frees the window")),
+        "the waiting crossing says nothing: {n:?}"
+    );
+    let reqs = requests.borrow();
+    assert_eq!(reqs.len(), 8);
+    let summary_calls: Vec<usize> = reqs
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.tools.is_empty())
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        summary_calls,
+        vec![3, 6],
+        "the send after rt 4 (index 5) is a chat request, the fold follows rt 5"
+    );
+}
+
+/// The margin does not swallow the end-of-turn report: a turn that ends
+/// while a crossing is waiting for the margin still says so, once.
+#[test]
+fn a_turn_that_ends_inside_the_margin_still_reports_the_crossing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_auto_compact(
+        dir.path(),
+        vec![
+            rt(1, 100),
+            rt(2, 100),
+            rt(3, 800),
+            summary_response("S1"),
+            msg_with_usage(
+                vec![text("done")],
+                StopReason::EndTurn,
+                serde_json::json!({"input_tokens": 800, "output_tokens": 0}),
+            ),
+        ],
+        Some(1000),
+        100,
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert_eq!(n.iter().filter(|x| x.ends_with("compacting automatically")).count(), 1, "{n:?}");
+    assert_eq!(
+        n.iter()
+            .filter(|x| *x
+                == "context: ~800 of 1000 tokens used; /compact frees the window by summarizing the conversation, or start a new session")
+            .count(),
+        1,
+        "the end-of-turn report: {n:?}"
+    );
+    assert_eq!(requests.borrow().len(), 5, "no second summary call");
+}
+
+/// A recovery fold starts the margin as well: the crossing on the retry's
+/// response waits, and the proactive fold comes one round trip later.
+#[test]
+fn a_recovery_fold_starts_the_margin_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_overflow(
+        dir.path(),
+        vec![
+            // A result large enough that folding it away frees more than a
+            // sixteenth, so the recovery is the fold alone.
+            Ok(big_file(dir.path(), "big.txt", 40)),
+            Ok(rt(2, 100)),
+            Ok(rt(3, 100)),
+            overflow_error(),
+            Ok(summary_response("S1")), // the recovery's fold
+            Ok(rt(4, 800)),             // the retry: crosses, one round trip since
+            Ok(rt(5, 800)),             // two: folds
+            Ok(summary_response("S2")),
+            Ok(done()),
+        ],
+        None,
+        0,
+        Some(1000),
+        true,
+    );
+    let n = notices(&collect_events(&mut session, "the task"));
+    assert_eq!(n.iter().filter(|x| *x == OVERFLOW_COMPACT_MARKER).count(), 1, "{n:?}");
+    assert_eq!(
+        n.iter().filter(|x| x.ends_with("compacting automatically")).count(),
+        1,
+        "one proactive fold, after the second round trip: {n:?}"
+    );
+    let reqs = requests.borrow();
+    assert_eq!(reqs.len(), 9);
+    let summary_calls: Vec<usize> = reqs
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.tools.is_empty())
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(summary_calls, vec![4, 7], "the recovery's summary, then the fold after rt 5");
+}
+
+/// The margin gates proactive folds only. A request the server refuses
+/// right after a proactive fold is recovered as before.
+#[test]
+fn a_recovery_right_after_a_proactive_fold_is_not_blocked() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, requests) = session_overflow(
+        dir.path(),
+        vec![
+            Ok(rt(1, 100)),
+            Ok(rt(2, 100)),
+            Ok(rt(3, 100)),
+            // Crosses, and leaves a result in the kept tail that a
+            // recovery can cut.
+            Ok(cat_rt(dir.path(), "big.txt", 200, 800)),
+            Ok(summary_response("S1")),
+            overflow_error(), // the first send on the folded history
+            Ok(summary_response("S2")),
+            Ok(done()),
+        ],
+        None,
+        0,
+        Some(1000),
+        true,
+    );
+    let events = collect_events(&mut session, "the task");
+    let n = notices(&events);
+    assert_eq!(n.iter().filter(|x| x.ends_with("compacting automatically")).count(), 1, "{n:?}");
+    assert!(overflow_markers(&n) >= 1, "the recovery ran: {n:?}");
+    assert!(
+        matches!(events.last(), Some(AgentEvent::TurnComplete { .. })),
+        "{:?}",
+        events.last()
+    );
+    assert_eq!(requests.borrow().len(), 8);
+}
