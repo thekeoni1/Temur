@@ -449,9 +449,10 @@ a recovery: it says so and cuts the largest tool result as well.
 That is still ONE recovery and one retry: both things happen before the
 single retry goes out.
 
-Bounded, like everything else here: at most one recovery per request,
-counted against the same three-per-turn limit as auto-compaction, and a
-retry that is rejected again propagates rather than looping. If anything
+Bounded, like everything else here: at most one recovery per request
+and three per turn, counted separately from the three automatic
+compactions, and a retry that is rejected again propagates rather than
+looping. If anything
 goes wrong inside the recovery, the error reported is the server's
 original one.
 
