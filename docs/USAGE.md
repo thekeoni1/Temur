@@ -522,12 +522,13 @@ down, or is not llama.cpp, is silent. Doctor still recommends adding
 the explicit `"context_window"` line to the config.
 
 Doctor also checks for a `max_tokens` larger than the `context_window`
-it runs against, which draws a WARN naming both numbers. That
-configuration makes the advisory's second arm (`window - used <
-max_tokens`) true from the first response of every session, so temur
-recommends `/compact` about a window that is barely touched, and
-underneath that every request reserves more completion than the server
-can hold. It is a WARN, never a FAIL: the config runs, and it is what
+it runs against, which draws a WARN naming both numbers. In that
+configuration every request reserves more completion than the server
+can hold. For a reasoning model id it also makes the advisory's second
+arm (`window - used < max_tokens`) true from the first response of
+every session, so temur recommends `/compact` about a window that is
+barely touched; for any other model that arm is capped at a quarter
+of the window. It is a WARN, never a FAIL: the config runs, and it is what
 a hand-written local config falls into when it names a window but
 keeps the default cap.
 On an anthropic profile the truth is the per-model `max_input_tokens`

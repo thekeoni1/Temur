@@ -361,10 +361,11 @@ const MAX_OVERFLOW_RECOVERIES_PER_TURN: u32 = 3;
 /// floor. Measured on 19 runs at that config (2026-11-17, kickoff 4 report,
 /// Part B): 54 of 57 proactive triggers had this test alone true, and the
 /// first occupancy figure after every one of the 68 folds was above 4096,
-/// so no fold brought the turn back under its own trigger. A model that
-/// is not reasoning does not write 4096 tokens in one reply there; the
-/// cap moves the test to 6145 at that config and changes nothing where
-/// max_tokens is at most a quarter of the window. A reasoning model keeps
+/// so no fold brought the turn back under its own trigger. Replies in
+/// those runs averaged 63 to 181 output tokens (a per-run average; the
+/// largest single reply is not in any log). The cap moves the test to
+/// 6145 at that config and changes nothing where max_tokens is at most a
+/// quarter of the window. A reasoning model keeps
 /// the full reserve, because its thinking is spent from `max_tokens`.
 ///
 /// A ruled value (operator, 2026-11-17), not a derived one.
@@ -2962,7 +2963,9 @@ fn response_reserve(model: &str, max_tokens: u32, window: u64) -> u64 {
 
 /// T69 (C1): may a proactive fold be taken now? Yes when this turn has
 /// not folded yet, or when at least [`AUTO_COMPACT_TAIL_ROUND_TRIPS`]
-/// round trips have completed since its last fold of either kind.
+/// round trips have completed since its last fold of either kind. A
+/// round trip is counted as [`round_trips`] counts it, one per model
+/// response, so a reply that drew a nudge and no tool call counts too.
 ///
 /// Without the margin a turn whose occupancy after a fold is still over
 /// the trigger folded again after ONE new round trip: the tail keeps two,

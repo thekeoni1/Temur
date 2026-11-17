@@ -398,15 +398,21 @@ fn context_check(
 /// T42 P5: `max_tokens` larger than `context_window` (T41/v0.30.1 queue
 /// item), WARN only.
 ///
-/// Two consequences, and the second is the one people miss. The context
-/// advisory's second arm is `window - used < max_tokens`, which is true
-/// by construction whenever the cap exceeds the whole window: the advisory
-/// then fires on the FIRST response of every session, at any usage, and
-/// says `/compact` about a window that is barely touched. Seen live on
-/// 2026-08-30 in the v0.30.1 smoke (step 3e), where the anthropic default
-/// `max_tokens` of 32000 rode along on an openai-compat profile that never
-/// named its own, against a 12,288-token local window. Underneath that,
-/// every request reserves more completion than the server can hold at all.
+/// Two consequences when this was written, and the second is the one
+/// people miss. The context advisory's second arm was
+/// `window - used < max_tokens`, which is true by construction whenever
+/// the cap exceeds the whole window: the advisory then fired on the FIRST
+/// response of every session, at any usage, and said `/compact` about a
+/// window that is barely touched. Seen live on 2026-08-30 in the v0.30.1
+/// smoke (step 3e), where the anthropic default `max_tokens` of 32000 rode
+/// along on an openai-compat profile that never named its own, against a
+/// 12,288-token local window. Underneath that, every request reserves
+/// more completion than the server can hold at all.
+///
+/// Since T69 (C2) the first consequence holds for a reasoning model id
+/// only: for any other id the arm reserves at most a quarter of the
+/// window. The WARN therefore states the second consequence alone, which
+/// is true for every id.
 ///
 /// Never a FAIL: it is a live-able configuration, it is exactly what a
 /// hand-written local config falls into, and doctor's exit code is for
