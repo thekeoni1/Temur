@@ -188,8 +188,11 @@ impl OpenAiCompatProvider {
             // (several calls in one message), ending the stream with this
             // error. The call it delivered is whole, so the turn goes on
             // with it. Anything short of that is the error it always was:
-            // no call, a cut call, a refusal, or any other error text.
-            if err.message.contains(PEG_NATIVE_REJECT) {
+            // no call, a cut call, a refusal, or any other error text. Not
+            // on an interrupted stream either: the user asked the turn to
+            // stop, so nothing is kept and the error is reported as it was
+            // before T69.
+            if err.message.contains(PEG_NATIVE_REJECT) && !cancel.is_set() {
                 if let Some(n) = acc.whole_calls() {
                     on_event(StreamEvent::Notice(kept_calls_notice(n)));
                     return acc.into_message(&req.model).ok_or(ProviderError::Incomplete);

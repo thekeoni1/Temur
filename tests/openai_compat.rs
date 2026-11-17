@@ -2068,6 +2068,23 @@ fn another_server_error_after_a_whole_call_is_the_unchanged_error() {
     );
 }
 
+/// An interrupt that lands while the error frame is still arriving: the
+/// calls are whole, and nothing is kept. The error is the one this race
+/// produced before T69, so the agent reports the interruption with it.
+#[test]
+fn peg_reject_on_an_interrupted_stream_keeps_nothing() {
+    let data = fixture_bytes("peg_reject_one_call");
+    let cut = find(&data, br#"{"error""#) as u64 + 20;
+    let (provider, token, _delivered, _total) = cancelling_provider("peg_reject_one_call", cut);
+    let mut events = vec![];
+    let err = provider
+        .stream(&sample_request(), &mut |e| events.push(e), &token)
+        .unwrap_err();
+    assert!(token.is_set());
+    assert_eq!(err.to_string(), PEG_ERROR_TEXT);
+    assert!(notices(&events).is_empty(), "{events:?}");
+}
+
 fn t69_cfg(dir: &std::path::Path) -> temur::agent::SessionConfig {
     temur::agent::SessionConfig {
         model: "local-test".into(),

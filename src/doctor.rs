@@ -875,8 +875,22 @@ fn classify_tool_call_probe(
     match result {
         Ok(_) if kept => ToolCallShape::Kept,
         Ok(msg) => {
-            if msg.content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. })) {
-                return ToolCallShape::Native;
+            // A call whose arguments did not parse (`input_raw` is set)
+            // was cut, most likely by the probe's own token cap. It shows
+            // the model reached for the interface and nothing more.
+            let mut cut = false;
+            for b in &msg.content {
+                match b {
+                    ContentBlock::ToolUse { input_raw: None, .. } => return ToolCallShape::Native,
+                    ContentBlock::ToolUse { .. } => cut = true,
+                    _ => {}
+                }
+            }
+            if cut {
+                return ToolCallShape::Inconclusive(
+                    "the answer ended inside a tool call, before its arguments were complete"
+                        .into(),
+                );
             }
             let text: String = msg
                 .content
@@ -2907,6 +2921,22 @@ mod tests {
         assert!(healthy, "{out}");
         assert!(
             out.contains(&format!("NOTE: tool-call probe at {base} inconclusive: ")),
+            "{out}"
+        );
+        assert!(!out.contains("answered the tool-call probe"), "{out}");
+    }
+
+    /// A call cut inside its arguments is not a PASS: nothing shows the
+    /// server would have accepted the whole answer.
+    #[test]
+    fn tool_call_probe_with_a_cut_call_is_a_note() {
+        const SSE_CUT: &str = include_str!("../tests/fixtures/openai/tool_truncated_args.sse");
+        let (healthy, out, base, _) = doctor_with_stream(Some(SSE_CUT));
+        assert!(healthy, "{out}");
+        assert!(
+            out.contains(&format!(
+                "NOTE: tool-call probe at {base} inconclusive: the answer ended inside a tool call, before its arguments were complete"
+            )),
             "{out}"
         );
         assert!(!out.contains("answered the tool-call probe"), "{out}");
