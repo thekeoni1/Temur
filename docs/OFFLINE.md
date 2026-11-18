@@ -43,6 +43,23 @@ own name (`Qwen3-4B-Thinking-2507-Q4_K_M`, say) or a reasoning model
 goes unrecognised. The native form needs nothing: it lists the path you
 gave.
 
+The 24-run measurements of 2026-11-18 described below passed two more
+flags, and the recipes above pass neither. `--cache-ram 0` turns off
+llama.cpp's prompt cache, which `server-b10438` allows 8192 MiB by
+default (`--cache-ram N`, "default: 8192", in its `--help`). With the
+default, serving an 8B model on a GPU from a Linux VM, the machine ran
+short of memory twice in our runs and the run was stopped: about 200 MB
+was left the first time, and under 500 MiB the second, on a VM with
+9,944 MiB and `--no-mmap` already set. With `--cache-ram 0` added the
+same run finished. Nothing here measures CPU serving. Those runs also
+passed `--no-mmap`, for which `server-b10438` prints this at startup:
+
+```
+DEPRECATED: --mmap and --no-mmap are deprecated. use --load-mode mmap instead
+```
+
+`scripts/serve.sh` passes neither flag.
+
 **One window** (checkout only): `scripts/serve.sh` runs the container
 form detached, so the server and temur share one terminal:
 
@@ -359,17 +376,28 @@ one unauthenticated GET, against keyless endpoints only.
 | Qwen3-1.7B (low-RAM floor) | Q4_K_M | ~1.1 GB | ~2.1 GB | yes | yes | not measured | verified 2026-08-15 (eval 7/9, 7/9) |
 | Qwen3-0.6B | Q4_K_M | ~0.4 GB | ~1.4 GB | degraded | yes | not measured | verified 2026-08-15 (eval 5/9, 5/9) |
 | Qwen2.5-Coder-1.5B-Instruct | Q4_K_M | ~0.9 GB | ~1.9 GB | intermittent | 1 of 2 runs | not measured | verified 2026-08-15 (eval 4/9, 4/9) |
-| Llama-3.2-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | unreliable | no | not measured | re-measured 2026-08-16 on v0.22.0, different binary from the rows above (eval 4/9, 3/9; was 2/9, 2/9 on 2026-08-15) |
+| Llama-3.2-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | unreliable; since 0.40.0 temur keeps the first call of a rejected message, see below | no | not measured | re-measured 2026-08-16 on v0.22.0, different binary from the rows above (eval 4/9, 3/9; was 2/9, 2/9 on 2026-08-15) |
 | Gemma-3-4B-it | Q4_K_M | ~2.3 GB | ~3.3 GB | not delivered by its template | n/a | not measured | verified 2026-08-15 (eval 0/9) |
 | Phi-4-mini-instruct | Q4_K_M | ~2.3 GB | ~3.3 GB | not delivered by its template | n/a | not measured | verified 2026-08-15 (eval 0/9) |
 | SmolLM2-1.7B-Instruct | Q4_K_M | ~1.0 GB | ~2.0 GB | not delivered by its template | n/a | not measured | verified 2026-08-15 (eval 0/9) |
-| Llama-3.1-8B-Instruct | Q4_K_M | ~4.9 GB | ~5.9 GB | emitted, but the server rejected 4 of 9 | yes | not measured | measured 2026-09-09 on head `8ea2aa3`, a different binary from every row above (eval 5/9, 5/9; identical failing set both runs) |
+| Llama-3.1-8B-Instruct | Q4_K_M | ~4.9 GB | ~5.9 GB | emitted, but the server rejected 4 of 9; since 0.40.0 temur keeps the first call of a rejected message, see below | yes | not measured | measured 2026-09-09 on head `8ea2aa3`, a different binary from every row above (eval 5/9, 5/9; identical failing set both runs) |
 | gpt-oss-20b | MXFP4 | ~12.1 GB | ~13.1 GB | yes | yes | not measured | measured 2026-09-09 on head `f7ab9df` (T57 P1), musl i686 sha256 `76c8e33e...` (eval 9/9, 9/9); scored 0/9, 0/9 on the parent binary, whose tool definitions its template could not render, see below |
 | **Qwen3-4B-Instruct-2507** (T58 re-measure) | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | 2/2, both via the nudge | measured 2026-09-09 on head `0cfc653` (T58 P2), musl i686 sha256 `596e3e43...` (eval 8/9, 9/9); the one miss is task 5 in run 1, which is the glob shape described below and not a regression |
 
 The rows that say "not delivered by its template" mean the tools never
 reached those models. Some of them score when the tools do reach them.
 See "Substitute chat template" below.
+
+A separate measurement on 0.40.0 (2026-11-18) ran a suite of eight
+longer tasks three times each against eight of these models: 24 runs
+per model at ctx 8192, with `max_tokens` 4096. It is a different suite
+from the nine-task eval, and its scores do not belong in the table.
+Gemma-3-4B-it, Phi-4-mini and SmolLM2, whose templates drop the tools,
+scored 0 of 24 each. Llama-3.1-8B and Llama-3.2-3B scored 0 of 24 each.
+Qwen2.5-Coder-1.5B scored 0 of 24 and Qwen2.5-Coder-3B 1 of 24.
+Qwen3-4B-Instruct-2507 scored 2 of 24, against 3 of 24 on v0.39.0 on
+2026-11-16. Each figure is one run of the suite, so a difference of one
+or two passes is not a result.
 
 Est. RAM uses the serve.sh warning's own arithmetic: file size plus
 128 KiB per context token of KV and compute allowance at 8192 ctx
@@ -414,7 +442,8 @@ sha256 `7b064f58...` (4,920,739,232 bytes), gpt-oss-20b sha256
 
 Llama-3.1-8B-Instruct receives the tools, and the server rejects what
 the model writes back. Its template delivers the definitions (doctor's
-tools-drop probe: prompt_tokens 36 without tools, 3563 with), and five
+tools-drop probe: prompt_tokens 36 without tools, 3563 with; 3587 with
+on 0.40.0), and five
 tasks pass, task 7 among them, so indirect tool selection works. Both
 runs scored 5/9 and failed the SAME four tasks (2 read-extract, 5
 find-needle, 6 bump-and-copy, 9 large-tail), every one of them with the
@@ -428,7 +457,25 @@ That is llama.cpp's own tool-call parser refusing the model's output.
 temur rejected nothing, and the per-task bound played no part: the
 failing tasks ran 21-38s against a 1200s bound. The measured prompt
 floor is 3667 tokens, 44% of the 8192 window with the compact profile
-already active.
+already active (3735 tokens, 45%, on 0.40.0).
+
+Since 0.40.0 temur keeps what the server did deliver. Both Llama models
+write several calls in one message; the server's parser takes the first
+and rejects the rest. When that first call is whole, temur runs it and
+the turn goes on. The calls after it are lost. `temur doctor` says so:
+
+```
+WARN: the server at http://127.0.0.1:8080/v1 rejected part of the tool-call output of "Meta-Llama-3.1-8B-Instruct-Q4_K_M" (several calls in one message): temur keeps the first call and goes on, and the calls after it are lost
+```
+
+That did not make either model pass a task. On the 24-run suite
+described under the table, Llama-3.1-8B and Llama-3.2-3B scored 0 of 24
+on 0.40.0, as both had on v0.39.0. What moved is where a run ends.
+A first call was kept 22 times on Llama-3.1-8B and 12 times on
+Llama-3.2-3B, and 7 and 11 rejects delivered no whole call and ended
+the turn as before. 17 of the 24 Llama-3.1-8B runs ended without the
+server's error, against 1 of 24 on v0.39.0, and the 24 runs took 1725
+seconds against 611.
 
 One missing JSON Schema key stops every gpt-oss-20b turn. Every task in
 both runs failed in 6-7 seconds with HTTP 500 before a token was
@@ -598,7 +645,10 @@ Llama-3.2-3B is not in the tools-dropped category; its 2/9 pair on
 and llama.cpp's tool-call grammar then rejects the model's output
 server-side with `The model produced output that does not match the
 expected peg-native format`, upstream of anything temur parses. That
-accounted for nine of its failures.
+accounted for nine of its failures. Since 0.40.0 temur keeps the first
+call of such a message when the server delivered it whole; the
+Llama-3.1-8B paragraphs above have what that changed and what it did
+not.
 
 The second cause is visible only with the session store mounted, which
 the harness now does for failed tasks. The model also emits well-formed
@@ -639,6 +689,17 @@ the bash tool call the model wrote as plain text`). The same feature
 explains its 1.5B sibling's lower score: that model writes the identical
 JSON behind a sentence of preamble, which the recovery does not accept,
 so those calls neither run nor prompt a retry.
+
+Since 0.40.0 `temur doctor` reports this habit before a session starts.
+For both Coder models it printed:
+
+```
+WARN: "Qwen2.5-Coder-3B-Instruct-Q4_K_M" at http://127.0.0.1:8080/v1 answered the tool-call probe with a call written as text, not through the tool interface; temur's text-call recovery is on
+```
+
+The recovery itself is unchanged. On the 24-run suite the two models
+passed 1 run in 48 between them on 0.40.0 and none on v0.39.0, which is
+inside the run-to-run spread.
 
 Qwen3-4B-Instruct-2507 is the primary recommendation and the default
 `temur init` writes: the only model that swept 9/9 in both runs, and
@@ -714,7 +775,8 @@ LM Studio you state the value by hand. However it gets set, temur then:
 
 - advises once per session when the conversation gets tight: at 80% of
   the window, or when the remaining room drops below `max_tokens` (for a
-  model that is not a reasoning model, below `max_tokens` or a quarter
+  model whose id does not mark it as a reasoning model, below
+  `max_tokens` or a quarter
   of the window, whichever is less; the next response may not fit),
   whichever comes first; the advisory names
   `/compact` and a new session as the remedies, and also fires at
@@ -774,6 +836,12 @@ at ggml-org/llama.cpp#27129. The probe's WARN was confirmed live on
 different server build. The fix is a chat template with tool support, or
 a model whose bundled one has it.
 
+Since 0.40.0 a session says it too. On a keyless local endpoint every
+session start sends the same two requests, and identical counts print
+one warning before the first chat request ([USAGE.md](USAGE.md) has the
+line). On 0.40.0 the three models gave the same counts (10, 4 and 31),
+and the warning appeared in all 24 runs of each.
+
 The probe carries the real definitions because a synthetic one misled
 it: on 2026-08-17 a one-tool toy schema reported PASS against a server
 that then returned HTTP 400 on every real request, since the template
@@ -791,10 +859,16 @@ It is still a WARN, never a FAIL.
 One cost: the second request makes the server prefill every tool
 definition, about 24KB on the full prompt profile. On a CPU-only local
 server that took 106 seconds the first time (measured 2026-08-18, 4814
-prompt tokens at 22.6 ms/token); doctor says so before it goes quiet. It
-is the same prefill the session's first real turn would pay, and
-llama.cpp's prompt cache makes a second run, including that first turn,
-fast.
+prompt tokens at 22.6 ms/token, a doctor run); doctor says so before it
+goes quiet. The probe is a cost of its own. Measured on 2026-11-18 on a
+GPU server with 4 slots and `--cache-ram 0`, the first real turn after
+the probe evaluated its whole prompt in all 120 runs of the five models
+whose templates render the tools, so the probe's prefill saved that turn
+nothing. The probe's own second request evaluated its whole prompt in
+some of those runs and one token in others, so a second doctor run may
+or may not be fast. With llama.cpp's default prompt cache none of this
+is measured. On that server the session-start pair took a median of
+about 0.3 to 2.4 seconds by model, 2.8 seconds at most.
 
 ## The offline demo
 

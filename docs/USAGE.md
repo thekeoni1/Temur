@@ -308,8 +308,9 @@ With a `context_window` configured, temur tracks an advisory estimate
 of context use (the last response's reported input+output tokens) and
 warns once per session when the conversation gets tight: at 80% of the
 window, or when the remaining room is smaller than `max_tokens` (for a
-model that is not a reasoning model, smaller than `max_tokens` or a
-quarter of the window, whichever is less), whichever comes first. The advisory names both remedies: `/compact`
+model whose id does not mark it as a reasoning model, smaller than
+`max_tokens` or a quarter of the window, whichever is less; "Picking and
+keeping a model" lists the id fragments), whichever comes first. The advisory names both remedies: `/compact`
 summarizes the conversation and continues in a fraction of the window;
 a new session starts clean. The same advisory also fires immediately
 at `--continue`/`--resume`/`/resume` when the restored session is
@@ -865,6 +866,49 @@ The two extra requests are capped at one generated token each, go to a
 local keyless endpoint, and are skipped entirely under `--no-network`.
 See OFFLINE.md for which models this hits.
 
+When the tools do render, doctor asks one more question of the same
+endpoint: what comes back when the model uses them. It sends one
+streamed request carrying the session's system prompt and tool
+definitions and a prompt that invites two calls ("Read a.txt and b.txt
+in this directory, then tell me what each file says."), capped at 256
+generated tokens. Nothing the model asks for is run; the answer is only
+classified. Doctor says what it is waiting for first:
+
+```
+NOTE: tool-call probe: asking "local-gguf" at http://127.0.0.1:8080/v1 for a two-step answer (up to 256 generated tokens; waits up to 300s for the server)
+```
+
+The 300 seconds bound the wait for the response to begin and, again,
+each wait between two reads of the stream. The request is sent once.
+Three answers matter:
+
+```
+PASS: "local-gguf" at http://127.0.0.1:8080/v1 answered the tool-call probe with a call through the tool interface
+```
+
+```
+WARN: "local-gguf" at http://127.0.0.1:8080/v1 answered the tool-call probe with a call written as text, not through the tool interface; temur's text-call recovery is on
+```
+
+```
+WARN: the server at http://127.0.0.1:8080/v1 rejected part of the tool-call output of "local-gguf" (several calls in one message): temur keeps the first call and goes on, and the calls after it are lost
+```
+
+The second is a model that writes its call as plain text. "Prose tool
+calls are recovered" below says what temur does with such a call, and
+the line ends `off (prose_tool_calls: false)` when that recovery is
+disabled. The third is a llama.cpp server whose parser took the first of
+several calls and rejected the rest; the paragraph on a response cut
+short after the first tool call, further down, covers it. When the
+server delivered no whole call the WARN reads `rejected the tool-call
+output of "local-gguf" and delivered no whole call: a turn that goes
+this way ends on the server's error`. An answer with no tool call, or
+one doctor cannot classify, is a NOTE beginning `tool-call probe at
+<url> inconclusive:`. The probe never FAILs. One answer is one sample: a
+model that passes here can still be rejected on another prompt. It does
+not run under `--no-network`, with a key file, or when the tools-drop
+probe did anything but PASS.
+
 A session asks the first of these questions itself. On a keyless
 local endpoint, every session start and every `/model` switch sends
 the same two requests, and identical counts draw one line before the
@@ -876,7 +920,9 @@ first chat request:
 
 Any other outcome is silent: differing counts, a server that cannot be
 reached, and one whose two answers have not arrived within 5 seconds
-of the probe's start. The session starts either way.
+of the probe's start. The session starts either way. Measured on a GPU
+llama.cpp server (4 slots, `--cache-ram 0`, 2026-11-18), the pair took a
+median of about 0.3 to 2.4 seconds by model and 2.8 seconds at most.
 
 Under the same gate, and capped the same way, doctor also measures the
 prompt floor: how much of the context window this selection spends
@@ -1095,7 +1141,9 @@ NOTE: measuring the prompt floor against the server; on a CPU-only server this i
 ```
 
 The tools-drop probe that follows announces its own pair the same way.
-Neither line appears under `--no-network`, where nothing is sent.
+Neither line appears under `--no-network`, where nothing is sent. The
+300 seconds apply to each request separately: the floor request and
+each request of the tools-drop pair get up to 300 seconds of their own.
 
 The verdict is on whichever number is in hand: PASS below 40% of the
 window, WARN at or above it, never a FAIL.
@@ -1920,6 +1968,9 @@ it with a notice:
 Ambiguous or truncated shapes are never executed; they get the
 corrective nudge instead. Set `"prose_tool_calls": false` in
 config.json to turn recovery off and restore nudge-only behavior.
+`temur doctor` reports a model that answers this way before a session
+starts: its tool-call probe WARNs that the call was written as text and
+says whether this recovery is on.
 
 A sentence of preamble before a fenced call is one of those shapes:
 `I'll create the file now.` followed by a fenced JSON object is not
@@ -2094,6 +2145,11 @@ the turn ends on the server's error as before:
 ```
 [!] provider error: api error (HTTP 200) server_error: The model produced output that does not match the expected peg-native format
 ```
+
+One limit: a response cut this way carries no usage figures. The turn
+line and the session totals in `/status` leave that request's tokens
+out, so they undercount for a session where a call was kept, and
+temur's estimate of context use is not refreshed on that round trip.
 
 ## Key isolation
 

@@ -298,10 +298,11 @@ pub const KEYLESS_LISTING_TIMEOUT_SECS: u64 = 3;
 /// seconds wall clock. The 3-second listing timeout turned that into a
 /// silent "no usable prompt_tokens" NOTE.
 ///
-/// This is not a cost the probe invents: it is exactly the prefill the
-/// session's FIRST REAL TURN would pay, for exactly the same bytes, and
-/// llama.cpp's prompt cache means paying it here warms it for that turn.
-/// A second doctor run against the same server returns quickly.
+/// The probe is a cost of its own. Measured 2026-11-18 on a server with
+/// 4 slots and `--cache-ram 0`: the session's first real turn evaluated
+/// its whole prompt after the probe in all 120 runs, and a second probe
+/// was fast in some runs and not in others. Not measured with the
+/// default prompt cache.
 pub const TOOLS_DROP_PROBE_TIMEOUT_SECS: u64 = 300;
 
 /// The ONE listing request `init` and `doctor` are allowed to make (T15):
