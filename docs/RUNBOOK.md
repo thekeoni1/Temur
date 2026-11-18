@@ -16819,3 +16819,377 @@ files. No key file was used in this soak, so the previous soak's
 key-path count was not run.
 
 Archive: `~/temur-eval-archive/v0.39.0-soak/`.
+
+## v0.40.0 ship record
+
+2026-11-18. **The T69 llama.cpp fixes, shipped at tag `v0.40.0`.** A
+MINOR release, the milestone T69: more local models work through
+llama.cpp, and temur says so in the session when one cannot. The range
+is `a42a490..8a600e6`, 27 commits: the 26 commits of the `t69-p1`
+branch, fast-forwarded onto main, and the bump. They were pushed
+together as one range. The branch itself was not pushed. The minor
+bump follows the rule ROADMAP set before phase 2: a new doctor probe
+ships (1e), so the version is 0.40.0. Cut in the v0.39.0 shape, with
+two differences:
+
+- **The cut ran on the laptop.** The desktop, where v0.39.0 was cut,
+  is down. The laptop's qemu ships `qemu-aarch64-static` and
+  `qemu-arm-static` under those names, and its leak allow file is the
+  one from earlier cuts, so neither the v0.39.0 shim nor a new allow
+  file was needed.
+- **Memory was watched.** Earlier that day the laptop had run short of
+  RAM, so every build ran with `CARGO_BUILD_JOBS=4` and a 3-second
+  `MemAvailable` sampler beside it, with a STOP below 1500 MiB. No run
+  came near it (Gates).
+
+The CHANGELOG's seven v0.40.0 items ship as written in `413171e`. In
+summary:
+
+- A request the server rejects for exceeding the context window is
+  recovered up to three times per turn on its own count, no longer
+  sharing the turn's three automatic compactions (1a).
+- Text-call recovery accepts `"function"` as the key naming the tool,
+  under the same arguments-beside rule as `"name"` and `"tool"` (1b).
+- When llama.cpp rejects a response as not matching "the expected
+  peg-native format" after one whole tool call, temur runs that call
+  and the turn goes on, with one line saying the rest was rejected.
+  Llama 3.1 and 3.2 draw this (1c).
+- `temur doctor` has a tool-call probe on keyless OpenAI-compatible
+  endpoints that reports how a two-call request came back. It PASSes
+  or WARNs and never FAILs (1e).
+- A session on a keyless OpenAI-compatible endpoint sends doctor's two
+  tools-drop requests at start and on every `/model` switch, sharing
+  one 5-second deadline, and warns once when the server drops the tool
+  definitions (1d).
+- Automatic compaction triggers later at a small window: for a model id
+  that does not look like a reasoning model, the room kept for one
+  response is the smaller of `max_tokens` and a quarter of the window,
+  so 8192 with `max_tokens` 4096 compacts from 6145 tokens used instead
+  of 4097. A turn waits two round trips after a fold before folding
+  again on its own. Existing configs change behaviour with no file edit
+  (1f).
+- Measured result, phase 2 (ROADMAP, "Phase 2 as measured"): eight
+  local models, one run each of 8 core tasks x 3, at a window of 8192
+  with `max_tokens` 4096, against the all-models dogfood row of
+  2026-11-16 on v0.39.0. Runs that ended on a context-overflow error
+  went from 3 to 0. The server refused a request for size three times
+  in the eight runs, and each was recovered. Pass counts moved by at
+  most one per model (3 to 2 on the control, 0 to 1 on
+  Qwen2.5-Coder-3B), which is inside run-to-run noise.
+
+The range (`git log --reverse a42a490..8a600e6`), 30 files changed,
+3,530 insertions and 157 deletions:
+
+| commit | subject |
+| --- | --- |
+| `86b5e9d` | T69 1b: the text-call recovery reads the tool name from "function" too |
+| `0e1ab8e` | T69 1a step 1: a test pins today's terminal overflow after three compactions |
+| `67c0320` | T69 1a step 2: the overflow recovery gets its own per-turn bound |
+| `7471055` | USAGE: the overflow recovery has its own limit of three per turn |
+| `167fbc6` | T69 1a step 2: the tests count folds performed, and the pin's own script recovers |
+| `f855269` | ROADMAP: T69 phase 0 results and the operator's rulings of 2026-11-17 |
+| `9e95585` | ROADMAP: T69 says what is built on the branch, and the repeat pair |
+| `52ef812` | T69 1a: a test that a recovery spends none of the proactive folds |
+| `713ad15` | T69 1c: keep the first call when llama.cpp rejects the rest |
+| `c52a0ba` | T69 1e: doctor asks the model for a two-step answer and says what came back |
+| `66a824b` | T69 1c, 1e: two fixes from the independent check |
+| `fb59e92` | T69 1c, 1e: the fix round planning ruled after the phase 1 report |
+| `8087b90` | ROADMAP: T69 at the branch head, the eleventh overflow log, a 1c limit |
+| `3938c8f` | T69 1d: a session says so when the server drops the tool definitions |
+| `b7f0e2a` | T69 1d: collect the probe before a compaction request too |
+| `390ce05` | T69 1d: /resume collects the probe when it may compact |
+| `126e53b` | T69 1d: the session probe has one deadline of five seconds |
+| `37fb025` | T69: a later compaction trigger at small windows, and no refold after one round trip |
+| `8565ed9` | ROADMAP: T69 with 1d as built and the compaction rulings |
+| `c05b64c` | T69: one more USAGE paragraph states the trigger as it now is |
+| `dcf7314` | ROADMAP: the kept-tail cut is ruled in scope, its rule is not |
+| `022c2fa` | ROADMAP: the kept-tail cut is measured and not taken |
+| `1825ccc` | T69: docs say what the release does and what the re-measure found |
+| `413171e` | CHANGELOG: the unreleased T69 entry |
+| `eb0405e` | ROADMAP: T69 phase 2 as measured, version 0.40.0 |
+| `d383c06` | T69: docs and comment say what the probe timing measured |
+| `8a600e6` | v0.40.0 |
+
+The phase gate ran at `d383c06`, the last branch commit, before the
+fast-forward: check.sh's two paths, 3,068 tests passed and 0 failed,
+`rc=0` (the phase report's `check-d383c06.log`). The phase report and
+its addendum are `~/laptop-t69-p2b-2026-11-18-report.md`.
+
+### Sizes
+
+Raw byte counts, read from the staged files and matched byte for byte
+against the public downloads:
+
+| asset | bytes | MB | v0.39.0 | change | under 10,000,000 |
+| --- | --- | --- | --- | --- | --- |
+| i686 | 8,385,332 | 8.39 | 8,368,620 | +16,712 | 1,614,668 |
+| x86_64 | 9,950,576 | 9.95 | 9,938,344 | +12,232 | 49,424 |
+| aarch64 | 8,043,088 | 8.04 | 8,026,568 | +16,520 | 1,956,912 |
+| armv7 | 7,771,120 | 7.77 | 7,746,360 | +24,760 | 2,228,880 |
+
+Divided by 1,000,000 and rounded to two decimals, README:37-38 reads
+**8.39 MB** on i686 (was 8.37) and **9.95 MB** on x86_64 (was 9.94).
+The i686 binary is **1,614,668 bytes** under the 10,000,000 STOP
+(16.15%), down from 1,631,380 at v0.39.0.
+
+Watch item: the x86_64 binary is **49,424 bytes** under 10,000,000. The
+STOP applies to i686, and README promises "under 10 MB" on 32-bit only,
+so nothing breaks at that line, but README's size sentence would read
+10.00 MB on x86_64 well before it. This release added 12,232 bytes
+there, a quarter of the margin. The next cut reads this margin before
+the bump.
+
+### The cut
+
+The bump `8a600e6` (parent `d383c06`, message `v0.40.0`, a body naming
+the files and that the sizes come from this cut's build, and the
+session trailer lines) has 7 files, 20 insertions and 20 deletions. Its
+edited lines:
+
+- `Cargo.toml` 3, `Cargo.lock` 1475 (the temur entry only),
+  `scripts/install.sh` 10.
+- `CHANGELOG.md` 5: `## Unreleased` becomes `## v0.40.0 - 2026-11-18`,
+  and nothing else in the file changes. The date is the push date in
+  UTC (Publication).
+- `README.md`:
+  - 37: the version and the i686 figure, 8.37 becoming 8.39.
+  - 38: the x86_64 figure, 9.94 becoming 9.95.
+  - 185: the install raw URL.
+  - 196: the install blob URL.
+  - 208: the release-download URL and asset name.
+  - 209: the SHA256SUMS URL.
+  - 211: the asset name.
+- `CLAUDE.md` 78, the scope line: `(v0.39.0, public since` becomes
+  `(v0.40.0, public since`. The cut session asked the operator the
+  v0.39.0 cut's question, (a) the version only, (b) the version and the
+  milestone number, (c) no edit, in the cut session before the bump
+  commit. The operator answered "(a) Version only"
+  (`operator-choice-claude-md.log`, written at record time; see
+  Corrections).
+- `ROADMAP.md`, four places:
+  - 1634-1635, the T69 opening: "T69 is the next milestone" becomes
+    "T69 shipped in v0.40.0", and "the launch waits for it" becomes
+    "the launch waited for it".
+  - 1639-1640: "Phase 2 is measured (2026-11-18) and its docs are
+    written on the branch. The release is not cut." becomes "Phase 2
+    is measured (2026-11-18) and its docs are written. T69 shipped in
+    v0.40.0 on 2026-11-18."
+  - 1983, the closing line: "T69 is not shipped until the release is
+    cut." becomes "T69 shipped in v0.40.0 on 2026-11-18."
+  - 2396-2398, the launch line: "goes out on v0.39.0" becomes "goes out
+    on v0.40.0", and the list ends "S6, the T68 prompt and the T69
+    llama.cpp fixes." Reflowed; the three lines are 65, 63 and 69
+    columns.
+
+`scripts/bump_version.sh 0.40.0`, one run from the clean tree at
+`d383c06` (`BUMP_EXIT=0`, `bump-*.log`), made the Cargo, install.sh and
+README pin edits, README 37's version included. The README figures, the
+CHANGELOG, CLAUDE.md and ROADMAP edits were made by hand. The figures
+came from a prestage run (`SKIP_CHECK=1`, `STAGE_ROOT` in the archive,
+`prestage-*.log`, `RC=0`) whose SHA256SUMS is byte-identical to the
+gate's (`cmp`, at record time).
+
+Sweeps before the bump commit (`sweep-*.log`):
+
+- The post-bump grep (the kickoff's `0\.39\.0` outside CHANGELOG,
+  RUNBOOK and ROADMAP) returns exactly the four `docs/OFFLINE.md`
+  lines the kickoff named (399, 474, 478, 702), each "on v0.39.0"
+  beside a measurement, which stay.
+- The size sweep, with this file's own hits left out, returned 11 lines
+  against 10 at `a42a490`. README:37-38 are at this cut's figures. The
+  OFFLINE diagram line ("~8 MB") moved from 326 to 346. The new line is
+  OFFLINE:51, "about 200 MB", which is memory in a model run, not
+  temur's size.
+- The staged bump (`scan-staged-bump-*.log`): the 5 leak patterns,
+  generic key shapes, non-ASCII, U+2014, the banned adjective and user
+  paths, all 0 over the 20 added lines and the message, each against a
+  control that fired.
+
+### Gates, and where their evidence lives
+
+Logs are in the cut archive, `~/release-logs/v0.40.0-cut-2026-11-18/`,
+by basename, each name carrying its UTC stamp. The cut report is
+`~/relay-2026-11-18-v0.40.0-cut-report.md`.
+
+`release.sh` ran once as the gate, at the committed `8a600e6` with a
+clean tree (`release-*.log`, first line: head `8a600e6`, dirty lines 0,
+`CARGO_BUILD_JOBS=4`, the command `scripts/release.sh` with neither
+`SKIP_CHECK` nor `STAGE_ROOT` set). With ANSI codes stripped, the log
+has 307 lines:
+
+- 257 `== ALL CHECKS PASSED ==`: check.sh on both paths (gnu-debug at 8,
+  musl-release at 185), with the bare busybox container steps at
+  253-256. The 48 `test result` lines sum to 3,068 passed and 0 failed.
+- 259, the one history hit: `ALLOWED (already public): 083eb334...`,
+  the T53 P1 commit message, "accepted at the v0.34.0 cut".
+- 260 `OK: leak grep clean (operator patterns + generic shapes, files +
+  history)`.
+- 262 `OK: install.sh + README match version 0.40.0 and all targets`.
+- 264-267: all four rust-std targets "up to date".
+- 283-286, the summary: "(native)" for i686 and x86_64, "(qemu)" for
+  aarch64 and armv7.
+- 288 `== RELEASE v0.40.0: 4/4 ARTIFACTS GATED ==`.
+- 301 `RC=0`.
+
+The only warning lines are podman's 38 linux/386 platform notices.
+There are no compiler warnings and no rustc crash.
+
+Memory, minimum `MemAvailable` per build from the 3-second sampler:
+prestage 4,650 MiB (37 samples), the gate 6,184 MiB (220 samples, swap
+at most 1 MiB). The phase gate at `d383c06` read 7,372 MiB.
+
+- Container smoke (`container-smoke-*.log`): the staged i686 binary
+  prints `temur 0.40.0` in the i386 container. `temur doctor
+  --no-network` in a fresh container with no config FAILs on the
+  missing config (exit 1). In a second container, `temur init` with
+  every default and then doctor read 7 pass, 0 warn, 0 fail, exit 0.
+  Offline only.
+- Installer test (`installer-*.log`): port 8765, with no listener
+  before or after; `python3 -m http.server` on 127.0.0.1 from the
+  stage; `scripts/install.sh` under `env -i` with `TEMUR_BASE_URL` into
+  a fresh HOME, once on x86_64 and once under `setarch i686` (`uname -m`
+  reads `i686`). Each printed "checksum verified.", exited 0 and
+  installed a binary that prints `temur 0.40.0`, with the sha256 of the
+  staged asset for that arch.
+- Range scan (`scan-range-bump-*.log`), over `a42a490..8a600e6`: 27
+  messages (380 lines), 3,530 added lines and the 8 new fixture files.
+  - 5 active patterns, each 0 in messages, added lines and fixtures;
+    each pattern's planted control fired.
+  - Generic key shapes 0, also over the tracked files at the head.
+  - Non-ASCII 0, U+2014 0, the banned adjective 0, user-path shapes 0,
+    each against a live control that fired.
+- The phase's independent check is in the phase report. This
+  record's own check is in the cut report.
+
+The independent gate on the same source is CI: run **44358764845** on
+`8a600e6`, the only run the push started. `release-gate`
+(134993996344) and `test` (134993997466) both succeeded on run_attempt
+1, on GitHub-hosted ubuntu-24.04 runners, between 2026-11-18T17:26:52Z
+and 18:07:04Z. The outcome is in `ci-bump-*.log`; the attempt, the
+runners, the times and the run count were read from the API
+(`api-capture-*.log`).
+
+### Tag
+
+Annotated tag `v0.40.0` at `8a600e6`, tag object
+`b7fdebeafdde4461f8bf8bbd93a39232c9051591`, created at 18:07:36Z, after
+CI's last update (18:07:05Z, `api-capture-*.log`). The message,
+`temur v0.40.0 - llama.cpp model compatibility (T69)`, is one line of
+51 bytes, ASCII, with a plain hyphen (`hold1-facts.log`).
+
+The tag was pushed by its explicit ref, `git push origin
+refs/tags/v0.40.0`, under `set -x` in a script(1) shell (`tag-*.log`).
+`git ls-remote` shows the tag object and its peel to `8a600e6`. Read
+back raw from the GitHub API with `gh api
+repos/thekeoni1/Temur/git/tags/b7fdebea...` (`tag-readback-*.log`,
+with the command in `api-capture-*.log`): tag `v0.40.0`,
+object `8a600e6`, type commit, the message above. The remote carries
+49 tags.
+
+### Publication and live verification
+
+The operator's word, "push 8a600e6", was typed in the cut session and
+logged at 17:26:45Z on 2026-11-18 (`word1-*.log`), before 00:00Z, so
+the CHANGELOG date held. No relay through planning was taken as the
+word.
+
+`git push origin main` ran under `set -x` in a script(1) shell
+(`push-main-*.log`): `a42a490..8a600e6`, a fast-forward, and `git
+ls-remote` reads `refs/heads/main` at `8a600e6`. Nothing else was
+pushed. `t69-p1` stays local.
+
+Release `https://github.com/thekeoni1/Temur/releases/tag/v0.40.0`,
+release id 450368679:
+
+- The title equals the tag message.
+- It is not a draft, not a prerelease, and is marked latest.
+- It was published at 2026-11-18T18:08:10Z, with five assets.
+- The notes are the CHANGELOG's v0.40.0 section body
+  (`release-notes-v0.40.0.md`, 40 lines, 2,584 bytes). The published
+  body read from the raw API JSON with `python3 -I` is identical.
+
+The sequence in `release-draft-*.log` and `publish-*.log`:
+
+- The draft create (`--draft --verify-tag`) exited 0.
+- The five uploads ran one per call, smallest first, each exiting 0.
+- All five sizes matched the stage.
+- Then `gh release edit --draft=false --latest`, and
+  `releases/latest` reads `v0.40.0`.
+
+| asset | sha256 |
+| --- | --- |
+| i686-unknown-linux-musl | `38ba7b97f93a5b43cf315f949832435f5425f305eeb781c87e42b54f2ca086ae` |
+| x86_64-unknown-linux-musl | `c7c02367ba24b0b1fda72068433041670d4eb9e40d20d87b9896909e8a62494e` |
+| aarch64-unknown-linux-musl | `49957b438d4334df464447968d5c2e0c1af7eb7bf4ff14dc35211c6d66ecf0a1` |
+| armv7-unknown-linux-musleabihf | `ee5d1d31d4f9e8fdb6672525043231e595bfbe2207244a6c4debcbf65c895f72` |
+| SHA256SUMS (428 bytes) | `f490cc6821d5226ea7b95b3ea34fe75e55004b8e10e3fe1c9ba22a90b884324a` |
+
+Live verification, `live-verify-*.log`:
+
+- All five assets downloaded with curl from the public URLs into a
+  new directory in the archive. The downloaded SHA256SUMS is
+  byte-identical to the staged one (`cmp`), and `sha256sum -c` passes
+  4 of 4.
+- The README:185 one-liner, verbatim, ran under `env -i` into a fresh
+  HOME, once on x86_64 and once under `setarch i686` (`uname -m` reads
+  `i686`). Each run printed "checksum verified.", exited 0 and
+  installed a binary that prints `temur 0.40.0`. The installed sha256
+  equals the published x86_64 and i686 asset respectively.
+- The README:196 blob URL and the README:185 raw URL return 200
+  (`urls-*.log`).
+
+### What this release does NOT establish
+
+Re-derived from the seven v0.40.0 CHANGELOG items and ROADMAP's phase 2
+record:
+
+- No model that failed before passes now. The overflow deaths went
+  from 3 to 0, but pass counts did not move beyond noise, and every
+  model but the control still passes 0 or 1 of 24.
+- The Llamas still lose every tool call after the first in a rejected
+  response. 1c keeps the first whole call; no task with a kept call
+  passed. A response cut this way reports no usage, so session token
+  totals undercount on those models (14 and 21 of 24 tasks short in
+  phase 2).
+- Templates that drop the tool definitions still cannot call tools.
+  1d only says so in the session; the three group B models still pass
+  0 of 24.
+- Every figure is one run per model, a day and a half after the
+  v0.39.0 row it is compared with.
+- Every T69 measurement but the dogfood's Llama-3.2-3B row ran with
+  `--cache-ram 0` and mmap off, flags that `docs/OFFLINE.md` does not
+  tell a reader to use and `scripts/serve.sh` does not pass. With the
+  default prompt cache, whether the session probe warms the first turn
+  is not measured.
+- Not measured: what doctor prints when the 256-token cap cuts a
+  response (the cap was not reached in phase 2); what the no-usage gap
+  does to the compaction check.
+- No dogfood of the PUBLISHED v0.40.0 asset has run yet, and there is
+  no desktop soak: the desktop is down.
+- ARM remains verified at build level only (qemu on this cut); no
+  hardware smoke.
+- Recorded and not built: the repeated fetch seen in the first pair's
+  one remaining death (the model fetched the same 3616-char result
+  again after each recovery), and the kept-tail cut, measured and
+  dropped under the operator's rule.
+- The launch announcement is still to go out, and the playground is
+  not refreshed to v0.40.0.
+
+### Corrections
+
+- The operator's CLAUDE.md answer was given in the cut session through
+  a question dialog and not written to a log at the time. Wrong
+  assumption: that the session transcript was enough of a record. It
+  was written to `operator-choice-claude-md.log` while this record was
+  drafted.
+- The first draft of this record cited the CI attempt, runners and
+  times to `ci-bump-*.log` and the tag read-back's source to
+  `tag-readback-*.log`; neither log holds them. Wrong assumption: that
+  a value read live during the cut was in the log beside it. The
+  independent check caught it, and the values were captured in
+  `api-capture-*.log`. Every count in this record is taken from text
+  with ANSI codes stripped.
+- `temur doctor --no-network` in a fresh container FAILs on the missing
+  config, which the kickoff's "runs there" did not anticipate. An
+  `init` with every default, then doctor, was added in a second
+  container, where doctor reads 7 pass, 0 warn, 0 fail.
