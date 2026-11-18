@@ -2,6 +2,49 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
+## Unreleased
+
+- A request the server rejects for exceeding the context window is now
+  recovered up to three times per turn on a count of its own: temur
+  compacts, or cuts the largest tool result, and retries. In v0.39.0
+  that recovery shared the turn's three automatic compactions, so a
+  turn that had already compacted three times ended on the server's
+  error.
+- Text-call recovery accepts `"function"` as the key naming the tool,
+  as in `{"function": "read", "arguments": {...}}`, under the same
+  rule as `"name"` and `"tool"`: only beside an arguments-like key.
+  The nested OpenAI form, an object under `"function"`, is still not a
+  call.
+- When a llama.cpp server rejects a response as not matching "the
+  expected peg-native format" after delivering one whole tool call,
+  temur runs that call and the turn goes on, with one line saying the
+  server rejected the rest. Llama 3.1 and 3.2 write several calls in
+  one message and draw this. The calls after the first are lost, and a
+  reject with no whole call still ends the turn. A response cut this
+  way reports no usage, so the session's token totals undercount.
+- `temur doctor` has a tool-call probe. Where the tools-drop probe
+  PASSes on a keyless OpenAI-compatible endpoint, doctor sends one
+  request that invites two tool calls, capped at 256 generated tokens,
+  and reports how the answer came back: a PASS for a call through the
+  tool interface, a WARN for a call written as text (with whether
+  text-call recovery is on), a WARN when the server rejected part or
+  all of the model's tool-call output. It never FAILs.
+- A session on a keyless OpenAI-compatible endpoint now sends doctor's
+  two tools-drop requests at start and on every `/model` switch, and
+  prints one warning before the first chat request when the server
+  drops the tool definitions. Both requests share 5 seconds; a probe
+  that has not finished by then is dropped and nothing is said.
+- Automatic compaction triggers later at a small context window. For a
+  model id that does not look like a reasoning model, the room kept for
+  one response is the smaller of `max_tokens` and a quarter of the
+  window, so a window of 8192 with `max_tokens` 4096 compacts from 6145
+  tokens used where v0.39.0 compacted from 4097. A turn also waits for
+  two round trips after a fold before it folds again on its own.
+  Existing configs change behaviour with no file edit.
+- Measured across eight local models, 24 task runs each, against
+  v0.39.0: runs that ended on a context-overflow error went from 3 to
+  0. Pass counts did not move beyond run-to-run noise.
+
 ## v0.39.0 - 2026-10-27
 
 - The default prompt no longer calls temur a coding agent for software
