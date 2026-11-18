@@ -45,14 +45,15 @@ gave.
 
 The 24-run measurements of 2026-11-18 described below passed two more
 flags, and the recipes above pass neither. `--cache-ram 0` turns off
-llama.cpp's prompt cache, which `server-b10438` allows 8192 MiB by
+llama.cpp's prompt cache, which llama.cpp b10438 allows 8192 MiB by
 default (`--cache-ram N`, "default: 8192", in its `--help`). With the
 default, serving an 8B model on a GPU from a Linux VM, the machine ran
 short of memory twice in our runs and the run was stopped: about 200 MB
 was left the first time, and under 500 MiB the second, on a VM with
 9,944 MiB and `--no-mmap` already set. With `--cache-ram 0` added the
 same run finished. Nothing here measures CPU serving. Those runs also
-passed `--no-mmap`, for which `server-b10438` prints this at startup:
+passed `--no-mmap`, for which `server-cuda-b10438` prints this at
+startup:
 
 ```
 DEPRECATED: --mmap and --no-mmap are deprecated. use --load-mode mmap instead
@@ -864,11 +865,12 @@ goes quiet. The probe is a cost of its own. Measured on 2026-11-18 on a
 GPU server with 4 slots and `--cache-ram 0`, the first real turn after
 the probe evaluated its whole prompt in all 120 runs of the five models
 whose templates render the tools, so the probe's prefill saved that turn
-nothing. The probe's own second request evaluated its whole prompt in
-some of those runs and one token in others, so a second doctor run may
-or may not be fast. With llama.cpp's default prompt cache none of this
-is measured. On that server the session-start pair took a median of
-about 0.3 to 2.4 seconds by model, 2.8 seconds at most.
+nothing. Within a session, the probe's second request evaluated its
+whole prompt in some of those runs and one token in others. A second
+doctor run is not measured. With llama.cpp's default prompt cache none
+of this is measured. On that server the time from the first probe
+request to the session's first chat request had a median of about 0.3
+to 2.4 seconds by model, 2.8 seconds at most.
 
 ## The offline demo
 

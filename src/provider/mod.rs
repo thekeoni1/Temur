@@ -300,8 +300,10 @@ pub const KEYLESS_LISTING_TIMEOUT_SECS: u64 = 3;
 ///
 /// The probe is a cost of its own. Measured 2026-11-18 on a server with
 /// 4 slots and `--cache-ram 0`: the session's first real turn evaluated
-/// its whole prompt after the probe in all 120 runs, and a second probe
-/// was fast in some runs and not in others. Not measured with the
+/// its whole prompt after the probe in all 120 runs of the five models
+/// whose templates render the tools. Within a session the probe's second
+/// request evaluated its whole prompt in some runs and one token in
+/// others. A second doctor run is not measured. Not measured with the
 /// default prompt cache.
 pub const TOOLS_DROP_PROBE_TIMEOUT_SECS: u64 = 300;
 

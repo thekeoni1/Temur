@@ -921,8 +921,9 @@ first chat request:
 Any other outcome is silent: differing counts, a server that cannot be
 reached, and one whose two answers have not arrived within 5 seconds
 of the probe's start. The session starts either way. Measured on a GPU
-llama.cpp server (4 slots, `--cache-ram 0`, 2026-11-18), the pair took a
-median of about 0.3 to 2.4 seconds by model and 2.8 seconds at most.
+llama.cpp server (4 slots, `--cache-ram 0`, 2026-11-18), the time from
+the first probe request to the session's first chat request had a median
+of about 0.3 to 2.4 seconds by model and 2.8 seconds at most.
 
 Under the same gate, and capped the same way, doctor also measures the
 prompt floor: how much of the context window this selection spends
