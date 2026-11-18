@@ -1636,7 +1636,8 @@ The operator approved it on 2026-11-16, and the launch waits for it. As
 of 2026-11-17 the fixes 1a and 1b are built on the branch `t69-p1` and
 are in no release. So are 1c (keep the first call), 1d (the session
 warning), 1e (the doctor probe) and the two compaction rules of 1f.
-Phase 2 is not built.
+Phase 2 is measured (2026-11-18) and its docs are written on the branch.
+The release is not cut.
 
 The evidence is the all-models dogfood of 2026-11-16: the v0.39.0 i686
 release asset (sha256 `b54b4f3b`) against llama.cpp `server-cuda-b10438`
@@ -1824,7 +1825,7 @@ Phase 1 fixes, in order of confidence:
   the request field (0b), the tool-prompt change (0c, 19 rejects
   against 16 in the control). Not measured and not taken: a bounded
   retry on the error, and the `--skip-chat-parsing` flag of b12429.
-  Known limit, to measure in phase 2: a response cut off this way
+  Known limit, measured in phase 2 (below): a response cut off this way
   carries no usage figures, so temur's estimate of the context in use
   is not refreshed on that round-trip, and the proactive compaction
   check works from the previous figure.
@@ -1843,8 +1844,8 @@ Phase 1 fixes, in order of confidence:
   dropped and nothing is said. An interactive start waits up to 2 s
   for it and collects the rest before the first request. Never with a
   key file, never on the Anthropic transport, never under `--mock` or
-  `--capture-sse`. Not measured yet: what the probe costs on a live
-  server. The prose-tools mode is held (see the ruling below).
+  `--capture-sse`. What the probe costs on a live server is measured in
+  phase 2 (below). The prose-tools mode is held (see the ruling below).
 - 1e. Doctor learns groups A and C: a probe that invites a two-step
   answer and reports that the server rejected the model's tool-call
   output (and whether temur kept a first call), or that the model
@@ -1913,6 +1914,73 @@ table. `docs/OFFLINE.md` gets refreshed Llama rows and any row the
 re-measure moves, and `docs/USAGE.md` any new field or message. Then
 CHANGELOG and the ship record. The version is 0.40.0 if a request
 field or a new doctor probe ships, and 0.39.1 if only 1a and 1b ship.
+A new doctor probe ships (1e), so the version is 0.40.0.
+
+Phase 2 as measured, 2026-11-18. The eight models ran once each on the
+branch build, 8 core tasks x 3, at a window of 8192 with `max_tokens`
+4096 on llama.cpp `server-cuda-b10438`. "Before" is the all-models
+dogfood row of 2026-11-16 on v0.39.0. Before and after are about a day
+and a half apart and one run each, so pass counts one or two apart are not a
+difference.
+
+| Model | Passes of 24, before | after | Overflow deaths, before | after | Doctor before | Doctor after |
+|---|---|---|---|---|---|---|
+| SmolLM2-1.7B | 0 | 0 | 0 | 0 | 10 pass, 1 warn | 10 pass, 1 warn |
+| gemma-3-4b-it | 0 | 0 | 0 | 0 | 10 pass, 1 warn | 10 pass, 1 warn |
+| Phi-4-mini | 0 | 0 | 0 | 0 | 10 pass, 1 warn | 10 pass, 1 warn |
+| Qwen2.5-Coder-1.5B | 0 | 0 | 0 | 0 | 11 pass, 0 warn | 11 pass, 1 warn |
+| Qwen2.5-Coder-3B | 0 | 1 | 0 | 0 | 11 pass, 0 warn | 11 pass, 1 warn |
+| Llama-3.2-3B | 0 | 0 | 0 | 0 | 10 pass, 1 warn | 10 pass, 2 warn |
+| Llama-3.1-8B | 0 | 0 | 1 | 0 | 10 pass, 1 warn | 10 pass, 2 warn |
+| Qwen3-4B-Instruct (control) | 3 | 2 | 2 | 0 | 11 pass, 0 warn | 12 pass, 0 warn |
+
+- Overflow deaths: 3 before, 0 after. The server refused a request for
+  size three times in the eight runs (once on Llama-3.1-8B, twice on
+  the control); each was recovered and the task went on.
+- The new doctor lines are the 1e probe's: a WARN for a call written as
+  text on both Coder models, a WARN for a partly rejected output on
+  both Llamas, a PASS on the control. On the three group B models the
+  probe does not run and the counts are unchanged.
+- 1c, both Llamas. Rejects seen, first call kept, stayed an error:
+  Llama-3.2-3B 23, 12, 11 (v0.39.0: 15, 0, 15 in the dogfood and 14, 0,
+  14 in phase 0a); Llama-3.1-8B 29, 22, 7 (v0.39.0: 22, 0, 22 and 20,
+  0, 20). No task with a kept call passed. On Llama-3.1-8B 17 of 24
+  tasks ended without the error against 1 of 24, and the run took 1725
+  s against 611.
+- The dogfood's Llama-3.2-3B row was served with llama.cpp's default
+  prompt cache and mmap and the run here with `--cache-ram 0
+  --no-mmap`, so that row's before and after differ in two server flags
+  as well as the binary; its phase 0a row has the same flags as the run
+  here. Apart from that one row, every T69 measurement (phase 0, both
+  pairs, phase 2) ran with `--cache-ram 0` and with mmap off
+  (`--no-mmap`, or `--load-mode none` on the b12429 image), flags that
+  `docs/OFFLINE.md` does not tell a reader to use and `scripts/serve.sh`
+  does not pass.
+- 1d, the session probe: it ran in all 24 tasks of all eight runs, and
+  the warning is in 24 of 24 task logs on each group B model and in
+  none elsewhere. From the first probe request to the task's first chat
+  request the median was 0.3 s to 2.4 s by model and the largest 2.8 s,
+  under the 5 s deadline.
+- Cache warming. A comment in `src/provider/mod.rs` and a sentence in
+  `docs/OFFLINE.md` said the probe's prefill warms the first real turn.
+  On this server (4 slots, `--cache-ram 0`) the first chat request of
+  every task in the five tool-rendering runs went to another slot and
+  evaluated its whole prompt, 120 of 120. Both texts now say what was
+  measured. With the default cache it is not measured.
+- The no-usage limit of 1c, as measured: on the two Llamas the tokens
+  temur totals for a task fall short of the prompt tokens the server
+  logged in 14 and 21 of 24 tasks (3 more in each have no total at
+  all), and match in all 24 tasks of the six other runs. Part of the
+  gap is the request that ends on the reject error, which v0.39.0 also
+  loses; the two sources are not separated.
+- The 256-token cap of the doctor probe was not reached: the reject
+  arrived at 72 and 73 generated tokens on the two Llamas.
+- Not measured: what doctor prints when the cap cuts a response; what
+  the no-usage gap does to the compaction check; the dogfood's first
+  requests, since it kept no whole server log; a server with a prompt
+  cache.
+
+T69 is not shipped until the release is cut.
 
 Ruled by the operator on 2026-11-17: group B gets the session warning.
 The prose-tools mode is held, because 0e scored 0/24 with and without
