@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased
+## v0.40.0 - 2026-11-18
 
 - A request the server rejects for exceeding the context window is now
   recovered up to three times per turn on a count of its own: temur

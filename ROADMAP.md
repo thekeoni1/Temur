@@ -1631,13 +1631,13 @@ one-liner gate stays deferred to the visibility flip (RUNBOOK).
 
 ### Queued from the all-models dogfood 2026-11-16 (T69 plan, 2026-11-16)
 
-T69 is the next milestone: more local models work through llama.cpp.
-The operator approved it on 2026-11-16, and the launch waits for it. As
+T69 shipped in v0.40.0: more local models work through llama.cpp.
+The operator approved it on 2026-11-16, and the launch waited for it. As
 of 2026-11-17 the fixes 1a and 1b are built on the branch `t69-p1` and
 are in no release. So are 1c (keep the first call), 1d (the session
 warning), 1e (the doctor probe) and the two compaction rules of 1f.
-Phase 2 is measured (2026-11-18) and its docs are written on the branch.
-The release is not cut.
+Phase 2 is measured (2026-11-18) and its docs are written. T69 shipped
+in v0.40.0 on 2026-11-18.
 
 The evidence is the all-models dogfood of 2026-11-16: the v0.39.0 i686
 release asset (sha256 `b54b4f3b`) against llama.cpp `server-cuda-b10438`
@@ -1980,7 +1980,7 @@ difference.
   requests, since it kept no whole server log; a server with a prompt
   cache.
 
-T69 is not shipped until the release is cut.
+T69 shipped in v0.40.0 on 2026-11-18.
 
 Ruled by the operator on 2026-11-17: group B gets the session warning.
 The prose-tools mode is held, because 0e scored 0/24 with and without
@@ -2393,9 +2393,9 @@ call ending silently (the T61 nudge fires only on a claim of done work);
 and `temur init`'s existing-config refusal not naming the model the
 config points at (the same discoverability shape as D17).
 
-The launch announcement goes out on v0.39.0, the patches carrying
-F14, F24, F27, F28, F29, F30 and S6 and the T68 prompt. The playground
-is refreshed to the announced version
+The launch announcement goes out on v0.40.0, the patches carrying
+F14, F24, F27, F28, F29, F30 and S6, the T68 prompt and the T69
+llama.cpp fixes. The playground is refreshed to the announced version
 before the announcement and names its own version and sha, and
 README 19-24 has been version-agnostic since T65 P5.
 
