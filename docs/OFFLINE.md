@@ -379,7 +379,7 @@ one unauthenticated GET, against keyless endpoints only.
 
 | Model | Quant | File size | Est. RAM at 8k ctx | Tool calls | Indirect selection | D22 file denial | Status |
 |---|---|---|---|---|---|---|---|
-| **Qwen3.5-4B** (primary) | Q4_K_M | ~2.7 GB | 3,431 MiB GPU memory, measured | yes | yes | 2/2 | measured 2026-11-22 on v0.40.0, server started with `--reasoning off`, CUDA build of `server-b10438` with GPU offload, where every row below ran on CPU (eval 9/9, 9/9) |
+| **Qwen3.5-4B** (primary) | Q4_K_M | ~2.7 GB | 3,431 MiB GPU memory, measured | yes | yes | 2/2 | measured 2026-11-22 on v0.40.0, server started with `--reasoning off`, CUDA build of `server-b10438` with GPU offload, the older rows record their own conditions (eval 9/9, 9/9) |
 | Qwen3-4B-Instruct-2507 (previous primary) | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | not measured | verified 2026-08-15 (eval 9/9, 9/9) |
 | Qwen3-4B-Thinking-2507 | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | not measured | verified 2026-08-15 (eval 7/9, 9/9, 9/9) |
 | Qwen2.5-Coder-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | via prose recovery | yes | not measured | verified 2026-08-15 (eval 6/9, 9/9, 7/9) |

@@ -132,7 +132,7 @@ fixed agent tasks, each scored only by host-verified filesystem
 assertions, through the compact prompt profile with an 8192-token
 context in a `--network none` pod. Two recorded runs of the same
 nine tasks: the previous default, Qwen3-4B-Instruct-2507 Q4_K_M
-(llama.cpp `server-b10068`, CPU), and the current default,
+(the non-CUDA llama.cpp `server-b10068`), and the current default,
 Qwen3.5-4B Q4_K_M (the CUDA build of llama.cpp `server-b10438` with
 GPU offload, started with `--reasoning off`, measured 2026-11-22 on
 the v0.40.0 binary):

@@ -17213,8 +17213,8 @@ Model file: `Qwen3.5-4B-Q4_K_M.gguf` from `unsloth/Qwen3.5-4B-GGUF`,
 All on the published v0.40.0 i686 musl binary, sha256 prefix
 `38ba7b97f93a5b43`, llama.cpp `server-cuda-b10438` with GPU offload
 and `--reasoning off`, ctx 8192. The old default's published eval rows
-ran on CPU (`server-b10438` and `server-b10068`), so the two are not
-the same conditions.
+ran on the non-CUDA server builds (`server-b10438` and `server-b10068`),
+so the two are not the same conditions.
 
 - Nine-task eval, `scripts/weak_model_eval.sh` with the T32 P3 row's
   settings (compact profile, `EVAL_MAX_TOKENS` 3072, `--network none`
@@ -17228,9 +17228,10 @@ the same conditions.
   later local branch whose changes touch no read or document parser.
   Both runs took about 10 minutes together. The old default's rows:
   9/9 and 9/9 on 2026-08-15 (T32 P3).
-- An unpublished 8-task suite of short tasks, 3 runs each: 22 of 24. The old default scored 24 and 24 of 24 on it on
-  2026-11-20.
-- An unpublished 8-task suite, 3 runs each: 21 and 21 of 24.
+- An unpublished suite of 8 short tasks, 3 runs each: 22 of 24. The
+  old default scored 24 and 24 on it on 2026-11-20.
+- A harder unpublished 8-task suite, 3 runs each: 21 and 21 of 24. The
+  old default spans 10 to 14 of 24 over nine runs on it.
 - Reasoning text: none in any of the 24 short-suite runs or the 26 eval
   transcripts, and no server log line naming thinking or reasoning.
 - GPU memory after the model loaded: 3,431 MiB.
