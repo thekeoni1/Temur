@@ -17193,3 +17193,58 @@ record:
   config, which the kickoff's "runs there" did not anticipate. An
   `init` with every default, then doctor, was added in a second
   container, where doctor reads 7 pass, 0 warn, 0 fail.
+
+## Default model change to Qwen3.5-4B (recorded 2026-11-22)
+
+2026-11-22. **The local default moves from Qwen3-4B-Instruct-2507 to
+Qwen3.5-4B Q4_K_M, served with reasoning off.** Not a release: the
+change sits on a local branch until a cut ships it. `temur init`'s
+local template now offers `qwen3.5-4b`, its offline shortlist leads
+with Qwen3.5-4B, and `scripts/serve.sh` passes `--reasoning off` by
+default through a new `REASONING` knob (`off`, `on`, `server`). The
+hosted defaults and temur's own thinking default do not change.
+
+Model file: `Qwen3.5-4B-Q4_K_M.gguf` from `unsloth/Qwen3.5-4B-GGUF`,
+2,740,937,888 bytes, sha256
+`00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4`.
+
+### Measurements, before the source change
+
+All on the published v0.40.0 i686 musl binary, sha256 prefix
+`38ba7b97f93a5b43`, llama.cpp `server-cuda-b10438` with GPU offload
+and `--reasoning off`, ctx 8192. The old default's published eval rows
+ran on CPU (`server-b10438` and `server-b10068`), so the two are not
+the same conditions.
+
+- Nine-task eval, `scripts/weak_model_eval.sh` with the T32 P3 row's
+  settings (compact profile, `EVAL_MAX_TOKENS` 3072, `--network none`
+  pod), `EVAL_RUNS=2`: **9/9 and 9/9**, no failing task. Task 10
+  (resume-feedback) PASS both runs; task 11 (memo-docx) PASS both;
+  task 12 (summary-pdf) FAIL both, no `summary.pdf` written; task 13
+  (pdf-section) FAIL both, the section never quoted. The server
+  container was given the GPU device and driver libraries, which the
+  committed script does not do; nothing else in the script changed.
+  Tasks 10 to 13 were judged by a tools test binary built from a
+  later local branch whose changes touch no read or document parser.
+  Both runs took about 10 minutes together. The old default's rows:
+  9/9 and 9/9 on 2026-08-15 (T32 P3).
+- An unpublished 8-task suite of short tasks, 3 runs each: 22 of 24. The old default scored 24 and 24 of 24 on it on
+  2026-11-20.
+- An unpublished 8-task suite, 3 runs each: 21 and 21 of 24.
+- Reasoning text: none in any of the 24 short-suite runs or the 26 eval
+  transcripts, and no server log line naming thinking or reasoning.
+- GPU memory after the model loaded: 3,431 MiB.
+
+`config::looks_like_reasoning_model` returns false for both
+`qwen3.5-4b` and `Qwen3.5-4B-Q4_K_M.gguf`, so `temur init` writes
+`max_tokens` 4096 for it; the server, not temur, turns its thinking off.
+
+`temur doctor` gains no reasoning check: the server's `/props` carries
+no field that says whether reasoning is on. Across four saved `/props`
+reads (Granite 4.2 8B with thinking on and with it off, Qwen3.5-4B off
+by the kwarg and off by the flag), the only field that differs is the
+random `media_marker`; `reasoning_format` is `none` and
+`reasoning_in_content` false in all four, and `chat_template_caps`
+match per model.
+
+Logs: `default-model-p8-2026-11-22`.

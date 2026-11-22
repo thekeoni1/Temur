@@ -43,6 +43,11 @@ own name (`Qwen3-4B-Thinking-2507-Q4_K_M`, say) or a reasoning model
 goes unrecognised. The native form needs nothing: it lists the path you
 gave.
 
+Qwen3.5-4B, the default model, thinks unless the server is started with
+reasoning off. Add `--reasoning off` to either recipe above when you
+serve it. `scripts/serve.sh` does this by default (its `REASONING`
+knob, below).
+
 The 24-run measurements of 2026-11-18 described below passed two more
 flags, and the recipes above pass neither. `--cache-ram 0` turns off
 llama.cpp's prompt cache, which llama.cpp b10438 allows 8192 MiB by
@@ -66,7 +71,7 @@ form detached, so the server and temur share one terminal:
 
 ```sh
 scripts/serve.sh start           # lone .gguf in MODELS_DIR auto-selected
-scripts/serve.sh start qwen3-4b  # pick by name from MODELS_DIR
+scripts/serve.sh start qwen3.5-4b  # pick by name from MODELS_DIR
 scripts/serve.sh status          # health + summary (shows the mounted model)
 scripts/serve.sh stop            # idempotent teardown
 ```
@@ -99,7 +104,10 @@ stay explicit),
 `podman pull` command and stops, nothing is pulled for you), `CTX`,
 `PORT`/`BIND` (published host side only; the container-internal port is
 always 8080, and a non-default `PORT` prints the `base_url` to set),
-`CONTAINER_NAME` (default `temur-llama`), `MEMINFO` (the meminfo file
+`CONTAINER_NAME` (default `temur-llama`), `REASONING` (`off`, the
+default, passes `--reasoning off`; `on` passes `--reasoning on`; `server`
+passes neither and leaves the model's own default; any other value
+fails before the server starts), `MEMINFO` (the meminfo file
 the RAM warning reads; default `/proc/meminfo`), `CHAT_TEMPLATE_FILE`
 (serve a `.jinja` chat template INSTEAD of the model's bundled one).
 
@@ -205,7 +213,7 @@ header:
 {
   "provider": "openai-compat",
   "max_tokens": 4096,
-  "openai_compat": { "model": "qwen3-4b", "context_window": 8192 }
+  "openai_compat": { "model": "qwen3.5-4b", "context_window": 8192 }
 }
 ```
 
@@ -217,7 +225,7 @@ header:
   "max_tokens": 4096,
   "openai_compat": {
     "base_url": "http://192.168.1.10:8080/v1",
-    "model": "qwen3-4b",
+    "model": "qwen3.5-4b",
     "context_window": 8192
   }
 }
@@ -371,7 +379,8 @@ one unauthenticated GET, against keyless endpoints only.
 
 | Model | Quant | File size | Est. RAM at 8k ctx | Tool calls | Indirect selection | D22 file denial | Status |
 |---|---|---|---|---|---|---|---|
-| **Qwen3-4B-Instruct-2507** (primary) | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | not measured | verified 2026-08-15 (eval 9/9, 9/9) |
+| **Qwen3.5-4B** (primary) | Q4_K_M | ~2.7 GB | 3,431 MiB GPU memory, measured | yes | yes | 2/2 | measured 2026-11-22 on v0.40.0, server started with `--reasoning off`, CUDA build of `server-b10438` with GPU offload, where every row below ran on CPU (eval 9/9, 9/9) |
+| Qwen3-4B-Instruct-2507 (previous primary) | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | not measured | verified 2026-08-15 (eval 9/9, 9/9) |
 | Qwen3-4B-Thinking-2507 | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | not measured | verified 2026-08-15 (eval 7/9, 9/9, 9/9) |
 | Qwen2.5-Coder-3B-Instruct | Q4_K_M | ~1.9 GB | ~2.9 GB | via prose recovery | yes | not measured | verified 2026-08-15 (eval 6/9, 9/9, 7/9) |
 | Qwen3-1.7B (low-RAM floor) | Q4_K_M | ~1.1 GB | ~2.1 GB | yes | yes | not measured | verified 2026-08-15 (eval 7/9, 7/9) |
@@ -383,7 +392,7 @@ one unauthenticated GET, against keyless endpoints only.
 | SmolLM2-1.7B-Instruct | Q4_K_M | ~1.0 GB | ~2.0 GB | not delivered by its template | n/a | not measured | verified 2026-08-15 (eval 0/9) |
 | Llama-3.1-8B-Instruct | Q4_K_M | ~4.9 GB | ~5.9 GB | emitted, but the server rejected 4 of 9; since 0.40.0 temur keeps the first call of a rejected message, see below | yes | not measured | measured 2026-09-09 on head `8ea2aa3`, a different binary from every row above (eval 5/9, 5/9; identical failing set both runs) |
 | gpt-oss-20b | MXFP4 | ~12.1 GB | ~13.1 GB | yes | yes | not measured | measured 2026-09-09 on head `f7ab9df` (T57 P1), musl i686 sha256 `76c8e33e...` (eval 9/9, 9/9); scored 0/9, 0/9 on the parent binary, whose tool definitions its template could not render, see below |
-| **Qwen3-4B-Instruct-2507** (T58 re-measure) | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | 2/2, both via the nudge | measured 2026-09-09 on head `0cfc653` (T58 P2), musl i686 sha256 `596e3e43...` (eval 8/9, 9/9); the one miss is task 5 in run 1, which is the glob shape described below and not a regression |
+| Qwen3-4B-Instruct-2507 (T58 re-measure) | Q4_K_M | ~2.4 GB | ~3.4 GB | yes | yes | 2/2, both via the nudge | measured 2026-09-09 on head `0cfc653` (T58 P2), musl i686 sha256 `596e3e43...` (eval 8/9, 9/9); the one miss is task 5 in run 1, which is the glob shape described below and not a regression |
 
 The rows that say "not delivered by its template" mean the tools never
 reached those models. Some of them score when the tools do reach them.
@@ -702,14 +711,24 @@ The recovery itself is unchanged. On the 24-run suite the two models
 passed 1 run in 48 between them on 0.40.0 and none on v0.39.0, which is
 inside the run-to-run spread.
 
-Qwen3-4B-Instruct-2507 is the primary recommendation and the default
-`temur init` writes: the only model that swept 9/9 in both runs, and
-several times faster per task than the 1.7B. Qwen3-4B-Thinking-2507
-reaches the same 9/9 and is the same size, but took roughly twelve times
-as long over the nine tasks; prefer the Instruct variant unless a task
-needs the thinking budget. Qwen3-1.7B is the low-RAM choice, a
-reasonable floor at 1.1 GB, 1.3 GB less resident than the 4B; take it
-when the serving machine cannot hold the 4B. Qwen2.5-Coder-3B reaches
+Qwen3.5-4B is the primary recommendation and the default `temur init`
+writes. Serve it with reasoning off, as `scripts/serve.sh` does by
+default. On 2026-11-22 it scored 9/9 in both runs of the nine-task eval
+on the v0.40.0 binary, with GPU offload, and no transcript held
+reasoning text. On an unpublished 8-task suite, 3 runs each, it passed
+21 and 21 of 24. temur does not take `qwen3.5-4b` for a reasoning model
+by its id, so `temur init` writes `max_tokens` 4096 for it; with
+reasoning on, its thinking would count against that budget.
+
+Qwen3-4B-Instruct-2507 was the primary recommendation and the default
+before Qwen3.5-4B: the only model that swept 9/9 in both runs of
+2026-08-15, and several times faster per task than the 1.7B.
+Qwen3-4B-Thinking-2507 reaches the same 9/9 and is the same size as the
+Instruct variant, but took roughly twelve times as long over the nine
+tasks; prefer the Instruct variant unless a task needs the thinking
+budget. Qwen3-1.7B is the low-RAM choice, a reasonable floor at 1.1 GB,
+1.3 GB less resident than Qwen3-4B-Instruct-2507; take it when the
+serving machine cannot hold a 4B. Qwen2.5-Coder-3B reaches
 9/9 on a good run but is the least consistent row; its 1.5B sibling
 measures below the 1.7B and is no longer recommended at any size.
 Qwen3-0.6B fits almost anywhere and degrades as advertised: it passes
@@ -738,7 +757,10 @@ Download source: every Q4_K_M quant measured above came from the
 community `unsloth/…-GGUF` repositories on Hugging Face (e.g.
 `unsloth/Qwen3-1.7B-GGUF`, `unsloth/gemma-3-4b-it-GGUF`); the official
 `Qwen/Qwen3-1.7B-GGUF` repo publishes Q8_0 only (1.83 GB), a fine
-larger-footprint alternative.
+larger-footprint alternative. The default model is
+`Qwen3.5-4B-Q4_K_M.gguf` from `unsloth/Qwen3.5-4B-GGUF`: 2,740,937,888
+bytes, sha256
+`00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4`.
 
 Larger is better whenever the serving machine allows it; anything in the
 7B+ class changes the experience qualitatively.

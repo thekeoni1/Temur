@@ -2,6 +2,18 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
+## Unreleased
+
+- The default local model is Qwen3.5-4B (Q4_K_M), replacing
+  Qwen3-4B-Instruct-2507. `temur init`'s local template offers
+  `qwen3.5-4b`, and its offline shortlist leads with it. On the
+  nine-task eval it scored 9/9 in two runs, served with reasoning off.
+- `scripts/serve.sh` starts the server with `--reasoning off` by
+  default, because Qwen3.5-4B thinks otherwise. The new `REASONING`
+  knob takes `off` (the default), `on`, or `server` (pass neither and
+  keep the model's own default); any other value fails before the
+  server starts. The "server starting" line shows the value.
+
 ## v0.40.0 - 2026-11-18
 
 - A request the server rejects for exceeding the context window is now

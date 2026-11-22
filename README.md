@@ -79,7 +79,7 @@ it, edit it, run it to confirm.
 ![temur finding, reading, editing, and running a file](docs/demo/edit-and-run.gif)
 
 Both captured live against a keyless local llama.cpp server
-(Qwen3-4B-Instruct-2507, the default local model) on the shipped
+(Qwen3-4B-Instruct-2507, the default local model at the time) on the shipped
 0.33.0 binary. Nothing is spliced or re-typed; pauses longer than
 2 seconds are shortened in the rendered GIFs.
 
@@ -129,25 +129,32 @@ attempt.
 
 **Weak-model floor.** `scripts/weak_model_eval.sh` runs nine
 fixed agent tasks, each scored only by host-verified filesystem
-assertions. The recorded run, with Qwen3-4B-Instruct-2507 Q4_K_M
-through the compact prompt profile (llama.cpp `server-b10068`,
-8192-token context, in a `--network none` pod):
+assertions, through the compact prompt profile with an 8192-token
+context in a `--network none` pod. Two recorded runs of the same
+nine tasks: the previous default, Qwen3-4B-Instruct-2507 Q4_K_M
+(llama.cpp `server-b10068`, CPU), and the current default,
+Qwen3.5-4B Q4_K_M (the CUDA build of llama.cpp `server-b10438` with
+GPU offload, started with `--reasoning off`, measured 2026-11-22 on
+the v0.40.0 binary):
 
-| Task | Result |
-|---|---|
-| write a file | pass |
-| read and extract | pass |
-| targeted edit | pass |
-| bash | pass |
-| multi-file search | pass |
-| edit-then-bash chain | pass |
-| indirect delete | pass |
-| gzip binary nudge | pass |
-| large-output tail | pass |
+| Task | Qwen3-4B-Instruct-2507 (previous default) | Qwen3.5-4B (default), run 1 | run 2 |
+|---|---|---|---|
+| write a file | pass | pass | pass |
+| read and extract | pass | pass | pass |
+| targeted edit | pass | pass | pass |
+| bash | pass | pass | pass |
+| multi-file search | pass | pass | pass |
+| edit-then-bash chain | pass | pass | pass |
+| indirect delete | pass | pass | pass |
+| gzip binary nudge | pass | pass | pass |
+| large-output tail | pass | pass | pass |
+| Score | **9/9** | **9/9** | **9/9** |
 
-Score: **9/9**. The transcript is in
-[docs/RUNBOOK.md](docs/RUNBOOK.md), record "T19 acceptance". The
-table is that run, kept as a record and not re-measured per release.
+The previous default's transcript is in
+[docs/RUNBOOK.md](docs/RUNBOOK.md), record "T19 acceptance"; the
+current default's runs are in the record "Default model change to
+Qwen3.5-4B". The table is those runs, kept as a record and not
+re-measured per release.
 The current per-release matrix, every model tested and dated to the
 pass that produced it, is in [docs/OFFLINE.md](docs/OFFLINE.md).
 
@@ -284,7 +291,7 @@ local llama.cpp server (`base_url` defaults to
 {
   "provider": "openai-compat",
   "max_tokens": 4096,
-  "openai_compat": { "model": "qwen3-4b", "context_window": 8192 }
+  "openai_compat": { "model": "qwen3.5-4b", "context_window": 8192 }
 }
 ```
 
