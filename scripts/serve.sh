@@ -36,6 +36,10 @@
 #         MODEL_ALIAS  the model id the server lists (default: the
 #                      selected .gguf's basename without .gguf); temur init
 #                      and doctor recognise a reasoning model by it
+#         REASONING    off (default): pass "--reasoning off", so a model that
+#                      thinks by default (Qwen3.5-4B, the init default)
+#                      answers without reasoning text; on: pass "--reasoning
+#                      on"; server: pass neither, the model's own default
 #         MEMINFO      meminfo file read by the RAM fit warning (default
 #                      /proc/meminfo; a knob so the check is testable)
 #         CHAT_TEMPLATE_FILE  path to a .jinja chat template to serve the
@@ -55,6 +59,8 @@ MODELS_DIR="${MODELS_DIR:-$HOME/models}"
 # offline_demo.sh; update deliberately, never track latest.
 LLAMA_IMAGE="${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b10438}"
 CTX="${CTX:-8192}"
+# Thinking on the server side: off by default (see the header).
+REASONING="${REASONING:-off}"
 PORT="${PORT:-8080}"
 BIND="${BIND:-127.0.0.1}"
 # CONTAINER_NAME, not NAME: WSL exports NAME=<hostname> into login shells,
@@ -192,6 +198,11 @@ start_cmd() { # $1 (optional) = model name resolved via select_model
         model_requested=yes
     fi
     echo "==== serve: preflight ===="
+    case "$REASONING" in
+        off|on) REASONING_ARG="--reasoning $REASONING" ;;
+        server) REASONING_ARG="" ;;
+        *) echo "FAIL: REASONING must be off, on or server, not: $REASONING"; exit 1 ;;
+    esac
     command -v podman >/dev/null 2>&1 || { echo "FAIL: podman not found"; exit 1; }
     # NEVER auto-pull (offline_demo.sh precedent): missing image => print
     # the exact command and stop.
@@ -303,11 +314,11 @@ start_cmd() { # $1 (optional) = model name resolved via select_model
         TMPL_MOUNT="-v $CHAT_TEMPLATE_FILE:$TMPL_DEST:ro"
         TMPL_ARG="--chat-template-file $TMPL_DEST"
     fi
-    # shellcheck disable=SC2086  # $TMPL_* are deliberately word-split
+    # shellcheck disable=SC2086  # $TMPL_* and $REASONING_ARG are deliberately word-split
     podman run -d --name "$CONTAINER_NAME" -p "$BIND:$PORT:8080" \
         -v "$MODEL_GGUF":/model.gguf:ro $TMPL_MOUNT "$LLAMA_IMAGE" \
-        -m /model.gguf -a "$MODEL_ALIAS" -c "$CTX" --jinja $TMPL_ARG --host 0.0.0.0 --port 8080 >/dev/null
-    echo "server starting (ctx $CTX, --jinja${CHAT_TEMPLATE_FILE:+, template $CHAT_TEMPLATE_FILE}, alias $MODEL_ALIAS); waiting on /health"
+        -m /model.gguf -a "$MODEL_ALIAS" -c "$CTX" --jinja $TMPL_ARG $REASONING_ARG --host 0.0.0.0 --port 8080 >/dev/null
+    echo "server starting (ctx $CTX, --jinja${CHAT_TEMPLATE_FILE:+, template $CHAT_TEMPLATE_FILE}, reasoning $REASONING, alias $MODEL_ALIAS); waiting on /health"
 
     # ~60s budget for model load, probed from the HOST through the
     # published port. On timeout, fail closed: never leave a dead

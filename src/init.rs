@@ -60,7 +60,7 @@ const TEMPLATES: [Template; 5] = [
         number: "1",
         name: "local",
         describe: "a llama.cpp / Ollama / LM Studio server you run",
-        default_model: "qwen3-4b",
+        default_model: "qwen3.5-4b",
         key_slug: None,
     },
     Template {
@@ -240,7 +240,7 @@ const MODEL_LIST_CAP: usize = 20;
 /// is small", and the second-highest scorer answers neither.
 const MODEL_SHORTLIST: &[&str] = &[
     "Known-good small models:",
-    "  Qwen3-4B-Instruct-2507 Q4_K_M (~3.4 GB RAM at 8k context)",
+    "  Qwen3.5-4B Q4_K_M (~3.4 GB GPU memory at 8k context; serve it with reasoning off)",
     "  Qwen3-1.7B Q4_K_M (~2.1 GB RAM; the low-RAM choice)",
     "Larger is better when RAM allows; 7B+ is qualitatively different.",
     "More in docs/OFFLINE.md, \"Recommended small models\".",
@@ -1293,13 +1293,13 @@ mod tests {
     #[test]
     fn local_render_default_base_url_is_byte_identical_to_the_readme_recipe() {
         let t = &TEMPLATES[0]; // local
-        let expect = "{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": { \"model\": \"qwen3-4b\", \"context_window\": 8192 }\n}\n";
+        let expect = "{\n  \"provider\": \"openai-compat\",\n  \"max_tokens\": 4096,\n  \"openai_compat\": { \"model\": \"qwen3.5-4b\", \"context_window\": 8192 }\n}\n";
         // Both the no-answer path and an answered default render the recipe.
-        assert_eq!(render_config(t, "qwen3-4b", None, None, None), expect);
+        assert_eq!(render_config(t, "qwen3.5-4b", None, None, None), expect);
         assert_eq!(
             render_config(
                 t,
-                "qwen3-4b",
+                "qwen3.5-4b",
                 None,
                 Some(crate::config::DEFAULT_OPENAI_COMPAT_BASE_URL),
                 None
@@ -1307,7 +1307,7 @@ mod tests {
             expect
         );
         // A detected n_ctx equal to the baked value renders the same bytes.
-        assert_eq!(render_config(t, "qwen3-4b", None, None, Some(8192)), expect);
+        assert_eq!(render_config(t, "qwen3.5-4b", None, None, Some(8192)), expect);
     }
 
     #[test]
@@ -1389,10 +1389,10 @@ mod tests {
     #[test]
     fn picker_default_is_template_default_when_listed_else_first() {
         // Template default present in the listing: empty answer picks it.
-        let list = |_: &str| Ok(ids(&["other", "qwen3-4b"]));
+        let list = |_: &str| Ok(ids(&["other", "qwen3.5-4b"]));
         let (cfg, out) = run_wizard("\n\n\n", &list).unwrap();
-        assert!(cfg.contains("\"model\": \"qwen3-4b\""), "{cfg}");
-        assert!(out.contains("[qwen3-4b]"), "default shown: {out}");
+        assert!(cfg.contains("\"model\": \"qwen3.5-4b\""), "{cfg}");
+        assert!(out.contains("[qwen3.5-4b]"), "default shown: {out}");
         // Absent: the first listed id becomes the default.
         let list = |_: &str| Ok(ids(&["first-served", "second"]));
         let (cfg, out) = run_wizard("\n\n\n", &list).unwrap();
@@ -1427,7 +1427,7 @@ mod tests {
         assert!(out.contains("could not list models from"), "{out}");
         assert!(out.contains("connection refused"), "{out}");
         assert!(out.contains("Model id"), "free-text question asked: {out}");
-        assert!(cfg.contains("\"model\": \"qwen3-4b\""), "{cfg}");
+        assert!(cfg.contains("\"model\": \"qwen3.5-4b\""), "{cfg}");
 
         let list = |_: &str| Ok(Vec::<String>::new());
         let (_cfg, out) = run_wizard("\n\ncustom\n", &list).unwrap();
