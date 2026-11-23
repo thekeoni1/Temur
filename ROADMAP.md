@@ -1676,7 +1676,7 @@ rules, temperature and the harness fixes held on the branch
    old default.
 
 Not in T70: any change to the hosted default or to thinking's default
-in temur's own config; the launch, which the operator has shelved.
+in temur's own config.
 
 ### Queued from the all-models dogfood 2026-11-16 (T69 plan, 2026-11-16)
 
