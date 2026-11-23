@@ -1629,6 +1629,55 @@ one-liner gate stays deferred to the visibility flip (RUNBOOK).
   `\text \mathrm \textbf \textit \mathbf` unwrap to their argument, `~`
   becomes a space; `\frac` and friends stay honest source by design.
 
+### T70: small local models score higher (plan and as built so far, 2026-11-22)
+
+T70 follows v0.40.0 and is about the scores of small local models.
+Nothing in it has shipped. Parts 1 and 2 are built on local branches
+and are in no release; part 3 is queued. The operator approved this
+entry on 2026-11-22.
+
+Why: on an unpublished 8-task suite, 3 runs each, the old default
+Qwen3-4B-Instruct-2507 spanned 10 to 14 of 24 over nine runs. Prompt
+rules, temperature and the harness fixes held on the branch
+`prose-recovery-p1` did not move it.
+
+1. **Part 1, the default model: built, not shipped.** Branch
+   `default-qwen35-p8`. The local default becomes Qwen3.5-4B Q4_K_M
+   with reasoning off. On the same 8-task suite it scored 21 and 21
+   of 24. On the nine-task eval (`scripts/weak_model_eval.sh`) it
+   scored 9 of 9 in each of two runs. On an easier unpublished suite
+   of 8 short tasks, which the old default passed 24 of 24 in each of
+   two runs, it scored 22 of 24. Eval tasks 12 (summary-pdf) and 13
+   (pdf-section) failed in both runs, and the old default was not
+   compared on them. `scripts/serve.sh` starts the server with
+   reasoning off by default, through a new `REASONING` knob (`off`,
+   `on`, `server`).
+2. **Part 2, schema replies: built, not shipped, not measured on
+   tasks.** Branch `schema-reply-p9`. A new key, `"tool_reply":
+   "schema"`, off by default and for the OpenAI-compatible wire only.
+   With it on, temur sends no tools array: it lists the tools in the
+   system message and asks the server, through a strict
+   `response_format` schema, for exactly one JSON object per reply,
+   either one tool call or a final answer. A valid call goes through
+   the normal dispatch, approval and deny rules included; anything
+   else is answered with an error and never run. The evidence so far
+   is about shape only. In a probe of five older models (Phi-4-mini,
+   Llama-3.1-8B, Llama-3.2-3B, gemma-3-4b, Qwen2.5-Coder-3B), the
+   server enforced the reply shape 9 of 9 for all five, where a forced
+   native call worked for two (the two Llamas). One smoke run with one
+   model (Phi-4-mini) gave well-formed replies that called no tool.
+   Whether schema replies make tasks succeed is the open question.
+3. **Part 3, queued.** Measure the five older models with the key on
+   before deciding whether part 2 ships. Then settle the order of
+   shipping for the three local branches: `default-qwen35-p8`,
+   `schema-reply-p9` and `prose-recovery-p1`. The third holds
+   prose-call recovery, a bash timeout floor, a working-directory
+   check and an edit not-found hint; it showed no score gain on the
+   old default.
+
+Not in T70: any change to the hosted default or to thinking's default
+in temur's own config; the launch, which the operator has shelved.
+
 ### Queued from the all-models dogfood 2026-11-16 (T69 plan, 2026-11-16)
 
 T69 shipped in v0.40.0: more local models work through llama.cpp.

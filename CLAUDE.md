@@ -85,7 +85,7 @@ enforced by the OS, not just by these rules. Do not try to escalate around them.
   `docs/RUNBOOK.md`. Still: build one milestone at a time; measure
   before claiming; ask before reordering priorities or flipping
   defaults (thinking off, hosted default claude-sonnet-5, local
-  default Qwen3-4B-Instruct-2507).
+  default Qwen3.5-4B).
 - Before reporting a phase to planning, the implementing session runs an independent
   check: a fresh subagent that is given only the spec, the diff, the draft report, and
   the gate and scan logs, never the conversation, and answers three questions in
