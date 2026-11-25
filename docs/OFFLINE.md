@@ -860,39 +860,58 @@ different server build. The fix is a chat template with tool support, or
 a model whose bundled one has it.
 
 Since 0.40.0 a session says it too. On a keyless local endpoint every
-session start sends the same two requests, and identical counts print
-one warning before the first chat request ([USAGE.md](USAGE.md) has the
-line). On 0.40.0 the three models gave the same counts (10, 4 and 31),
+session start sends the same bare request and then one carrying a
+single small tool definition, not the session's list (since 0.41.0),
+and identical counts print one warning before the first chat request
+([USAGE.md](USAGE.md) has the line). The session reports only the drop;
+doctor still sends the full list. On 0.40.0, whose session probe sent
+the full list, the three models gave the same counts (10, 4 and 31),
 and the warning appeared in all 24 runs of each.
 
-The probe carries the real definitions because a synthetic one misled
-it: on 2026-08-17 a one-tool toy schema reported PASS against a server
-that then returned HTTP 400 on every real request, since the template
-could render the toy and threw on temur's own. So there is a third
-answer besides drop and PASS, for a template that cannot render what
-temur sends:
+Doctor's probe carries the real definitions because a synthetic one
+misled it: on 2026-08-17 a one-tool toy schema reported PASS against a
+server that then returned HTTP 400 on every real request, since the
+template could render the toy and threw on temur's own. So there is a
+third answer besides drop and PASS, for a template that cannot render
+what temur sends:
 
 ```
 WARN: the server at http://127.0.0.1:8080/v1 rejected temur's tool definitions for "local-gguf" (HTTP 400: <the server's own message>): every turn that sends tools will fail the same way
 ```
 
 Unlike the drop, that one is not silent in use: every turn dies there.
-It is still a WARN, never a FAIL.
+It is still a WARN, never a FAIL. A session reports only the drop, which
+any definition shows, and a template that cannot render temur's own
+definitions fails visibly on the first turn.
 
-One cost: the second request makes the server prefill every tool
+One cost: doctor's second request makes the server prefill every tool
 definition, about 24KB on the full prompt profile. On a CPU-only local
 server that took 106 seconds the first time (measured 2026-08-18, 4814
 prompt tokens at 22.6 ms/token, a doctor run); doctor says so before it
-goes quiet. The probe is a cost of its own. Measured on 2026-11-18 on a
-GPU server with 4 slots and `--cache-ram 0`, the first real turn after
-the probe evaluated its whole prompt in all 120 runs of the five models
-whose templates render the tools, so the probe's prefill saved that turn
-nothing. Within a session, the probe's second request evaluated its
-whole prompt in some of those runs and one token in others. A second
-doctor run is not measured. With llama.cpp's default prompt cache none
-of this is measured. On that server the time from the first probe
-request to the session's first chat request had a median of about 0.3
-to 2.4 seconds by model, 2.8 seconds at most.
+goes quiet.
+
+0.40.0's session probe sent the same full list, and the rest of this
+paragraph was measured on it. The probe is a cost of its own. Measured
+on 2026-11-18 on a GPU server with 4 slots and `--cache-ram 0`, the
+first real turn after the probe evaluated its whole prompt in all 120
+runs of the five models whose templates render the tools, so the probe's
+prefill saved that turn nothing. Within a session, the probe's second
+request evaluated its whole prompt in some of those runs and one token
+in others. A second doctor run is not measured. With llama.cpp's default
+prompt cache none of this is measured. On that server the time from the
+first probe request to the session's first chat request had a median of
+about 0.3 to 2.4 seconds by model, 2.8 seconds at most. On a CPU-only
+server that probe could hold the server for over a minute, and the first
+turn timed out.
+
+Since 0.41.0 the session's second request carries one small tool
+definition. Measured on 2026-11-25 on a CPU-only server, cold, on the
+compact prompt profile: that request was 270 prompt tokens for
+Qwen3.5-4B and 146 for Qwen3-4B-Instruct-2507, where the full list was
+3247 for Qwen3.5-4B. The first chat request waited 5.8 and 0.3 seconds
+behind it, and the first turn passed for both. When the template drops
+the tools, that request is as short as the bare one, so the drop is
+reported in time even on a cold CPU-only server.
 
 ## The offline demo
 

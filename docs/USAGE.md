@@ -911,8 +911,10 @@ probe did anything but PASS.
 
 A session asks the first of these questions itself. On a keyless
 local endpoint, every session start and every `/model` switch sends
-the same two requests, and identical counts draw one line before the
-first chat request:
+the same bare request and then one carrying a single small tool
+definition, not the session's list, and identical counts draw one line
+before the first chat request. The session reports only the drop;
+doctor still sends the full list:
 
 ```
 [!] the server at http://127.0.0.1:8080/v1 appears to drop tool definitions for "gemma-3-4b" (prompt_tokens 10 with and without a tool definition): the chat template has no tool support, so the model cannot call tools in this session; `temur doctor` has the full report
@@ -920,10 +922,15 @@ first chat request:
 
 Any other outcome is silent: differing counts, a server that cannot be
 reached, and one whose two answers have not arrived within 5 seconds
-of the probe's start. The session starts either way. Measured on a GPU
-llama.cpp server (4 slots, `--cache-ram 0`, 2026-11-18), the time from
-the first probe request to the session's first chat request had a median
-of about 0.3 to 2.4 seconds by model and 2.8 seconds at most.
+of the probe's start. The session starts either way. On 0.40.0, whose
+session probe sent the full list, the time from the first probe request
+to the session's first chat request had a median of about 0.3 to 2.4
+seconds by model and 2.8 seconds at most on a GPU llama.cpp server (4
+slots, `--cache-ram 0`, 2026-11-18); on a CPU-only server that probe
+could hold the server for over a minute, and the first turn timed out.
+Since 0.41.0, on a CPU-only server (2026-11-25), the first chat request
+waited 5.8 seconds behind the probe for Qwen3.5-4B and 0.3 seconds for
+Qwen3-4B-Instruct-2507.
 
 Under the same gate, and capped the same way, doctor also measures the
 prompt floor: how much of the context window this selection spends
