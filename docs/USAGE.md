@@ -915,7 +915,7 @@ the same two requests, and identical counts draw one line before the
 first chat request:
 
 ```
-[!] the server at http://127.0.0.1:8080/v1 appears to drop tool definitions for "gemma-3-4b" (prompt_tokens 10 with and without temur's tools): the chat template has no tool support, so the model cannot call tools in this session; `temur doctor` has the full report
+[!] the server at http://127.0.0.1:8080/v1 appears to drop tool definitions for "gemma-3-4b" (prompt_tokens 10 with and without a tool definition): the chat template has no tool support, so the model cannot call tools in this session; `temur doctor` has the full report
 ```
 
 Any other outcome is silent: differing counts, a server that cannot be

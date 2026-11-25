@@ -784,7 +784,7 @@ fn repl(
     // Anthropic transport; `Watch::start` applies the last two itself.
     let probe_live = mock.is_none() && capture.is_none();
     let mut tools_watch = if probe_live {
-        temur::tools_drop::Watch::start(&resolved, session.tool_definitions())
+        temur::tools_drop::Watch::start(&resolved)
     } else {
         temur::tools_drop::Watch::idle()
     };
@@ -1052,10 +1052,7 @@ fn repl(
             // is asked again of the server now active. A probe still
             // running for the selection just left is dropped unheard.
             if switched && probe_live {
-                tools_watch = temur::tools_drop::Watch::start(
-                    &active_resolved,
-                    session.tool_definitions(),
-                );
+                tools_watch = temur::tools_drop::Watch::start(&active_resolved);
                 warn_if_tools_dropped(
                     &mut tools_watch,
                     Some(std::time::Duration::from_millis(

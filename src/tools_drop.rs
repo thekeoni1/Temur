@@ -78,10 +78,37 @@ const DEADLINE_SLACK_MS: u64 = 250;
 /// first chat request instead.
 pub const SESSION_PROBE_START_GRACE_MS: u64 = 2000;
 
+/// The one tool definition the SESSION probe sends with its second
+/// request (v0.41.0). Doctor's check still sends the session's full list
+/// (`doctor::tools_drop_check`); a session start only asks whether the
+/// template renders a tools array at all, and the full list made that
+/// request about 3,200 prompt tokens, which a CPU-only llama.cpp server
+/// decodes in one uncancellable batch: the first chat request then waited
+/// behind it past the 60 s head bound (v0.40.0 to v0.41.0). The probe is
+/// sent with `max_tokens` 1 and only its usage is read, so this tool is
+/// never offered to a model that could call it.
+pub const SESSION_PROBE_TOOL_NAME: &str = "echo_text";
+/// [`SESSION_PROBE_TOOL_NAME`]'s one-line description.
+pub const SESSION_PROBE_TOOL_DESCRIPTION: &str = "Return the given text unchanged.";
+/// [`SESSION_PROBE_TOOL_NAME`]'s input schema: one short string parameter.
+pub const SESSION_PROBE_TOOL_SCHEMA: &str =
+    r#"{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}"#;
+
+/// The session probe's tool list: exactly one definition, built from the
+/// constants above.
+pub fn session_probe_tools() -> Vec<ToolDef> {
+    vec![ToolDef {
+        name: SESSION_PROBE_TOOL_NAME.to_string(),
+        description: SESSION_PROBE_TOOL_DESCRIPTION.to_string(),
+        input_schema: serde_json::from_str(SESSION_PROBE_TOOL_SCHEMA)
+            .expect("the session probe schema is valid JSON"),
+    }]
+}
+
 /// The session's one line, from doctor's WARN for the same finding.
 pub fn session_warning(base_url: &str, model: &str, tokens: u64) -> String {
     format!(
-        "the server at {base_url} appears to drop tool definitions for \"{model}\" (prompt_tokens {tokens} with and without temur's tools): the chat template has no tool support, so the model cannot call tools in this session; `temur doctor` has the full report"
+        "the server at {base_url} appears to drop tool definitions for \"{model}\" (prompt_tokens {tokens} with and without a tool definition): the chat template has no tool support, so the model cannot call tools in this session; `temur doctor` has the full report"
     )
 }
 
@@ -114,25 +141,22 @@ impl Watch {
     }
 
     /// Start the probe for `p` when [`wanted`] says so, else [`Watch::idle`].
-    /// `defs` are the definitions the session sends.
-    pub fn start(p: &ResolvedProfile, defs: Vec<ToolDef>) -> Self {
+    /// The request with tools carries [`session_probe_tools`], one minimal
+    /// definition, not the session's list.
+    pub fn start(p: &ResolvedProfile) -> Self {
         Self::start_with(
             p,
-            defs,
             std::time::Duration::from_millis(SESSION_PROBE_DEADLINE_MS),
         )
     }
 
     /// [`Watch::start`] with the deadline supplied, so a test can watch
     /// one pass without waiting out the real one.
-    pub fn start_with(
-        p: &ResolvedProfile,
-        defs: Vec<ToolDef>,
-        deadline: std::time::Duration,
-    ) -> Self {
+    pub fn start_with(p: &ResolvedProfile, deadline: std::time::Duration) -> Self {
         if !wanted(p) {
             return Self::idle();
         }
+        let defs = session_probe_tools();
         let (tx, rx) = std::sync::mpsc::channel();
         let base_url = p.base_url.clone();
         let model = p.model.clone();
@@ -227,10 +251,24 @@ mod tests {
         }
     }
 
-    fn defs() -> Vec<ToolDef> {
-        crate::tools::Registry::standard()
-            .with_profile(crate::tools::PromptProfile::Compact)
-            .definitions()
+    /// v0.41.0: the session probe's request with tools carries exactly
+    /// one definition, the fixed one, read back from the raw body bytes.
+    #[test]
+    fn the_session_probe_sends_one_fixed_tool() {
+        let tools = session_probe_tools();
+        let body = crate::provider::tools_drop_probe_body("m", Some(&tools), None);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let sent = v["tools"].as_array().expect("a tools array");
+        assert_eq!(sent.len(), 1, "{body}");
+        assert_eq!(sent[0]["function"]["name"], SESSION_PROBE_TOOL_NAME, "{body}");
+        assert_eq!(body.matches("\"name\":").count(), 1, "one name on the wire: {body}");
+        assert!(body.contains("\"name\":\"echo_text\""), "{body}");
+        assert!(!body.contains("\"bash\""), "not the session's list: {body}");
+        assert_eq!(v["max_tokens"], 1, "{body}");
+        let params = &sent[0]["function"]["parameters"];
+        assert_eq!(params["properties"].as_object().unwrap().len(), 1, "{body}");
+        assert_eq!(params["properties"]["text"]["type"], "string", "{body}");
+        assert!(!SESSION_PROBE_TOOL_DESCRIPTION.contains('\n'));
     }
 
     /// A server that counts connections and answers every POST with a
@@ -318,11 +356,11 @@ mod tests {
     #[test]
     fn warns_once_when_the_counts_match() {
         let (base, hits) = server(10, 10, false);
-        let mut w = Watch::start(&profile("openai-compat", &base, false), defs());
+        let mut w = Watch::start(&profile("openai-compat", &base, false));
         assert_eq!(
             w.take(None),
             Some(format!(
-                "the server at {base} appears to drop tool definitions for \"m\" (prompt_tokens 10 with and without temur's tools): the chat template has no tool support, so the model cannot call tools in this session; `temur doctor` has the full report"
+                "the server at {base} appears to drop tool definitions for \"m\" (prompt_tokens 10 with and without a tool definition): the chat template has no tool support, so the model cannot call tools in this session; `temur doctor` has the full report"
             ))
         );
         assert_eq!(w.take(None), None, "said once");
@@ -332,7 +370,7 @@ mod tests {
     #[test]
     fn silent_when_the_tools_are_rendered() {
         let (base, hits) = server(10, 31, false);
-        let mut w = Watch::start(&profile("openai-compat", &base, false), defs());
+        let mut w = Watch::start(&profile("openai-compat", &base, false));
         assert_eq!(w.take(None), None);
         assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
@@ -345,7 +383,7 @@ mod tests {
         };
         let base = format!("http://127.0.0.1:{port}/v1");
         let started = Instant::now();
-        let mut w = Watch::start(&profile("openai-compat", &base, false), defs());
+        let mut w = Watch::start(&profile("openai-compat", &base, false));
         assert_eq!(w.take(None), None);
         assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
     }
@@ -359,7 +397,6 @@ mod tests {
         let started = Instant::now();
         let mut w = Watch::start_with(
             &profile("openai-compat", &base, false),
-            defs(),
             Duration::from_secs(1),
         );
         assert_eq!(w.take(Some(Duration::from_millis(50))), None, "still running");
@@ -392,7 +429,7 @@ mod tests {
                 );
             }
         });
-        let mut w = Watch::start(&profile("openai-compat", &base, false), defs());
+        let mut w = Watch::start(&profile("openai-compat", &base, false));
         assert_eq!(w.take(None), None);
         assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
@@ -406,7 +443,7 @@ mod tests {
             profile("anthropic", &base, true),
         ] {
             assert!(!wanted(&p), "{p:?}");
-            let mut w = Watch::start(&p, defs());
+            let mut w = Watch::start(&p);
             assert_eq!(w.take(None), None);
         }
         // Give a request that should not exist time to arrive.
@@ -453,7 +490,6 @@ mod tests {
         let started = Instant::now();
         let mut w = Watch::start_with(
             &profile("openai-compat", &base, false),
-            defs(),
             Duration::from_secs(1),
         );
         assert_eq!(w.take(None), None);
@@ -510,7 +546,6 @@ mod tests {
         let started = Instant::now();
         let mut w = Watch::start_with(
             &profile("openai-compat", &base, false),
-            defs(),
             Duration::from_secs(1),
         );
         assert_eq!(w.take(None), None);
@@ -532,7 +567,6 @@ mod tests {
         let (base, _) = server(10, 10, true);
         let mut w = Watch::start_with(
             &profile("openai-compat", &base, false),
-            defs(),
             Duration::from_secs(30),
         );
         w.give_up = Instant::now() + Duration::from_millis(300);

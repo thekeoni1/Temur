@@ -2650,7 +2650,7 @@ fn keyless_local_config(base: &str) -> String {
 
 fn tools_drop_line(base: &str) -> String {
     format!(
-        "  [!] the server at {base} appears to drop tool definitions for \"local-gguf\" (prompt_tokens 10 with and without temur's tools): the chat template has no tool support, so the model cannot call tools in this session; `temur doctor` has the full report"
+        "  [!] the server at {base} appears to drop tool definitions for \"local-gguf\" (prompt_tokens 10 with and without a tool definition): the chat template has no tool support, so the model cannot call tools in this session; `temur doctor` has the full report"
     )
 }
 
@@ -2680,6 +2680,14 @@ fn one_shot_warns_on_stderr_when_the_server_drops_the_tools() {
     assert!(!posts[0].contains("\"stream\":true") && !posts[0].contains("\"tools\""), "{}", posts[0]);
     assert!(!posts[1].contains("\"stream\":true") && posts[1].contains("\"tools\""), "{}", posts[1]);
     assert!(posts[2].contains("\"stream\":true"), "the chat request comes last: {}", posts[2]);
+    // v0.41.0: the probe's tools are ONE fixed definition, not the
+    // session's list; the chat request still carries the whole list.
+    let probe_tools: serde_json::Value = serde_json::from_str(post_body(&posts[1])).unwrap();
+    let probe_tools = probe_tools["tools"].as_array().expect("a tools array");
+    assert_eq!(probe_tools.len(), 1, "{}", posts[1]);
+    assert_eq!(probe_tools[0]["function"]["name"], "echo_text", "{}", posts[1]);
+    assert_eq!(post_body(&posts[1]).matches("\"name\":").count(), 1, "{}", posts[1]);
+    assert!(posts[2].contains("\"name\":\"bash\""), "the turn sends temur's tools: {}", posts[2]);
     for p in posts.iter() {
         assert_no_credential_header(&p.to_ascii_lowercase());
     }
