@@ -240,7 +240,7 @@ const MODEL_LIST_CAP: usize = 20;
 /// is small", and the second-highest scorer answers neither.
 const MODEL_SHORTLIST: &[&str] = &[
     "Known-good small models:",
-    "  Qwen3.5-4B Q4_K_M (~3.4 GB GPU memory at 8k context; serve it with reasoning off)",
+    "  Qwen3.5-4B Q4_K_M (~4.8-6.4 GB RAM at 8k context; serve with reasoning off)",
     "  Qwen3-1.7B Q4_K_M (~2.1 GB RAM; the low-RAM choice)",
     "Larger is better when RAM allows; 7B+ is qualitatively different.",
     "More in docs/OFFLINE.md, \"Recommended small models\".",

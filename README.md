@@ -34,8 +34,8 @@ and [docs/COMPARISON.md](docs/COMPARISON.md).
   order of 90 MB. temur's release binary has no interpreter and no
   shared libraries, so it loads on old x86 machines, armv7 industrial
   controllers, OpenWrt-class devices, `FROM scratch` containers, and
-  rescue/initramfs environments. The v0.40.0 binaries measure 8.39 MB
-  on i686 and 9.95 MB on x86_64: the PDF, spreadsheet and document
+  rescue/initramfs environments. The v0.41.0 binaries measure 8.39 MB
+  on i686 and 9.96 MB on x86_64: the PDF, spreadsheet and document
   parsers are compiled in, the price of reading documents with nothing
   installed.
 - Offline is a first-class mode. The OpenAI-compatible provider runs
@@ -133,9 +133,8 @@ assertions, through the compact prompt profile with an 8192-token
 context in a `--network none` pod. Two recorded runs of the same
 nine tasks: the previous default, Qwen3-4B-Instruct-2507 Q4_K_M
 (the non-CUDA llama.cpp `server-b10068`), and the current default,
-Qwen3.5-4B Q4_K_M (the CUDA build of llama.cpp `server-b10438` with
-GPU offload, started with `--reasoning off`, measured 2026-11-22 on
-the v0.40.0 binary):
+Qwen3.5-4B Q4_K_M (llama.cpp `server-b10438`, started with
+`--reasoning off`, measured 2026-11-22 on the v0.40.0 binary):
 
 | Task | Qwen3-4B-Instruct-2507 (previous default) | Qwen3.5-4B (default), run 1 | run 2 |
 |---|---|---|---|
@@ -189,7 +188,7 @@ One-liner (detects your arch, downloads, verifies the checksum, installs to
 `~/.local/bin`; refuses to install anything unverified):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/thekeoni1/Temur/v0.40.0/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/thekeoni1/Temur/v0.41.0/scripts/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
@@ -200,7 +199,7 @@ For the 32-bit binary on such a box, run the one-liner under `setarch
 i686`, or use the manual install below.
 
 Piping to `sh` is a trust decision: [read the script
-first](https://github.com/thekeoni1/Temur/blob/v0.40.0/scripts/install.sh) if
+first](https://github.com/thekeoni1/Temur/blob/v0.41.0/scripts/install.sh) if
 you prefer. The checksum step defends against transport corruption and a
 mismatched artifact. It is not a substitute for trusting the release source,
 since the sums come from the same place as the binaries.
@@ -212,10 +211,10 @@ so copy it fresh each time; `temur --version` shows what is installed.
 Manual install (example: x86_64; substitute your triple):
 
 ```sh
-curl -fsSLO https://github.com/thekeoni1/Temur/releases/download/v0.40.0/temur-v0.40.0-x86_64-unknown-linux-musl
-curl -fsSLO https://github.com/thekeoni1/Temur/releases/download/v0.40.0/SHA256SUMS
+curl -fsSLO https://github.com/thekeoni1/Temur/releases/download/v0.41.0/temur-v0.41.0-x86_64-unknown-linux-musl
+curl -fsSLO https://github.com/thekeoni1/Temur/releases/download/v0.41.0/SHA256SUMS
 sha256sum -c --ignore-missing SHA256SUMS
-install -m 755 temur-v0.40.0-x86_64-unknown-linux-musl ~/.local/bin/temur
+install -m 755 temur-v0.41.0-x86_64-unknown-linux-musl ~/.local/bin/temur
 export PATH="$HOME/.local/bin:$PATH"
 ```
 

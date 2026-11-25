@@ -2,7 +2,7 @@
 
 Newest first. Dates are release dates; "Unreleased" ships next.
 
-## Unreleased
+## v0.41.0 - 2026-11-25
 
 - The default local model is Qwen3.5-4B (Q4_K_M), replacing
   Qwen3-4B-Instruct-2507. `temur init`'s local template offers
@@ -13,6 +13,12 @@ Newest first. Dates are release dates; "Unreleased" ships next.
   knob takes `off` (the default), `on`, or `server` (pass neither and
   keep the model's own default); any other value fails before the
   server starts. The "server starting" line shows the value.
+- The first turn on a cold CPU-only llama.cpp server no longer times
+  out. Since v0.40.0 the start-up check for a template that drops tool
+  definitions sent the session's whole tool list, which such a server
+  could take over a minute to read before it answered anything else; it
+  now sends one small tool definition. `temur doctor` still sends the
+  whole list.
 
 ## v0.40.0 - 2026-11-18
 
