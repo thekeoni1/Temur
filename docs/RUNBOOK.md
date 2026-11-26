@@ -17249,3 +17249,160 @@ random `media_marker`; `reasoning_format` is `none` and
 match per model.
 
 Logs: `default-model-p8-2026-11-22`.
+
+## v0.41.0 ship record
+
+2026-11-25. **Qwen3.5-4B as the local default, and the cold-CPU
+first-turn fix, shipped at tag `v0.41.0`.** A MINOR release: part 1 of
+the milestone T70, plus one fix found during the cut. The range is
+`95fd4de..718caf7`, 8 commits: the 5 of the `default-qwen35-p8`
+branch, the fix `fa96e11`, its docs `c8ff863`, and the bump `718caf7`.
+Main was fast-forwarded to them and they were pushed together with the
+tag. The branch itself was not pushed. 15 files changed, 354
+insertions and 119 deletions.
+
+- **The cut ran on the desktop.**
+- **The scope grew during the cut.** The step-4 eval found that the
+  first turn on a cold CPU-only llama.cpp server timed out, with both
+  the old and the new default model, because of the session probe that
+  v0.40.0 introduced. The operator ruled it fixed in this release (2026-11-25).
+
+The CHANGELOG's three v0.41.0 items ship as written in `718caf7`:
+
+- The default local model is Qwen3.5-4B (Q4_K_M), replacing
+  Qwen3-4B-Instruct-2507, in `temur init`'s local template and its
+  offline shortlist.
+- `scripts/serve.sh` starts the server with `--reasoning off` by
+  default, with a `REASONING` knob (`off`, `on`, `server`).
+- The first turn on a cold CPU-only server no longer times out. The
+  session's start-up tools-drop check now sends one small tool
+  definition (`echo_text`, one string parameter) instead of the whole
+  tool list. `temur doctor` still sends the whole list.
+
+### The first-turn timeout, as measured (2026-11-25)
+
+All on CPU, one model server at a time, llama.cpp `server-b10438`,
+task 1's prompt in a fresh HOME against a freshly started server.
+
+- Step 4: the eval's task 1 failed with "timed out waiting for send
+  body from the server", the 60-second response-head bound. A cold
+  first request pair on each model failed the same way, at 66.34 s
+  (Qwen3.5-4B) and 66.38 s (Qwen3-4B-Instruct-2507).
+- Phase R, R1: the v0.39.0 release binary, which has no session probe,
+  passed on both models. Its cold first turn prefilled for 129.8 s
+  (3287 tokens, Qwen3-4B-Instruct-2507) and 144.3 s (3421 tokens,
+  Qwen3.5-4B). A first turn over 60 seconds does not fail by itself.
+- R2: the v0.41.0 candidate with the probe switched off in a scratch
+  build also passed on both models (132.3 s / 3289 tokens and 146.8 s /
+  3423 tokens).
+- R3, with server verbose logging: the probe's request with tools was
+  3247 tokens. The server decodes it in 2048-token batches. While one
+  batch decodes, it declines every queued task, cancels included. That
+  first batch took 84.6 s. temur cancelled the probe at its 5-second
+  deadline, and the chat request had been posted just before that, but
+  the server handled neither until the batch ended, after temur's 60-second bound had fired.
+- F2.1, with the fix: both models passed. The probe's request with
+  tools was 270 tokens (Qwen3.5-4B) and 146 tokens
+  (Qwen3-4B-Instruct-2507). The chat request waited 5.76 s and 0.32 s
+  before it started, then prefilled 3421 and 3289 tokens.
+- F2.2, detection still works: against a server with a chat template
+  that drops tool definitions, the session warned once. Both probe
+  requests were done 0.84 s after the first began (server log), both
+  rendered at 9 prompt tokens. Without that template, there was no warning.
+  `temur doctor` against the dropping server gave the same tools-drop
+  lines as v0.39.0.
+
+### Eval
+
+The nine-task eval, Qwen3.5-4B at a window of 8192, served with
+`--reasoning off`, on CPU, one run each:
+
+- Step 4, before the fix: **8/9**. Task 1 failed on the timeout above.
+- F2.3, with the fix: **9/9**. No task 1-9 ended on a provider timeout.
+  Of the four ungated tasks 10-13, task 13 failed on a context overflow
+  at 8192 (recorded, not worked).
+
+### Sizes
+
+| asset | bytes | MB | v0.40.0 | change | under 10,000,000 |
+| --- | --- | --- | --- | --- | --- |
+| i686 | 8,388,268 | 8.39 | 8,385,332 | +2,936 | 1,611,732 |
+| x86_64 | 9,959,336 | 9.96 | 9,950,576 | +8,760 | 40,664 |
+| aarch64 | 8,045,576 | 8.05 | 8,043,088 | +2,488 | 1,954,424 |
+| armv7 | 7,764,600 | 7.76 | 7,771,120 | -6,520 | 2,235,400 |
+
+README:37-38 reads **8.39 MB** on i686 and **9.96 MB** on x86_64 (was
+9.95). The x86_64 watch item from v0.40.0 stands: **40,664 bytes**
+under 10,000,000.
+
+### Gates, the step-7 STOP, and the amend
+
+Logs are in `~/v0410-logs/`. The cut report is `~/v0410-report.md`.
+
+- The bump commit `d5104ce` was gated with `release.sh` at a clean
+  tree, which exited 0. check.sh ran on both paths, with 48 test-result
+  lines summing to 3,069 passed and 0 failed. The leak grep was clean,
+  4/4 artifacts were gated, and the installer test passed against a
+  local server.
+- The step-7 independent check found a wrong claim the bump put in the
+  README. Lines 137-138, a dated record ("measured 2026-11-22 on the v0.40.0
+  binary"), had been rewritten to say v0.41.0. That was a STOP. The
+  amend, to README lines 136-138 only, restored "on the v0.40.0
+  binary" and shortened the server description beside it. `d5104ce` became `718caf7` with the
+  message unchanged.
+- `release.sh` ran again at `718caf7` and exited 0. Its `SHA256SUMS` is
+  byte-identical to gate 1's (sha256 `262e9d57...`).
+- Finding for the queue: `scripts/bump_version.sh:37` is a blanket
+  `sed -i "s/v$OLD/v$NEW/g" README.md`. It rewrites dated records along
+  with the pins. The post-bump sweep greps only the old version, so it
+  cannot see a record rewritten to the new one.
+
+### Tag, publication and live verification
+
+The operator's word, "great, push", was typed in the cut session.
+
+- Annotated tag `v0.41.0` points at `718caf7`, tag object
+  `a47890bffb99ed5e282ed5432717ad2dc1f89f22`. The message is
+  `temur v0.41.0 - Qwen3.5-4B local default and the cold-CPU
+  first-turn fix (T70)`.
+- The final `release.sh` ran at the tag and exited 0. Its `SHA256SUMS`
+  is byte-identical to the gate's.
+- `git push origin main v0.41.0`: main `95fd4de..718caf7`, plus the new
+  tag. The remote carries 50 tags. CI on `718caf7` completed with
+  success at 05:02:08Z.
+- The release was created with the command `release.sh` printed:
+  `https://github.com/thekeoni1/Temur/releases/tag/v0.41.0`, release id
+  458974392.
+  - The title equals the tag message.
+  - It is not a draft and not a prerelease, and it is marked latest.
+  - It has five assets.
+  - The notes are the CHANGELOG v0.41.0 section body (954 bytes). The
+    raw API body is identical.
+- The CHANGELOG and the tag are dated 2026-11-25, the local commit
+  date, and the release was published 2026-11-26T04:55:49Z (UTC).
+- The README one-liner, run into a fresh HOME, downloaded the x86_64
+  asset, printed "checksum verified.", and the installed
+  `temur --version` read `temur 0.41.0`. The fresh HOME was removed.
+- `SHA256SUMS` downloaded from the release is byte-identical to the
+  staged one.
+
+| asset | sha256 |
+| --- | --- |
+| i686-unknown-linux-musl | `974b7b49193746b74074e2678e354aa8d68f8220f14aa4f7d6dd6c1ac295bb7f` |
+| x86_64-unknown-linux-musl | `9ae9799242871a9e060bf716c242de03ada4151d51965c9b9fe58508ef37f33f` |
+| aarch64-unknown-linux-musl | `d87fe6322b2de885b2b27c2d41f3742622cc83476da8b900392a941fa10778f9` |
+| armv7-unknown-linux-musleabihf | `d61c23a216af3f7a7e5111a7f94591b1d781a13aca4d6a278be106a397a1e7ae` |
+| SHA256SUMS (428 bytes) | `262e9d5783c2f52cadbf99aabc8e4dee62805c7290cae647b19661385e72bac1` |
+
+### What this release does NOT establish
+
+- Every eval figure is one run on CPU. The two scores differ by one
+  task, and that task is the one the fix addresses.
+- On a cold CPU server, the Qwen3.5-4B probe's 270-token request still
+  runs past the 5-second deadline. That session hears nothing from the
+  probe; the first turn still waits behind it (5.76 s in F2.1), but
+  no longer past the 60-second bound.
+- The task 13 context overflow at 8192 is recorded, not worked.
+- No dogfood or soak of the published v0.41.0 asset has run yet. ARM
+  is verified at build level only.
+- T70 parts 2 and 3 ship nothing in this release.
